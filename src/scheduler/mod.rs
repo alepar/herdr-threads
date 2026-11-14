@@ -316,12 +316,7 @@ impl<'a, D: DeadlinePort + ?Sized, W: WakePort + ?Sized, N: NotificationPort + ?
                 .into_iter()
                 .filter(|due| {
                     !due.receipts.is_empty()
-                        && !all_targets_covered(
-                            self.wakes.mod_channels,
-                            &due.seat,
-                            &due.targets,
-                            utc,
-                        )
+                        && !no_native_wake(self.wakes.mod_channels, &due.seat, &due.targets, utc)
                         && poke_admissible(&state, &due.seat, now)
                 })
                 .take(usize::from(POKE_SEAT_LIMIT))
@@ -711,6 +706,27 @@ fn all_targets_covered(
         .all(|target| binding_covered(channels, seat, &target.binding, now))
 }
 
+/// Whether the native lane has nothing to do for these targets: every one is served by its live
+/// mod channel (`all_targets_covered`), or every one's harness wakes only through its own channel
+/// (`Registry::wakes_only_through_channel`: no composer policy, so no host can type into it).
+/// Such a seat is no native wake or poke target: nothing is reserved, attempted or recorded, so
+/// no refusal climbs the ladder. Its channel delivers and wakes it once registered, and its turn
+/// hook delivers on its next turn. A seat with at least one target the host can type into, or a
+/// source that carries no targets, keeps the native rules.
+fn no_native_wake(
+    channels: &dyn ModChannels,
+    seat: &SeatId,
+    targets: &[WakeTarget],
+    now: UtcMillis,
+) -> bool {
+    let registry = crate::harness::registry::builtins();
+    all_targets_covered(channels, seat, targets, now)
+        || (!targets.is_empty()
+            && targets
+                .iter()
+                .all(|target| registry.wakes_only_through_channel(&target.harness)))
+}
+
 /// The reservation with the bindings a mod channel already serves removed from its targets, so
 /// the composer wake never types to a binding that was woken through its channel, nor to
 /// another binding of that binding's process (same fingerprint pid and harness, ht-327): the
@@ -864,7 +880,8 @@ impl<'a, S: WakePort + ?Sized, N: NotificationPort + ?Sized> WakeRunner<'a, S, N
         // Spec D7: the mod channel delivers this seat's attention. Nothing is
         // reserved, refused or recorded: the ladder is untouched, and the
         // channel's removal kicks the wake lane so the candidate is re-derived.
-        if all_targets_covered(
+        // Likewise for targets only their own channel can wake (`no_native_wake`).
+        if no_native_wake(
             self.mod_channels,
             &candidate.seat,
             &candidate.targets,
@@ -1194,7 +1211,7 @@ impl<'a, S: WakePort + ?Sized, N: NotificationPort + ?Sized> WakeRunner<'a, S, N
             .state
             .lock()
             .map_err(|_| error(ErrorCode::StoreCorrupt, "wake state lock poisoned"))?;
-        if all_targets_covered(
+        if no_native_wake(
             self.mod_channels,
             &seat,
             &due.targets,

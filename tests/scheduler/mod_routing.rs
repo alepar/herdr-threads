@@ -727,3 +727,118 @@ fn poke_follows_the_same_per_binding_rule() {
     assert_eq!(runner.try_poke(&due, &budget()).unwrap(), None);
     assert_eq!(wake.reserves.load(Ordering::SeqCst), 1, "all covered");
 }
+
+/// A target of `harness`; `dormant` marks the seat's dormant binding (`dormant_top_level`).
+fn harness_target(id: &str, harness: &str, pid: u32, dormant: bool) -> crate::ports::WakeTarget {
+    crate::ports::WakeTarget {
+        harness: harness.into(),
+        dormant,
+        ..target(id, pid)
+    }
+}
+
+/// Refuses every wake before submission, as a host does for a harness it cannot type into.
+#[derive(Default)]
+struct RefusingNotifier {
+    attempts: AtomicU64,
+}
+impl NotificationPort for RefusingNotifier {
+    fn attempt_wake(
+        &self,
+        _: WakeReservation,
+        _: &HostCallContext,
+    ) -> Result<WakeOutcome, ApiError> {
+        self.attempts.fetch_add(1, Ordering::SeqCst);
+        Ok(WakeOutcome::Refused(crate::ports::RefusalCause::Unsafe))
+    }
+}
+
+/// Drives `passes` wake passes of `candidate`, each after the 5-minute dormant retry cap, with no
+/// mod channel; returns the store events and the host attempts.
+fn passes_without_channel(candidate: &WakeCandidate, passes: u64) -> (Vec<&'static str>, u64) {
+    let events = Arc::new(Mutex::new(Vec::new()));
+    let store = cooperative(store(&events));
+    let notifier = RefusingNotifier::default();
+    let channels = BindingChannels::default();
+    let mut runner = WakeRunner::new(&store, &notifier, RetryConfig::default(), daemon_boot());
+    runner.mod_channels = &channels;
+    for pass in 0..passes {
+        let now = pass * 300_001;
+        store.inner.clock.0.store(now, Ordering::SeqCst);
+        let budget = CallBudget {
+            deadline: MonoInstant(now + 10_000),
+            cancellation: Cancellation::default(),
+        };
+        runner.try_candidate(candidate, &budget).unwrap();
+    }
+    let events = events.lock().unwrap().clone();
+    (events, notifier.attempts.load(Ordering::SeqCst))
+}
+
+// Kills: a seat whose harness wakes only through its own channel (opencode: `IdleWake::Channel`,
+// no composer policy) being reserved and refused while its channel is down, so the refusal ladder
+// retries it forever; connected or dormant.
+#[test]
+fn channel_only_targets_are_never_reserved_without_their_channel() {
+    for dormant in [false, true] {
+        let candidate = candidate_with(vec![harness_target("a", "opencode", 10, dormant)]);
+        let (events, attempts) = passes_without_channel(&candidate, 5);
+        assert!(events.is_empty(), "dormant={dormant}: {events:?}");
+        assert_eq!(attempts, 0, "dormant={dormant}");
+    }
+}
+
+// Kills: the exclusion keyed on `IdleWake::Channel` alone (Claude and Hermes also wake through a
+// channel but have a composer policy) or on the seat instead of every target: a composer
+// harness with no channel, alone or beside a channel-only binding, keeps its native wake and
+// ladder.
+#[test]
+fn composer_harness_targets_keep_the_native_wake_without_a_channel() {
+    for targets in [
+        vec![harness_target("a", "claude", 10, false)],
+        vec![harness_target("a", "hermes", 10, false)],
+        vec![harness_target("a", "codex", 10, true)],
+        vec![harness_target("a", "unregistered", 10, false)],
+        vec![
+            harness_target("a", "opencode", 10, false),
+            harness_target("b", "hermes", 20, false),
+        ],
+    ] {
+        let harnesses: Vec<String> = targets.iter().map(|t| t.harness.clone()).collect();
+        let (events, attempts) = passes_without_channel(&candidate_with(targets), 3);
+        assert!(attempts > 0, "{harnesses:?}: {events:?}");
+        assert!(events.contains(&"reserve"), "{harnesses:?}: {events:?}");
+    }
+}
+
+// Kills: a soft poke still reserved for a seat only its own channel can wake.
+#[test]
+fn channel_only_targets_get_no_poke_and_composer_targets_do() {
+    for (harness, reserves) in [("opencode", 0), ("hermes", 1), ("claude", 1)] {
+        let events = Arc::new(Mutex::new(Vec::new()));
+        let wake = PokeStore {
+            inner: store(&events),
+            reserves: Default::default(),
+            targets: vec![harness_target("a", harness, 10, false)],
+        };
+        let notifier = FakeNotifier {
+            events: events.clone(),
+        };
+        let due = FakeDeadlinePort {
+            clock: wake.inner.clock.clone(),
+            due_calls: AtomicU64::new(0),
+        };
+        let channels = BindingChannels::default();
+        let scheduler = Scheduler::new(
+            "i".into(),
+            &due,
+            &wake,
+            &notifier,
+            RetryConfig::default(),
+            daemon_boot(),
+        )
+        .with_mod_channels(&channels);
+        scheduler.drive_pokes(&budget()).unwrap();
+        assert_eq!(wake.reserves.load(Ordering::SeqCst), reserves, "{harness}");
+    }
+}

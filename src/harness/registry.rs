@@ -1521,6 +1521,21 @@ impl Registry {
             IdleWakeOn::None
         })
     }
+    /// Whether a harness id's only idle-wake path is its own push channel: its delivery policy
+    /// wakes itself (`IdleWake::Channel`) and it has no composer policy, so no host can type a
+    /// wake into it (`idle_wake_on` is `None` on every host while its channel is down). `false`
+    /// for an unregistered id and for every harness with a composer policy.
+    pub fn wakes_only_through_channel(&self, harness_id: &str) -> bool {
+        self.registrations
+            .iter()
+            .find(|r| r.metadata().id == harness_id)
+            .is_some_and(|r| {
+                r.adapter.composer_policy().is_none()
+                    && r.adapter
+                        .delivery_policy()
+                        .is_some_and(|p| p.idle_wake() == IdleWake::Channel)
+            })
+    }
     /// The binding policy of an agent harness id; `"human"` and unknown ids give the default.
     pub fn binding_policy(&self, harness_id: &str) -> BindingPolicy {
         self.registrations
@@ -1705,6 +1720,23 @@ mod tests {
             let channel_only = r.composer_policy().is_none()
                 && r.delivery_policy()
                     .is_some_and(|p| p.idle_wake() == IdleWake::Channel);
+            assert_eq!(
+                registry.wakes_only_through_channel(id),
+                channel_only,
+                "{id}"
+            );
+            if channel_only {
+                for wake in [
+                    WakeCapability::Composer(ComposerTraits::HERDR_TUI),
+                    WakeCapability::None,
+                ] {
+                    assert_eq!(
+                        registry.idle_wake_on(id, wake, false),
+                        Some(IdleWakeOn::None),
+                        "{id}: no host wakes a channel-only harness"
+                    );
+                }
+            }
             for c in [false, true] {
                 let got = registry
                     .idle_wake_on(id, WakeCapability::Composer(ComposerTraits::HERDR_TUI), c)
@@ -1750,6 +1782,18 @@ mod tests {
                 "{id} none c=true"
             );
         }
+        // The scheduler's native-wake exclusion (`no_native_wake` in src/scheduler/mod.rs):
+        // only opencode wakes through nothing but its channel; Claude and Hermes, `Channel`
+        // harnesses with a composer policy, keep their composer fallback.
+        let channel_only: Vec<_> = registry
+            .registrations()
+            .iter()
+            .map(|r| r.metadata().id)
+            .filter(|id| registry.wakes_only_through_channel(id))
+            .collect();
+        assert_eq!(channel_only, ["opencode"]);
+        assert!(!registry.wakes_only_through_channel("human"));
+        assert!(!registry.wakes_only_through_channel("pi"));
         for id in ["human", "pi"] {
             for wake in [tui, WakeCapability::None] {
                 for c in [false, true] {

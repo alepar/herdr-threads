@@ -1209,7 +1209,12 @@ model open work, and summary closure never changes receipt state or installs glo
   also holds the wake (conservative); tmux drops OSC 7501, so no self-reported status exists (T5).
 - *Wake*: a wake prompt goes only to a native host kind declared by the bound registered adapter
   (implemented). Recognized aliases do not change the binding or merge seats. A missing composer
-  provider defers ordinary idle/done wake; soft poke and stash/restore also send no keys.
+  provider defers ordinary idle/done wake; soft poke and stash/restore also send no keys. A seat whose
+  wake targets all belong to a harness that wakes only through its own channel (a `Channel` delivery policy
+  and no composer policy, `wakes_only_through_channel`) is no native wake or poke target, dormant or
+  connected: with its channel down nothing is reserved, attempted or refused, so no refusal ladder runs; the
+  channel wakes it once registered, its turn hook delivers on its next turn, and its sender reads
+  `wake=no_wake`. A seat with any target the host can type into keeps the rules below.
   *Per binding* (ht-54r.13): a seat may hold several bindings, and a wake is decided per connected
   top-level binding. A wake is reserved per seat (the fence is the seat's mapping generation, so a binding
   enrolling or reading its mail does not void it) and names as targets the open, connected, top-level,
