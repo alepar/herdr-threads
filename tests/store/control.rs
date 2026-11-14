@@ -11009,7 +11009,11 @@ fn continuity_successor_survives_a_liveness_pass_before_its_first_touch() {
 }
 
 #[test]
-fn continuity_successor_is_not_judged_while_its_instance_is_held() {
+fn continuity_successor_is_judged_once_its_hosts_marker_is_current() {
+    // The C1 reattachment happens past the reconciliation marker, while another unresolved seat
+    // keeps the hold armed. The successor is proven in the current incarnation and carries the
+    // hook's current fingerprint, so the liveness worker judges it (ht-hrbx): a verdict on that
+    // fingerprint applies through the one disconnect transition.
     let (context, mut conn, path) = c1_fixture();
     b5_set_marker_to_recovery(&conn);
     c1_unresolved_seat(&conn, "s3", "claude", "sess-3");
@@ -11023,8 +11027,8 @@ fn continuity_successor_is_not_judged_while_its_instance_is_held() {
     assert_eq!(b5_hold_state(&conn), (1, 0));
     let candidates = crate::store::bindings::liveness_candidates(&conn, None).unwrap();
     assert!(
-        candidates.iter().all(|c| c.binding.seat.as_str() != "s1"),
-        "a held instance is never judged: {candidates:?}"
+        candidates.iter().any(|c| c.binding.seat.as_str() == "s1"),
+        "a reconciled host's resolved seat is judged under an armed hold: {candidates:?}"
     );
     let binding: String = conn
         .query_row(
@@ -11049,7 +11053,10 @@ fn continuity_successor_is_not_judged_while_its_instance_is_held() {
     )
     .unwrap();
     tx.commit().unwrap();
-    assert_eq!(changed, 0, "apply_liveness re-reads the candidates");
+    assert_eq!(
+        changed, 1,
+        "apply_liveness applies the verdict on the current fingerprint"
+    );
     let liveness: String = conn
         .query_row(
             "SELECT liveness FROM occupant_bindings WHERE seat_id='s1' AND ended_at IS NULL",
@@ -11057,7 +11064,7 @@ fn continuity_successor_is_not_judged_while_its_instance_is_held() {
             |r| r.get(0),
         )
         .unwrap();
-    assert_eq!(liveness, "connected");
+    assert_eq!(liveness, "disconnected");
     drop(conn);
     let _ = std::fs::remove_file(path);
 }

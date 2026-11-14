@@ -321,9 +321,12 @@ fn unresolved_named_row_does_not_silence_others() {
         1,
         "a pane host arms the hold for the same transition"
     );
-    assert!(
-        control.candidate_seats().is_empty(),
-        "and its live binding is silenced"
+    // Past the host's reconciliation pass the armed hold no longer silences a resolved seat
+    // (ht-hrbx): only a hold of a recovery not yet reconciled does.
+    assert_eq!(
+        control.candidate_seats(),
+        vec![a.as_str().to_owned()],
+        "but its reconciled live binding stays judged"
     );
 }
 
