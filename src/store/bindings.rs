@@ -374,6 +374,7 @@ pub(crate) fn enroll_with_hooks(
         None => SeedMode::Fresh,
     };
     let seeded = read_cursors::seed(tx, &binding.binding_id, mode)?;
+    super::attention::seed_notice_frontier(tx, &binding.binding_id)?;
     run_enroll_hooks(
         tx,
         &EnrollEvent {

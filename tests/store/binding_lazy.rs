@@ -1567,3 +1567,148 @@ fn rejoin_with_only_self_mail_owes_no_wake() {
     );
     assert!(unread(&db, &sender).is_empty());
 }
+
+/// `enroll_binding` for a top-level successor of `predecessor` (lineage seed).
+fn enroll_successor(db: &Connection, session: &str, predecessor: &BindingId) -> BindingId {
+    let (k, p) = (key(session, None), placement());
+    let req = EnrollRequest {
+        key: &k,
+        role: BindingRole::TopLevel,
+        parent: None,
+        lineage: Some(predecessor),
+        fingerprint: None,
+        placement: &p,
+        trigger: EnrollTrigger::Lifecycle,
+    };
+    match enroll(db, &req, UtcMillis(10)).unwrap() {
+        EnrollOutcome::Enrolled { binding, .. } => binding.binding_id,
+        other => panic!("{other:?}"),
+    }
+}
+
+// ht-y3iv. Kills: a restarted session inheriting a cursor below the seat's own sends and
+// being offered them (and woken on them) as unread backlog.
+#[test]
+fn a_new_session_never_inherits_the_seats_own_sends_as_unread() {
+    let mut db = db();
+    let old = enroll_binding(&db, "old", None);
+    lazy(&db, 3);
+    for n in [4, 5] {
+        lazy_in_from(&db, "t", n, 0, Some(&old));
+    }
+    lazy(&db, 6);
+    let tx = db.transaction().unwrap();
+    for n in [3, 4, 5, 6] {
+        note_published(&tx, &format!("prep-{n}")).unwrap();
+    }
+    tx.commit().unwrap();
+    assert_eq!(unread(&db, &old), [msg(3), msg(6)]);
+    disconnect_now(&db, &old, DisconnectReason::ProcessExit);
+    let new = enroll_binding(&db, "new", None);
+    assert_eq!(
+        unread(&db, &new),
+        [msg(3), msg(6)],
+        "peer mail the seat has not read stays unread; its own sends never are"
+    );
+    assert_eq!(view(&db, &new), 2);
+    assert_eq!(
+        wake_frontier(&db, "s", NudgeThreshold::new(0).unwrap()).unwrap(),
+        None,
+        "the seat's own p0 sends hold no wake for the new session"
+    );
+    complete(&mut db, Some(&new), &[msg(3), msg(6)]);
+    assert!(unread(&db, &new).is_empty());
+    assert_eq!(
+        read_cursors::cursor_for(&db, &new, &ThreadId::new("t")).unwrap(),
+        Some(6),
+        "the cursor passes the seat's own sends"
+    );
+}
+
+// ht-y3iv. Kills: a lineage successor losing a sibling's mail its predecessor had not read,
+// or seeing the predecessor's own sends.
+#[test]
+fn a_successor_skips_its_predecessors_sends_but_keeps_sibling_mail() {
+    let mut db = db();
+    let main = enroll_binding(&db, "main", None);
+    let side = enroll_binding(&db, "side", None);
+    lazy_in_from(&db, "t", 3, 1, Some(&side));
+    lazy_in_from(&db, "t", 4, 1, Some(&main));
+    let tx = db.transaction().unwrap();
+    for n in [3, 4] {
+        note_published(&tx, &format!("prep-{n}")).unwrap();
+    }
+    tx.commit().unwrap();
+    assert_eq!(unread(&db, &main), [msg(3)]);
+    assert_eq!(unread(&db, &side), [msg(4)]);
+    disconnect_now(&db, &main, DisconnectReason::Superseded);
+    let next = enroll_successor(&db, "main-2", &main);
+    assert_eq!(unread(&db, &next), [msg(3)]);
+    complete(&mut db, Some(&next), &[msg(3)]);
+    assert_eq!(
+        read_cursors::cursor_for(&db, &next, &ThreadId::new("t")).unwrap(),
+        Some(4)
+    );
+    // A fresh session started now has read the seat's furthest point: nothing at all.
+    let fresh = enroll_binding(&db, "fresh", None);
+    assert!(unread(&db, &fresh).is_empty());
+}
+
+/// An informational notice `n{n}` projected for seat `s` (thread sequence 100 + n).
+fn notice(db: &Connection, n: i64) {
+    db.execute_batch(&format!("\
+        INSERT INTO messages(id,instance_id,thread_id,sequence,kind,event_json,decision_at,decision_seq,event_offset) VALUES ('n{n}','34750f98bd59fcfc946da45aaabe933b','t',{seq},'warn','{{}}',0,{d},1);\
+        INSERT INTO digest_programmatic_warnings(seat_id,warning_id,thread_id,event_seq,event_offset) VALUES ('s','n{n}','t',{d},1);\
+    ", seq = 100 + n, d = 100 + n)).unwrap();
+}
+
+fn notices(db: &Connection, binding: &BindingId) -> Vec<String> {
+    crate::store::attention::notice_offer_page_for(db, "s", binding, 16)
+        .unwrap()
+        .into_iter()
+        .map(|n| n.notice.warning.as_str().to_owned())
+        .collect()
+}
+
+// ht-y3iv. Kills: a new session (fresh or a successor) starting at notice frontier 0 and being
+// offered every informational notice the seat was ever shown, and a subagent losing its parent
+// fallback to a frozen row of its own.
+#[test]
+fn a_new_session_starts_at_the_seats_furthest_offered_notice() {
+    let db = db();
+    let old = enroll_binding(&db, "old", None);
+    notice(&db, 1);
+    notice(&db, 2);
+    let page = crate::store::attention::notice_offer_page_for(&db, "s", &old, 16).unwrap();
+    crate::store::attention::settle_offered_notices(&db, "s", &old, &page).unwrap();
+    assert!(notices(&db, &old).is_empty());
+    disconnect_now(&db, &old, DisconnectReason::ProcessExit);
+    let fresh = enroll_binding(&db, "fresh", None);
+    assert!(
+        notices(&db, &fresh).is_empty(),
+        "already offered to the seat"
+    );
+    let next = enroll_successor(&db, "next", &old);
+    assert!(notices(&db, &next).is_empty());
+    let sub = enroll_binding(&db, "fresh", Some(&fresh));
+    let own_row: bool = db
+        .query_row(
+            "SELECT EXISTS(SELECT 1 FROM digest_notice_offer WHERE binding_id=?1)",
+            [sub.as_str()],
+            |r| r.get(0),
+        )
+        .unwrap();
+    assert!(!own_row, "a subagent keeps reading its parent's frontier");
+    notice(&db, 3);
+    for binding in [&fresh, &next, &sub] {
+        assert_eq!(
+            notices(&db, binding),
+            ["n3"],
+            "a new notice reaches each session"
+        );
+    }
+    assert_eq!(
+        crate::store::attention::seat_notice_high_water(&db, "s").unwrap(),
+        crate::store::attention::binding_notice_frontier(&db, old.as_str()).unwrap()
+    );
+}

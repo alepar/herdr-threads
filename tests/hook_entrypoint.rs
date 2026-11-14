@@ -4909,8 +4909,9 @@ impl Fixture {
 /// stays pending, and no projection row is deleted. Successive emitting
 /// tool calls walk the backlog page by page even without a new publication;
 /// only carried pages settle, and delivery readiness vanishes when drained. SessionStart
-/// `clear` starts a new occupant, whose own lifecycle offer carries the
-/// oldest page again (the frontier is occupant-scoped).
+/// `clear` starts a new session, whose frontier starts at the seat's
+/// furthest-offered notice (ht-y3iv): its lifecycle offer carries the next
+/// page, never the pages already offered.
 /// Kills: M-delete-all-settlement (projection rows deleted, or the emitting
 /// call exceeds the tool budget at scale as in fix5 B1), M-settle-beyond-page
 /// (the frontier passes the carried page) and M-frontier-not-occupant-scoped
@@ -4964,8 +4965,9 @@ fn programmatic_backlog_is_offered_page_by_page(n: u64) {
         assert_eq!(projected(), n as i64, "{label}");
         timings.push(("next page", elapsed));
     }
-    // A new occupant: its frontier is its own, so its lifecycle offer
-    // carries (and settles) the oldest page again.
+    // A new session: its frontier starts at the seat's furthest-offered
+    // notice (ht-y3iv), so its lifecycle offer carries (and settles) the next
+    // page, never one already offered.
     let cleared = fx.hook("w9:p1", &Payload::session_start("sess-2", "clear").bytes());
     assert_eq!(cleared.code, Some(0), "{}", cleared.stderr);
     assert!(cleared.stderr.is_empty(), "{}", cleared.stderr);
@@ -4982,14 +4984,14 @@ fn programmatic_backlog_is_offered_page_by_page(n: u64) {
     // The peer data is one JSON line; an inbox pointer can follow it when it
     // still fits the context budget (shorter state paths leave room for it).
     let text: String = serde_json::from_str(text.lines().next().unwrap_or(text)).unwrap();
-    assert_eq!(carried_notices("clear", &text), (fx.notice_page(0), true));
+    assert_eq!(carried_notices("clear", &text), (fx.notice_page(5), true));
     timings.push(("clear", cleared.elapsed));
     let successor = fx.count("SELECT generation FROM seats WHERE id='seat'");
     // ht-54r.3: a new session adds a binding; the mapping generation holds.
     assert_eq!(successor, generation);
     assert_eq!(
         fx.notice_frontier(),
-        (successor, fx.nth_notice_ordinal(16), n as i64 - 16)
+        (successor, fx.nth_notice_ordinal(16 * 6), n as i64 - 16 * 6)
     );
     assert_eq!(projected(), n as i64);
     if let Some(path) = std::env::var_os("HT_DIGEST_TIMINGS") {

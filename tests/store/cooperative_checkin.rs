@@ -2637,7 +2637,8 @@ fn programmatic_notices_settle_page_by_page_for_the_current_occupant() {
     let offer = check_in(&store, current(&first.context, "current-5")).unwrap();
     assert_eq!(carried(&offer), (names(&unprojected), false));
     assert_eq!(pending_notices(&conn), ((0, false), 22));
-    // Replacement: the successor's frontier is its own, starting empty.
+    // Replacement: the successor's frontier is its own, starting at the seat's furthest-offered
+    // notice (ht-y3iv), so nothing already offered is offered again.
     let mut replacement = first.context.clone();
     replacement.execution = ExecutionId::new("00000000-0000-4000-8000-000000000002");
     replacement.native_session = NativeSessionId::new("successor-session");
@@ -2647,10 +2648,14 @@ fn programmatic_notices_settle_page_by_page_for_the_current_occupant() {
     assert_eq!(successor.context.binding_generation, 0);
     assert_eq!(
         (successor.warning_count, successor.warning_count_has_more),
-        (22, false)
+        (0, false)
     );
-    assert_eq!(carried(&successor), (all[..16].to_vec(), true));
-    assert_eq!(pending_notices(&conn), ((6, false), 22));
+    assert_eq!(carried(&successor), (vec![], false));
+    assert_eq!(pending_notices(&conn), ((0, false), 22));
+    // A notice published now reaches the successor.
+    let newest = write_programmatic_warnings(&context, &mut conn, "n", 1, "d").unwrap();
+    let offer = check_in(&store, current(&successor.context, "successor-1")).unwrap();
+    assert_eq!(carried(&offer), (names(&newest), false));
 }
 
 pub(crate) fn human_claim(from: &CallerClaim, generation: u64) -> CallerClaim {

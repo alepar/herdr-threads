@@ -1008,7 +1008,11 @@ model open work, and summary closure never changes receipt state or installs glo
   still excludes the author for compatibility with older peers. The author row is local
   bookkeeping staged with a fresh send, excluded from signed-audience comparison, and
   never synthesized by remote/binding-less historical replay. Upgrading does not backfill
-  old sends. New bindings retain the existing fresh-frontier semantics.
+  old sends. New bindings retain the existing fresh-frontier semantics: a thread cursor a new
+  binding starts at the seat maximum also passes the seat's own author rows above it, and a
+  lineage successor's copied cursor passes its predecessor's own sends, so a restarted session
+  is never offered, or woken on, the seat's own messages as backlog; sibling mail its
+  predecessor had not read stays unread for a successor (ht-y3iv).
   A voluntary leave/rejoin treats earlier author-seat sibling mail as history at the
   new join head; it never promotes such rows to seat-wide legacy pending mail.
   Peer/service rows retain the established pending-mail preservation on rejoin.
@@ -1625,7 +1629,11 @@ warning cutoff and informational-notice view against the reading binding's own f
 (wake, receipts, an unbound inbox) follow the seat's newest open top-level binding, a connected
 one first. The mod channel is held per connected top-level binding of a push-channel harness,
 not per seat. A global decision watermark cannot settle uncarried events, including late attribution.
-History and immutable operation results remain readable. A successor occupant gets its own offers;
+History and immutable operation results remain readable. A newly enrolled top-level binding's notice
+frontier starts at the seat's highest offered frontier (as its cursors start at the seat maximum), and so
+does a not-yet-enrolled session's digest, so a restarted session is not offered notices the seat was already
+offered (ht-y3iv); concurrent bindings still each get every notice that arrives after they enrolled. A
+successor occupant gets its own offers of later notices;
 response loss can lose an informational offer after commitment, and so can a hook-pull injection
 that the harness accepts but the model never sees (an agy `systemMessage` that silently misses;
 notices are not transcript-confirmed, ht-7jh); an explicit operation retry

@@ -39,14 +39,66 @@ pub fn seed(tx: &Connection, binding: &BindingId, mode: SeedMode) -> Result<Seed
     let mut threads = 0;
     if let SeedMode::Lineage(from) = &mode {
         threads += copy_lineage(tx, from, binding)?;
+        // The successor continues its predecessor: what the predecessor sent is not news to it,
+        // while sibling mail the predecessor had not read stays unread (ht-y3iv).
+        for thread in cursor_threads(tx, binding)? {
+            pass_own_sends(tx, binding, &thread, Some(from))?;
+        }
     }
+    let inherited = cursor_threads(tx, binding)?;
     threads += init_for_new_binding(tx, binding)?;
+    // A thread whose cursor starts at the seat's furthest-read point starts past the seat's own
+    // sends too: a seat's own messages are never unread for a session new to the thread (ht-y3iv).
+    for thread in cursor_threads(tx, binding)? {
+        if !inherited.contains(&thread) {
+            pass_own_sends(tx, binding, &thread, None)?;
+        }
+    }
     // Last: the cursors and inherited marks are final, so the view starts as the binding's unread rows.
     super::lazy_delivery::seed_binding_pending(tx, binding)?;
     Ok(SeedOutcome {
         first_contact,
         threads,
     })
+}
+
+/// The threads `binding` holds a cursor in.
+fn cursor_threads(tx: &Connection, binding: &BindingId) -> Result<Vec<ThreadId>, ApiError> {
+    let mut stmt = tx
+        .prepare("SELECT thread_id FROM binding_cursors WHERE binding_id=?1 ORDER BY thread_id")
+        .map_err(store_error)?;
+    stmt.query_map([binding.as_str()], |r| {
+        r.get::<_, String>(0).map(ThreadId::new)
+    })
+    .map_err(store_error)?
+    .collect::<Result<_, _>>()
+    .map_err(store_error)
+}
+
+/// Mark the seat's own delivery rows above `binding`'s cursor in `thread` as displayed by it (only
+/// those sent by `sender` when given), then advance the cursor over the passable prefix, which
+/// prunes the marks it passes. Cost: the thread's messages past the cursor.
+fn pass_own_sends(
+    tx: &Connection,
+    binding: &BindingId,
+    thread: &ThreadId,
+    sender: Option<&BindingId>,
+) -> Result<(), ApiError> {
+    let marked = tx
+        .execute(
+            "INSERT OR IGNORE INTO binding_row_displays(binding_id,message_id) \
+             SELECT ?1, x.id FROM binding_cursors c JOIN occupant_bindings b ON b.binding_id=c.binding_id \
+             JOIN messages x ON x.thread_id=c.thread_id AND x.sequence>c.seq \
+             WHERE c.binding_id=?1 AND c.thread_id=?2 AND x.actor_seat_id=b.seat_id \
+             AND (?3 IS NULL OR x.sender_binding_id=?3) \
+             AND EXISTS(SELECT 1 FROM lazy_recipients lr WHERE lr.message_id=x.id AND lr.seat_id=b.seat_id)",
+            params![binding.as_str(), thread.as_str(), sender.map(BindingId::as_str)],
+        )
+        .map_err(store_error)?;
+    if marked > 0 {
+        advance_through_displayed_with_change(tx, binding, thread, &[])?;
+    }
+    Ok(())
 }
 
 pub fn cursor_for(

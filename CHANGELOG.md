@@ -1,5 +1,11 @@
 # Changelog
 
+## Unreleased
+
+### Fixed
+
+- **A restarted session no longer replays the seat's backlog.** A new session's binding starts past the seat's own sent messages and at the seat's furthest-offered notice, so it is no longer offered (or woken on) its own earlier sends and old warnings. A successor still gets sibling mail its predecessor had not read (ht-y3iv).
+
 ## v3.1.0
 
 One-way store upgrade to node schema 17 (migrations 0016, graph clone identity, and 0017, the kept claim's kernel boot). Binaries before 3.1.0 refuse an upgraded store; `install.sh` and `herdr-threads update` back it up first. Restart the daemon after upgrading. A service client built on 3.1.0 registers `service_session_v3`, which an older daemon refuses, so upgrade the daemon first. Peer wire: two new replicated seat facts, `seat.retired_reversible` and `seat.unretired`; a 3.0.x node parks them and shows such a seat live until its final retirement.
