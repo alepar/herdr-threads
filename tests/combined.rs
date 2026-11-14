@@ -222,6 +222,8 @@ mod hc_contract;
 mod hc_schema_conformance;
 #[path = "host_no_wake_tripwire.rs"]
 mod host_no_wake_tripwire;
+#[path = "opencode_plugin_js.rs"]
+mod opencode_plugin_js;
 #[path = "integration/priority_sweep.rs"]
 mod priority_sweep;
 #[path = "update/update_cli.rs"]
