@@ -1,11 +1,18 @@
 # Changelog
 
-## Unreleased
+## v3.1.1
+
+Fixes only; no store schema or wire change.
 
 ### Fixed
 
 - **A restarted session no longer replays the seat's backlog.** A new session's binding starts past the seat's own sent messages and at the seat's furthest-offered notice, so it is no longer offered (or woken on) its own earlier sends and old warnings. A successor still gets sibling mail its predecessor had not read, and a still-open warning condition (an overdue receipt or invitation, an open unavailability) is offered to the new session once (ht-y3iv).
 - **A launched agent that checks in before `launch` records it is no longer woken by its own sends.** `launch` recorded a `managed_launch` placeholder beside the agent's own session binding when the agent's check-in won the race; the placeholder never read mail, so each of the agent's own p0 sends woke it with `attention pending` and an empty `inbox`. The launch now records no placeholder when the started process already holds a session binding (ht-t17l).
+- **Setup and the daemon survive a workspace pause and resume.** A volume that keeps its inodes but comes back with a new device number (a paused and resumed Linux cloud workspace, a macOS reboot) no longer makes `setup` refuse its own config lock as another setup's, and a dead daemon's socket on it reads as "daemon not running" (exit 3) instead of "socket pathname was substituted"; `daemon ensure` reclaims it as before. No client takes the daemon's owner lock (ht-1nva, ht-x772).
+- **A stuck unresolved seat no longer silences liveness for its whole host.** The liveness worker again judges a host's resolved seats once the host has reconciled its current boot, so a dead session beside a live one is disconnected and the seat becomes wakeable again. A process-exit verdict now waits for a capture of the host begun after the process was read dead, so a Herdr restart never disconnects through the worker. A wake to a seat with several agent processes passes when Herdr reports the agent idle with an empty composer (ht-hrbx, ht-esl). Accepted limit: dead sessions of a Herdr server that never comes back stay connected until a server publishes again.
+- **Store deadline storms after subagent starts are gone.** Enrolling a binding (each Claude subagent) seeded its display marks with a query that scanned every message of every joined thread against every cursor, holding the store writer for seconds on large shared threads, so sends ended `unknown_outcome` and mod-channel passes failed. It now runs in milliseconds (ht-6oev).
+- **A check-in offer's inbox continuation works on instances with more than 100 threads.** Its continuation is the plain `inbox` when the offered page stopped without reaching every pending row, and a complete offer no longer re-presents every turn (ht-2alm).
+- **An origin's attention for an already-carried notice no longer points at an empty inbox.** When an overdue warning about your own ACK request is the only thing pending, the attention reads `herdr-threads: see notice <id>` instead of the inbox hint (ht-0n3b).
 
 ## v3.1.0
 
