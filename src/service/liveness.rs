@@ -15,6 +15,12 @@
 //! seats that are unresolved or retired, and seats of a host under a recovery hold until its
 //! reconciliation marker names its current recovery boot/epoch are never judged
 //! (`bindings::liveness_candidates`), so a Herdr restart cannot disconnect through here.
+//! A process-exit verdict is applied only once the seat's host has answered since the process
+//! was read dead (`LivenessHosts`, ht-hrbx): a Herdr restart ends its panes' processes before the
+//! new boot is published, and judging them in that window would end bindings with the wrong
+//! reason. The verdict is kept pending and applied on a later pass if the host published a
+//! coherent capture in between and is not down; a new boot's publication moves the recovery
+//! boot, so the reconciliation marker is stale and the candidate read drops the seat first.
 //! An idle pass (every process alive) is one read and no write.
 use crate::{
     ports::{ProcessInfo, StorePort},
@@ -31,7 +37,51 @@ use crate::{
         BindingRole, BindingRow, DisconnectReason, LivenessCandidate, LivenessDecision,
     },
 };
-use std::{collections::BTreeMap, sync::Arc};
+use std::{
+    collections::{BTreeMap, HashMap},
+    sync::{Arc, Mutex, OnceLock},
+};
+
+/// What the seat's host says about applying a process-exit verdict now.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum HostLiveness {
+    /// The host never ends its targets' processes (the named host): apply at once.
+    Open,
+    /// The host is attached and up; the count of its coherent publications so far.
+    Published(u64),
+    /// The host is down, or not attached: apply nothing, keep nothing pending.
+    Closed,
+}
+
+/// Per-host evidence for the liveness worker's publication gate. Production is the daemon's
+/// `HostSessions`.
+pub trait LivenessHosts: Send + Sync {
+    fn liveness(&self, host: crate::ports::HostId) -> HostLiveness;
+}
+
+impl LivenessHosts for std::sync::Weak<crate::service::host_sessions::HostSessions> {
+    fn liveness(&self, host: crate::ports::HostId) -> HostLiveness {
+        let Some(session) = self.upgrade().and_then(|sessions| sessions.get(host)) else {
+            return HostLiveness::Closed;
+        };
+        if !session.port().kind().liveness_needs_publication() {
+            HostLiveness::Open
+        } else if session.reachability().is_down() {
+            HostLiveness::Closed
+        } else {
+            HostLiveness::Published(session.reachability().publications())
+        }
+    }
+}
+
+/// A process-exit verdict waiting for its host to answer: the host's publication count when the
+/// process was read dead.
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct Pending {
+    decision: LivenessDecision,
+    host: crate::ports::HostId,
+    publications: u64,
+}
 
 /// What one pass saw and did.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
@@ -44,6 +94,9 @@ pub struct LivenessWorker {
     store: Arc<dyn StorePort>,
     writer: Arc<FairWriter>,
     processes: Arc<dyn ProcessInfo>,
+    /// The publication gate; unset, every verdict applies at once (unit fixtures with no host).
+    hosts: OnceLock<Arc<dyn LivenessHosts>>,
+    pending: Mutex<HashMap<crate::protocol::ids::BindingId, Pending>>,
 }
 
 /// Judges candidates against the process table. Pure: no store access.
@@ -129,7 +182,83 @@ impl LivenessWorker {
             store,
             writer,
             processes,
+            hosts: OnceLock::new(),
+            pending: Mutex::new(HashMap::new()),
         }
+    }
+
+    /// Installs the publication gate (once; the daemon does it when its host registry exists).
+    pub fn set_hosts(&self, hosts: Arc<dyn LivenessHosts>) {
+        let _ = self.hosts.set(hosts);
+    }
+
+    /// The verdicts to apply now; process-exit verdicts wait for their host (module doc). A full
+    /// pass forgets pending verdicts it no longer reaches.
+    fn gate(
+        &self,
+        candidates: &[LivenessCandidate],
+        decisions: Vec<LivenessDecision>,
+        full_pass: bool,
+    ) -> Result<Vec<LivenessDecision>, ApiError> {
+        let Some(hosts) = self.hosts.get() else {
+            return Ok(decisions);
+        };
+        let host_of: HashMap<_, _> = candidates
+            .iter()
+            .map(|c| (&c.binding.binding_id, c.host))
+            .collect();
+        let mut pending = self.pending.lock().map_err(|_| {
+            ApiError::new(
+                crate::protocol::results::ErrorCode::StoreCorrupt,
+                "liveness pending verdicts poisoned",
+            )
+        })?;
+        let mut apply = Vec::new();
+        let mut reached = Vec::new();
+        for decision in decisions {
+            if decision.reason != DisconnectReason::ProcessExit {
+                apply.push(decision);
+                continue;
+            }
+            let Some(&host) = host_of.get(&decision.binding) else {
+                continue;
+            };
+            reached.push(decision.binding.clone());
+            match hosts.liveness(host) {
+                HostLiveness::Open => {
+                    pending.remove(&decision.binding);
+                    apply.push(decision);
+                }
+                HostLiveness::Closed => {
+                    pending.remove(&decision.binding);
+                }
+                HostLiveness::Published(now) => match pending.get(&decision.binding) {
+                    Some(seen)
+                        if seen.decision == decision
+                            && seen.host == host
+                            && now > seen.publications =>
+                    {
+                        pending.remove(&decision.binding);
+                        apply.push(decision);
+                    }
+                    Some(seen) if seen.decision == decision && seen.host == host => {}
+                    _ => {
+                        pending.insert(
+                            decision.binding.clone(),
+                            Pending {
+                                decision,
+                                host,
+                                publications: now,
+                            },
+                        );
+                    }
+                },
+            }
+        }
+        if full_pass {
+            pending.retain(|binding, _| reached.contains(binding));
+        }
+        Ok(apply)
     }
 
     /// One pass: a read of the connected candidates, classification in memory, and one write
@@ -146,6 +275,7 @@ impl LivenessWorker {
     fn check(&self, seat: Option<&SeatId>, budget: &CallBudget) -> Result<PassOutcome, ApiError> {
         let candidates = self.store.liveness_candidates(seat, budget)?;
         let decisions = classify(&candidates, self.processes.as_ref());
+        let decisions = self.gate(&candidates, decisions, seat.is_none())?;
         if decisions.is_empty() {
             return Ok(PassOutcome {
                 checked: candidates.len(),

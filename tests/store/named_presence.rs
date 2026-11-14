@@ -330,6 +330,56 @@ fn unresolved_named_row_does_not_silence_others() {
     );
 }
 
+// Kills (ht-hrbx review F1): a new boot's publication over a host whose hold an unresolved seat
+// keeps armed, after which its resolved seats are still judged on the old boot's marker. The
+// publication moves the recovery boot, so the marker is stale and the seats go silent until the
+// new boot's reconciliation pass is recorded. A pane-kind host, as in the control above.
+#[test]
+fn a_new_boot_publication_silences_a_held_hosts_seats_until_its_pass() {
+    let mut f = fixture();
+    let alpha = f.seat("alpha");
+    let gamma = f.seat("gamma");
+    f.bind(&alpha, "alpha", 1);
+    let published = f.publish();
+    f.reconcile(&published);
+    f.conn
+        .execute(
+            "UPDATE herdr_hosts SET kind='herdr' WHERE host_id=?1",
+            [f.host.get()],
+        )
+        .unwrap();
+    f.unresolve(&published, &gamma, "gamma");
+    assert_eq!(f.candidate_seats(), vec![alpha.as_str().to_owned()]);
+    // The store still names an older boot, its pass complete (the stuck-hold state before the
+    // restart); the next capture is the new boot's.
+    f.conn
+        .execute(
+            "UPDATE herdr_hosts SET host_boot='old',recovery_boot='old',reconciled_boot='old' WHERE host_id=?1",
+            [f.host.get()],
+        )
+        .unwrap();
+    assert_eq!(f.candidate_seats(), vec![alpha.as_str().to_owned()]);
+    let new_boot = f.publish();
+    assert_eq!(
+        f.scalar(&format!(
+            "SELECT baseline_hold_unclaimed FROM herdr_hosts WHERE host_id={}",
+            f.host.get()
+        )),
+        1,
+        "the unresolved seat keeps the hold armed across the new boot"
+    );
+    assert!(
+        f.candidate_seats().is_empty(),
+        "between the new boot's publication and its pass nothing is judged"
+    );
+    f.reconcile(&new_boot);
+    assert_eq!(
+        f.candidate_seats(),
+        vec![alpha.as_str().to_owned()],
+        "once the pass is recorded the seat it kept resolved is judged again"
+    );
+}
+
 // S2. Kills: a first named publication over live seats that arms `baseline_hold_unclaimed`, or
 // leaves a hold a former state armed. Control: a pane host in the same state keeps its hold.
 #[test]

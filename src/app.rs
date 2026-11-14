@@ -2209,6 +2209,8 @@ where
             // The service routes by claim host (`DomainService::attached_host`);
             // Health and archival still follow the startup session (`None`
             // when no server is attached at startup: store-only).
+            // The liveness publication gate reads the registry weakly (it holds the worker).
+            liveness.set_hosts(Arc::new(Arc::downgrade(&host_sessions)));
             let primary = host_sessions.startup_primary(factory_hint.as_ref());
             rate_limited_log.write_line(&match &primary {
                 Some(session) => format!(

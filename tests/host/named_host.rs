@@ -113,6 +113,18 @@ fn observe_current_target_is_present_generation_one() {
     assert!(second.observation_sequence > first.observation_sequence);
 }
 
+// Pins (ht-esl review): the named host classifies no composer, even for the read a several-target
+// wake takes, so the dispatcher's several-target idle gate never passes for a named seat; its
+// tmux wake gate decides those seats instead (TRUST-POLICY A4).
+#[test]
+fn the_classified_read_of_a_named_seat_stays_unknown() {
+    let (host, _) = host_with(&[]);
+    let read = host
+        .observe_current_target_for_poke(&HostTargetId::new("reviewer"), &context())
+        .unwrap();
+    assert_eq!(read.ui, crate::ports::HostUiState::Unknown);
+}
+
 // Kills: observing a target that is not a seat name.
 #[test]
 fn an_unparsable_name_is_never_observed() {

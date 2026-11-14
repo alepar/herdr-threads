@@ -5527,6 +5527,18 @@ fn composer_wake_seen(
     check: &dyn ReservationCheck,
     ui: HostUiState,
 ) -> (WakeOutcome, Vec<SafeWakeTarget>) {
+    composer_wake_seen_classified(targets, foreground, reasons, check, ui, None)
+}
+
+/// [`composer_wake_seen`] whose composer-classified read reports `composer_ui` (`None`: `ui`).
+fn composer_wake_seen_classified(
+    targets: Vec<crate::ports::WakeTarget>,
+    foreground: &[u32],
+    reasons: &[&str],
+    check: &dyn ReservationCheck,
+    ui: HostUiState,
+    composer_ui: Option<HostUiState>,
+) -> (WakeOutcome, Vec<SafeWakeTarget>) {
     let clock = FakeClock(AtomicU64::new(0));
     let context = HostCallContext {
         budget: CallBudget {
@@ -5552,7 +5564,7 @@ fn composer_wake_seen(
     observation.execution = ExecutionEvidence::Unknown;
     let host = CooperativeRecordingHost {
         observation,
-        composer_ui: None,
+        composer_ui,
         prompted: std::sync::Mutex::new(vec![]),
         foreground: foreground.to_vec(),
     };
@@ -5708,6 +5720,40 @@ fn one_process_composer_wake_does_not_need_a_composer_classified_idle() {
             "{ui:?}"
         );
         assert!(prompted.is_empty());
+    }
+}
+
+/// Since ht-esl a one-process (ht-327) wake of several bindings also takes the composer-classified
+/// read. Kills: that read turning a composer it cannot classify (`Unknown`) into a refusal, and
+/// typed input or a busy turn the classified read shows being typed into anyway.
+#[test]
+fn one_process_composer_wake_with_a_classified_read() {
+    let owed = ServedReservationCheck { served: &[] };
+    let (outcome, prompted) = composer_wake_seen_classified(
+        one_process_bindings(),
+        &[10],
+        &["pending_receipt"],
+        &owed,
+        HostUiState::Unknown,
+        Some(HostUiState::Unknown),
+    );
+    assert_eq!(outcome, WakeOutcome::Submitted);
+    assert_eq!(prompted.len(), 1);
+    for composer in [HostUiState::HumanInput, HostUiState::ActiveTurn] {
+        let (outcome, prompted) = composer_wake_seen_classified(
+            one_process_bindings(),
+            &[10],
+            &["pending_receipt"],
+            &owed,
+            HostUiState::Unknown,
+            Some(composer),
+        );
+        assert_eq!(
+            outcome,
+            WakeOutcome::Refused(RefusalCause::Unsafe),
+            "{composer:?}"
+        );
+        assert!(prompted.is_empty(), "{composer:?}");
     }
 }
 
@@ -5876,6 +5922,12 @@ fn several_target_wake_reads_the_composer_classified_idle() {
         );
         assert!(prompted.is_empty(), "{composer:?}");
     }
+    // A host that keeps the default poke read classifies no composer (the named host: its UI is
+    // always `Unknown`), so its several-target wakes stay refused here; its own tmux wake gate is
+    // what decides those seats (TRUST-POLICY A4).
+    let (outcome, prompted) = composer_wake_classified(two(), HostUiState::Unknown, &[10], None);
+    assert_eq!(outcome, WakeOutcome::Refused(RefusalCause::Unsafe));
+    assert!(prompted.is_empty());
 }
 
 /// Kills: typing into a multi-binding pane Herdr does not report idle.

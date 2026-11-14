@@ -2578,6 +2578,7 @@ where
                             match &outcome {
                                 crate::identity::reconcile::ObservationOutcome::Published(_) => {
                                     reachability.mark_archival_published(port.clock().monotonic_now().0);
+                                    reachability.mark_published();
                                     host_evidence.record_published();
                                     pacer.on_success();
                                 }

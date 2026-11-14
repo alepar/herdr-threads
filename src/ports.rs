@@ -4470,6 +4470,14 @@ impl HostKind {
         matches!(self, HostKind::Herdr)
     }
 
+    /// Whether a restart of this host can end its targets' processes, so a process exit is
+    /// evidence only once the host has answered since (the liveness worker's publication gate,
+    /// ht-hrbx). The named host has no targets of its own and never restarts; an unknown kind
+    /// is gated.
+    pub fn liveness_needs_publication(self) -> bool {
+        !matches!(self, HostKind::Named)
+    }
+
     /// Whether a new incarnation of this host restores its panes at their saved target ids, so a
     /// saved target is worth judging after a restart: a launcher-supplied continuity key reattaches
     /// a seat onto it (TRUST-POLICY C1), and its lasting absence retires the seat (G5). A host whose

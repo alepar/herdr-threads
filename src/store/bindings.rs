@@ -684,6 +684,9 @@ pub struct LivenessCandidate {
     pub instance: String,
     /// The binding's latest lifecycle claim (`observed_at`).
     pub claimed_at: i64,
+    /// The Herdr server (`seats.host_id`) the binding's seat lives on: the liveness worker
+    /// applies a process-exit verdict only once that server has answered since (ht-hrbx).
+    pub host: crate::ports::HostId,
 }
 
 /// One liveness verdict: disconnect `binding` for `reason` provided it is still connected with
@@ -708,7 +711,8 @@ pub fn liveness_candidates(
 ) -> Result<Vec<LivenessCandidate>, ApiError> {
     let mut statement = db
         .prepare_cached(&format!(
-            "SELECT {COLUMNS}, (SELECT instance_id FROM seats WHERE id=occupant_bindings.seat_id), observed_at \
+            "SELECT {COLUMNS}, (SELECT instance_id FROM seats WHERE id=occupant_bindings.seat_id), observed_at, \
+             (SELECT host_id FROM seats WHERE id=occupant_bindings.seat_id) \
              FROM occupant_bindings WHERE ended_at IS NULL AND liveness='connected' AND harness<>'human' \
              AND (?1 IS NULL OR seat_id=?1) \
              AND seat_id IN (SELECT s.id FROM seats s JOIN herdr_hosts h ON h.host_id=s.host_id AND h.node_id=s.instance_id \
@@ -721,17 +725,23 @@ pub fn liveness_candidates(
         .map_err(store_error)?;
     let rows = statement
         .query_map([seat.map(SeatId::as_str)], |r| {
-            Ok((row(r)?, r.get::<_, String>(20)?, r.get::<_, i64>(21)?))
+            Ok((
+                row(r)?,
+                r.get::<_, String>(20)?,
+                r.get::<_, i64>(21)?,
+                r.get::<_, i64>(22)?,
+            ))
         })
         .map_err(store_error)?
         .collect::<Result<Vec<_>, _>>()
         .map_err(store_error)?;
     rows.into_iter()
-        .map(|(binding, instance, claimed_at)| {
+        .map(|(binding, instance, claimed_at, host)| {
             Ok(LivenessCandidate {
                 binding: binding?,
                 instance,
                 claimed_at,
+                host: crate::ports::HostId::from_row(host),
             })
         })
         .collect()

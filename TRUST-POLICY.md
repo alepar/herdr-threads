@@ -145,6 +145,12 @@ claim; no new provenance or wire value.
 Amended 2026-11-06 for the un-retire deadline shift (ht-ma6i.48): per-obligation frozen time, applied to late arrivals
 from durable windows; no new provenance or wire value.
 
+Amended 2026-11-14 for liveness under a stuck hold and several-target wakes (ht-hrbx, ht-esl): the liveness worker
+judges a Herdr server's resolved seats once its reconciliation marker names the current recovery boot and epoch, even
+while an unresolved seat keeps the hold armed, and applies a process-exit verdict only after the server published a
+coherent capture since the process was read dead; a several-target wake classifies the composer for its idle gate.
+No new provenance or wire value.
+
 ## Abstract
 
 herdr-threads gives coding agents in Herdr panes a durable mailbox: threads, invitations, messages that an
@@ -1039,8 +1045,14 @@ model open work, and summary closure never changes receipt state or installs glo
   transition, and the worker never ends a binding, retires, moves or merges a seat. It never judges a
   human binding (a person has no harness process), and it skips seats that are unresolved or retired
   and every seat of a Herdr server under a recovery hold until the reconciliation marker (C2) names that
-  server's current recovery boot and epoch, so a Herdr restart never disconnects through the
-  worker: the reconciler's C2 path owns those seats. Past the marker every seat still resolved is proven in
+  server's current recovery boot and epoch. A process-exit verdict (a fingerprint-less binding included) is
+  applied only once the seat's server has answered since: the worker keeps it pending and applies it on a later
+  pass only if the server's observation lane published a coherent capture after the process was read dead and
+  has not marked the server down since; a server that is down, or not attached, gets no verdict and keeps none
+  pending (the named host, which never ends its seats' processes, is not held back). A Herdr restart ends its
+  panes' processes before the new boot is published, and that publication moves the recovery boot, so the
+  marker no longer names it and the seat is skipped until the new boot's pass; a Herdr restart therefore never
+  disconnects through the worker: the reconciler's C2 path owns those seats. Past the marker every seat still resolved is proven in
   the current incarnation, so a seat left unresolved, which keeps the hold armed until it is repaired or
   retired, never silences the liveness of the server's resolved seats (ht-hrbx). A verdict is applied only if the binding is still
   connected with the fingerprint it was judged on. Availability follows liveness per binding (C4).
@@ -1216,7 +1228,8 @@ model open work, and summary closure never changes receipt state or installs glo
   entries of `pane.process_info`; a harness launcher and its native child, and any helper the harness
   runs in its foreground process group, are all foreground), and with several targets only when Herdr
   reports the pane idle (its agent status idle or done and its composer read empty: a wake of several
-  targets classifies the composer as a poke does, ht-esl). Membership is exact pid equality: an ancestor or descendant of a foreground
+  targets classifies the composer as a poke does, ht-esl; a host that classifies no composer, such as the
+  named host, never reads idle there, and a named seat's tmux wake gate decides it instead). Membership is exact pid equality: an ancestor or descendant of a foreground
   process is not a match. No match, several matches, no fingerprint or no foreground report means no composer wake, with
   no fallback to the latest claim or touch, even for a seat with one target (nothing is guessed, and the
   refusal is pre-send so the reminder ladder does not climb). One exception (ht-327): several matching targets
@@ -1224,9 +1237,10 @@ model open work, and summary closure never changes receipt state or installs glo
   same-process rule leaves connected, such as the in-process `/side` sessions of a Codex TUI), and a wake for
   seat-level attention (an invitation, receipt or warning, or a receipt's soft-deadline poke) types once into
   that process's composer: the item reaches whichever of its bindings takes the turn, so no binding is
-  chosen. Like a single target it is not held to the several-targets idle condition (a composer read
-  that cannot classify it leaves it `Unknown`); the adapter's final composer read immediately before submission
-  still refuses typed input and a busy agent. After that read, and immediately before typing, the wake asks again whether it is still owed: a turn that served the item and ended while the attempt was in flight gets no wake (a pre-send refusal; ht-78f6). For a receipt or invitation it is owed only while one is still pending (an ACK or accept since the reservation owes no wake; ht-j3by) and every binding of the process is
+  chosen. Like a single target it is not held to the several-targets idle condition: a composer read that
+  cannot classify it leaves it `Unknown` and it is still typed into. Since it names several targets it takes the
+  classified read too (ht-esl), so typed input or a working agent that read shows refuses it at once, and the
+  adapter's final composer read immediately before submission still refuses typed input and a busy agent. After that read, and immediately before typing, the wake asks again whether it is still owed: a turn that served the item and ended while the attempt was in flight gets no wake (a pre-send refusal; ht-78f6). For a receipt or invitation it is owed only while one is still pending (an ACK or accept since the reservation owes no wake; ht-j3by) and every binding of the process is
   unserved (one served in its turn served the process), and a binding whose mod channel woke it takes its process's other bindings off the composer
   targets. Seat-level attention includes a delivery row the seat's nudge threshold admitted (reason `lazy`,
   the lazy frontier admitted by `NudgeThreshold`): under message priority delivery (D9) a bare `--nudge`

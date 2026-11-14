@@ -658,6 +658,78 @@ fn an_unresolved_seat_past_reconciliation_does_not_silence_the_hosts_resolved_se
     }
 }
 
+/// A settable [`LivenessHosts`]: every host answers the same.
+#[derive(Default)]
+struct Gate(std::sync::Mutex<Option<HostLiveness>>);
+impl Gate {
+    fn set(&self, state: HostLiveness) {
+        *self.0.lock().unwrap() = Some(state);
+    }
+}
+impl LivenessHosts for Gate {
+    fn liveness(&self, _: crate::ports::HostId) -> HostLiveness {
+        self.0.lock().unwrap().unwrap_or(HostLiveness::Closed)
+    }
+}
+
+/// Kills (ht-hrbx review F1): a process-exit verdict applied before the seat's host answered
+/// again. A Herdr restart ends its panes' processes before the new boot is published, so a death
+/// seen while the host is down, or with no coherent publication since, is no evidence yet.
+#[test]
+fn a_process_exit_waits_for_a_publication_after_it_was_read() {
+    let fx = Fx::new("liveness-publication-gate");
+    let gate = Arc::new(Gate::default());
+    fx.worker.set_hosts(gate.clone());
+    let b = fx.bind("s", "claude", "A", Some((100, 5)), 10);
+    // Read dead while the host is down: nothing applies and nothing is kept.
+    gate.set(HostLiveness::Closed);
+    assert_eq!(fx.worker.pass(&budget()).unwrap().disconnected, 0);
+    // Up again with 7 publications: the verdict is kept, not applied.
+    gate.set(HostLiveness::Published(7));
+    assert_eq!(fx.worker.pass(&budget()).unwrap().disconnected, 0);
+    assert_eq!(fx.worker.pass(&budget()).unwrap().disconnected, 0);
+    assert!(fx.connected(&b), "no publication since the read");
+    // Down before the next publication: the pending verdict is dropped.
+    gate.set(HostLiveness::Closed);
+    fx.worker.pass(&budget()).unwrap();
+    gate.set(HostLiveness::Published(8));
+    assert_eq!(fx.worker.pass(&budget()).unwrap().disconnected, 0);
+    assert!(fx.connected(&b), "the outage voided the earlier read");
+    // A publication after this read: the verdict applies, also through the per-seat recheck.
+    gate.set(HostLiveness::Published(9));
+    fx.worker
+        .recheck_seat(&crate::protocol::ids::SeatId::new("s"), &budget())
+        .unwrap();
+    assert_eq!(
+        fx.state(&b),
+        ("disconnected".into(), Some("liveness_process_exit".into()))
+    );
+    // A host that never ends its targets' processes (the named host) is not gated.
+    let fx = Fx::new("liveness-publication-gate-open");
+    let gate = Arc::new(Gate::default());
+    gate.set(HostLiveness::Open);
+    fx.worker.set_hosts(gate);
+    let b = fx.bind("s", "claude", "A", Some((100, 5)), 10);
+    assert_eq!(fx.worker.pass(&budget()).unwrap().disconnected, 1);
+    assert!(!fx.connected(&b));
+}
+
+/// The gate holds back only process exits: a same-process supersede needs both processes alive,
+/// which no restart produces.
+#[test]
+fn a_supersede_is_not_held_by_the_publication_gate() {
+    let fx = Fx::new("liveness-publication-gate-supersede");
+    let gate = Arc::new(Gate::default());
+    gate.set(HostLiveness::Published(1));
+    fx.worker.set_hosts(gate);
+    fx.table.set(100, 5);
+    let older = fx.bind("s", "claude", "A", Some((100, 5)), 10);
+    let newer = fx.bind("s", "claude", "B", Some((100, 5)), 20);
+    fx.worker.pass(&budget()).unwrap();
+    assert_eq!(fx.state(&older), superseded());
+    assert!(fx.connected(&newer));
+}
+
 #[test]
 fn idle_pass_commits_nothing() {
     let fx = Fx::new("liveness-idle");

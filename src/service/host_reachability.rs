@@ -22,6 +22,9 @@ pub struct HostReachability {
     /// refusal backoff when this moves, so its first pass after recovery
     /// attempts every due seat promptly.
     recoveries: AtomicU64,
+    /// Coherent publications so far: the liveness worker applies a process-exit verdict only
+    /// after the host answered with one since the process was read dead (ht-hrbx).
+    publications: AtomicU64,
     /// The wake lane's Pacer, kicked on recovery.
     wake: Mutex<Option<Arc<Pacer>>>,
 }
@@ -42,6 +45,16 @@ impl HostReachability {
     /// The number of down-to-up transitions so far.
     pub fn recoveries(&self) -> u64 {
         self.recoveries.load(Ordering::SeqCst)
+    }
+
+    /// The number of coherent publications so far.
+    pub fn publications(&self) -> u64 {
+        self.publications.load(Ordering::SeqCst)
+    }
+
+    /// The observation lane published a coherent capture of the host.
+    pub fn mark_published(&self) {
+        self.publications.fetch_add(1, Ordering::SeqCst);
     }
 
     /// A capture was frozen for unavailability.
