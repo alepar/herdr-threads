@@ -1,6 +1,6 @@
 # opencode harness adapter
 
-Epic `ht-vxdp`. Design 2026-11-14, coordinator seat `snSGlLkotnaR` (tab `opencode`). Status: draft, awaiting the user's decisions (§Decisions for the user) and the live probe (§Probe).
+Epic `ht-vxdp`. Design 2026-11-14, coordinator seat `snSGlLkotnaR` (tab `opencode`). Status: draft, revised after design review 1 ([review-design-1.md](review-design-1.md)); awaiting the user's decisions (§Decisions for the user) and the live probe (§Probe).
 
 ## Goal
 
@@ -50,30 +50,36 @@ The cost is the dormant cases in D8, where no channel is live. A typed fallback 
 
 - `AdapterMetadata`: id `opencode`, label "opencode", executable `opencode`, env marker `OPENCODE` (moved out of `src/harness/unsupported.rs`, where it is registered today as an unsupported harness), host kinds from the probe.
 - `CallerEnvShape`: `process_names: ["opencode"]`, `pid_var: OPENCODE_PID`, `session_var: HERDR_THREADS_OPENCODE_SESSION`, and a role witness that reads `HERDR_THREADS_OPENCODE_PARENT`.
-- The plugin's `shell.env` hook sets, for every shell-tool call:
+- The plugin's `shell.env` hook sets all three variables on every shell call that has a `sessionID` (tool calls and the user's `!shell`), so a nested opencode never inherits a stale value:
   - `HERDR_THREADS_OPENCODE_SESSION` = the call's `sessionID`;
-  - `HERDR_THREADS_OPENCODE_PARENT` = the root top-level session id, only when the session has a `parentID` (walked up, bounded to 8 levels).
-- Role witness: no parent variable is `TopLevel`; a valid one is `Subagent{parent}`; a malformed one is `MalformedMarker`. When the plugin cannot learn whether a session is a child (lookup failed), it sets `HERDR_THREADS_OPENCODE_PARENT=?`, which is malformed and so refused: it fails toward child.
-- A `herdr-threads` call under an `opencode` process with no session variable is refused `session_claim_required` naming the variable (plugin missing, `--pure`, or the user's `!shell`, which has no session).
+  - `HERDR_THREADS_OPENCODE_PARENT` = the root top-level session id for a child (walked up `parentID`, bounded to 8 levels), empty for a top-level session, `?` when the lookup failed;
+  - `HERDR_THREADS_OPENCODE_PID` = the plugin's own process id.
+- Role witness: `HERDR_THREADS_OPENCODE_PID` must equal `OPENCODE_PID`, else `Unattributable` (the variables were inherited from an outer opencode, for example by a nested `--pure` one). Then an empty parent is `TopLevel`, a valid one is `Subagent{parent}`, anything else is `MalformedMarker`: an unknown role fails toward child.
+- A `herdr-threads` call under an `opencode` process with no session variable is refused `session_claim_required` naming the variable (plugin missing or `--pure`). A user `!shell` command claims the session it was typed in, as a user's `!` command does under Claude.
 - Session ids are validated as `ses_[0-9A-Za-z]{1,64}`.
 - Liveness fingerprint: the `opencode` process (`OPENCODE_PID` record). One process serves one pane, so no `process_spans_seats`.
 
 ### D3. Enrollment and lifecycle
 
-The plugin keeps one **bound session**: the top-level session it last checked in. It runs the registered hook command (`herdr-threads … hook-event opencode <Event>`, payload on stdin) only at these points:
+The plugin keeps one **bound session**: the top-level session whose last lifecycle check-in succeeded. Every top-level `chat.message` runs exactly one registered hook command (`herdr-threads … hook-event opencode <Event>`, payload on stdin), so the daemon hears from the session every turn, as it does for Claude and Codex, and a failed check-in is retried on the next turn:
 
 | Trigger in the plugin | Event and payload | Adapter decode |
 |---|---|---|
 | `chat.message` for a top-level session that is not the bound one, first in this process | `SessionStart`, `source: startup` (or `resume` when the session was not created in this process) | `Lifecycle(Startup | Resume)`, top-level, with context |
 | same, later in the process, session created in this process (`/new`, `--fork`) | `SessionStart`, `source: clear` | `Lifecycle(Clear)` |
 | same, later, session older than the process (session switch) | `SessionStart`, `source: resume` | `Lifecycle(Resume)`: C1 continuity by native session id |
-| first `chat.message` after `session.compacted` for the bound session | `SessionStart`, `source: compact` | compact re-entry (fixed hook section restated) |
+| `session.compacted` for the bound session (also mid-turn, on auto-compaction) | `SessionStart`, `source: compact`; its output is appended (D4) | compact re-entry (fixed hook section restated) |
+| any other top-level `chat.message` of the bound session | `UserPromptSubmit` | ordinary turn hook: quiet while the channel is live, delivers pending items when it is not |
 | first `chat.message` of a child session | `SubagentStart` | child restriction, answered locally, no daemon call |
 
 - The payload is `{event, source, session_id, parent_session_id?, cwd}`, modelled on Claude's `SessionStart` so the decode needs no new core concept. The role is payload-declared from opencode's native `parentID`, the same class of evidence as Claude's and Codex's payload roles.
 - The hook's context output is added to that same user message as a synthetic text part in `chat.message`, so the first turn sees its check-in. It is hidden in the TUI.
 - `hook_admission_policy` is `RegisteredContract`; admission is versionless (`contract_declared`), no version probe.
 - No `local_evidence`, no `hook_step`, no `turn_state_edge`: the channel serves delivery, and the plugin holds the turn state.
+- A session is marked bound only when its lifecycle hook succeeded; until then every turn retries it. A watch refusal `no_binding` or `session_mismatch` clears the bound mark, so the next turn checks in again.
+- The plugin's own appends and wake prompts also raise `chat.message`. An append is skipped by a re-entrancy mark; a wake prompt is an ordinary top-level message and runs the turn hook.
+- **One plugin instance per process.** opencode can run a plugin's init more than once per process, and can load a second installed copy from another config directory. The plugin keeps a process-global guard: a later instance takes over only after the earlier one's `dispose`, and a second copy stays inert. Doctor flags a second installed copy.
+- A plugin reload loses the "created in this process" memory; the next lifecycle is then reported as `resume`, which is safe (C1 continuity by session id).
 - Hook failure, timeout or daemon down: the plugin injects nothing and the turn proceeds; a lifecycle hook prints the shared `check-in unavailable` notice as the other harnesses do. A hook that throws can fail an opencode turn, so every plugin hook body is wrapped and never throws.
 
 ### D4. Delivery
@@ -81,11 +87,13 @@ The plugin keeps one **bound session**: the top-level session it last checked in
 One primitive: **append**. The plugin stores the framed page in the bound session with `client.session.prompt({noReply: true, parts: [{type: "text", text, synthetic: true}]})`.
 
 - Framing is the existing one (`[herdr-threads] new messages:` then per-item header lines and indented bodies), produced in the plugin as `register.js` does, in the daemon's batch order. No new model-visible string.
-- **Busy session:** the appended message is read by the next step of the running turn. No wake.
+- **Busy session:** the appended message is read by the next step of the running turn, and no wake is sent. A waking item appended while busy sets a **wake-pending** mark, cleared only when a model step is seen starting after the append. If the session goes idle with the mark still set (the turn ended on its final text, an interrupt or a rejected permission), the plugin sends the wake. This is the Claude mod's rule: the append is the delivery, the wake only guarantees it a turn.
 - **Idle session, passive item** (not `wakes`, no ACK needed): appended, no turn. It is in context for the next turn. The session stays idle.
 - **Idle session, waking item** (`wakes: true` or ACK-required): appended, then the plugin calls `client.session.promptAsync` with the content-free wake text `herdr-threads: wake up` (22 bytes, the existing `WAKE_UP`). The turn that starts sees the appended rows.
 - **Ack:** after the append call returns the stored message, the plugin runs `watch ack --via append --row <msg id> <ids>`. The stored message id is the host evidence of entry that the `DeliveryPolicy` admission rule asks for, the same evidence class as the Claude mod's stored row. A truncated item is never acked. A failed append acks nothing and the item is offered again.
 - The wake is reported as `via submit` with no ids, as the Claude mod does.
+- The frame and batch-order code in the plugin is a third copy (after `src/delivery/frame.rs` and `register.js`); a parity golden pins it to the Rust framing. The plugin handles the whole watch-line protocol the mod does (attention lines, `presentation_epoch`, ack retry, restart on `binding_changed`, stop on `replaced` / `disabled`).
+- **Channel not live** (stalled and in its cooldown, `mod_delivery` off, watch refused): the turn hook delivers pending items at each turn start, as for a hooks-only harness. There is no wake in that state.
 - Idle gate for the wake: the bound session has no `busy` or `retry` status, no pending permission or question, no wake in flight, and the channel is live. Backoff after a failed submit follows the mod's rule.
 - Child sessions never receive deliveries and are never woken.
 
@@ -108,7 +116,7 @@ Config root: `--config-root`, else `OPENCODE_CONFIG_DIR`, else `$XDG_CONFIG_HOME
 
 **Permission.** With consent (`--with-permissions`, asked interactively otherwise, as for agy), the rendered plugin adds `permission.bash["herdr-threads *"] = "allow"` and the same for `ht *` in its `config` hook. Without consent, opencode asks the user on the first call and its own "Allow always" covers the rest. This is the one unconfirmed mechanism; the probe checks it. If it does not work, there is no grant and doctor says so.
 
-`unsetup opencode` removes only the owned files. `status` and `doctor` report: plugin missing, modified or stale; skill missing; consent state. A plugin that failed to load is invisible to opencode's UI, so the plugin writes a small heartbeat record into the instance state dir at init, and doctor reports "installed, never loaded".
+Consent changes the rendered plugin, so the manifest records which variant was written and status does not report it as modified. `unsetup opencode` removes only the owned files. `status` and `doctor` report: plugin missing, modified or stale; skill missing; consent state. A plugin that failed to load is invisible to opencode's UI, so the plugin writes a small heartbeat record into the instance state dir at init, and doctor reports "installed, never loaded".
 
 No `installer_policy` in this epic: `install.sh` keeps handling Claude and Codex; opencode is set up by `herdr-threads setup opencode`, as agy and Hermes are.
 
@@ -119,7 +127,9 @@ No `installer_policy` in this epic: `install.sh` keeps handling Claude and Codex
 - Composes `opencode [caller args] --prompt <startup input>`; `--model M` maps to `-m M`; `HERDR_THREADS_OPENCODE_OPTS` for native options.
 - Accepts `-m/--model`, `--agent`, `-c/--continue`, `-s/--session`, `--fork`.
 - Refuses subcommands (`run`, `serve`, `attach`, `acp`, …), `--pure` (no plugin), `--auto` and its aliases `--yolo` / `--dangerously-skip-permissions`, `--port` / `--hostname` / `--mdns` (an unauthenticated server), `--mini`, and unknown flags.
+- The startup input goes through `prepare_startup_input` (`before: ["--prompt"]`) and the model through `apply_model`; `compose_argv` leaves argv unchanged.
 - Handoff uses the V2 bootstrap, as agy does. `--prompt` creates the session at startup, so a launched opencode enrolls at once.
+- A `launch` with no startup input would leave a seat nothing can reach, because no session exists until a prompt. The policy then supplies the content-free prompt `herdr-threads: wake up`, so the launched session enrolls with one short turn.
 
 ### D8. What degrades
 
@@ -130,6 +140,7 @@ No `installer_policy` in this epic: `install.sh` keeps handling Claude and Codex
 | Resumed by hand (`-c` / `-s`) | Bound again at its first prompt. Until then the seat has no live channel and a sender sees `wake=no_wake`. |
 | `/new`, then idle at the home screen | The previous session stays bound and is still woken; its turn runs in a session the TUI is not showing. The next prompt rebinds to the new session. |
 | `opencode serve` + `attach` | Plugins run in the server process, so its sessions are attributed to the server's pane, not the attaching client's. Existing accepted limit "foreground harness execution is user managed". |
+| Channel stalled (10-minute cooldown), or `mod_delivery` off | Items arrive at the next turn start through the turn hook; no wake; the sender sees `wake=no_wake`. CLI calls show the `N pending` hint. |
 | No permission consent | opencode asks the user per command until "Allow always". |
 | A future opencode renames a hook or SDK call | Versionless: the plugin feature-detects each call. A missing `shell.env` loses CLI attribution only; a missing `noReply` falls back to hook injection; a missing `promptAsync` loses the wake only (`wake=no_wake`). Doctor reports the degraded capability from the heartbeat record. |
 
@@ -152,6 +163,8 @@ The target is zero behaviour change in core. Known edits outside `src/harness/op
 - `src/harness/unsupported.rs`: drop the `OPENCODE` marker.
 - Tests and goldens that pin opencode as unsupported or pin the builtin list (listed in the file map).
 - `src/host/native.rs:5765`: a test uses `opencode` as its unrecognized kind; it gets another name.
+- opencode is the first `Channel` harness with no composer policy. `registry.rs` tests `idle_wake_on_agrees_with_has_idle_wake` and `idle_wake_on_spec_table`, and the builtin `match` in `adapter.rs` tests, need its row. Two behaviours must be checked and pinned by tests: the scheduler does not retry forever for a connected or dormant opencode binding with no channel, and the M12 line ("has no idle wake; threshold has no effect") is not printed for an opencode seat whose channel is merely not up yet. If either needs a core change, it is a neutral one keyed on `IdleWake::Channel` without a composer policy.
+- The adapter declares `binding_turn_delivery = false` for bindings whose only evidence is a plain CLI call, so the `N pending` hint shows when neither hook nor channel serves the seat.
 - Scripts: `check-harness-neutral` knobs, `wake-e2e.py`, `wake-e2e-herdr`, `validate-package.sh`, `herdr-release-smoke`.
 - Docs: `README.md`, `integrations/skill/SKILL.md` session-id list, `integrations/opencode/README.md`, `docs/agent-usage.md`, `docs/compatibility/harnesses.md`, `AGENTS.md` (harness list, never-write list gains `~/.config/opencode` and `~/.opencode`), `CHANGELOG.md`, `TRUST-POLICY.md`.
 
@@ -165,7 +178,7 @@ No invariant is weakened and no provenance value is added.
 
 - **Startup enrollment:** extend "Global hooks enroll supported top-level Herdr sessions" to the opencode plugin.
 - **opencode session claim:** opencode exports no session variable; the herdr-threads plugin adds the session id to each shell-tool call from the hook's own `sessionID`. It is `cooperative_env_session` with a plugin as carrier. The child role comes from opencode's native `parentID`; an unknown role is refused, never read as top-level.
-- **Push delivery evidence:** for opencode, `cooperative_mod_delivery` is claimed on the stored message the append returned.
+- **Push delivery evidence:** for opencode, `cooperative_mod_delivery` is claimed on the stored message the append returned, idle or queued into a running turn; the wake-pending rule guarantees a queued waking item a turn.
 - **Accepted limits:** the D8 rows for `serve`/`attach`, the wake of a bound session the TUI is not showing, the hand-resumed session with no wake until its first prompt, and the consent-gated in-process permission grant.
 
 ### D12. Testing
@@ -185,6 +198,7 @@ A real opencode under isolated dirs, the OpenRouter DeepSeek model and an isolat
 4. Duplicate skill names (`~/.agents/skills` or `~/.claude/skills` beside the installed one).
 5. The agent kind Herdr reports for an opencode pane, and its idle/working status.
 6. Plugin init failure visibility and `--pure`.
+7. An append during the final text step and during a rejected permission (the wake-pending cases).
 
 Each result either confirms a decision above or switches it to the stated fallback.
 

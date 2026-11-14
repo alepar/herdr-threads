@@ -1,0 +1,16 @@
+# Design review 1 (2026-11-14)
+
+Independent adversarial review of the first design draft (`9d5a720a4`), read-only, against the code and the normative docs. Verdict: the architecture (push channel, plugin wake, env claim) is sound and fits the existing seams; the draft was not safe to plan from until the findings below were folded in. All are folded into the design.
+
+| Id | Finding | Evidence | Disposition |
+|---|---|---|---|
+| C1 | A waking item appended to a busy session is acked at once (`ack_mod_delivered` settles the receipt), and if the turn then ends (final text step, interrupt, rejected permission) nothing wakes the session. | `src/store/receipts.rs:248-277`, `:440-455`; the Claude mod's pending-wake flag, `integrations/claude/mod/hooks/register.js:559-660`, `:907` | D4: wake-pending mark, cleared only by a model step starting after the append; sent on idle. Probe item 7. |
+| M1 | Enrollment had no retry; `watch` needs an open, connected top-level binding (`NoBinding` otherwise), and core's kept intents assume a later event. | `src/service/dispatch.rs:1851-1917`, `src/cli/hook.rs:2096-2100` | D3: a hook on every top-level turn (`UserPromptSubmit`), bound only on success, re-check-in after `no_binding` / `session_mismatch`. |
+| M2 | Plugin-set claim variables inherit into a nested opencode (a stale `_PARENT`, or an outer `_SESSION` with the inner process fingerprint). | `src/harness/caller_env.rs:251-303` | D2: all three variables set on every call, with a pid echo compared against `OPENCODE_PID`. |
+| M3 | More than one plugin instance per process (init re-run, second installed copy) would duplicate hooks and make the watch children replace each other. | `src/service/mod_channels.rs:866-906`, `register.js:312-314` | D3: process-global single-instance guard; doctor flags a second copy. |
+| M4 | `launch --kind opencode` with no startup prompt creates no session, so the seat is unreachable. | `TRUST-POLICY.md:780` | D7: the policy supplies the content-free prompt. |
+| M5 | With the channel stalled (10-minute cooldown) or `mod_delivery` off, opencode had neither delivery nor wake. | `src/protocol/watch.rs:73-76`, `src/service/mod_channels.rs:545`, `:853` | D4/D8: the turn hook delivers at turn start; `binding_turn_delivery` declared; rows added. |
+| M6 | Core test edits missing: opencode is the first `Channel` harness with no composer policy. The M12 "no idle wake" text and the scheduler's retry behaviour for a binding with no channel need checking. | `src/harness/registry.rs:1482-1522`, `:1687-1720`; `src/harness/adapter.rs:1992-2018`; `src/service/dispatch.rs:2902-2920` | D10. |
+| minor | `--prompt` through `prepare_startup_input`; frame parity golden; plugin's own messages raising `chat.message`; auto-compaction mid-turn; consent changing the plugin digest; marker move in the same commit as the registry row. | `src/harness/agy/launch.rs:225`, `src/cli/topology_handoff.rs:484-494` | D3, D4, D6, D7. |
+
+Clean: `watch --harness` values come from the registry (`src/cli/commands.rs:2887`); `--row` accepts `msg_…` (`src/protocol/commands.rs:1254`); `not_claude` is only a frozen wire name; A→B→A session switching works through lifecycle check-ins (`TRUST-POLICY.md:890-896`); the `HERDR_` prefix is safe (`src/cli/launch_gate.rs:149-166`).
