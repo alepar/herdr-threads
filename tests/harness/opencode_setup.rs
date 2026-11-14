@@ -335,6 +335,51 @@ fn a_moved_executable_rerenders_the_launch_line() {
     );
 }
 
+/// Two interrupted upgrades in a row: the first replaced the file but never finalized its
+/// record, the second recorded its intent and failed to write. The file still holds the first
+/// one's pending bytes, which the record must still recognize.
+#[test]
+fn two_interrupted_upgrades_in_a_row_leave_an_owned_file() {
+    use std::os::unix::fs::PermissionsExt;
+    let fx = Fixture::new();
+    fx.setup_src(PermissionPolicy::Ask, MARKED_V1).unwrap();
+    let manifest_path = fx.manifest();
+    let v1 = read_manifest(&manifest_path).unwrap().unwrap().files[0]
+        .digest
+        .clone();
+    // Interruption 1: V2 is on disk, the record still says V1 with V2 pending.
+    fx.setup_src(PermissionPolicy::Ask, MARKED_V2).unwrap();
+    let mut manifest = read_manifest(&manifest_path).unwrap().unwrap();
+    let v2 = std::mem::replace(&mut manifest.files[0].digest, v1);
+    manifest.files[0].pending = Some(v2.clone());
+    write_manifest(&manifest_path, &manifest).unwrap();
+    // Interruption 2: the V3 write fails after its intent is recorded.
+    let v3 = MARKED_V2.replace("// v2", "// v3");
+    let plugins = fx.config.join("plugins");
+    std::fs::set_permissions(&plugins, std::fs::Permissions::from_mode(0o555)).unwrap();
+    if std::fs::write(plugins.join("probe"), "x").is_ok() {
+        // Permission bits do not bind this user (root): the failure cannot be staged.
+        return;
+    }
+    assert!(fx.setup_src(PermissionPolicy::Ask, &v3).is_err());
+    std::fs::set_permissions(&plugins, std::fs::Permissions::from_mode(0o755)).unwrap();
+    assert_eq!(
+        std::fs::read_to_string(fx.plugin()).unwrap(),
+        render_plugin(MARKED_V2, &fx.launch(), false)
+    );
+    let entry = &read_manifest(&manifest_path).unwrap().unwrap().files[0];
+    assert!(entry.owns(&v2), "{entry:?}");
+    // The record still owns the file: setup finishes the upgrade and unsetup removes it.
+    let outcome = fx.setup_src(PermissionPolicy::Ask, &v3).unwrap();
+    assert_eq!(outcome.projection["files"][0]["action"], "updated");
+    assert_eq!(
+        std::fs::read_to_string(fx.plugin()).unwrap(),
+        render_plugin(&v3, &fx.launch(), false)
+    );
+    assert!(fx.unsetup().unwrap().residue.is_empty());
+    assert!(!fx.plugin().exists());
+}
+
 #[test]
 fn an_unowned_file_at_an_owned_path_is_a_conflict_and_nothing_changes() {
     for rel in [PLUGIN_PATH, SKILL_PATH] {

@@ -453,6 +453,8 @@ pub fn install(
         let current = read_regular(&path).map_err(|failure| {
             conflict(format!("{}; nothing was changed", failure.describe(&path)))
         })?;
+        // The digest of the bytes on disk, which may be the record's earlier pending one.
+        let mut held = target.clone();
         let action = match current {
             None => FileAction::Created,
             Some(bytes) => match entry {
@@ -460,6 +462,7 @@ pub fn install(
                     if bytes == file.bytes {
                         FileAction::Unchanged
                     } else {
+                        held = fingerprint(&bytes);
                         FileAction::Updated
                     }
                 }
@@ -471,10 +474,6 @@ pub fn install(
                     )));
                 }
             },
-        };
-        let held = match (action, entry) {
-            (FileAction::Updated, Some(entry)) => entry.digest.clone(),
-            _ => target.clone(),
         };
         plan.push((file, action, held, target));
     }
