@@ -179,19 +179,24 @@ pub fn init_for_new_binding(tx: &Connection, binding: &BindingId) -> Result<usiz
     // Before the cursors are written, while "no cursor yet" still identifies the threads this call
     // inherits: take the out-of-order display marks, still above the inherited cursor, of the one
     // binding whose cursor is inherited (the seat maximum; ties go to the lowest binding id).
+    // Driven from the inherited binding, once per thread, so the cost is that binding's marks: the
+    // seat-maximum probe walks the seat's own bindings, never every cursor in a shared thread, and no
+    // probe runs per message (ht-6oev: per message, it scanned the thread's cursors of every seat).
     tx.execute(
         "INSERT OR IGNORE INTO binding_row_displays(binding_id,message_id) \
-         SELECT ?1, d.message_id FROM occupant_bindings b \
-         JOIN occupant_bindings o ON o.seat_id=b.seat_id AND o.binding_id<>?1 \
-         JOIN binding_row_displays d ON d.binding_id=o.binding_id \
-         JOIN messages dm ON dm.id=d.message_id \
-         JOIN memberships mb ON mb.seat_id=b.seat_id AND mb.thread_id=dm.thread_id AND mb.state='joined' \
-         WHERE b.binding_id=?1 \
-           AND NOT EXISTS(SELECT 1 FROM binding_cursors own WHERE own.binding_id=?1 AND own.thread_id=dm.thread_id) \
-           AND o.binding_id=(SELECT c2.binding_id FROM binding_cursors c2 JOIN occupant_bindings o2 ON o2.binding_id=c2.binding_id \
-                WHERE o2.seat_id=b.seat_id AND c2.thread_id=dm.thread_id AND c2.binding_id<>?1 \
+         WITH inherit(thread_id,from_binding) AS (\
+           SELECT mb.thread_id, (SELECT c2.binding_id FROM occupant_bindings o2 \
+                CROSS JOIN binding_cursors c2 ON c2.binding_id=o2.binding_id AND c2.thread_id=mb.thread_id \
+                WHERE o2.seat_id=b.seat_id AND o2.binding_id<>?1 \
                 ORDER BY c2.seq DESC, c2.binding_id LIMIT 1) \
-           AND dm.sequence>(SELECT c3.seq FROM binding_cursors c3 WHERE c3.binding_id=o.binding_id AND c3.thread_id=dm.thread_id)",
+           FROM occupant_bindings b JOIN memberships mb ON mb.seat_id=b.seat_id AND mb.state='joined' \
+           WHERE b.binding_id=?1 \
+             AND NOT EXISTS(SELECT 1 FROM binding_cursors own WHERE own.binding_id=?1 AND own.thread_id=mb.thread_id)) \
+         SELECT ?1, d.message_id FROM inherit i \
+         CROSS JOIN binding_cursors c3 ON c3.binding_id=i.from_binding AND c3.thread_id=i.thread_id \
+         CROSS JOIN binding_row_displays d ON d.binding_id=i.from_binding \
+         CROSS JOIN messages dm ON dm.id=d.message_id \
+         WHERE dm.thread_id=i.thread_id AND dm.sequence>c3.seq",
         params![binding.as_str()],
     )
     .map_err(store_error)?;
@@ -199,8 +204,9 @@ pub fn init_for_new_binding(tx: &Connection, binding: &BindingId) -> Result<usiz
         concat!(
             "INSERT OR IGNORE INTO binding_cursors(binding_id,thread_id,seq) \
              SELECT ?1, m.thread_id, COALESCE(\
-                 (SELECT MAX(c.seq) FROM binding_cursors c JOIN occupant_bindings o ON o.binding_id=c.binding_id \
-                   WHERE o.seat_id=b.seat_id AND c.thread_id=m.thread_id AND c.binding_id<>?1),",
+                 (SELECT MAX(c.seq) FROM occupant_bindings o CROSS JOIN binding_cursors c \
+                   ON c.binding_id=o.binding_id AND c.thread_id=m.thread_id \
+                   WHERE o.seat_id=b.seat_id AND o.binding_id<>?1),",
             first_cursor_sql!("m.thread_id", "b.seat_id"),
             ",0) \
              FROM occupant_bindings b JOIN memberships m ON m.seat_id=b.seat_id AND m.state='joined' \
@@ -230,8 +236,8 @@ pub fn thread_head(db: &Connection, thread: &ThreadId) -> Result<u64, ApiError> 
 pub fn seed_preview(db: &Connection, seat: &SeatId, thread: &ThreadId) -> Result<u64, ApiError> {
     let max: Option<i64> = db
         .query_row(
-            "SELECT MAX(c.seq) FROM binding_cursors c JOIN occupant_bindings o ON o.binding_id=c.binding_id \
-             WHERE o.seat_id=?1 AND c.thread_id=?2",
+            "SELECT MAX(c.seq) FROM occupant_bindings o CROSS JOIN binding_cursors c \
+             ON c.binding_id=o.binding_id AND c.thread_id=?2 WHERE o.seat_id=?1",
             params![seat.as_str(), thread.as_str()],
             |r| r.get(0),
         )

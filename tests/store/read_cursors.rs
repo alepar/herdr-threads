@@ -393,3 +393,82 @@ fn advance_through_displayed_counts_only_this_bindings_display_acks() {
     assert_eq!(advance_through_displayed(&db, &b, &t(), &[1]).unwrap(), 1);
     assert_eq!(advance_through_displayed(&db, &b, &t(), &[2]).unwrap(), 3);
 }
+
+/// Seat `s` (one binding `A`, its cursor one below the head of `t`, the head displayed out of
+/// order) shares thread `t` with `others` bindings of other seats, each holding a cursor there, and
+/// `t` holds `messages` read messages below them. Returns the SQLite VM units (10 instructions each) of enrolling a new binding of `s`,
+/// after checking that it inherited A's display mark.
+fn enrollment_units(others: u64, messages: u64) -> u64 {
+    use crate::test_support::isolation::{CostCounter, count_vm_units};
+    let db = db();
+    let a = open(&db, "sess-A");
+    let each = |n: u64, statement: &str| {
+        db.execute_batch(&format!(
+            "WITH RECURSIVE n(x) AS (VALUES(1) UNION ALL SELECT x+1 FROM n WHERE x<{n}) {statement}"
+        ))
+        .unwrap();
+    };
+    each(
+        messages,
+        "INSERT INTO messages(instance_id,id,thread_id,sequence,kind,body,decision_at,decision_seq) \
+         SELECT '34750f98bd59fcfc946da45aaabe933b','h'||x,'t',x+2,'ordinary','b',x+2,x+2 FROM n",
+    );
+    each(
+        others,
+        "INSERT INTO seats(id,instance_id,state,role,generation,created_at,home_node,is_local,host_id) \
+         SELECT 'o'||x,'34750f98bd59fcfc946da45aaabe933b','resolved','native',4,0,(SELECT id FROM local_node),1,(SELECT min(host_id) FROM herdr_hosts) FROM n",
+    );
+    each(
+        others,
+        "INSERT INTO occupant_bindings(seat_id,generation,target_id,host_boot,host_epoch,harness,native_session,execution_id,observation_provenance,observed_at,terminal_id,incarnation) \
+         SELECT 'o'||x,4,'p'||x,'b',1,'claude','n'||x,'e'||x,'cooperative_top_level',0,'term','inc' FROM n",
+    );
+    db.execute_batch(
+        "INSERT INTO binding_cursors(binding_id,thread_id,seq) SELECT binding_id,'t',1 FROM occupant_bindings WHERE seat_id<>'s';",
+    )
+    .unwrap();
+    let head = messages + 2;
+    db.execute(
+        "UPDATE binding_cursors SET seq=?2 WHERE binding_id=?1",
+        params![a.as_str(), i64::try_from(head - 1).unwrap()],
+    )
+    .unwrap();
+    db.execute(
+        "INSERT INTO binding_row_displays(binding_id,message_id) VALUES (?1,?2)",
+        params![a.as_str(), format!("h{messages}")],
+    )
+    .unwrap();
+    let counter = CostCounter::default();
+    let fresh = count_vm_units(&db, &counter, || open(&db, "sess-N"));
+    let inherited: bool = db
+        .query_row(
+            "SELECT EXISTS(SELECT 1 FROM binding_row_displays WHERE binding_id=?1 AND message_id=?2)",
+            params![fresh.as_str(), format!("h{messages}")],
+            |r| r.get(0),
+        )
+        .unwrap();
+    assert!(inherited, "the new binding inherits A's out-of-order mark");
+    assert_eq!(cursor_for(&db, &fresh, &t()).unwrap(), Some(head - 1));
+    counter.units()
+}
+
+// Kills (ht-6oev): enrollment work that grows with other seats' cursors in a shared thread or with
+// the thread's history, such as a per-message probe of every cursor in the thread. Every seat
+// joins the shared broadcast threads, so each new (subagent) binding paid that inside its writer
+// turn: seconds on the live store, enough to push every other store call past its deadline.
+#[test]
+fn enrollment_is_flat_in_other_seats_cursors_and_thread_history() {
+    const C: u64 = 50;
+    let base = enrollment_units(20, 20);
+    for (axis, others, messages) in [
+        ("other seats' cursors", 200, 20),
+        ("thread history", 20, 200),
+        ("both", 200, 200),
+    ] {
+        let grown = enrollment_units(others, messages);
+        assert!(
+            grown <= base + base / 10 + C,
+            "{axis}: {base} units grew to {grown} at 10x"
+        );
+    }
+}
