@@ -607,6 +607,10 @@ impl HostPort for NamedHost {
     fn kind(&self) -> HostKind {
         HostKind::Named
     }
+    /// Named seats' processes are the operator's own; nothing of this host ends them.
+    fn processes_end_on_restart(&self) -> bool {
+        false
+    }
     /// The host starts a wake lane (pacer, reachability, Health) because a verified tmux binding
     /// can be typed into; a target without one answers `None` per target.
     fn wake_capability(&self) -> WakeCapability {

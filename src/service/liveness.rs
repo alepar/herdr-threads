@@ -47,10 +47,21 @@ use std::{
 pub enum HostLiveness {
     /// The host never ends its targets' processes (the named host): apply at once.
     Open,
-    /// The host is attached and up; the count of its coherent publications so far.
-    Published(u64),
+    /// The host is attached and up: its capture tokens (`HostReachability`).
+    Published(CaptureMarks),
     /// The host is down, or not attached: apply nothing, keep nothing pending.
     Closed,
+}
+
+/// Where an up host's captures stand.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct CaptureMarks {
+    /// Capture attempts begun so far.
+    pub started: u64,
+    /// The newest capture token that published coherently.
+    pub published: u64,
+    /// Down-to-up transitions so far: a change means an outage in between.
+    pub recoveries: u64,
 }
 
 /// Per-host evidence for the liveness worker's publication gate. Production is the daemon's
@@ -61,26 +72,32 @@ pub trait LivenessHosts: Send + Sync {
 
 impl LivenessHosts for std::sync::Weak<crate::service::host_sessions::HostSessions> {
     fn liveness(&self, host: crate::ports::HostId) -> HostLiveness {
-        let Some(session) = self.upgrade().and_then(|sessions| sessions.get(host)) else {
+        let Some(session) = self.upgrade().and_then(|sessions| sessions.get_any(host)) else {
             return HostLiveness::Closed;
         };
-        if !session.port().kind().liveness_needs_publication() {
+        if !session.port().processes_end_on_restart() {
             HostLiveness::Open
         } else if session.reachability().is_down() {
             HostLiveness::Closed
         } else {
-            HostLiveness::Published(session.reachability().publications())
+            let reachability = session.reachability();
+            HostLiveness::Published(CaptureMarks {
+                started: reachability.captures_started(),
+                published: reachability.published_capture(),
+                recoveries: reachability.recoveries(),
+            })
         }
     }
 }
 
-/// A process-exit verdict waiting for its host to answer: the host's publication count when the
-/// process was read dead.
+/// A process-exit verdict waiting for its host to answer: the host's capture marks when the
+/// process was read dead. It applies once a capture begun after that read published, with no
+/// outage in between.
 #[derive(Debug, Clone, PartialEq, Eq)]
 struct Pending {
     decision: LivenessDecision,
     host: crate::ports::HostId,
-    publications: u64,
+    read_at: CaptureMarks,
 }
 
 /// What one pass saw and did.
@@ -236,19 +253,20 @@ impl LivenessWorker {
                     Some(seen)
                         if seen.decision == decision
                             && seen.host == host
-                            && now > seen.publications =>
+                            && seen.read_at.recoveries == now.recoveries =>
                     {
-                        pending.remove(&decision.binding);
-                        apply.push(decision);
+                        if now.published > seen.read_at.started {
+                            pending.remove(&decision.binding);
+                            apply.push(decision);
+                        }
                     }
-                    Some(seen) if seen.decision == decision && seen.host == host => {}
                     _ => {
                         pending.insert(
                             decision.binding.clone(),
                             Pending {
                                 decision,
                                 host,
-                                publications: now,
+                                read_at: now,
                             },
                         );
                     }

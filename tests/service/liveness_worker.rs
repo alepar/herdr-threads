@@ -672,11 +672,19 @@ impl LivenessHosts for Gate {
     }
 }
 
+fn marks(started: u64, published: u64, recoveries: u64) -> HostLiveness {
+    HostLiveness::Published(CaptureMarks {
+        started,
+        published,
+        recoveries,
+    })
+}
+
 /// Kills (ht-hrbx review F1): a process-exit verdict applied before the seat's host answered
 /// again. A Herdr restart ends its panes' processes before the new boot is published, so a death
-/// seen while the host is down, or with no coherent publication since, is no evidence yet.
+/// seen while the host is down, or with no coherent capture begun since, is no evidence yet.
 #[test]
-fn a_process_exit_waits_for_a_publication_after_it_was_read() {
+fn a_process_exit_waits_for_a_capture_begun_after_it_was_read() {
     let fx = Fx::new("liveness-publication-gate");
     let gate = Arc::new(Gate::default());
     fx.worker.set_hosts(gate.clone());
@@ -684,19 +692,32 @@ fn a_process_exit_waits_for_a_publication_after_it_was_read() {
     // Read dead while the host is down: nothing applies and nothing is kept.
     gate.set(HostLiveness::Closed);
     assert_eq!(fx.worker.pass(&budget()).unwrap().disconnected, 0);
-    // Up again with 7 publications: the verdict is kept, not applied.
-    gate.set(HostLiveness::Published(7));
+    // Up again, 7 captures begun, 7 published: the verdict is kept, not applied.
+    gate.set(marks(7, 7, 0));
     assert_eq!(fx.worker.pass(&budget()).unwrap().disconnected, 0);
     assert_eq!(fx.worker.pass(&budget()).unwrap().disconnected, 0);
-    assert!(fx.connected(&b), "no publication since the read");
-    // Down before the next publication: the pending verdict is dropped.
-    gate.set(HostLiveness::Closed);
-    fx.worker.pass(&budget()).unwrap();
-    gate.set(HostLiveness::Published(8));
+    assert!(fx.connected(&b), "no capture since the read");
+    // Re-review F2: capture 7 was in flight at the read; its late publication is no evidence,
+    // nor is capture 8 begun but not yet published.
+    gate.set(marks(8, 7, 0));
+    assert_eq!(fx.worker.pass(&budget()).unwrap().disconnected, 0);
+    assert!(
+        fx.connected(&b),
+        "only a capture begun after the read counts"
+    );
+    // Re-review F3: an outage between passes (a recovery) voids the read, even with a capture
+    // published since; the verdict is read again at that point.
+    gate.set(marks(9, 9, 1));
     assert_eq!(fx.worker.pass(&budget()).unwrap().disconnected, 0);
     assert!(fx.connected(&b), "the outage voided the earlier read");
-    // A publication after this read: the verdict applies, also through the per-seat recheck.
-    gate.set(HostLiveness::Published(9));
+    // Down at pass time: the pending verdict is dropped.
+    gate.set(HostLiveness::Closed);
+    fx.worker.pass(&budget()).unwrap();
+    gate.set(marks(10, 10, 1));
+    assert_eq!(fx.worker.pass(&budget()).unwrap().disconnected, 0);
+    // A capture begun after this read published: the verdict applies, also through the per-seat
+    // recheck.
+    gate.set(marks(11, 11, 1));
     fx.worker
         .recheck_seat(&crate::protocol::ids::SeatId::new("s"), &budget())
         .unwrap();
@@ -720,7 +741,7 @@ fn a_process_exit_waits_for_a_publication_after_it_was_read() {
 fn a_supersede_is_not_held_by_the_publication_gate() {
     let fx = Fx::new("liveness-publication-gate-supersede");
     let gate = Arc::new(Gate::default());
-    gate.set(HostLiveness::Published(1));
+    gate.set(marks(1, 1, 0));
     fx.worker.set_hosts(gate);
     fx.table.set(100, 5);
     let older = fx.bind("s", "claude", "A", Some((100, 5)), 10);

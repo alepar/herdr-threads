@@ -22,9 +22,11 @@ pub struct HostReachability {
     /// refusal backoff when this moves, so its first pass after recovery
     /// attempts every due seat promptly.
     recoveries: AtomicU64,
-    /// Coherent publications so far: the liveness worker applies a process-exit verdict only
-    /// after the host answered with one since the process was read dead (ht-hrbx).
-    publications: AtomicU64,
+    /// Captures begun so far (a token taken before each capture attempt) and the newest token
+    /// whose capture published coherently: the liveness worker applies a process-exit verdict
+    /// only after a capture that began after the process was read dead published (ht-hrbx).
+    captures_started: AtomicU64,
+    published_capture: AtomicU64,
     /// The wake lane's Pacer, kicked on recovery.
     wake: Mutex<Option<Arc<Pacer>>>,
 }
@@ -47,14 +49,24 @@ impl HostReachability {
         self.recoveries.load(Ordering::SeqCst)
     }
 
-    /// The number of coherent publications so far.
-    pub fn publications(&self) -> u64 {
-        self.publications.load(Ordering::SeqCst)
+    /// The number of capture attempts begun so far.
+    pub fn captures_started(&self) -> u64 {
+        self.captures_started.load(Ordering::SeqCst)
     }
 
-    /// The observation lane published a coherent capture of the host.
-    pub fn mark_published(&self) {
-        self.publications.fetch_add(1, Ordering::SeqCst);
+    /// The newest capture token whose capture published coherently (0: none).
+    pub fn published_capture(&self) -> u64 {
+        self.published_capture.load(Ordering::SeqCst)
+    }
+
+    /// Takes the token of the capture attempt about to begin.
+    pub fn begin_capture(&self) -> u64 {
+        self.captures_started.fetch_add(1, Ordering::SeqCst) + 1
+    }
+
+    /// The capture begun with `token` published coherently.
+    pub fn mark_published(&self, token: u64) {
+        self.published_capture.fetch_max(token, Ordering::SeqCst);
     }
 
     /// A capture was frozen for unavailability.

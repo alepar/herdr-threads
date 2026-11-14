@@ -2561,6 +2561,7 @@ where
                         deadline: crate::protocol::time::MonoInstant(now.saturating_add(7_000)),
                         cancellation: Cancellation::default(),
                     };
+                    let capture_token = reachability.begin_capture();
                     let captured = identity.capture_if_due(&port, &budget, &maintenance);
                     status.observe_capture(&captured);
                     match captured {
@@ -2578,7 +2579,7 @@ where
                             match &outcome {
                                 crate::identity::reconcile::ObservationOutcome::Published(_) => {
                                     reachability.mark_archival_published(port.clock().monotonic_now().0);
-                                    reachability.mark_published();
+                                    reachability.mark_published(capture_token);
                                     host_evidence.record_published();
                                     pacer.on_success();
                                 }

@@ -4470,14 +4470,6 @@ impl HostKind {
         matches!(self, HostKind::Herdr)
     }
 
-    /// Whether a restart of this host can end its targets' processes, so a process exit is
-    /// evidence only once the host has answered since (the liveness worker's publication gate,
-    /// ht-hrbx). The named host has no targets of its own and never restarts; an unknown kind
-    /// is gated.
-    pub fn liveness_needs_publication(self) -> bool {
-        !matches!(self, HostKind::Named)
-    }
-
     /// Whether a new incarnation of this host restores its panes at their saved target ids, so a
     /// saved target is worth judging after a restart: a launcher-supplied continuity key reattaches
     /// a seat onto it (TRUST-POLICY C1), and its lasting absence retires the seat (G5). A host whose
@@ -4562,7 +4554,8 @@ pub enum ClosureAuthority {
 /// [`WakeCapability`]/[`ComposerTraits`], [`ClosureAuthority`],
 /// [`ArchivalEvidence`])
 /// - Owns: one defaulted answer per policy question: kind, wake, closure
-///   authority, archival evidence, target root pid and server pid. Every
+///   authority, archival evidence, whether a restart ends its targets'
+///   processes, target root pid and server pid. Every
 ///   default reproduces today's Herdr behaviour.
 /// - Hides: which environment a host is. Delivery, closure, wake, archival,
 ///   placement and binding policy branch on the answer, never on the kind.
@@ -4582,6 +4575,13 @@ pub trait HostPort: Send + Sync {
     /// listed on the trait.
     fn kind(&self) -> HostKind {
         HostKind::Herdr
+    }
+    /// Whether a restart of this host can end its targets' processes, so a process exit is
+    /// evidence only once the host has answered a capture since (the liveness worker's
+    /// publication gate, ht-hrbx). Default: yes. The named host has no targets of its own and
+    /// never restarts.
+    fn processes_end_on_restart(&self) -> bool {
+        true
     }
     /// Whether this host creates targets through `CreateTargetPort` and starts
     /// the gate itself (no pane to read, no `launch --pane`). Default: no.

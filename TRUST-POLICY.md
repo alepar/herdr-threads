@@ -147,9 +147,9 @@ from durable windows; no new provenance or wire value.
 
 Amended 2026-11-14 for liveness under a stuck hold and several-target wakes (ht-hrbx, ht-esl): the liveness worker
 judges a Herdr server's resolved seats once its reconciliation marker names the current recovery boot and epoch, even
-while an unresolved seat keeps the hold armed, and applies a process-exit verdict only after the server published a
-coherent capture since the process was read dead; a several-target wake classifies the composer for its idle gate.
-No new provenance or wire value.
+while an unresolved seat keeps the hold armed, and applies a process-exit verdict only after a capture begun since the
+process was read dead published with no outage in between; a several-target wake classifies the composer for its idle
+gate. One accepted limit (a server that stays away keeps its dead bindings connected). No new provenance or wire value.
 
 ## Abstract
 
@@ -1047,9 +1047,13 @@ model open work, and summary closure never changes receipt state or installs glo
   and every seat of a Herdr server under a recovery hold until the reconciliation marker (C2) names that
   server's current recovery boot and epoch. A process-exit verdict (a fingerprint-less binding included) is
   applied only once the seat's server has answered since: the worker keeps it pending and applies it on a later
-  pass only if the server's observation lane published a coherent capture after the process was read dead and
-  has not marked the server down since; a server that is down, or not attached, gets no verdict and keeps none
-  pending (the named host, which never ends its seats' processes, is not held back). A Herdr restart ends its
+  pass only if a capture the server's observation lane began after the process was read dead has published
+  coherently, and the lane saw no outage in between (its down-to-up count is unchanged and the server is not
+  down at that pass); a server that is down, or not attached, gets no verdict and keeps none pending (the named
+  host, which never ends its seats' processes, is not held back). Accepted limit: a Herdr server that goes away
+  and does not come back, or a remembered server never attached since the daemon started, keeps its seats'
+  dead bindings connected until it publishes again, so their presence stays active and no unavailability
+  episode opens meanwhile; the next boot's publication and pass unresolve or judge them. A Herdr restart ends its
   panes' processes before the new boot is published, and that publication moves the recovery boot, so the
   marker no longer names it and the seat is skipped until the new boot's pass; a Herdr restart therefore never
   disconnects through the worker: the reconciler's C2 path owns those seats. Past the marker every seat still resolved is proven in

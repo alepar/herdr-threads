@@ -546,6 +546,15 @@ impl HostSessions {
         self.sessions.read().ok()?.get(&id).cloned()
     }
 
+    /// The session of host `id`, the built-in one included (`get` is dialled-only).
+    pub fn get_any(&self, id: HostId) -> Option<Arc<HostSession>> {
+        self.builtin
+            .get()
+            .filter(|builtin| builtin.host_id == id)
+            .cloned()
+            .or_else(|| self.get(id))
+    }
+
     /// The session of `locator`: the built-in one first, then a dialled one.
     pub fn by_locator(&self, locator: &HostLocator) -> Option<Arc<HostSession>> {
         if let Some(builtin) = self.builtin.get().filter(|b| b.locator == *locator) {
@@ -1245,6 +1254,8 @@ mod tests {
     /// Every host call is refused: sessions start, observe nothing and wake nothing.
     struct FakeHost {
         no_wake: bool,
+        /// `false`: answers like the named host for the liveness publication gate.
+        ends_processes: bool,
     }
 
     fn refused<T>() -> Result<T, ApiError> {
@@ -1252,6 +1263,9 @@ mod tests {
     }
 
     impl HostPort for FakeHost {
+        fn processes_end_on_restart(&self) -> bool {
+            self.ends_processes
+        }
         fn wake_capability(&self) -> WakeCapability {
             if self.no_wake {
                 WakeCapability::None
@@ -1394,7 +1408,13 @@ mod tests {
                     Arc::new(move |kind, _| {
                         world.built.fetch_add(1, Ordering::SeqCst);
                         world.built_kinds.lock().unwrap().push(kind);
-                        (Arc::new(FakeHost { no_wake: false }), Arc::new(NoObserver))
+                        (
+                            Arc::new(FakeHost {
+                                no_wake: false,
+                                ends_processes: true,
+                            }),
+                            Arc::new(NoObserver),
+                        )
                     })
                 },
                 probe: {
@@ -1975,7 +1995,13 @@ mod tests {
     }
 
     fn builtin_parts(no_wake: bool) -> (Arc<dyn HostPort>, Arc<dyn BootstrapObserver>) {
-        (Arc::new(FakeHost { no_wake }), Arc::new(NoObserver))
+        (
+            Arc::new(FakeHost {
+                no_wake,
+                ends_processes: true,
+            }),
+            Arc::new(NoObserver),
+        )
     }
 
     // Kills: a built-in session listed by `attached()`, so the sweep, startup
@@ -2056,6 +2082,50 @@ mod tests {
             .unwrap();
         assert_eq!(rig.sessions.attached_count(), MAX_ATTACHED_HOSTS);
         assert_eq!(rig.sessions.all_for_reads().len(), MAX_ATTACHED_HOSTS + 1);
+    }
+
+    // Kills (ht-hrbx re-review F1): the liveness gate reading only the dialled sessions, so a
+    // named seat (the built-in session) answers `Closed` and its exited process is never judged.
+    // The built-in host is open, a dialled server is gated on its captures, an unknown one closed.
+    #[test]
+    fn the_liveness_gate_sees_the_builtin_and_dialled_sessions() {
+        use crate::service::liveness::{CaptureMarks, HostLiveness, LivenessHosts};
+        let rig = Rig::new("hs-liveness-gate", false, Duration::from_secs(60));
+        rig.world.set_live("/herdr/a.sock", true);
+        let dialled = rig
+            .sessions
+            .resolve(&loc("/herdr/a.sock"), &rig.budget(5_000))
+            .unwrap();
+        let builtin = rig
+            .sessions
+            .attach_builtin(
+                HostKind::Named,
+                Arc::new(FakeHost {
+                    no_wake: false,
+                    ends_processes: false,
+                }),
+                Arc::new(NoObserver),
+                &loc("/builtin/named"),
+            )
+            .unwrap();
+        let gate = Arc::downgrade(&rig.sessions);
+        assert_eq!(gate.liveness(builtin.host_id()), HostLiveness::Open);
+        let token = dialled.reachability().begin_capture();
+        dialled.reachability().mark_published(token);
+        assert_eq!(
+            gate.liveness(dialled.host_id()),
+            HostLiveness::Published(CaptureMarks {
+                started: token,
+                published: token,
+                recoveries: 0,
+            })
+        );
+        dialled.reachability().mark_down();
+        assert_eq!(gate.liveness(dialled.host_id()), HostLiveness::Closed);
+        assert_eq!(
+            gate.liveness(crate::ports::HostId::from_row(9_999)),
+            HostLiveness::Closed
+        );
     }
 
     // Kills: `resolve` trying to dial (exists is false for it) instead of
