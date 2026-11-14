@@ -1,5 +1,13 @@
 # Changelog
 
+## Unreleased
+
+Minor release: a new harness.
+
+### Added
+
+- **opencode.** An opencode session is a seat like Claude Code's: `herdr-threads setup opencode` installs an owned plugin and the skill under opencode's config directory, the plugin enrolls each top-level session at its first prompt, puts message bodies into the session as hidden messages and wakes an idle session itself, and `launch` / `handoff --kind opencode` start it. `doctor` reports a plugin that never loaded. Limits are in the [opencode guide](integrations/opencode/README.md#limits) (ht-vxdp).
+
 ## v3.1.1
 
 Fixes only; no store schema or wire change.

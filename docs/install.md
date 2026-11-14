@@ -254,6 +254,7 @@ Hooks and permissions are separate components. Hook setup grants nothing; the pe
 - **Claude** (`settings.json`): allow `Bash(herdr-threads)`, `Bash(herdr-threads *)`, `Bash(ht)` and `Bash(ht *)`; ask, bare and with ` *`, for each spelling followed by `human`, `setup`, `unsetup`, `doctor fix` or `internal installer-integrations`. Claude applies ask before allow. A rule the user already had is recorded as pre-existing and never removed.
 - **Codex**: setup owns the whole file `$CODEX_HOME/rules/herdr-threads.rules`: one execpolicy `prefix_rule` allowing `["herdr-threads","ht"]`, plus `prompt` rules for `human` and the same self-granting commands. A file at that path that setup did not write, or one someone edited, is reported (`state: foreign` / `edited`) and never overwritten or deleted.
 - **agy** (`~/.gemini/antigravity-cli/settings.json`): the single `permissions.allow` member `command(herdr-threads)`, owned by the settings engine and recorded in an `agy-user` manifest. It matches every `herdr-threads ...` command and herdr-threads writes no agy ask rule, so unlike Claude and Codex it also covers the person and setup commands; the consent question says so. A member the user already had is recorded as pre-existing and kept. agy rewrites `settings.json` and can drop the member; plain `setup agy` re-adds it when a grant is recorded.
+- **opencode**: no file is edited. With consent the rendered plugin adds `permission.bash` `herdr-threads *` and `ht *` = `allow` to opencode's in-memory config when it loads, placed last; a user `deny` on either key is kept. Like agy's entry it covers person and setup commands. Without consent opencode asks until "Allow always".
 - **Hermes** needs no grant: the shipped plugin's `pre_tool_call` hook returns `approve` (Hermes asks the person) before a terminal command runs `herdr-threads`/`ht` with `human`, `setup`, `unsetup`, `doctor fix` or `internal installer-integrations` ([Hermes notes](../integrations/hermes/README.md)).
 
 Those commands ask because the person namespace acts for the human and the others could let an agent grant itself permissions. Outside the `human` namespace the CLI requires those words first, from anyone: `herdr-threads setup claude --json` works, but `herdr-threads --json setup claude` is refused, and `human` must be the first word after the executable. This is cooperative ([trust policy](../TRUST-POLICY.md)): quoting words to dodge a text rule is outside the model. Stronger deny/ask/managed rules remain authoritative, and bare names cannot attest later PATH, alias or function resolution. Setup changes no general shell allowance, network permission, sandbox setting or approval mode.
@@ -365,6 +366,20 @@ rewrites `settings.json` and can drop the allow member: `setup-status` then repo
 missing and re-running `setup agy` restores it. The allow member is installed only with consent: `setup agy --with-permissions` (or a yes to the terminal question) adds it, `--without-permissions` removes the one setup added, and a plain `setup agy` otherwise only advises ([Agent permissions](#agent-permissions)). Its `settings.json` pre-images follow the backup model in [Harness hooks](#harness-hooks) (never pruned; `unsetup agy` keeps them). `agy --sandbox` is unsupported and refused by
 `launch`. The [agy operator guide](../integrations/agy/README.md) has the launch flags,
 `HERDR_THREADS_AGY_OPTS`, `-c` versus `--conversation`, and doctor output.
+
+### opencode
+
+```
+herdr-threads setup opencode
+herdr-threads setup-status opencode
+```
+
+`setup opencode` writes the owned plugin `plugins/herdr-threads.js` and the skill
+`skills/herdr-threads/SKILL.md` under `$OPENCODE_CONFIG_DIR`, else
+`${XDG_CONFIG_HOME:-~/.config}/opencode`, recorded in an ownership manifest; `opencode.json` is
+never touched and `unsetup opencode` removes only what it wrote. Restart opencode
+afterwards. The [opencode operator guide](../integrations/opencode/README.md)
+has delivery, launch flags, doctor output and limits.
 
 ## Managed launch
 
@@ -539,7 +554,7 @@ A newer executable does not take over a running older daemon. `daemon ensure` an
 Herdr has no shutdown hook, so disabling or uninstalling does not stop the daemon.
 
 1. `daemon stop`.
-2. Remove the owned harness entries: `herdr-threads unsetup` (every harness; or `unsetup claude` / `unsetup codex` / `unsetup agy`) (with the same `CLAUDE_CONFIG_DIR` / `CODEX_HOME` and Herdr instance as setup). Do this before step 3: once the plugin is uninstalled or disabled, `herdr plugin list` no longer names its state directory, and `unsetup` fails with `state directory unknown` unless the default state directory still exists or you pass `--state-dir` (the manifests that record what to remove live under `<state>/setup/`). This removes the owned permission rules too. Unchanged files are restored byte for byte; Codex's own `[hooks.state]` trust entries are Codex state and stay, as do setup's `.herdr-threads` backups.
+2. Remove the owned harness entries: `herdr-threads unsetup` (every harness; or `unsetup claude` / `unsetup codex` / `unsetup agy` / `unsetup opencode`) (with the same `CLAUDE_CONFIG_DIR` / `CODEX_HOME` and Herdr instance as setup). Do this before step 3: once the plugin is uninstalled or disabled, `herdr plugin list` no longer names its state directory, and `unsetup` fails with `state directory unknown` unless the default state directory still exists or you pass `--state-dir` (the manifests that record what to remove live under `<state>/setup/`). This removes the owned permission rules too. Unchanged files are restored byte for byte; Codex's own `[hooks.state]` trust entries are Codex state and stay, as do setup's `.herdr-threads` backups.
 3. Unlink or uninstall the plugin in Herdr.
 
 State is preserved. There is no data-deletion command.

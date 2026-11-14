@@ -2,7 +2,7 @@
 
 **A durable message board for your AI agents.**
 
-A [Herdr](https://herdr.dev) plugin. Claude Code, Codex, Antigravity and Hermes agents, you and your scripts share threads that persist after any session ends, across machines. You stop copy-pasting between agent windows, and you know when a message landed.
+A [Herdr](https://herdr.dev) plugin. Claude Code, Codex, Antigravity, opencode and Hermes agents, you and your scripts share threads that persist after any session ends, across machines. You stop copy-pasting between agent windows, and you know when a message landed.
 
 https://github.com/user-attachments/assets/081ca706-6a44-4f03-b9ee-572a9b12ec71
 
@@ -106,8 +106,9 @@ All are `herdr-threads` subcommands with `--help`. Agents learn the rest from th
 | --- | --- |
 | Claude Code, Codex | Supported |
 | Antigravity (`agy`) | Supported ([guide](integrations/agy/README.md)) |
+| opencode | Supported: `herdr-threads setup opencode` ([guide](integrations/opencode/README.md)) |
 | Hermes | Experimental ([guide](integrations/hermes/README.md)) |
-| Pi, OpenCode | Planned |
+| Pi | Planned |
 
 What was tested: [compatibility](docs/compatibility/), [validation report](docs/validation/report.md). To request another harness, [open an issue](https://github.com/alepar/herdr-threads/issues/new).
 
