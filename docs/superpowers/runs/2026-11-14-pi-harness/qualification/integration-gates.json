@@ -1,0 +1,189 @@
+{
+  "run_id": "23661afb-9299-4ce3-b479-62e522e48a04",
+  "source": "bad263b15dbbca518ea0509d16f90f9d01c1c602",
+  "base": "e60ec5eb5e9746f82b399127838dc9515c7cc712",
+  "tree": "733fcbfb2ea0c725062e185146317ccb712901ec",
+  "status": "",
+  "prepared_at": "2026-11-15T14:29:51.658698+00:00",
+  "caps": 4,
+  "hashes": {
+    "/var/home/alepar/.cache/herdr-threads-heavy/heavy": "8984c39e9e24dc9e6e94fd743fd0ae097b7d8c2acb68b905a2d724df52f72cdd",
+    "/var/home/alepar/.cache/herdr-threads-heavy/tb": "54feea6d5cbdb8bf1889d405f91b3554046b5ecd4fd5779ac30e46ec56211d93",
+    ".config/nextest.toml": "f5be54ee4a75cd2aa33d80d7ea321a262545226b76c6f25b3948a534f80742dd",
+    "Cargo.toml": "4dc77fa0a1e66d4dc95707a4dd38b927d9efd8cfcfe448755e02c1a91587c7f3",
+    "Cargo.lock": "0d084d286e1f168c263cfa05fb026e465e64ed39c0412eff9faa060f273b33a8"
+  },
+  "overrides": {},
+  "preexisting_candidate": {
+    "path": "target/debug/herdr-threads",
+    "sha256": "a8aef2df56e6954fe3c12b7d02841f521712ceb403d13f9b93fabdabe2224289",
+    "note": "Pre-existing artifact only; not yet a v3.2.1 build proof."
+  },
+  "gates": {
+    "fmt": {
+      "exit": 0,
+      "wall_s": 6.09
+    },
+    "clippy": {
+      "exit": 0,
+      "wall_s": 62.45
+    },
+    "neutral": {
+      "exit": 0,
+      "wall_s": 1.23
+    },
+    "wire": {
+      "exit": 0,
+      "wall_s": 0.09
+    },
+    "default": {
+      "exit": 0,
+      "wall_s": 53.82
+    }
+  },
+  "suite_started_at": "2026-11-15T14:33:27.268114+00:00",
+  "suite_start_head": "9820c9ca6752ef72a3a56d06b66bf55f8bbdd4af",
+  "suite_start_status": "",
+  "suite_start_docs_delta": [
+    "docs/superpowers/runs/2026-11-14-pi-harness/qualification/README.md",
+    "docs/superpowers/runs/2026-11-14-pi-harness/qualification/integration-rebase-evidence.json",
+    "docs/superpowers/runs/2026-11-14-pi-harness/qualification/integration-rebase.md"
+  ],
+  "result": {
+    "suite_exit": 0,
+    "summary": "Summary [1033.189s] 9645 tests run: 9645 passed (1 slow), 66 skipped",
+    "tests_run": 9645,
+    "tests_passed": 9645,
+    "tests_failed": 0,
+    "skipped": 66,
+    "binaries": 19,
+    "slow": 1,
+    "compile_time_cargo_display": "7m 12s",
+    "compile_time_precision": "Cargo rounded display; not an exact seconds measurement.",
+    "nextest_execution_s": 1033.189,
+    "total_command_wall_s": 1465.37,
+    "user_s": 5161.84,
+    "sys_s": 304.51,
+    "slow_test": {
+      "name": "herdr-threads::package manifest::failpoints_are_compiled_out_of_release_builds",
+      "seconds": 214.97,
+      "status": "PASS"
+    },
+    "nextest_run_id": "64092aa3-32f1-44c8-9bdc-09bdaff61228",
+    "builder_leaks": {
+      "exit": 0,
+      "wall_s": 0.22,
+      "processes": "clean",
+      "scratch": "clean"
+    },
+    "host_leaks": {
+      "exit": 0,
+      "processes": "clean",
+      "scratch": "no ledger; builder consumed clean ledger"
+    },
+    "budget": {
+      "suite_seconds": 300,
+      "suite_pass": false,
+      "clippy_seconds": 60,
+      "clippy_pass": false,
+      "issue": "ht-n4xh",
+      "disposition": "Nonblocking under the explicitly accepted cap-4 shared-training constraint; actual misses retained. No attribution of timing cause established by this run."
+    },
+    "end_head": "9820c9ca6752ef72a3a56d06b66bf55f8bbdd4af",
+    "post_scan_worktree_status": "clean (observed with binary-profile capture before report preparation)",
+    "report_preparation_status": " M docs/superpowers/runs/2026-11-14-pi-harness/qualification/README.md\n?? docs/superpowers/runs/2026-11-14-pi-harness/handoff.md\n?? docs/superpowers/runs/2026-11-14-pi-harness/qualification/integration-gates.md\n",
+    "docs_only_delta": [
+      "docs/superpowers/runs/2026-11-14-pi-harness/qualification/README.md",
+      "docs/superpowers/runs/2026-11-14-pi-harness/qualification/integration-rebase-evidence.json",
+      "docs/superpowers/runs/2026-11-14-pi-harness/qualification/integration-rebase.md"
+    ],
+    "completed_at": "2026-11-15T15:00:09.109099+00:00"
+  },
+  "binary_profile": {
+    "current_binary": "target/debug/herdr-threads",
+    "sha256": "3e3508042f751e1c6710e18da4ac6c1270ffcfedf2428df0b001b5f28b0ef4d9",
+    "version_output": "herdr-threads 3.2.1",
+    "same_inode_deps": [
+      "target/debug/deps/herdr_threads-89936ad1028d57ca"
+    ],
+    "fingerprint_path": "target/debug/.fingerprint/herdr-threads-89936ad1028d57ca/bin-herdr-threads.json",
+    "fingerprint": {
+      "rustc": 11835527281324007204,
+      "features": "[\"test-support\"]",
+      "profile": 3057891792897344596,
+      "rustflags": [],
+      "config": 9396254390672932401,
+      "compile_kind": 0
+    },
+    "historical_dev_artifact": {
+      "path": "target/debug/deps/herdr_threads-75705d562a6fb0ec",
+      "sha256": "a8aef2df56e6954fe3c12b7d02841f521712ceb403d13f9b93fabdabe2224289",
+      "note": "Historical pre-rebase v3.2.0 qualified dev artifact; not v3.2.1 proof."
+    },
+    "new_dev_candidate_built": false
+  },
+  "log_sha256": {
+    "fmt.log": "bc870a53810b9e5111331abb4b98bd4fe76c81e2f3c15f0bac09dde2c43acbaa",
+    "clippy.log": "82ddf3685abb72fa27ed78471d55ab29513b114888634e0641dd53079cecc80b",
+    "wire.log": "17cfbbd2472e3ebd380ed7ace07af5ad00a7bc61708b8bd7ab8262314ce47877",
+    "neutral.log": "a69400801d9f8475491dc4e0dd1ac927e437a0ec6f30abe77b49fbd77e2f61b1",
+    "default.log": "f10957ad5742042354e982073e782096c09c0a5b5f5c98303e5ddadcd6342612",
+    "suite.log": "b977b0390c42ef752ecda3ab784acd521010e16938fce46e6a9a3365fe191650",
+    "build-progress.log": "0dc9d6390c8a524244c85b7f28a0e7d06ef3fd22878943eafab34f42653b31a1",
+    "build-progress-2.log": "53a1e2ce0f1bdfbe5dc7d41e4b3e40b00895dd5daadffd277cf704e4dd2ce2b9",
+    "builder-leaks.log": "3a029850eada54b83b42024a2f97ceff6a65473bb00ecb0a97e030f70f7a268c",
+    "host-leaks.log": "c76a220d106e69e698432855a5646f0811630a5404fe5509b28b21d9f43315e4"
+  },
+  "commands": {
+    "fmt": "cargo fmt --all -- --check",
+    "clippy": "cargo clippy --locked --all-targets --all-features -- -D warnings",
+    "neutral": "scripts/check-harness-neutral",
+    "wire": "scripts/check-wire-compat",
+    "default": "scripts/check-default-features",
+    "suite": "cargo nextest run --locked --all-targets --all-features",
+    "cleanup": "scripts/check-no-leaked-processes --run-id 23661afb-9299-4ce3-b479-62e522e48a04"
+  },
+  "command_context": "All checks/suite use heavy/tb, explicit caps4 and recorded HT_LEAK_RUN_ID; cleanup runs in builder and host. Existing warm target. No unfiltered retry/native/live rerun.",
+  "historical_failure_rechecks": [
+    {
+      "test": "herdr-threads app::health_v2_observer_tests::health_wording_uses_supplied_registry_and_unknown_optional_metadata",
+      "integration_result": "PASS [   0.010s] ( 390/9645) herdr-threads app::health_v2_observer_tests::health_wording_uses_supplied_registry_and_unknown_optional_metadata"
+    },
+    {
+      "test": "herdr-threads cli::launch::tests::stage_a_help_lists_registered_options_keys_in_registry_order",
+      "integration_result": "PASS [   0.007s] (1490/9645) herdr-threads cli::launch::tests::stage_a_help_lists_registered_options_keys_in_registry_order"
+    },
+    {
+      "test": "herdr-threads service::dispatch::inherited_name_tests::inherited_name_is_refused_other_names_bind_and_restart_frees_it",
+      "integration_result": "PASS [   0.333s] (4879/9645) herdr-threads service::dispatch::inherited_name_tests::inherited_name_is_refused_other_names_bind_and_restart_frees_it"
+    },
+    {
+      "test": "herdr-threads service::dispatch::inherited_name_tests::no_hint_or_no_server_pid_skips_the_check",
+      "integration_result": "PASS [   0.400s] (4884/9645) herdr-threads service::dispatch::inherited_name_tests::no_hint_or_no_server_pid_skips_the_check"
+    },
+    {
+      "test": "herdr-threads::combined golden_surfaces::health_json_observed_unobserved",
+      "integration_result": "PASS [   1.028s] (8410/9645) herdr-threads::combined golden_surfaces::health_json_observed_unobserved"
+    },
+    {
+      "test": "herdr-threads::combined setup_cli::bare_setup_covers_every_detected_harness_and_unsetup_removes_both",
+      "integration_result": "PASS [   0.070s] (9069/9645) herdr-threads::combined setup_cli::bare_setup_covers_every_detected_harness_and_unsetup_removes_both"
+    },
+    {
+      "test": "herdr-threads::combined setup_cli::bare_setup_exits_nonzero_only_for_a_failed_harness",
+      "integration_result": "PASS [   0.047s] (9071/9645) herdr-threads::combined setup_cli::bare_setup_exits_nonzero_only_for_a_failed_harness"
+    },
+    {
+      "test": "herdr-threads::combined setup_cli::bare_setup_skips_missing_and_installs_available_harnesses",
+      "integration_result": "PASS [   0.042s] (9070/9645) herdr-threads::combined setup_cli::bare_setup_skips_missing_and_installs_available_harnesses"
+    },
+    {
+      "test": "herdr-threads::integration harness_adapter_wiring::harness_adapter_end_to_end_wiring_uses_registry_values_across_boundaries",
+      "integration_result": "PASS [   1.010s] (9406/9645) herdr-threads::integration harness_adapter_wiring::harness_adapter_end_to_end_wiring_uses_registry_values_across_boundaries"
+    },
+    {
+      "test": "herdr-threads::integration hermes_enrollment_sweep::every_registered_adapter_declares_its_enrollment_policy",
+      "integration_result": "PASS [   0.005s] (9423/9645) herdr-threads::integration hermes_enrollment_sweep::every_registered_adapter_declares_its_enrollment_policy"
+    }
+  ]
+}
