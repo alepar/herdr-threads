@@ -15,8 +15,11 @@ import shlex
 import shutil
 import signal
 import subprocess
+import sys
+import tempfile
 import time
 import unittest
+from unittest import mock
 import urllib.request
 import uuid
 
@@ -25,6 +28,10 @@ FIXTURE = REPO / "scripts/pi_tui_fixtures/provider.mjs"
 MODULES = REPO / "docs/superpowers/runs/2026-11-14-pi-harness/research/candidates/probe/node_modules"
 WAKE = "herdr-threads: wake up"
 CASES = ("setup", "safety", "threshold", "busy", "receipts", "ordering", "invitations", "negative", "failures", "lifecycle", "compaction", "handoff", "channel", "named")
+HELPER_GRACE_TIMEOUT = 30
+HELPER_TERM_TIMEOUT = 8
+HELPER_KILL_TIMEOUT = 5
+ROOT_CLEANUP_TIMEOUT = 35
 
 
 def redact(text, replacements, secrets=()):
@@ -81,7 +88,13 @@ class Run:
                 p.communicate(timeout=2)
             except subprocess.TimeoutExpired:
                 os.killpg(p.pid, signal.SIGKILL)
-                p.communicate()
+                try:
+                    p.communicate(timeout=HELPER_KILL_TIMEOUT)
+                except subprocess.TimeoutExpired:
+                    for stream in (p.stdin, p.stdout, p.stderr):
+                        if stream:
+                            stream.close()
+                    p.wait(timeout=HELPER_KILL_TIMEOUT)
             raise
         self.commands.append({"at": time.time(), "argv": argv, "rc": p.returncode, "stdout": out, "stderr": err})
         if check and p.returncode:
@@ -152,11 +165,26 @@ class Run:
     def model_saw(self, body, since=0):
         return any(row["event"] in ("provider_request", "context") and body in json.dumps(row) for row in self.rows()[since:])
 
-    def quiet(self, seconds=1):
-        starts = self.count("before_agent_start")
+    def quiet(self, starts, seconds=1):
         time.sleep(seconds)
         if self.count("before_agent_start") != starts:
             raise AssertionError("unexpected native run during quiet observation")
+
+    def send_quiet(self, body, *, seconds=1, **kwargs):
+        starts = self.count("before_agent_start")
+        result = self.send(body, **kwargs)
+        self.quiet(starts, seconds)
+        return result
+
+    def blocked_send(self, label, body):
+        before = self.capture(label + "-before")
+        state = next((r["state"] for r in reversed(self.rows()) if "state" in r), {})
+        self.send_quiet(body, seconds=2)
+        after = self.capture(label + "-after")
+        current = next((r["state"] for r in reversed(self.rows()) if "state" in r), {})
+        assert before["styled"]["raw"] == after["styled"]["raw"], "blocked UI/editor changed"
+        for field in ("sid", "editor", "provider", "model"):
+            assert field in state and state[field] == current.get(field), "blocked native state changed: " + field
 
     def wake_lane(self):
         # A refusal test must not pass merely because the preceding successful
@@ -181,6 +209,7 @@ class Run:
 source "$1"
 probe_root=$(ih_root_new)
 trap 'ih_teardown "$probe_root"' EXIT
+trap 'exit 143' TERM HUP INT
 printf '%s\\n' "$probe_root"
 mkdir -p "$probe_root/cfg" "$probe_root/project" "$probe_root/bin" "$probe_root/agent"
 export PATH="$probe_root/bin:$PATH"
@@ -191,7 +220,8 @@ read -r _ || true
 '''
         lib = REPO / "scripts/lib/isolated-herdr.sh"
         self.host = subprocess.Popen(["bash", "-c", helper, "bash", str(lib)], env={**self.base, "IH_LIB": str(lib)},
-                                     stdin=subprocess.PIPE, stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True)
+                                     stdin=subprocess.PIPE, stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True,
+                                     start_new_session=True)
         self.root = Path(self.host.stdout.readline().strip())
         if self.host.stdout.readline().strip() != "READY":
             raise RuntimeError("isolated Herdr failed to start")
@@ -309,11 +339,7 @@ read -r _ || true
             self.wake_lane()
             self.herdr("pane", "send-text", self.recipient, text)
             time.sleep(.2)
-            self.capture(label)
-            before = self.count("before_agent_start")
-            mid = self.send("SAFETY " + label)
-            self.quiet(2)
-            assert self.count("before_agent_start") == before
+            self.blocked_send(label, "SAFETY " + label)
             self.keys("ctrl+c")
             # New attention restarts the ordinary refusal ladder immediately after draft removal.
             settled = self.count("agent_settled")
@@ -329,16 +355,16 @@ read -r _ || true
         self.keys("shift+enter")
         self.herdr("pane", "send-text", self.recipient, "second")
         self.keys("ctrl+a")
-        self.capture("multiline-home")
-        self.send("MULTILINE DRAFT"); self.quiet(2); self.keys("ctrl+c")
+        self.blocked_send("multiline-home", "MULTILINE DRAFT")
+        self.keys("ctrl+c")
         for command, label in ((None, "model-picker"), ("/settings", "settings-picker"), ("/probe-select", "inline-select")):
             self.wake_lane()
             if command:
                 self.prompt(command)
             else:
                 self.keys("ctrl+l")
-            time.sleep(.3); self.capture(label)
-            self.send("MODAL " + label); self.quiet(2)
+            time.sleep(.3)
+            self.blocked_send(label, "MODAL " + label)
             self.keys("esc")
             settled = self.count("agent_settled")
             self.send("MODAL RELEASE " + label)
@@ -349,7 +375,7 @@ read -r _ || true
         # Set the threshold as the current native process, not the controller.
         self.prompt("/probe-threshold 0"); time.sleep(.2)
         since = len(self.rows())
-        self.send("PASSIVE-P1", priority=1); self.quiet(2)
+        self.send_quiet("PASSIVE-P1", priority=1, seconds=2)
         self.turn("Qualification manual turn. Reply READY without tools.")
         assert self.model_saw("PASSIVE-P1", since)
         for threshold, priority in ((0, 0), (3, 3), (-1, 9)):
@@ -373,12 +399,12 @@ read -r _ || true
             time.sleep(.7); self.capture(mode)
             assert self.herdr("agent", "get", self.recipient)["result"]["agent"]["agent_status"] == "working"
             starts = self.count("before_agent_start")
-            self.send("BUSY-EXACT-" + mode); self.quiet(.5)
+            self.send("BUSY-EXACT-" + mode); self.quiet(starts, .5)
             path.touch()
             self.wait("busy run settled", lambda: self.count("agent_settled") > settled)
             assert self.model_saw("BUSY-EXACT-" + mode)
             # Exceeds the first native wake retry; delivered attention must not trail the turn.
-            self.quiet(31)
+            self.quiet(starts, 31)
             assert self.count("before_agent_start") == starts
 
     def case_receipts(self):
@@ -427,7 +453,7 @@ read -r _ || true
         self.wake_lane()
         self.herdr("pane", "send-text", self.recipient, "OWNED ORDERING HOLD")
         for priority in (5, 1, 0):
-            self.send("ORDER-" + str(priority), priority=priority)
+            self.send_quiet("ORDER-" + str(priority), priority=priority, seconds=.5)
         time.sleep(.5)
         settled = self.count("agent_settled")
         self.keys("ctrl+c")
@@ -458,9 +484,9 @@ read -r _ || true
             held = self.count("stream_held"); settled = self.count("agent_settled")
             self.prompt("qualification failed boundary " + mode)
             self.wait("held failure boundary", lambda: self.count("stream_held") > held)
-            mid = self.send("FAILED-BOUNDARY-" + mode, priority=1)
-            since = len(self.rows())
             starts = self.count("before_agent_start")
+            since = len(self.rows())
+            self.send_quiet("FAILED-BOUNDARY-" + mode, priority=1, seconds=.5)
             if mode == "cancel-settle":
                 (self.root / "cancel-settle").touch()
             if mode == "abort":
@@ -468,7 +494,7 @@ read -r _ || true
             else:
                 (self.root / "release-text").touch()
             self.wait("failed native run settles", lambda: self.count("agent_settled") > settled)
-            self.quiet(.5)
+            self.quiet(starts, .5)
             assert self.count("before_agent_start") == starts
             # Non-receipt p1 rows remain unread until the next actual user turn.
             assert not any(r["event"] == "context" and "FAILED-BOUNDARY-" + mode in json.dumps(r) for r in self.rows()[since:])
@@ -541,8 +567,7 @@ read -r _ || true
             self.wait("verified tmux native wake", lambda: any(r["event"] == "agent_settled" and r["state"]["sid"] == sid for r in self.rows()), 45)
             self.wait("named context receipt", lambda: self.receipt(mid)["effective_status"] == "acknowledged")
             assert self.count("agent_settled") > before
-            self.send("NAMED-PASSIVE-P1", priority=1)
-            self.quiet(1)
+            self.send_quiet("NAMED-PASSIVE-P1", priority=1)
             before = self.count("agent_settled")
             self.run(["tmux", "-S", self.tmux_socket, "send-keys", "-t", "pi", "Named user turn after passive p1.", "Enter"])
             self.wait("named user turn", lambda: self.count("agent_settled") > before)
@@ -554,11 +579,11 @@ read -r _ || true
             self.wait("named busy tool", lambda: self.count("tool_held") > held)
             starts = self.count("before_agent_start")
             busy_mid = self.send("NAMED-BUSY-P0", ack=True)
-            self.quiet(.5)
+            self.quiet(starts, .5)
             (self.root / "release-tool").touch()
             self.wait("named busy turn settles", lambda: self.count("agent_settled") > before)
             self.wait("named busy context receipt", lambda: self.receipt(busy_mid)["effective_status"] == "acknowledged")
-            self.quiet(31)
+            self.quiet(starts, 31)
             assert self.count("before_agent_start") == starts
             self.facts["named"] = {"receipt": self.receipt(mid), "native_session": sid,
                                    "passive_p1_next_turn": True, "busy_p0_receipt": self.receipt(busy_mid), "no_trailing_wake": True,
@@ -609,57 +634,263 @@ read -r _ || true
         self.facts["live_wake_tools"] = tools
         self.facts["live_wake_inbox_calls"] = inbox_calls
         assert inbox_calls == 0, "redundant inbox call after exact native context delivery"
-        self.send("LIVE PASSIVE P1. Reply only RECEIVED when delivered.", priority=1)
-        self.quiet(2)
+        self.send_quiet("LIVE PASSIVE P1. Reply only RECEIVED when delivered.", priority=1, seconds=2)
         self.turn("Reply READY without tools.")
         models = {(r["state"]["provider"], r["state"]["model"]) for r in self.rows() if r.get("state") and r["event"] in ("before_agent_start", "context")}
         assert models == {(self.provider, self.model)}
         assert any(r["event"] == "after_provider_response" and r["data"]["status"] == 200 for r in self.rows())
         self.facts["live_model_continuity"] = sorted(models)
 
+    def stop_helper(self, errors):
+        helper = self.host
+        try:
+            helper.communicate("stop\n", timeout=HELPER_GRACE_TIMEOUT)
+        except BaseException as exc:
+            errors["helper_graceful"] = type(exc).__name__ + ": " + str(exc)
+        for sig, seconds in ((signal.SIGTERM, HELPER_TERM_TIMEOUT), (signal.SIGKILL, HELPER_KILL_TIMEOUT)):
+            if helper.poll() is not None:
+                break
+            try:
+                # Only our own session may be signalled as a group. A helper
+                # from a partially completed startup still has a known PID.
+                if os.getpgid(helper.pid) == helper.pid:
+                    os.killpg(helper.pid, sig)
+                else:
+                    helper.send_signal(sig)
+                helper.communicate(timeout=seconds)
+            except BaseException as exc:
+                errors["helper_" + sig.name] = type(exc).__name__ + ": " + str(exc)
+        for stream in (helper.stdin, helper.stdout, helper.stderr):
+            if stream:
+                try:
+                    stream.close()
+                except OSError:
+                    pass
+        helper.wait(timeout=HELPER_KILL_TIMEOUT)
+        self.facts["cleanup"]["helper_rc"] = helper.returncode
+        self.facts["cleanup"]["helper_reaped"] = True
+
+    def owned_root(self):
+        return (self.root is not None and not self.root.is_symlink()
+                and self.root.parent in (Path("/tmp"), Path("/private/tmp"))
+                and self.root.name.startswith("ih.")
+                and (self.root / "owner").read_text().strip() == self.base["HT_TEST_OWNER"])
+
     def cleanup(self):
         cleanup = self.facts["cleanup"]
+        errors = cleanup.setdefault("errors", {})
         trace = ""
-        try:
-            if self.recipient:
-                self.capture("final")
-                self.keys("esc")
-                self.prompt("/quit")
-                time.sleep(.5)
-            if self.root and (self.root / "native.jsonl").exists():
-                trace = (self.root / "native.jsonl").read_text()
-            if self.tmux_socket:
-                self.facts["named_final_screen"] = self.run(["tmux", "-S", self.tmux_socket, "capture-pane", "-p", "-e", "-t", "pi"], check=False)[1]
-                self.run(["tmux", "-S", self.tmux_socket, "kill-server"], check=False)
-            if self.workspace:
-                cleanup["workspace_close"] = self.herdr("workspace", "close", self.workspace, check=False)
-            if self.root:
-                cleanup["daemon_stop"] = self.ht("daemon", "stop", check=False)
-        except BaseException as exc:
-            cleanup["error"] = self.clean(str(exc))
-        finally:
-            if self.root:
-                (self.root / "provider.env").unlink(missing_ok=True)
-            if self.host:
-                try:
-                    self.host.communicate("stop\n", timeout=30)
-                    cleanup["helper_rc"] = self.host.returncode
-                except BaseException as exc:
-                    cleanup["helper_error"] = self.clean(str(exc))
-            cleanup["root_removed"] = self.root is not None and not self.root.exists()
-            rc, out, err = self.run([REPO / "scripts/check-no-leaked-processes", "--run-id", self.run_id], self.base, check=False)
-            cleanup.update(leak_rc=rc, leak_stdout=out, leak_stderr=err)
-            for name, value in (("manifest.json", self.facts), ("results.json", self.results), ("commands.json", self.commands), ("captures.json", self.captures)):
-                (self.ev / name).write_text(self.clean(json.dumps(value, indent=2)) + "\n")
-            (self.ev / "native.jsonl").write_text(self.clean(trace))
-            for secret in self.secrets:
-                if any(secret in path.read_text() for path in self.ev.iterdir() if path.is_file()):
-                    shutil.rmtree(self.ev)
-                    raise RuntimeError("credential detected in retained evidence; evidence removed")
-        return cleanup.get("helper_rc") == 0 and cleanup["root_removed"] and cleanup["leak_rc"] == 0 and "error" not in cleanup
+        def attempt(name, action):
+            try:
+                result = action()
+                cleanup[name] = result
+                return result
+            except BaseException as exc:
+                errors[name] = type(exc).__name__ + ": " + str(exc)
+                return None
+        if self.recipient:
+            attempt("final_capture", lambda: self.capture("final"))
+            attempt("recipient_quit", lambda: (self.keys("esc"), self.prompt("/quit")))
+        if self.root and (self.root / "native.jsonl").exists():
+            trace = attempt("trace_read", lambda: (self.root / "native.jsonl").read_text()) or ""
+            cleanup.pop("trace_read", None)
+        if self.tmux_socket:
+            self.facts["named_final_screen"] = attempt("named_capture", lambda: self.run(["tmux", "-S", self.tmux_socket, "capture-pane", "-p", "-e", "-t", "pi"], check=False)[1])
+            attempt("tmux_stop", lambda: self.run(["tmux", "-S", self.tmux_socket, "kill-server"], check=False))
+        if self.workspace:
+            attempt("workspace_close", lambda: self.herdr("workspace", "close", self.workspace, check=False))
+        if self.root:
+            attempt("daemon_stop", lambda: self.ht("daemon", "stop", check=False))
+            attempt("credential_remove", lambda: (self.root / "provider.env").unlink(missing_ok=True))
+        if self.host:
+            attempt("helper_stop", lambda: self.stop_helper(errors))
+        if self.root and self.root.exists():
+            def root_teardown():
+                if not self.owned_root():
+                    raise RuntimeError("refusing cleanup of an unowned root")
+                lib = REPO / "scripts/lib/isolated-herdr.sh"
+                return self.run(["bash", "-c", 'source "$1"; ih_teardown "$2"', "bash", lib, self.root],
+                                {**self.base, "IH_LIB": str(lib), "HT_SKIP_HERDR_TESTS": "1"}, timeout=ROOT_CLEANUP_TIMEOUT)
+            attempt("root_fallback", root_teardown)
+        scan = [REPO / "scripts/check-no-leaked-processes", "--run-id", self.run_id]
+        checked = attempt("leak_scan", lambda: self.run(scan, self.base, check=False))
+        if checked and checked[0]:
+            errors["leaks_detected"] = "owned run left resources; forced cleanup required"
+            attempt("leak_kill", lambda: self.run([*scan, "--grace", "0", "--kill"], self.base, check=False))
+            checked = attempt("leak_rescan", lambda: self.run(scan, self.base, check=False))
+        cleanup.update(leak_rc=checked[0] if checked else -1,
+                       leak_stdout=checked[1] if checked else "", leak_stderr=checked[2] if checked else "")
+        if self.root and self.root.exists() and cleanup["leak_rc"] == 0:
+            def remove_root():
+                if not self.owned_root():
+                    raise RuntimeError("refusing removal of an unowned root")
+                shutil.rmtree(self.root)
+            attempt("root_remove", remove_root)
+        cleanup["root_removed"] = self.root is not None and not self.root.exists()
+        cleanup["ok"] = cleanup.get("helper_rc") == 0 and cleanup["root_removed"] and cleanup["leak_rc"] == 0 and not errors
+        for name, value in (("manifest.json", self.facts), ("results.json", self.results), ("commands.json", self.commands), ("captures.json", self.captures)):
+            (self.ev / name).write_text(self.clean(json.dumps(value, indent=2)) + "\n")
+        (self.ev / "native.jsonl").write_text(self.clean(trace))
+        for secret in self.secrets:
+            if any(secret in path.read_text() for path in self.ev.iterdir() if path.is_file()):
+                shutil.rmtree(self.ev)
+                raise RuntimeError("credential detected in retained evidence; evidence removed")
+        return cleanup["ok"]
 
 
 class DriverTests(unittest.TestCase):
+    def cleanup_failure_fixture(self, interruption, ignore_term=False, capture_failure=False):
+        with tempfile.TemporaryDirectory(prefix="ht-pi-driver-selftest-") as evidence:
+            root = Path(tempfile.mkdtemp(prefix="ih."))
+            args = argparse.Namespace(bin=sys.executable, modules=MODULES, pi=None,
+                                      evidence_dir=evidence, live=False)
+            run = Run(args)
+            run.root = root
+            (root / "owner").write_text(run.base["HT_TEST_OWNER"])
+            (root / "provider.env").write_text("synthetic credential fixture")
+            helper_code = '''import os,signal,subprocess,sys,time
+from pathlib import Path
+root=Path(sys.argv[1])
+child=None if sys.argv[2]=='ignore' else subprocess.Popen([sys.executable,'-c','import time;time.sleep(120)',str(root)])
+if child: (root/'child.pid').write_text(str(child.pid))
+def stop(*_):
+ if child: child.terminate();child.wait(timeout=3)
+ raise SystemExit(143)
+signal.signal(signal.SIGTERM,signal.SIG_IGN if sys.argv[2]=='ignore' else stop)
+(root/'ready').touch()
+while True: time.sleep(.05)
+'''
+            helper = subprocess.Popen([sys.executable, "-c", helper_code, str(root), "ignore" if ignore_term else "term"],
+                                      env=run.base, stdin=subprocess.PIPE, stdout=subprocess.PIPE,
+                                      stderr=subprocess.PIPE, text=True, start_new_session=True)
+            control = subprocess.Popen([sys.executable, "-c", "import time;time.sleep(120)"],
+                                       env={k: v for k, v in run.base.items() if k not in ("HT_TEST_OWNER", "HT_LEAK_RUN_ID")},
+                                       start_new_session=True)
+            class InterruptedOnce:
+                first = True
+                def __getattr__(self, name):
+                    return getattr(helper, name)
+                def communicate(self, *args, **kwargs):
+                    if self.first:
+                        self.first = False
+                        raise interruption
+                    return helper.communicate(*args, **kwargs)
+            run.host = InterruptedOnce()
+            # Keep this injected-failure test fast without weakening its real,
+            # exact-run process scan or replacing process cleanup with a mock.
+            execute = run.run
+            def short_scan(argv, *args, **kwargs):
+                if str(argv[0]).endswith("check-no-leaked-processes"):
+                    argv = [*argv, "--grace", "0"]
+                return execute(argv, *args, **kwargs)
+            run.run = short_scan
+            run.start = lambda: None
+            run.case_setup = lambda: None
+            actions = []
+            if capture_failure:
+                run.recipient, run.workspace = "owned-fixture-pane", "owned-fixture-workspace"
+                def fail_capture(_label):
+                    raise RuntimeError("injected capture failure")
+                run.capture = fail_capture
+                run.keys = lambda *_args: None
+                run.prompt = lambda *_args: None
+                run.herdr = lambda *args, **_kwargs: actions.append(args) or {}
+                run.ht = lambda *args, **_kwargs: actions.append(args) or {}
+            try:
+                run.wait("owned fake helper", lambda: (root / "ready").exists(), 5)
+                child_pid = int((root / "child.pid").read_text()) if (root / "child.pid").exists() else None
+                limits = {"HELPER_GRACE_TIMEOUT": .1, "HELPER_TERM_TIMEOUT": .2 if ignore_term else 3,
+                          "HELPER_KILL_TIMEOUT": 3, "ROOT_CLEANUP_TIMEOUT": 8}
+                with mock.patch.dict(globals(), limits), mock.patch.dict(main.__globals__, {"Run": lambda _args: run}), mock.patch("builtins.print"):
+                    status = main(["--cases", "setup"])
+                self.assertEqual(status, 1, "recovered teardown failure must still fail qualification")
+                self.assertIsNotNone(helper.poll(), "owned helper was not terminated and reaped")
+                self.assertFalse(root.exists(), "owned root survived failed graceful teardown")
+                self.assertEqual(run.facts["cleanup"]["leak_rc"], 0, "owned descendants survived teardown")
+                self.assertIsNone(control.poll(), "cleanup signalled an out-of-run control process")
+                if child_pid:
+                    with self.assertRaises(ProcessLookupError):
+                        os.kill(child_pid, 0)
+                if capture_failure:
+                    self.assertIn(("workspace", "close", "owned-fixture-workspace"), actions)
+                    self.assertIn(("daemon", "stop"), actions)
+                if ignore_term:
+                    self.assertEqual(helper.returncode, -signal.SIGKILL)
+            finally:
+                if helper.poll() is None:
+                    os.killpg(helper.pid, signal.SIGTERM)
+                    try:
+                        helper.communicate(timeout=4)
+                    except subprocess.TimeoutExpired:
+                        os.killpg(helper.pid, signal.SIGKILL)
+                        helper.communicate(timeout=4)
+                shutil.rmtree(root, ignore_errors=True)
+                control.terminate()
+                control.wait(timeout=4)
+
+    def test_helper_timeout_terminates_reaps_descendants_and_removes_root(self):
+        self.cleanup_failure_fixture(subprocess.TimeoutExpired("owned fake helper", .1))
+
+    def test_helper_interruption_still_runs_independent_cleanup(self):
+        self.cleanup_failure_fixture(KeyboardInterrupt(), capture_failure=True)
+
+    def test_helper_that_ignores_term_is_killed_and_reaped(self):
+        self.cleanup_failure_fixture(subprocess.TimeoutExpired("owned fake helper", .1), ignore_term=True)
+
+    def test_passive_send_rejects_a_run_started_synchronously_inside_send(self):
+        for case in ("threshold", "live"):
+            with self.subTest(case=case):
+                run = Run.__new__(Run)
+                starts = [0]
+                run.count = lambda _event: starts[0]
+                run.rows = lambda: []
+                run.prompt = lambda _text: None
+                run.case_receipts = lambda: None
+                run.facts = {}
+                def send(*_args, **_kwargs):
+                    starts[0] += 1
+                run.send = send
+                def manual_turn(_text):
+                    raise RuntimeError("negative assertion missed a synchronous wake")
+                run.turn = manual_turn
+                with mock.patch.object(time, "sleep"), self.assertRaisesRegex(AssertionError, "unexpected native run"):
+                    getattr(run, "case_" + case)()
+
+    def test_each_no_wake_guard_rejects_a_synchronous_send_start(self):
+        for blocked in (False, True):
+            with self.subTest(blocked=blocked):
+                run = Run.__new__(Run)
+                starts = [0]
+                run.count = lambda _event: starts[0]
+                run.capture = lambda _label: {"styled": {"raw": "unchanged"}}
+                run.rows = lambda: [{"state": {"sid": "s1", "editor": "draft", "provider": "p1", "model": "m1"}}]
+                def send(*_args, **_kwargs):
+                    starts[0] += 1
+                run.send = send
+                with mock.patch.object(time, "sleep"), self.assertRaisesRegex(AssertionError, "unexpected native run"):
+                    if blocked:
+                        run.blocked_send("draft-or-picker", "synthetic item")
+                    else:
+                        run.send_quiet("passive item")
+
+    def test_blocked_send_rejects_ui_or_model_changes_without_a_run(self):
+        for changed in ("screen", "model", "provider", "editor", "sid"):
+            with self.subTest(changed=changed):
+                run = Run.__new__(Run)
+                state = {"sid": "s1", "editor": "draft", "provider": "fixture", "model": "m1"}
+                screen = ["same selector and composer"]
+                run.count = lambda _event: 0
+                run.rows = lambda: [{"state": dict(state)}]
+                run.capture = lambda _label: {"styled": {"raw": screen[0]}}
+                def send(*_args, **_kwargs):
+                    if changed == "screen":
+                        screen[0] = "picker consumed the wake marker"
+                    else:
+                        state[changed] = "changed"
+                run.send = send
+                with mock.patch.object(time, "sleep"), self.assertRaises(AssertionError):
+                    run.blocked_send("modal", "synthetic item")
+
     def test_missing_duplicate_and_failed_case_cannot_pass(self):
         for rows in ([], [{"case": "a", "outcome": "fail"}], [{"case": "a", "outcome": "pass"}] * 2):
             with self.assertRaises(RuntimeError):
@@ -713,7 +944,7 @@ def main(argv=None):
         ok = False
     finally:
         ok = run.cleanup() and ok
-    print("cleanup: " + ("clean" if run.facts["cleanup"].get("leak_rc") == 0 and run.facts["cleanup"].get("root_removed") else "failed"), flush=True)
+    print("cleanup: " + ("clean" if run.facts["cleanup"].get("ok") else "failed"), flush=True)
     return 0 if ok else 1
 
 
