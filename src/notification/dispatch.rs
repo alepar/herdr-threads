@@ -8,14 +8,15 @@ use crate::service::pacer::Backoff;
 use crate::{
     harness::recipe::PokeCapabilities,
     notification::policy::{
-        DurableRetry, MARKER, PokeDecision, RetryConfig, RetryError, RetryGuard, poke_eligibility,
+        DurableRetry, MARKER, PokeDecision, RetryConfig, RetryError, RetryGuard, WAKE_UP,
+        poke_eligibility,
     },
     ports::{
         AgentComposerState, ComposerChoice, EvidenceKind, ExecutionEvidence, HostCallContext,
         HostPort, HostUiState, IncarnationEvidence, NotificationPort, ObservationProvenance,
         PokeAttempt, PokeCapabilitySource, PokeMode, PokePlan, PromptOutcome, RefusalCause,
         ReservedWakeAuthority, StructuralOccupancy, WakeCapability, WakeOutcome, WakeReservation,
-        WakeTargetBasis,
+        WakeTargetBasis, WakeTransport,
     },
     protocol::{
         authority::Harness,
@@ -72,6 +73,9 @@ pub struct NativeWakeDispatcher<'a, H: HostPort + ?Sized, C: ReservationCheck + 
     host: &'a H,
     check: &'a C,
     clock: &'a dyn Clock,
+    queue: Option<&'a dyn crate::notification::queue::QueueWakePort>,
+    /// Attempt-scoped actual transport, consumed after the owned call exits.
+    transports: Mutex<HashMap<WakeAttemptId, WakeTransport>>,
     /// Which seats hold ids parked for `inbox`; default: none known.
     hook_pull: &'a dyn crate::ports::HookPullOutlook,
     /// Post-send verification per seat, taken by the scheduler drive.
@@ -91,11 +95,18 @@ impl<'a, H: HostPort + ?Sized, C: ReservationCheck + ?Sized> NativeWakeDispatche
             host,
             check,
             clock,
+            queue: None,
+            transports: Mutex::new(HashMap::new()),
             hook_pull: &NO_HOOK_PULL,
             verifications: Mutex::new(HashMap::new()),
             refusals: Mutex::new(HashMap::new()),
             text_fallbacks: Mutex::new(HashMap::new()),
         }
+    }
+
+    pub fn with_queue(mut self, queue: &'a dyn crate::notification::queue::QueueWakePort) -> Self {
+        self.queue = Some(queue);
+        self
     }
 
     /// The prompt-submission budget, from the host's wake capability. A host with no wake
@@ -106,6 +117,23 @@ impl<'a, H: HostPort + ?Sized, C: ReservationCheck + ?Sized> NativeWakeDispatche
                 u64::try_from(traits.submit_budget.as_millis()).unwrap_or(u64::MAX)
             }
             WakeCapability::None => 0,
+        }
+    }
+
+    fn prompt_context(&self, context: &HostCallContext) -> HostCallContext {
+        let prompt_deadline = context.budget.deadline.0.min(
+            self.clock
+                .monotonic_now()
+                .0
+                .saturating_add(self.submit_budget_millis()),
+        );
+        HostCallContext {
+            budget: CallBudget {
+                deadline: MonoInstant(prompt_deadline),
+                cancellation: context.budget.cancellation.clone(),
+            },
+            expected_boot: context.expected_boot.clone(),
+            expected_epoch: context.expected_epoch,
         }
     }
 
@@ -166,7 +194,7 @@ impl<H: HostPort + ?Sized, C: ReservationCheck + ?Sized> NativeWakeDispatcher<'_
     /// submitted only when `poke_eligibility` accepts a fresh observation.
     ///
     /// Every exit of a wake (including a wake that carries poke text) before
-    /// `submit_prompt` is a `Refused` (pacer D5): nothing was sent, so the
+    /// either wake transport starts is a `Refused` (pacer D5): nothing was sent, so the
     /// scheduler restores the ladder and retries on the refusal backoff. A
     /// scheduled `PokeOnly` attempt never moved the ladder, so its pre-send
     /// skips keep their plain outcomes and leave `soft_poked_at` unset.
@@ -536,20 +564,7 @@ impl<H: HostPort + ?Sized, C: ReservationCheck + ?Sized> NativeWakeDispatcher<'_
                 Some("budget spent before prompt"),
             );
         }
-        let prompt_deadline = context.budget.deadline.0.min(
-            self.clock
-                .monotonic_now()
-                .0
-                .saturating_add(self.submit_budget_millis()),
-        );
-        let prompt_context = HostCallContext {
-            budget: CallBudget {
-                deadline: MonoInstant(prompt_deadline),
-                cancellation: context.budget.cancellation.clone(),
-            },
-            expected_boot: Some(reservation.host_boot.clone()),
-            expected_epoch: Some(reservation.host_epoch),
-        };
+        let mut prompt_context = self.prompt_context(context);
         let mut default_text = MARKER;
         // Why a wake whose harness has a content-free text still types the `inbox` marker, for the
         // daemon log (ht-i5w2); `None` when nothing fell back.
@@ -664,6 +679,60 @@ impl<H: HostPort + ?Sized, C: ReservationCheck + ?Sized> NativeWakeDispatcher<'_
             self.check
                 .owes_wake(&reservation, &reached, &context.budget)
         };
+        if let Some(queue) = self.queue {
+            // Retain Queue before the external call: an unwinding adapter may have submitted.
+            // Never start an effect when its transport cannot be retained for the scheduler.
+            {
+                let Ok(mut transports) = self.transports.lock() else {
+                    return refuse(RefusalCause::Unavailable, WakeOutcome::Unavailable, None);
+                };
+                if transports.len() >= MAX_ACTIVE_PROMPTS
+                    || transports.contains_key(&reservation.attempt)
+                {
+                    return refuse(RefusalCause::Unavailable, WakeOutcome::Unavailable, None);
+                }
+                transports.insert(reservation.attempt.clone(), WakeTransport::Queue);
+            }
+            let targets = reservation.authority.targets();
+            let use_queue = text == WAKE_UP
+                && poke.is_none()
+                && !using_poke
+                && targets.len() == 1
+                && !targets[0].dormant;
+            // The queue adapter may initialize a helper before asking again; its guard gets
+            // the original lease, rather than a native submission window sampled earlier.
+            let guard = || self.host.check_idle_wake(&target, context);
+            match queue.attempt(
+                &reservation,
+                &target,
+                use_queue,
+                &guard,
+                &still_owed,
+                context,
+            ) {
+                Ok(crate::notification::queue::QueueDispatch::Native) => {
+                    let Ok(mut transports) = self.transports.lock() else {
+                        return refuse(RefusalCause::Unavailable, WakeOutcome::Unavailable, None);
+                    };
+                    let Some(transport) = transports.get_mut(&reservation.attempt) else {
+                        return refuse(RefusalCause::Unavailable, WakeOutcome::Unavailable, None);
+                    };
+                    *transport = WakeTransport::Composer;
+                    drop(transports);
+                    prompt_context = self.prompt_context(context);
+                }
+                Ok(crate::notification::queue::QueueDispatch::Refused) => {
+                    return refuse(RefusalCause::Unavailable, WakeOutcome::Unavailable, None);
+                }
+                Ok(crate::notification::queue::QueueDispatch::Submitted) => {
+                    return outcome(WakeOutcome::Submitted);
+                }
+                Ok(crate::notification::queue::QueueDispatch::Unknown) => {
+                    return outcome(WakeOutcome::OutcomeUnknown);
+                }
+                Err(error) => return refuse_error(error),
+            }
+        }
         let submitted =
             self.host
                 .submit_prompt_if_owed(&target, text, &prompt_context, &still_owed);
@@ -728,6 +797,14 @@ impl<H: HostPort + ?Sized, C: ReservationCheck + ?Sized> NotificationPort
         context: &HostCallContext,
     ) -> Result<PokeAttempt, ApiError> {
         self.attempt(reservation, Some(PokeRequest { plan, mode, caps }), context)
+    }
+
+    fn take_transport(&self, attempt: &WakeAttemptId) -> WakeTransport {
+        self.transports
+            .lock()
+            .ok()
+            .and_then(|mut transports| transports.remove(attempt))
+            .unwrap_or(WakeTransport::Composer)
     }
 
     fn take_verification(&self, seat: &SeatId) -> Option<SubmissionVerification> {

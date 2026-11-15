@@ -2129,10 +2129,64 @@ where
                     Arc::new(move || session_stop.cancel())
                 }),
             ];
+            let (queue_recovery, queue_wake) = match guarded_state_dir.as_ref() {
+                Some(state_dir) => {
+                    let processes: Arc<dyn crate::ports::ProcessInfo> =
+                        Arc::new(crate::host::process_table::HostProcessTable);
+                    let recovery = Arc::new(crate::notification::queue_recovery::QueueRecovery::new(
+                        Arc::clone(&store),
+                        Arc::clone(&writer),
+                        Arc::clone(&factory_clock),
+                        Arc::clone(&processes),
+                        state_dir.clone(),
+                        boot,
+                    ));
+                    let wake: Arc<dyn crate::notification::queue::QueueWakePort> =
+                        Arc::new(crate::notification::queue::QueueWakeRuntime::new(
+                            Arc::clone(&store),
+                            Arc::clone(&writer),
+                            Arc::clone(&factory_clock),
+                            processes,
+                            state_dir.clone(),
+                            Arc::clone(&turn_state),
+                            Arc::clone(&recovery),
+                        ));
+                    (Some(recovery), Some(wake))
+                }
+                None => (None, None),
+            };
+            if let Some(recovery) = queue_recovery.clone() {
+                let stop = session_stop.clone();
+                let clock = Arc::clone(&factory_clock);
+                let log = Arc::clone(&rate_limited_log);
+                // This node owner is joined by the same slot as host callbacks, so the
+                // daemon keeps its OwnerLock until every control callback has stopped.
+                start_into_slot(&factory_slot, &factory_stop, || {
+                    std::thread::Builder::new()
+                        .name("queue-cleanup".into())
+                        .spawn(move || {
+                            while !stop.is_cancelled() {
+                                let budget = CallBudget {
+                                    deadline: MonoInstant(clock.monotonic_now().0.saturating_add(2500)),
+                                    cancellation: stop.clone(),
+                                };
+                                if let Err(error) = recovery.tick(&budget)
+                                    && !stop.is_cancelled()
+                                {
+                                    log.write_line(&format!("queue cleanup: {}", error.detail));
+                                }
+                                if stop.wait_blocking(Duration::from_millis(5000)) {
+                                    break;
+                                }
+                            }
+                        })
+                })?;
+            }
             let host_sessions = Arc::new(HostSessions::new(
                 Arc::clone(&host_index),
                 host_factory,
                 SessionDeps {
+                    queue_wake,
                     store: Arc::clone(&store),
                     writer: Arc::clone(&writer),
                     kicks: Arc::clone(&kicks),
@@ -2430,6 +2484,7 @@ where
                 });
                 let idle = crate::daemon::idle_exit::IdleExit::new(
                     crate::daemon::idle_exit::ActivityProbe {
+                        queue_recovery: queue_recovery.clone(),
                         hosts: Arc::clone(&host_sessions),
                         sync: sync_handle.clone(),
                         gauge: factory_peers.gauge(),

@@ -871,6 +871,95 @@ async fn factory_cancellation_token_stops_the_elected_owner() {
     assert!(!paths.descriptor_path.exists());
     std::fs::remove_dir_all(root).unwrap();
 }
+/// Releasing the lease before `on_drained` joins its callback would let a replacement
+/// owner overlap metadata writes from the canceled owner.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn owner_lease_outlives_cancelled_helper_callback_join() {
+    let (root, _, paths) = fixture();
+    let task_paths = paths.clone();
+    let shutdown = Cancellation::default();
+    let stop = shutdown.clone();
+    let callback = Arc::new(Mutex::new(None::<std::thread::JoinHandle<()>>));
+    let callback_factory = callback.clone();
+    let callback_finished = Arc::new(AtomicUsize::new(0));
+    let finished_callback = callback_finished.clone();
+    let (callback_entered_tx, callback_entered) = tokio::sync::oneshot::channel();
+    let (callback_release, callback_gate) = std::sync::mpsc::channel();
+    let (ready_tx, ready) = tokio::sync::oneshot::channel();
+    let (draining_tx, draining) = tokio::sync::oneshot::channel();
+    let (joined_tx, joined) = tokio::sync::oneshot::channel();
+    let (drain_release, drain_gate) = tokio::sync::oneshot::channel();
+    let task = tokio::spawn(async move {
+        run_owner_with_factory(
+            &task_paths,
+            Arc::new(TestClock),
+            stop,
+            crate::daemon::diagnostics::WriterSink(Vec::<u8>::new()),
+            BufferLimits::new(1024, 256).unwrap(),
+            move |instance, boot, cancellation| {
+                *callback_factory.lock().unwrap() = Some(std::thread::spawn(move || {
+                    callback_entered_tx.send(()).unwrap();
+                    callback_gate.recv().unwrap();
+                    // Stand in for a helper completion callback's final metadata write.
+                    assert!(cancellation.is_cancelled());
+                    finished_callback.store(1, Ordering::SeqCst);
+                }));
+                Ok(Arc::new(HealthService {
+                    version: env!("CARGO_PKG_VERSION").into(),
+                    instance: Arc::new(Mutex::new(instance.to_string())),
+                    boot: Arc::new(Mutex::new(boot.to_string())),
+                    calls: AtomicUsize::new(0),
+                }) as Arc<dyn LocalService>)
+            },
+            move |_| {
+                ready_tx.send(()).unwrap();
+                Ok(())
+            },
+            move || async move {
+                let callback = callback.lock().unwrap().take().unwrap();
+                draining_tx.send(()).unwrap();
+                tokio::task::spawn_blocking(move || callback.join())
+                    .await
+                    .map_err(|_| io::Error::other("callback join task failed"))?
+                    .map_err(|_| io::Error::other("callback panicked"))?;
+                joined_tx.send(()).unwrap();
+                drain_gate
+                    .await
+                    .map_err(|_| io::Error::other("drain gate closed"))
+            },
+        )
+        .await
+    });
+    ready.await.unwrap();
+    callback_entered.await.unwrap();
+    shutdown.cancel();
+    draining.await.unwrap();
+    let callback_was_blocked = callback_finished.load(Ordering::SeqCst) == 0;
+    let replacement_refused_while_callback_can_execute = matches!(
+        OwnerLock::acquire(&paths),
+        Err(error) if error.kind() == io::ErrorKind::WouldBlock
+    );
+    callback_release.send(()).unwrap();
+    joined.await.unwrap();
+    let callback_was_joined = callback_finished.load(Ordering::SeqCst) == 1;
+    let replacement_refused_until_drain_finishes = matches!(
+        OwnerLock::acquire(&paths),
+        Err(error) if error.kind() == io::ErrorKind::WouldBlock
+    );
+    drain_release.send(()).unwrap();
+    let owner_exited = task.await.unwrap().unwrap();
+    let replacement = OwnerLock::acquire(&paths).unwrap();
+    drop(replacement);
+    assert!(owner_exited);
+    assert!(callback_was_blocked);
+    assert!(replacement_refused_while_callback_can_execute);
+    assert!(callback_was_joined);
+    assert!(replacement_refused_until_drain_finishes);
+    assert!(!paths.descriptor_path.exists());
+    assert!(!paths.socket_path.exists());
+    std::fs::remove_dir_all(root).unwrap();
+}
+
 impl LocalService for BlockingService {
     crate::unserved_local_service_routes!(
         service_control,

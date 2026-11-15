@@ -211,7 +211,7 @@ pub const KNOWN_UNMAPPED: &[&str] = &[
     "no_wake_reports",
     // A plain local launch's gate-only record (H3): read only by the gate's own polling.
     "local_launch_gates",
-    // Inactive programmatic-wake effect history; no dispatch consumer yet.
+    // Programmatic-wake history uses its bounded node recovery owner, not per-host kicks.
     "wake_intents",
     "wake_intent_ids",
     "native_turn_state",

@@ -106,6 +106,7 @@ pub struct HostAttachPlan {
 /// poke capabilities and hook-pull outlook are node-wide and shared here;
 /// per-host state never goes in.
 pub struct SessionDeps {
+    pub queue_wake: Option<Arc<dyn crate::notification::queue::QueueWakePort>>,
     pub store: Arc<dyn StorePort>,
     pub writer: Arc<FairWriter>,
     pub kicks: Arc<CommitKicks>,
@@ -149,6 +150,7 @@ impl SessionDeps {
     pub fn detached(store: Arc<dyn StorePort>, clock: Arc<dyn Clock>, node_uuid: String) -> Self {
         Self {
             store,
+            queue_wake: None,
             writer: Arc::new(FairWriter::new(32)),
             kicks: Arc::new(CommitKicks::default()),
             clock,
@@ -985,6 +987,7 @@ impl HostSessions {
                     Arc::clone(&deps.hook_pull),
                     deps.liveness.clone(),
                     deps.wake_safety_tick,
+                    deps.queue_wake.clone(),
                 )?);
             }
             Ok(())
@@ -1447,6 +1450,7 @@ mod tests {
             let stop = Cancellation::default();
             let remembered_store = Arc::clone(&store);
             let deps = SessionDeps {
+                queue_wake: None,
                 store: Arc::clone(&store) as Arc<dyn StorePort>,
                 writer: Arc::new(FairWriter::new(32)),
                 kicks: Arc::clone(&kicks),

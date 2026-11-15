@@ -383,3 +383,59 @@ fn a_held_wake_awaits_its_receipt_and_an_unverified_unknown_does_not() {
         );
     });
 }
+
+struct QueueNotifier(WakeOutcome);
+impl NotificationPort for QueueNotifier {
+    fn attempt_wake(
+        &self,
+        _: WakeReservation,
+        _: &HostCallContext,
+    ) -> Result<WakeOutcome, ApiError> {
+        Ok(self.0)
+    }
+    fn take_transport(&self, _: &WakeAttemptId) -> crate::ports::WakeTransport {
+        crate::ports::WakeTransport::Queue
+    }
+}
+
+#[test]
+fn queue_transport_never_awaits_generic_contact_or_marks_unreceived() {
+    for outcome in [WakeOutcome::Submitted, WakeOutcome::OutcomeUnknown] {
+        let events = Arc::new(Mutex::new(Vec::new()));
+        let store = LadderStore::new(events);
+        let notifier = QueueNotifier(outcome);
+        let contacts = Contacts {
+            contact: Mutex::new(Some(false)),
+            asked: Mutex::new(Vec::new()),
+        };
+        let mut runner = WakeRunner::new(&store, &notifier, RetryConfig::default(), daemon_boot());
+        runner.hook_pull = &contacts;
+        assert_eq!(
+            runner
+                .try_candidate(&store.candidate(), &budget(&store))
+                .unwrap(),
+            Some(outcome)
+        );
+        assert!(
+            runner.state.lock().unwrap().awaiting.is_empty(),
+            "queue submission has no native composer contact receipt"
+        );
+        store.advance(STEPS[0] + 1);
+        assert_eq!(
+            runner
+                .try_candidate(&store.candidate(), &budget(&store))
+                .unwrap(),
+            Some(outcome)
+        );
+        *contacts.contact.lock().unwrap() = Some(true);
+        assert!(contacts.asked.lock().unwrap().is_empty());
+        assert!(
+            store
+                .events
+                .lock()
+                .unwrap()
+                .iter()
+                .all(|event| !event.starts_with("unreceived"))
+        );
+    }
+}

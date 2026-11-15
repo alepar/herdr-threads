@@ -2103,6 +2103,7 @@ pub fn start_wake_worker_with_liveness(
         hook_pull,
         liveness,
         safety_tick,
+        None,
     )
 }
 
@@ -2128,6 +2129,7 @@ pub fn start_wake_worker_named(
     hook_pull: Arc<dyn crate::ports::HookPullOutlook>,
     liveness: Option<Arc<crate::service::liveness::LivenessWorker>>,
     safety_tick: Duration,
+    queue: Option<Arc<dyn crate::notification::queue::QueueWakePort>>,
 ) -> std::io::Result<thread::JoinHandle<()>> {
     thread::Builder::new().name(thread_name).spawn(move || {
         let _origin = kicks::enter_lane(Lane::Wakes);
@@ -2138,6 +2140,10 @@ pub fn start_wake_worker_named(
             .with_liveness(liveness);
         let notifier = NativeWakeDispatcher::new(host.as_ref(), &port, port.store.clock())
             .with_hook_pull(hook_pull.as_ref());
+        let notifier = match queue.as_deref() {
+            Some(queue) => notifier.with_queue(queue),
+            None => notifier,
+        };
         let observed = ObservedWakePort::new(&port, &status);
         let scheduler = Scheduler::new(instance, &port, &observed, &notifier, retry, boot)
             .with_poke_capabilities(poke_capabilities.as_ref())

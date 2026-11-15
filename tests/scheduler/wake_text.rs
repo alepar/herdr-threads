@@ -611,3 +611,6 @@ fn a_marker_fallback_records_why() {
         Some("binding provenance: binding cooperative_env_session")
     );
 }
+
+#[path = "queue_transport.rs"]
+mod queue_transport;

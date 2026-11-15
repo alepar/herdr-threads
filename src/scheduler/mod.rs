@@ -17,7 +17,7 @@ use crate::{
         NoPokeCapabilities, NotificationPort, PokeAttempt, PokeCapabilitySource, PokeDue, PokeMode,
         PokePlan, PokeReceipt, PokeReservation, PriorLadder, RefusalCause, ReservedWakeAuthority,
         WakeCandidate, WakeOutcome, WakeRecoveryCandidate, WakeRecoveryOutcome,
-        WakeRecoveryRequest, WakeReservation, WakeTarget,
+        WakeRecoveryRequest, WakeReservation, WakeTarget, WakeTransport,
     },
     protocol::{
         ids::{BindingId, SeatId, ThreadId, WakeAttemptId},
@@ -1065,6 +1065,7 @@ impl<'a, S: WakePort + ?Sized, N: NotificationPort + ?Sized> WakeRunner<'a, S, N
             caps: self.caps,
         });
         let attempt = self.run_attempt(&reservation, job.as_ref(), budget, committed_at);
+        let transport = self.notifier.take_transport(&reservation.attempt);
         let outcome = attempt.outcome;
         let receipts = attempt
             .poked
@@ -1092,10 +1093,12 @@ impl<'a, S: WakePort + ?Sized, N: NotificationPort + ?Sized> WakeRunner<'a, S, N
             } else {
                 state.dispatch.record_outcome(&seat, outcome, completed_at);
             }
-            if matches!(
-                outcome,
-                WakeOutcome::Submitted | WakeOutcome::OutcomeUnknown
-            ) {
+            if transport == WakeTransport::Composer
+                && matches!(
+                    outcome,
+                    WakeOutcome::Submitted | WakeOutcome::OutcomeUnknown
+                )
+            {
                 state.awaiting.insert(
                     seat.clone(),
                     AwaitingReceipt {
@@ -1264,6 +1267,7 @@ impl<'a, S: WakePort + ?Sized, N: NotificationPort + ?Sized> WakeRunner<'a, S, N
             caps: self.caps,
         };
         let attempt = self.run_attempt(&reservation, Some(&job), budget, committed_at);
+        self.notifier.take_transport(&reservation.attempt);
         let outcome = attempt.outcome;
         failpoint!("wake.after_prompt", reservation.daemon_boot.to_string());
         let completed_at = self.store.clock().monotonic_now();

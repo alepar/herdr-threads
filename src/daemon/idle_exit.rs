@@ -14,7 +14,7 @@ pub const IDLE_EXIT_AFTER: Duration = Duration::from_secs(10 * 60);
 /// How often the monitor samples the probe in production.
 pub const CHECK_EVERY: Duration = Duration::from_secs(30);
 
-/// What keeps the daemon alive: dialled hosts holding a resolved seat, wake-armed named bindings, peer links, enabled
+/// What keeps the daemon alive: finite queue cleanup, dialled hosts holding a resolved seat, wake-armed named bindings, peer links, enabled
 /// dial targets and local client connections.
 ///
 /// Responsibility (ActivityProbe)
@@ -26,6 +26,7 @@ pub const CHECK_EVERY: Duration = Duration::from_secs(30);
 /// - Where new liveness inputs go: a field here and a term in `active`.
 /// - Role: the read side of idle exit; a plain struct, not a trait.
 pub struct ActivityProbe {
+    pub queue_recovery: Option<Arc<crate::notification::queue_recovery::QueueRecovery>>,
     pub hosts: Arc<HostSessions>,
     pub sync: SyncHandle,
     pub gauge: ConnectionGauge,
@@ -50,7 +51,10 @@ impl ActivityProbe {
     /// handshaking (inbound or dialed), any dial target is enabled, or any
     /// local client connection is open.
     pub fn active(&self) -> bool {
-        host_inputs_active(&self.hosts)
+        self.queue_recovery
+            .as_ref()
+            .is_some_and(|recovery| recovery.has_work())
+            || host_inputs_active(&self.hosts)
             || self.sync.link_count() != 0
             || self.sync.enabled_target_count() != 0
             || self.gauge.count() != 0
