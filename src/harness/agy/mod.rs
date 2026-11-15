@@ -227,8 +227,11 @@ impl HarnessAdapter for AgyAdapter {
     fn doctor_text(&self, hooks: &serde_json::Value, form: DoctorTextForm) -> String {
         doctor::doctor_text(hooks, form)
     }
-    fn local_evidence(&self, request: &LocalEvidenceRequest<'_>) -> LocalEvidence {
-        witness::local_evidence(request)
+    fn local_evidence(
+        &self,
+        request: &LocalEvidenceRequest<'_>,
+    ) -> Result<LocalEvidence, DecodeFailure> {
+        Ok(witness::local_evidence(request))
     }
     fn launch_policy(&self) -> Option<&dyn LaunchPolicy> {
         Some(&launch::AgyLaunch)

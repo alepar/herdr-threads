@@ -235,8 +235,8 @@ pub trait HarnessAdapter: Send + Sync + 'static {
     }
     /// Native runtime artifacts about the event's session, read by the runner after the pure
     /// decode and folded with [`LocalEvidence::refine`]. Default: none.
-    fn local_evidence(&self, _: &LocalEvidenceRequest<'_>) -> LocalEvidence {
-        LocalEvidence::default()
+    fn local_evidence(&self, _: &LocalEvidenceRequest<'_>) -> Result<LocalEvidence, DecodeFailure> {
+        Ok(LocalEvidence::default())
     }
     /// A step the runner runs for a top-level `Observer` event in place of the neutral output.
     fn hook_step(&self) -> Option<&dyn HookStep> {

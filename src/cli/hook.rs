@@ -3800,7 +3800,7 @@ fn decode_refined(
         state_dir: state_dir.as_deref(),
         pane_session: &pane_session,
         deadline,
-    });
+    })?;
     evidence.refine(&mut decoded);
     Ok(decoded)
 }

@@ -46,7 +46,7 @@ fn no_composer_no_local_witness_no_hook_step_no_turn_edge() {
         deadline: std::time::Instant::now(),
     };
     assert_eq!(
-        OpencodeAdapter.local_evidence(&request),
+        OpencodeAdapter.local_evidence(&request).unwrap(),
         crate::harness::adapter::LocalEvidence::default()
     );
 }

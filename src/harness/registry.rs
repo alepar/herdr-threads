@@ -304,7 +304,10 @@ trait ErasedAdapter: Send + Sync {
     fn installer_policy(&self) -> Option<&dyn InstallerPolicy>;
     fn launch_policy(&self) -> Option<&dyn LaunchPolicy>;
     fn composer_policy(&self) -> Option<&dyn ComposerPolicy>;
-    fn local_evidence(&self, request: &LocalEvidenceRequest<'_>) -> LocalEvidence;
+    fn local_evidence(
+        &self,
+        request: &LocalEvidenceRequest<'_>,
+    ) -> Result<LocalEvidence, DecodeFailure>;
     fn presentation_codec(&self, selector: u8) -> Option<PresentationCodec>;
     fn hook_step(&self) -> Option<&dyn HookStep>;
     fn turn_state_edge(&self, event: &DecodedEvent) -> Option<TurnEdge>;
@@ -537,7 +540,10 @@ impl<A: HarnessAdapter> ErasedAdapter for TypedAdapter<A> {
     fn composer_policy(&self) -> Option<&dyn ComposerPolicy> {
         self.0.composer_policy()
     }
-    fn local_evidence(&self, request: &LocalEvidenceRequest<'_>) -> LocalEvidence {
+    fn local_evidence(
+        &self,
+        request: &LocalEvidenceRequest<'_>,
+    ) -> Result<LocalEvidence, DecodeFailure> {
         self.0.local_evidence(request)
     }
     fn presentation_codec(&self, selector: u8) -> Option<PresentationCodec> {
@@ -1197,7 +1203,10 @@ impl Registration {
     pub fn composer_policy(&self) -> Option<&dyn ComposerPolicy> {
         self.adapter.composer_policy()
     }
-    pub fn local_evidence(&self, request: &LocalEvidenceRequest<'_>) -> LocalEvidence {
+    pub fn local_evidence(
+        &self,
+        request: &LocalEvidenceRequest<'_>,
+    ) -> Result<LocalEvidence, DecodeFailure> {
         self.adapter.local_evidence(request)
     }
     pub fn presentation_codec(&self, selector: u8) -> Option<PresentationCodec> {

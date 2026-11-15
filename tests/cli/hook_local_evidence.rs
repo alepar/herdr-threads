@@ -66,6 +66,8 @@ impl HookStep for Step {
 /// The synthetic fixture with scripted local evidence and an optional step.
 struct Evidenced {
     evidence: LocalEvidence,
+    refuse_evidence: std::sync::atomic::AtomicBool,
+    session_end: std::sync::atomic::AtomicBool,
     call_pane_session: bool,
     seen: Mutex<Vec<Seen>>,
     step: Option<Step>,
@@ -94,7 +96,17 @@ impl HarnessAdapter for Evidenced {
         ADAPTER.classify(i)
     }
     fn decode(&self, a: &(), i: &HookInput) -> Result<DecodedEvent, DecodeFailure> {
-        ADAPTER.decode(a, i)
+        let mut decoded = ADAPTER.decode(a, i)?;
+        if self.session_end.load(std::sync::atomic::Ordering::SeqCst) {
+            decoded.intent = EventIntent::Observer;
+            decoded.binding_event = Some(BindingEventDecode {
+                kind: crate::protocol::commands::BindingEventKind::SessionEnd,
+                agent_id: None,
+                child_session: None,
+                claim_session: None,
+            });
+        }
+        Ok(decoded)
     }
     fn encode(
         &self,
@@ -116,14 +128,23 @@ impl HarnessAdapter for Evidenced {
     fn unsetup(&self, r: &UnsetupRequest, b: &CallBudget) -> Result<RemovalOutcome, SetupFailure> {
         ADAPTER.unsetup(r, b)
     }
-    fn local_evidence(&self, request: &LocalEvidenceRequest<'_>) -> LocalEvidence {
+    fn local_evidence(
+        &self,
+        request: &LocalEvidenceRequest<'_>,
+    ) -> Result<LocalEvidence, DecodeFailure> {
         self.seen.lock().unwrap().push(Seen {
             deadline: request.deadline,
             state_dir: request.state_dir.map(Path::to_path_buf),
             home: request.home.map(OsString::from),
             pane_session: self.call_pane_session.then(|| (request.pane_session)()),
         });
-        self.evidence.clone()
+        if self
+            .refuse_evidence
+            .load(std::sync::atomic::Ordering::SeqCst)
+        {
+            return Err(DecodeFailure::Invalid("owner claim mismatch".into()));
+        }
+        Ok(self.evidence.clone())
     }
     fn hook_step(&self) -> Option<&dyn HookStep> {
         self.step.as_ref().map(|step| step as &dyn HookStep)
@@ -137,6 +158,8 @@ fn adapter(
 ) -> &'static Evidenced {
     Box::leak(Box::new(Evidenced {
         evidence,
+        refuse_evidence: std::sync::atomic::AtomicBool::new(false),
+        session_end: std::sync::atomic::AtomicBool::new(false),
         call_pane_session,
         seen: Mutex::default(),
         step: step.map(|output| Step {
@@ -171,7 +194,7 @@ fn herdr() -> HookEnv {
         pane: Some("w9:p1".into()),
         ambiguous: None,
         named: None,
-        caller: Default::default(),
+        caller: crate::cli::caller_location::CallerEnv::from_lookup(|_| None),
     }
 }
 
@@ -860,4 +883,52 @@ fn an_adapter_without_a_step_keeps_the_neutral_observer_output() {
         &payload("SyntheticObserver", "pre", "native-1", "top_level"),
     );
     assert_eq!(outcome.stdout, br#"{"synthetic_context":null}"#);
+}
+
+#[test]
+fn refused_local_evidence_cannot_check_in_or_disconnect_even_a_decoded_session_end() {
+    let f = fixture("evidence-refusal", true);
+    let a = adapter(LocalEvidence::default(), false, None);
+    let r = registration(a);
+    let good = run(
+        &f,
+        r,
+        "SyntheticStart",
+        &payload("SyntheticStart", "start", "native-1", "top_level"),
+    );
+    assert_eq!(good.diagnostic, None);
+    assert_eq!(check_ins(&f), 1);
+    a.refuse_evidence
+        .store(true, std::sync::atomic::Ordering::SeqCst);
+    for (event, ended) in [
+        ("SyntheticStart", false),
+        ("SyntheticTool", false),
+        ("SyntheticObserver", true),
+    ] {
+        a.session_end
+            .store(ended, std::sync::atomic::Ordering::SeqCst);
+        f.service.0.lock().unwrap().clear();
+        let out = run(
+            &f,
+            r,
+            event,
+            &payload(event, "refused", "foreign", "top_level"),
+        );
+        assert!(out.stdout.is_empty());
+        assert!(
+            out.diagnostic
+                .as_deref()
+                .is_some_and(|s| s.contains("owner claim mismatch"))
+        );
+        assert_eq!(
+            f.service.count(|c| matches!(
+                c,
+                Command::CheckIn(_)
+                    | Command::BindingEvent(_)
+                    | Command::ResolveSeat(_)
+                    | Command::CompleteInboxDelivery(_)
+            )),
+            0
+        );
+    }
 }
