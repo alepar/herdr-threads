@@ -16,7 +16,7 @@
     "harness pi not installed: no executable `pi` on the daemon's PATH",
     "harness synthetic_fourth not installed: synthetic fourth: no explicit fixture binary directory",
     "receipt cooperative: declared input contracts; accept/ACK is recorded as cooperative_top_level; runtime and native model receipt unverified; contracts: claude declared, codex declared, hermes admission unknown, agy declared, opencode declared, pi declar…",
-    "wake cooperative: prompts only Herdr's detected idle/done claude, codex, hermes or agy agent in the seat's terminal, rechecked immediately before submission; native execution and composer contents are unverified"
+    "wake cooperative: prompts only Herdr's detected idle/done claude, codex, hermes, agy or pi agent in the seat's terminal, rechecked immediately before submission; native execution and composer contents are unverified"
   ],
   "protocol_version": 9,
   "schema": {

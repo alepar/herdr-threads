@@ -1562,6 +1562,7 @@ fn bare_setup_covers_every_detected_harness_and_unsetup_removes_both() {
             ("hermes", "skipped"),
             ("agy", "skipped"),
             ("opencode", "skipped"),
+            ("pi", "skipped"),
             ("synthetic_fourth", "skipped")
         ])
     );
@@ -1590,6 +1591,7 @@ fn bare_setup_covers_every_detected_harness_and_unsetup_removes_both() {
             ("hermes", "skipped"),
             ("agy", "status"),
             ("opencode", "status"),
+            ("pi", "status"),
             ("synthetic_fourth", "status")
         ])
     );
@@ -1603,7 +1605,7 @@ fn bare_setup_covers_every_detected_harness_and_unsetup_removes_both() {
             entry["report"]["installed"],
             !matches!(
                 entry["harness"].as_str(),
-                Some("synthetic_fourth" | "agy" | "opencode")
+                Some("synthetic_fourth" | "agy" | "opencode" | "pi")
             ),
             "{entry}"
         );
@@ -1637,6 +1639,7 @@ fn bare_setup_covers_every_detected_harness_and_unsetup_removes_both() {
             ("hermes", "skipped"),
             ("agy", "not_installed"),
             ("opencode", "not_installed"),
+            ("pi", "not_installed"),
             ("synthetic_fourth", "not_installed")
         ])
     );
@@ -1677,6 +1680,7 @@ fn bare_setup_skips_missing_and_installs_available_harnesses() {
             ("hermes", "skipped"),
             ("agy", "skipped"),
             ("opencode", "skipped"),
+            ("pi", "skipped"),
             ("synthetic_fourth", "skipped")
         ])
     );
@@ -1693,6 +1697,7 @@ fn bare_setup_skips_missing_and_installs_available_harnesses() {
             ("hermes", "skipped"),
             ("agy", "not_installed"),
             ("opencode", "not_installed"),
+            ("pi", "not_installed"),
             ("synthetic_fourth", "not_installed")
         ])
     );
@@ -1729,6 +1734,7 @@ fn bare_setup_exits_nonzero_only_for_a_failed_harness() {
             ("hermes", "skipped"),
             ("agy", "skipped"),
             ("opencode", "skipped"),
+            ("pi", "skipped"),
             ("synthetic_fourth", "skipped")
         ])
     );

@@ -497,7 +497,9 @@ fn hermes_operator_retire_then_next_cli_turn_re_enrolls_a_fresh_seat() {
 #[test]
 fn every_registered_adapter_declares_its_enrollment_policy() {
     let expected = |id: &str| match id {
-        "claude" | "codex" | "agy" | "opencode" | "synthetic_fourth" => EnrollmentPolicy::Lifecycle,
+        "claude" | "codex" | "agy" | "opencode" | "pi" | "synthetic_fourth" => {
+            EnrollmentPolicy::Lifecycle
+        }
         "hermes" => EnrollmentPolicy::WitnessedStartAndUnownedTurn,
         other => panic!("adapter {other} has no row in the enrollment policy table"),
     };
@@ -517,6 +519,7 @@ fn every_registered_adapter_declares_its_enrollment_policy() {
             "codex",
             "hermes",
             "opencode",
+            "pi",
             "synthetic_fourth"
         ]
     );

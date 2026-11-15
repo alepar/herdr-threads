@@ -510,6 +510,7 @@ fn harness_adapter_end_to_end_wiring_uses_registry_values_across_boundaries() {
             "hermes",
             "agy",
             "opencode",
+            "pi",
             "synthetic_fourth"
         ]
     );

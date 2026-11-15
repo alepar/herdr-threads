@@ -3478,7 +3478,7 @@ pub(crate) mod health_v2_observer_tests {
         );
         // Only harnesses with a composer policy: opencode and the test-support synthetic_fourth
         // are never prompted.
-        let expected = "wake cooperative: prompts only Herdr's detected idle/done claude, codex, hermes or agy agent in the seat's terminal, rechecked immediately before submission; native execution and composer contents are unverified";
+        let expected = "wake cooperative: prompts only Herdr's detected idle/done claude, codex, hermes, agy or pi agent in the seat's terminal, rechecked immediately before submission; native execution and composer contents are unverified";
         assert_eq!(
             crate::daemon::health::cooperative_wake_line_for(builtins),
             expected

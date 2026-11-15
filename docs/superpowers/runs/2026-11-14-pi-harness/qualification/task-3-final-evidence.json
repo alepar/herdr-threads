@@ -1,0 +1,828 @@
+{
+  "production_source": "a6957f16005bb4fee15db0d84ba0c58970c60cd3",
+  "final_check_source": "4dbdcd5f1f7b7d602ec9dbf101be962fae91c6c6",
+  "source_delta": "4dbdcd5f1 only formats test assertions after a6957f160; postcompact footer patch is the only production delta after broad native runs.",
+  "candidate_sha256": "f0b66be9fbf77c5371fab272e783f04ff9219167dbb24c9bc46e673737910163",
+  "source_hashes": {
+    "src/harness/pi/composer.rs": "56035705ddea0088a591a1d4cfbc031235f78e4fe52ee1ea1925b119c1ff4aff",
+    "integrations/pi/extension/herdr-threads.js": "f036d4d0148bf0a14ea9276ff84ad0ec5eaeed35db66abd205c435213d25278b",
+    "scripts/pi-tui-qualify.py": "2a16e19e2cfe13ff95adf93707b60af129eb8761b5b1e9784a9ff4ac68f4cfb8",
+    "scripts/pi_tui_fixtures/provider.mjs": "1a818c4deb0e15ce4bea08f1cd77ecb272e0e2586a39db8537fc611132d6cf67"
+  },
+  "runs": {
+    "original": {
+      "private_artifact": "task-3-integrated-native",
+      "source": "3e839bb0c36bf633c956aaa9a3d5217bca957673",
+      "candidate_sha256": "ac61f5958bc0dea2eadb41b1c27f6aaa669ec2b8089d9d71a3f936149ad25cff",
+      "fixture_sha256": "cfd7490bed423823cfc19046b9ec38470c485ffffbfdd1184363584756864d32",
+      "results": [
+        {
+          "case": "setup",
+          "outcome": "pass",
+          "elapsed_s": 0.026
+        },
+        {
+          "case": "safety",
+          "outcome": "fail",
+          "error": "AssertionError: blocked native state changed: editor"
+        }
+      ],
+      "cleanup": {
+        "ok": true,
+        "helper_rc": 0,
+        "helper_reaped": true,
+        "root_removed": true,
+        "leak_rc": 0,
+        "errors": {}
+      },
+      "native_trace_sha256": "a4124ac5308a243841eed18358709b22a804a6edb352432cd6a4de13c3734049"
+    },
+    "r2": {
+      "private_artifact": "task-3-integrated-native-r2",
+      "source": "ae6626ff88b11c50dcddc47800b6201441e8e8f2",
+      "candidate_sha256": "ac61f5958bc0dea2eadb41b1c27f6aaa669ec2b8089d9d71a3f936149ad25cff",
+      "fixture_sha256": "f102cc5e147844c59d7b7e85731a3a470d1f3cea39c2464f414e6c17954e6330",
+      "results": [
+        {
+          "case": "setup",
+          "outcome": "pass",
+          "elapsed_s": 0.024
+        },
+        {
+          "case": "safety",
+          "outcome": "pass",
+          "elapsed_s": 210.677
+        },
+        {
+          "case": "threshold",
+          "outcome": "pass",
+          "elapsed_s": 99.748
+        },
+        {
+          "case": "busy",
+          "outcome": "pass",
+          "elapsed_s": 65.177
+        },
+        {
+          "case": "receipts",
+          "outcome": "pass",
+          "elapsed_s": 0.813
+        },
+        {
+          "case": "ordering",
+          "outcome": "pass",
+          "elapsed_s": 34.814
+        },
+        {
+          "case": "invitations",
+          "outcome": "pass",
+          "elapsed_s": 33.195
+        },
+        {
+          "case": "negative",
+          "outcome": "pass",
+          "elapsed_s": 30.982
+        },
+        {
+          "case": "failures",
+          "outcome": "fail",
+          "error": "AssertionError: "
+        }
+      ],
+      "cleanup": {
+        "ok": true,
+        "helper_rc": 0,
+        "helper_reaped": true,
+        "root_removed": true,
+        "leak_rc": 0,
+        "errors": {}
+      },
+      "native_trace_sha256": "379b9fea63654d23591ebc2768056d09ad7e42fac7f533a2af01d2e2e47e992a"
+    },
+    "supplement": {
+      "private_artifact": "task-3-timing-settle-focused",
+      "source": "ae6626ff88b11c50dcddc47800b6201441e8e8f2",
+      "candidate_sha256": "ac61f5958bc0dea2eadb41b1c27f6aaa669ec2b8089d9d71a3f936149ad25cff",
+      "fixture_sha256": "1a818c4deb0e15ce4bea08f1cd77ecb272e0e2586a39db8537fc611132d6cf67",
+      "results": [
+        {
+          "case": "safety",
+          "outcome": "pass",
+          "elapsed_s": 182.537
+        },
+        {
+          "case": "threshold",
+          "outcome": "pass",
+          "elapsed_s": 101.877
+        },
+        {
+          "case": "failures",
+          "outcome": "pass",
+          "elapsed_s": 4.436
+        },
+        {
+          "case": "named",
+          "outcome": "pass",
+          "elapsed_s": 66.12
+        }
+      ],
+      "cleanup": {
+        "ok": true,
+        "helper_rc": 0,
+        "helper_reaped": true,
+        "root_removed": true,
+        "leak_rc": 0,
+        "errors": {}
+      },
+      "native_trace_sha256": "080ad319141d82b8c22c9b4f6fdfe49e184c7981bf5fe2007af73993529db1c6"
+    },
+    "remaining": {
+      "private_artifact": "task-3-integrated-native-remaining",
+      "source": "3ad10e775dff08675fa4a763c5a64bb0c152f1ea",
+      "candidate_sha256": "ac61f5958bc0dea2eadb41b1c27f6aaa669ec2b8089d9d71a3f936149ad25cff",
+      "fixture_sha256": "1a818c4deb0e15ce4bea08f1cd77ecb272e0e2586a39db8537fc611132d6cf67",
+      "results": [
+        {
+          "case": "lifecycle",
+          "outcome": "pass",
+          "elapsed_s": 1.919
+        },
+        {
+          "case": "compaction",
+          "outcome": "pass",
+          "elapsed_s": 0.487
+        },
+        {
+          "case": "handoff",
+          "outcome": "pass",
+          "elapsed_s": 5.5
+        },
+        {
+          "case": "channel",
+          "outcome": "fail",
+          "error": "RuntimeError: timed out: native wake without channel"
+        }
+      ],
+      "cleanup": {
+        "ok": true,
+        "helper_rc": 0,
+        "helper_reaped": true,
+        "root_removed": true,
+        "leak_rc": 0,
+        "errors": {}
+      },
+      "native_trace_sha256": "cf2990534df58a250f9dd8501b45bf3519841393ccd2581bd8466913b0e52dc2"
+    },
+    "footer": {
+      "private_artifact": "task-3-postcompact-channel",
+      "source": "3ad10e775dff08675fa4a763c5a64bb0c152f1ea",
+      "candidate_sha256": "198e81ff9307f3e88c29cd47ba8ae425d0ed4f6283e5bb80a676636058895cce",
+      "fixture_sha256": "1a818c4deb0e15ce4bea08f1cd77ecb272e0e2586a39db8537fc611132d6cf67",
+      "results": [
+        {
+          "case": "compaction",
+          "outcome": "pass",
+          "elapsed_s": 0.458
+        },
+        {
+          "case": "channel",
+          "outcome": "pass",
+          "elapsed_s": 2.806
+        }
+      ],
+      "cleanup": {
+        "ok": true,
+        "helper_rc": 0,
+        "helper_reaped": true,
+        "root_removed": true,
+        "leak_rc": 0,
+        "errors": {}
+      },
+      "native_trace_sha256": "67092b88d9698a82db63599a6545802c35d99e01443c78e706a0a0de2a80b09e"
+    }
+  },
+  "required_case_mapping": {
+    "setup": "r2",
+    "safety": "supplement",
+    "threshold": "supplement",
+    "busy": "r2",
+    "receipts": "r2",
+    "ordering": "r2",
+    "invitations": "r2",
+    "negative": "r2",
+    "failures": "supplement",
+    "lifecycle": "remaining",
+    "compaction": "footer",
+    "handoff": "remaining",
+    "channel": "footer",
+    "named": "supplement"
+  },
+  "excluded_observations": [
+    "Original stale-periodic-editor safety comparison is a failed fixture observation, not a pass.",
+    "Earlier multiline/passive controls masked by cooldown receive no negative-control credit; supplement replaces them.",
+    "r2 whole-run cancellation absence assertion was invalid; supplement isolates the cancelled proposal.",
+    "remaining channel timed out on known native unknown-usage footer; footer run on corrected binary replaces it."
+  ],
+  "accepted_limits": [
+    "external custom overlays",
+    "whitespace-only draft with cursor returned to column zero"
+  ],
+  "hc": {
+    "binary_present": false,
+    "native_wake": false,
+    "runtime_qualification": "not exercised by this Herdr/tmux driver"
+  },
+  "named_receipt": {
+    "seat": "soNcyLITfswe",
+    "status": "acknowledged",
+    "physical_status": "acknowledged",
+    "effective_status": "acknowledged",
+    "retirement_cutover": null,
+    "cleanup_state": null,
+    "ack_provenance": {
+      "actor": "soNcyLITfswe",
+      "generation": 1,
+      "native_observation": "{\"action_provenance\":\"cooperative_mod_delivery\",\"binding_generation\":1,\"decided_at\":1794728710516,\"execution\":\"04d78919-bf8a-5264-9300-c58f61897763\",\"harness\":\"pi\",\"host_boot\":\"named-host:node=327331f3ba787de0a8e278bb5e88a59f\",\"observed_at\":1794728710516,\"provenance\":\"cooperative_top_level\",\"session\":\"01a1de2a-ced9-71e7-b47b-5964434d5c3d\",\"target_generation\":1,\"via\":\"context\"}",
+      "decided_at": 1794728710516
+    }
+  },
+  "named_busy_receipt": {
+    "seat": "soNcyLITfswe",
+    "status": "acknowledged",
+    "physical_status": "acknowledged",
+    "effective_status": "acknowledged",
+    "retirement_cutover": null,
+    "cleanup_state": null,
+    "ack_provenance": {
+      "actor": "soNcyLITfswe",
+      "generation": 1,
+      "native_observation": "{\"action_provenance\":\"cooperative_mod_delivery\",\"binding_generation\":1,\"decided_at\":1794728744549,\"execution\":\"04d78919-bf8a-5264-9300-c58f61897763\",\"harness\":\"pi\",\"host_boot\":\"named-host:node=327331f3ba787de0a8e278bb5e88a59f\",\"observed_at\":1794728744549,\"provenance\":\"cooperative_top_level\",\"session\":\"01a1de2a-ced9-71e7-b47b-5964434d5c3d\",\"target_generation\":1,\"via\":\"context\"}",
+      "decided_at": 1794728744549
+    }
+  },
+  "named_session": "01a1de2a-ced9-71e7-b47b-5964434d5c3d",
+  "named_startup_binding": {
+    "version": 9,
+    "result": {
+      "kind": "seat_inspect",
+      "data": {
+        "summary": {
+          "seat": "soNcyLITfswe",
+          "continuity": "resolved",
+          "target": "pi-qualification-named",
+          "generation": 1,
+          "created_at": 1794728709983,
+          "retired_at": null,
+          "active": true,
+          "bindings": [
+            {
+              "harness": "pi",
+              "role": "top_level",
+              "connected": true
+            }
+          ],
+          "availability": "available"
+        },
+        "mapping": {
+          "state": "resolved",
+          "target": "pi-qualification-named",
+          "detail_argv": null
+        },
+        "hold": null,
+        "retirement": null,
+        "open_binding": {
+          "provenance": "cooperative_top_level",
+          "harness": "pi",
+          "target": "pi-qualification-named"
+        },
+        "history": {
+          "items": [
+            {
+              "kind": "binding",
+              "data": {
+                "ordinal": 3,
+                "generation": 1,
+                "target": "pi-qualification-named",
+                "terminal": "named:pi-qualification-named",
+                "incarnation": "named-host:node=327331f3ba787de0a8e278bb5e88a59f",
+                "host_boot": "named-host:node=327331f3ba787de0a8e278bb5e88a59f",
+                "host_epoch": 1,
+                "native_session": "01a1de2a-ced9-71e7-b47b-5964434d5c3d",
+                "execution": "04d78919-bf8a-5264-9300-c58f61897763",
+                "observed_at": 1794728710006,
+                "registered_at": 1794728710006,
+                "ended_at": null,
+                "provenance": "cooperative_top_level"
+              }
+            }
+          ],
+          "next_cursor": null,
+          "next_argv": null,
+          "high_water_ordinal": 3,
+          "scope_revision": null,
+          "has_more": false,
+          "stop_reason": "complete",
+          "consistency": "bounded_live"
+        },
+        "directory": {
+          "node": "oNc",
+          "machine": "$MACHINE",
+          "state": "idle",
+          "harness": "pi",
+          "activity_at": 1794728710006,
+          "name": "pi-qualification-named"
+        }
+      }
+    }
+  },
+  "named_no_trailing_wake": true,
+  "receipt": {
+    "seat": "s61EMsFtzE6i",
+    "status": "acknowledged",
+    "physical_status": "acknowledged",
+    "effective_status": "acknowledged",
+    "retirement_cutover": null,
+    "cleanup_state": null,
+    "ack_provenance": {
+      "actor": "s61EMsFtzE6i",
+      "generation": 1,
+      "native_observation": "{\"action_provenance\":\"cooperative_mod_delivery\",\"binding_generation\":1,\"decided_at\":1794727040637,\"execution\":\"d87c883e-89eb-5e61-b8ed-c0a40e5de9a4\",\"harness\":\"pi\",\"host_boot\":\"<private-host-boot>\",\"observed_at\":1794727040637,\"provenance\":\"cooperative_top_level\",\"session\":\"01a1de0b-8a1d-76f5-9b74-ae20eab90479\",\"target_generation\":1,\"via\":\"context\"}",
+      "decided_at": 1794727040637
+    }
+  },
+  "safety_pairs": {
+    "literal": {
+      "before": {
+        "at": 1794728421.0326316,
+        "run_starts": 1,
+        "native_observation": {
+          "at": 1794728421004,
+          "event": "state",
+          "state": {
+            "sid": "01a1de26-564d-77b3-b980-6991898853de",
+            "idle": true,
+            "editor": "UNSENT DRAFT",
+            "model": "scripted",
+            "provider": "ht-fixture"
+          },
+          "observation": "dd3fce64-6ee2-43cb-a1a4-f90158438cf7"
+        },
+        "styled_sha256": "95dac032a79b6b5dbbe30b50a20504f14e1993d37de29570e1fcf58d404a6d9d",
+        "styled": "\n \u001b[0m\u001b[38;5;3mWarning: fd not found. Offline mode enabled, skipping download.\u001b[0m                                                       \n \u001b[0m\u001b[38;5;3mWarning: ripgrep not found. Offline mode enabled, skipping download.\u001b[0m                                                  \n\n                                                                                                                       \n Qualification baseline. Reply only READY. Do not call tools.                                                          \n                                                                                                                       \n\n PROBE COMPLETED                                                                                                       \n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\u001b[0m\u001b[2m\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u001b[0m\nUNSENT DRAFT\u001b[0m\u001b[7m \u001b[0m                                                                                                          \n\u001b[0m\u001b[2m\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u001b[0m\n\u001b[0m\u001b[2m$SCRATCH/project\u001b[0m\n\u001b[0m\u001b[2m2.0%/100k                                                                                                      scripted\u001b[0m",
+        "visible": "\n Warning: fd not found. Offline mode enabled, skipping download.\n Warning: ripgrep not found. Offline mode enabled, skipping download.\n\n\n Qualification baseline. Reply only READY. Do not call tools.\n\n\n PROBE COMPLETED\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\nUNSENT DRAFT\n\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\n$SCRATCH/project\n2.0%/100k                                                                                                      scripted\n"
+      },
+      "after": {
+        "at": 1794728423.0851674,
+        "run_starts": 1,
+        "native_observation": {
+          "at": 1794728423114,
+          "event": "state",
+          "state": {
+            "sid": "01a1de26-564d-77b3-b980-6991898853de",
+            "idle": true,
+            "editor": "UNSENT DRAFT",
+            "model": "scripted",
+            "provider": "ht-fixture"
+          },
+          "observation": "f58689ae-e358-4f7b-b1f5-2456bed10342"
+        },
+        "styled_sha256": "95dac032a79b6b5dbbe30b50a20504f14e1993d37de29570e1fcf58d404a6d9d",
+        "styled": "\n \u001b[0m\u001b[38;5;3mWarning: fd not found. Offline mode enabled, skipping download.\u001b[0m                                                       \n \u001b[0m\u001b[38;5;3mWarning: ripgrep not found. Offline mode enabled, skipping download.\u001b[0m                                                  \n\n                                                                                                                       \n Qualification baseline. Reply only READY. Do not call tools.                                                          \n                                                                                                                       \n\n PROBE COMPLETED                                                                                                       \n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\u001b[0m\u001b[2m\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u001b[0m\nUNSENT DRAFT\u001b[0m\u001b[7m \u001b[0m                                                                                                          \n\u001b[0m\u001b[2m\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u001b[0m\n\u001b[0m\u001b[2m$SCRATCH/project\u001b[0m\n\u001b[0m\u001b[2m2.0%/100k                                                                                                      scripted\u001b[0m",
+        "visible": "\n Warning: fd not found. Offline mode enabled, skipping download.\n Warning: ripgrep not found. Offline mode enabled, skipping download.\n\n\n Qualification baseline. Reply only READY. Do not call tools.\n\n\n PROBE COMPLETED\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\nUNSENT DRAFT\n\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\n$SCRATCH/project\n2.0%/100k                                                                                                      scripted\n"
+      }
+    },
+    "whitespace": {
+      "before": {
+        "at": 1794728456.5588713,
+        "run_starts": 2,
+        "native_observation": {
+          "at": 1794728456484,
+          "event": "state",
+          "state": {
+            "sid": "01a1de26-564d-77b3-b980-6991898853de",
+            "idle": true,
+            "editor": "    ",
+            "model": "scripted",
+            "provider": "ht-fixture"
+          },
+          "observation": "44e9136d-174f-4a6d-a1f1-06d8bf8dd039"
+        },
+        "styled_sha256": "4f619961ddc16a41e1ea4881d998140242049334576cf656ffd8d46ceda022d6",
+        "styled": "\n \u001b[0m\u001b[38;5;3mWarning: fd not found. Offline mode enabled, skipping download.\u001b[0m                                                       \n \u001b[0m\u001b[38;5;3mWarning: ripgrep not found. Offline mode enabled, skipping download.\u001b[0m                                                  \n\n                                                                                                                       \n Qualification baseline. Reply only READY. Do not call tools.                                                          \n                                                                                                                       \n\n PROBE COMPLETED                                                                                                       \n\n                                                                                                                       \n herdr-threads: wake up                                                                                                \n                                                                                                                       \n\n PROBE COMPLETED                                                                                                       \n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\u001b[0m\u001b[2m\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u001b[0m\n    \u001b[0m\u001b[7m \u001b[0m                                                                                                                  \n\u001b[0m\u001b[2m\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u001b[0m\n\u001b[0m\u001b[2m$SCRATCH/project\u001b[0m\n\u001b[0m\u001b[2m2.1%/100k                                                                                                      scripted\u001b[0m",
+        "visible": "\n Warning: fd not found. Offline mode enabled, skipping download.\n Warning: ripgrep not found. Offline mode enabled, skipping download.\n\n\n Qualification baseline. Reply only READY. Do not call tools.\n\n\n PROBE COMPLETED\n\n\n herdr-threads: wake up\n\n\n PROBE COMPLETED\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\n\n\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\n$SCRATCH/project\n2.1%/100k                                                                                                      scripted\n"
+      },
+      "after": {
+        "at": 1794728458.6109104,
+        "run_starts": 2,
+        "native_observation": {
+          "at": 1794728458697,
+          "event": "state",
+          "state": {
+            "sid": "01a1de26-564d-77b3-b980-6991898853de",
+            "idle": true,
+            "editor": "    ",
+            "model": "scripted",
+            "provider": "ht-fixture"
+          },
+          "observation": "ed2893fd-704f-4d67-8842-3e9f34a02c1c"
+        },
+        "styled_sha256": "4f619961ddc16a41e1ea4881d998140242049334576cf656ffd8d46ceda022d6",
+        "styled": "\n \u001b[0m\u001b[38;5;3mWarning: fd not found. Offline mode enabled, skipping download.\u001b[0m                                                       \n \u001b[0m\u001b[38;5;3mWarning: ripgrep not found. Offline mode enabled, skipping download.\u001b[0m                                                  \n\n                                                                                                                       \n Qualification baseline. Reply only READY. Do not call tools.                                                          \n                                                                                                                       \n\n PROBE COMPLETED                                                                                                       \n\n                                                                                                                       \n herdr-threads: wake up                                                                                                \n                                                                                                                       \n\n PROBE COMPLETED                                                                                                       \n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\u001b[0m\u001b[2m\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u001b[0m\n    \u001b[0m\u001b[7m \u001b[0m                                                                                                                  \n\u001b[0m\u001b[2m\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u001b[0m\n\u001b[0m\u001b[2m$SCRATCH/project\u001b[0m\n\u001b[0m\u001b[2m2.1%/100k                                                                                                      scripted\u001b[0m",
+        "visible": "\n Warning: fd not found. Offline mode enabled, skipping download.\n Warning: ripgrep not found. Offline mode enabled, skipping download.\n\n\n Qualification baseline. Reply only READY. Do not call tools.\n\n\n PROBE COMPLETED\n\n\n herdr-threads: wake up\n\n\n PROBE COMPLETED\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\n\n\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\n$SCRATCH/project\n2.1%/100k                                                                                                      scripted\n"
+      }
+    },
+    "wrapped": {
+      "before": {
+        "at": 1794728492.047385,
+        "run_starts": 3,
+        "native_observation": {
+          "at": 1794728491987,
+          "event": "state",
+          "state": {
+            "sid": "01a1de26-564d-77b3-b980-6991898853de",
+            "idle": true,
+            "editor": "WWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWW",
+            "model": "scripted",
+            "provider": "ht-fixture"
+          },
+          "observation": "fa842e0c-e029-4109-a0f1-32453c96422c"
+        },
+        "styled_sha256": "3e35628c3ff2515a7101e13ef08e25220b7db747cd833d00f2e815cf1498ca96",
+        "styled": "\n \u001b[0m\u001b[38;5;3mWarning: fd not found. Offline mode enabled, skipping download.\u001b[0m                                                       \n \u001b[0m\u001b[38;5;3mWarning: ripgrep not found. Offline mode enabled, skipping download.\u001b[0m                                                  \n\n                                                                                                                       \n Qualification baseline. Reply only READY. Do not call tools.                                                          \n                                                                                                                       \n\n PROBE COMPLETED                                                                                                       \n\n                                                                                                                       \n herdr-threads: wake up                                                                                                \n                                                                                                                       \n\n PROBE COMPLETED                                                                                                       \n\n                                                                                                                       \n herdr-threads: wake up                                                                                                \n                                                                                                                       \n\n PROBE COMPLETED                                                                                                       \n\n\n\n\n\n\n\n\n\n\n\n\n\u001b[0m\u001b[2m\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u001b[0m\nWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWW \nWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWW \nWWWWWWWWWWWWWWWWWWWWWWWW\u001b[0m\u001b[7m \u001b[0m                                                                                              \n\u001b[0m\u001b[2m\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u001b[0m\n\u001b[0m\u001b[2m$SCRATCH/project\u001b[0m\n\u001b[0m\u001b[2m2.2%/100k                                                                                                      scripted\u001b[0m",
+        "visible": "\n Warning: fd not found. Offline mode enabled, skipping download.\n Warning: ripgrep not found. Offline mode enabled, skipping download.\n\n\n Qualification baseline. Reply only READY. Do not call tools.\n\n\n PROBE COMPLETED\n\n\n herdr-threads: wake up\n\n\n PROBE COMPLETED\n\n\n herdr-threads: wake up\n\n\n PROBE COMPLETED\n\n\n\n\n\n\n\n\n\n\n\n\n\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\nWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWW\nWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWW\nWWWWWWWWWWWWWWWWWWWWWWWW\n\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\n$SCRATCH/project\n2.2%/100k                                                                                                      scripted\n"
+      },
+      "after": {
+        "at": 1794728494.1070244,
+        "run_starts": 3,
+        "native_observation": {
+          "at": 1794728494198,
+          "event": "state",
+          "state": {
+            "sid": "01a1de26-564d-77b3-b980-6991898853de",
+            "idle": true,
+            "editor": "WWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWW",
+            "model": "scripted",
+            "provider": "ht-fixture"
+          },
+          "observation": "d8499551-d9ae-43e5-ad69-8162ad0b333a"
+        },
+        "styled_sha256": "3e35628c3ff2515a7101e13ef08e25220b7db747cd833d00f2e815cf1498ca96",
+        "styled": "\n \u001b[0m\u001b[38;5;3mWarning: fd not found. Offline mode enabled, skipping download.\u001b[0m                                                       \n \u001b[0m\u001b[38;5;3mWarning: ripgrep not found. Offline mode enabled, skipping download.\u001b[0m                                                  \n\n                                                                                                                       \n Qualification baseline. Reply only READY. Do not call tools.                                                          \n                                                                                                                       \n\n PROBE COMPLETED                                                                                                       \n\n                                                                                                                       \n herdr-threads: wake up                                                                                                \n                                                                                                                       \n\n PROBE COMPLETED                                                                                                       \n\n                                                                                                                       \n herdr-threads: wake up                                                                                                \n                                                                                                                       \n\n PROBE COMPLETED                                                                                                       \n\n\n\n\n\n\n\n\n\n\n\n\n\u001b[0m\u001b[2m\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u001b[0m\nWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWW \nWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWW \nWWWWWWWWWWWWWWWWWWWWWWWW\u001b[0m\u001b[7m \u001b[0m                                                                                              \n\u001b[0m\u001b[2m\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u001b[0m\n\u001b[0m\u001b[2m$SCRATCH/project\u001b[0m\n\u001b[0m\u001b[2m2.2%/100k                                                                                                      scripted\u001b[0m",
+        "visible": "\n Warning: fd not found. Offline mode enabled, skipping download.\n Warning: ripgrep not found. Offline mode enabled, skipping download.\n\n\n Qualification baseline. Reply only READY. Do not call tools.\n\n\n PROBE COMPLETED\n\n\n herdr-threads: wake up\n\n\n PROBE COMPLETED\n\n\n herdr-threads: wake up\n\n\n PROBE COMPLETED\n\n\n\n\n\n\n\n\n\n\n\n\n\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\nWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWW\nWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWW\nWWWWWWWWWWWWWWWWWWWWWWWW\n\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\n$SCRATCH/project\n2.2%/100k                                                                                                      scripted\n"
+      }
+    },
+    "multiline-home": {
+      "before": {
+        "at": 1794728527.0411763,
+        "run_starts": 4,
+        "native_observation": {
+          "at": 1794728526974,
+          "event": "state",
+          "state": {
+            "sid": "01a1de26-564d-77b3-b980-6991898853de",
+            "idle": true,
+            "editor": "first\nsecond",
+            "model": "scripted",
+            "provider": "ht-fixture"
+          },
+          "observation": "1f9dd2cb-bc91-46c0-8cf8-1f561c00973e"
+        },
+        "styled_sha256": "274ea512de7f24b475223894090af7ee3170b8b23adc928833298aa8c9b88322",
+        "styled": "\n \u001b[0m\u001b[38;5;3mWarning: fd not found. Offline mode enabled, skipping download.\u001b[0m                                                       \n \u001b[0m\u001b[38;5;3mWarning: ripgrep not found. Offline mode enabled, skipping download.\u001b[0m                                                  \n\n                                                                                                                       \n Qualification baseline. Reply only READY. Do not call tools.                                                          \n                                                                                                                       \n\n PROBE COMPLETED                                                                                                       \n\n                                                                                                                       \n herdr-threads: wake up                                                                                                \n                                                                                                                       \n\n PROBE COMPLETED                                                                                                       \n\n                                                                                                                       \n herdr-threads: wake up                                                                                                \n                                                                                                                       \n\n PROBE COMPLETED                                                                                                       \n\n                                                                                                                       \n herdr-threads: wake up                                                                                                \n                                                                                                                       \n\n PROBE COMPLETED                                                                                                       \n\n\n\n\n\n\n\n\u001b[0m\u001b[2m\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u001b[0m\nfirst                                                                                                                  \n\u001b[0m\u001b[7ms\u001b[0mecond                                                                                                                 \n\u001b[0m\u001b[2m\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u001b[0m\n\u001b[0m\u001b[2m$SCRATCH/project\u001b[0m\n\u001b[0m\u001b[2m2.3%/100k                                                                                                      scripted\u001b[0m",
+        "visible": "\n Warning: fd not found. Offline mode enabled, skipping download.\n Warning: ripgrep not found. Offline mode enabled, skipping download.\n\n\n Qualification baseline. Reply only READY. Do not call tools.\n\n\n PROBE COMPLETED\n\n\n herdr-threads: wake up\n\n\n PROBE COMPLETED\n\n\n herdr-threads: wake up\n\n\n PROBE COMPLETED\n\n\n herdr-threads: wake up\n\n\n PROBE COMPLETED\n\n\n\n\n\n\n\n\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\nfirst\nsecond\n\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\n$SCRATCH/project\n2.3%/100k                                                                                                      scripted\n"
+      },
+      "after": {
+        "at": 1794728529.10321,
+        "run_starts": 4,
+        "native_observation": {
+          "at": 1794728529187,
+          "event": "state",
+          "state": {
+            "sid": "01a1de26-564d-77b3-b980-6991898853de",
+            "idle": true,
+            "editor": "first\nsecond",
+            "model": "scripted",
+            "provider": "ht-fixture"
+          },
+          "observation": "d58ab023-fec6-49c9-b724-27fe222139be"
+        },
+        "styled_sha256": "274ea512de7f24b475223894090af7ee3170b8b23adc928833298aa8c9b88322",
+        "styled": "\n \u001b[0m\u001b[38;5;3mWarning: fd not found. Offline mode enabled, skipping download.\u001b[0m                                                       \n \u001b[0m\u001b[38;5;3mWarning: ripgrep not found. Offline mode enabled, skipping download.\u001b[0m                                                  \n\n                                                                                                                       \n Qualification baseline. Reply only READY. Do not call tools.                                                          \n                                                                                                                       \n\n PROBE COMPLETED                                                                                                       \n\n                                                                                                                       \n herdr-threads: wake up                                                                                                \n                                                                                                                       \n\n PROBE COMPLETED                                                                                                       \n\n                                                                                                                       \n herdr-threads: wake up                                                                                                \n                                                                                                                       \n\n PROBE COMPLETED                                                                                                       \n\n                                                                                                                       \n herdr-threads: wake up                                                                                                \n                                                                                                                       \n\n PROBE COMPLETED                                                                                                       \n\n\n\n\n\n\n\n\u001b[0m\u001b[2m\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u001b[0m\nfirst                                                                                                                  \n\u001b[0m\u001b[7ms\u001b[0mecond                                                                                                                 \n\u001b[0m\u001b[2m\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u001b[0m\n\u001b[0m\u001b[2m$SCRATCH/project\u001b[0m\n\u001b[0m\u001b[2m2.3%/100k                                                                                                      scripted\u001b[0m",
+        "visible": "\n Warning: fd not found. Offline mode enabled, skipping download.\n Warning: ripgrep not found. Offline mode enabled, skipping download.\n\n\n Qualification baseline. Reply only READY. Do not call tools.\n\n\n PROBE COMPLETED\n\n\n herdr-threads: wake up\n\n\n PROBE COMPLETED\n\n\n herdr-threads: wake up\n\n\n PROBE COMPLETED\n\n\n herdr-threads: wake up\n\n\n PROBE COMPLETED\n\n\n\n\n\n\n\n\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\nfirst\nsecond\n\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\n$SCRATCH/project\n2.3%/100k                                                                                                      scripted\n"
+      }
+    },
+    "model-picker": {
+      "before": {
+        "at": 1794728529.6369963,
+        "run_starts": 4,
+        "native_observation": {
+          "at": 1794728529588,
+          "event": "state",
+          "state": {
+            "sid": "01a1de26-564d-77b3-b980-6991898853de",
+            "idle": true,
+            "editor": "",
+            "model": "scripted",
+            "provider": "ht-fixture"
+          },
+          "observation": "a6fb7f6c-3d84-40f7-a402-9d6fc44e3b25"
+        },
+        "styled_sha256": "9863783c107576d98c10c50280e18e22717a2b69bba9e2b1293ffe056cb9f047",
+        "styled": "                                                                                                                       \n Qualification baseline. Reply only READY. Do not call tools.                                                          \n                                                                                                                       \n\n PROBE COMPLETED                                                                                                       \n\n                                                                                                                       \n herdr-threads: wake up                                                                                                \n                                                                                                                       \n\n PROBE COMPLETED                                                                                                       \n\n                                                                                                                       \n herdr-threads: wake up                                                                                                \n                                                                                                                       \n\n PROBE COMPLETED                                                                                                       \n\n                                                                                                                       \n herdr-threads: wake up                                                                                                \n                                                                                                                       \n\n PROBE COMPLETED                                                                                                       \n\n\u001b[0m\u001b[38;5;4m\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u001b[0m\n\n\u001b[0m\u001b[38;5;3mOnly showing models from configured providers. Use /login to add providers.\u001b[0m                                            \n\n> \u001b[0m\u001b[7m \u001b[0m                                                                                                                    \n\n\u001b[0m\u001b[38;5;5m\u2192 \u2713 scripted\u001b[0m\u001b[2m (Scripted probe)\u001b[0m \u001b[0m\u001b[2m[ht-fixture]\u001b[0m                                                                             \n\n\u001b[0m\u001b[2m  Model Name: Scripted probe\u001b[0m                                                                                           \n\n\u001b[0m\u001b[38;5;2m  Model catalogs refreshed.\u001b[0m                                                                                            \n\n\u001b[0m\u001b[2m  Enter to select \u00b7 Ctrl+S to set as default \u00b7 Escape/Ctrl+C to cancel\u001b[0m                                                 \n\u001b[0m\u001b[38;5;4m\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u001b[0m\n\u001b[0m\u001b[2m$SCRATCH/project\u001b[0m\n\u001b[0m\u001b[2m2.3%/100k                                                                                                      scripted\u001b[0m",
+        "visible": "\n Qualification baseline. Reply only READY. Do not call tools.\n\n\n PROBE COMPLETED\n\n\n herdr-threads: wake up\n\n\n PROBE COMPLETED\n\n\n herdr-threads: wake up\n\n\n PROBE COMPLETED\n\n\n herdr-threads: wake up\n\n\n PROBE COMPLETED\n\n\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\n\nOnly showing models from configured providers. Use /login to add providers.\n\n>\n\n\u2192 \u2713 scripted (Scripted probe) [ht-fixture]\n\n  Model Name: Scripted probe\n\n  Model catalogs refreshed.\n\n  Enter to select \u00b7 Ctrl+S to set as default \u00b7 Escape/Ctrl+C to cancel\n\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\n$SCRATCH/project\n2.3%/100k                                                                                                      scripted\n"
+      },
+      "after": {
+        "at": 1794728531.6923552,
+        "run_starts": 4,
+        "native_observation": {
+          "at": 1794728531801,
+          "event": "state",
+          "state": {
+            "sid": "01a1de26-564d-77b3-b980-6991898853de",
+            "idle": true,
+            "editor": "",
+            "model": "scripted",
+            "provider": "ht-fixture"
+          },
+          "observation": "2df986ff-cd3a-4e4e-afd0-d77517797668"
+        },
+        "styled_sha256": "9863783c107576d98c10c50280e18e22717a2b69bba9e2b1293ffe056cb9f047",
+        "styled": "                                                                                                                       \n Qualification baseline. Reply only READY. Do not call tools.                                                          \n                                                                                                                       \n\n PROBE COMPLETED                                                                                                       \n\n                                                                                                                       \n herdr-threads: wake up                                                                                                \n                                                                                                                       \n\n PROBE COMPLETED                                                                                                       \n\n                                                                                                                       \n herdr-threads: wake up                                                                                                \n                                                                                                                       \n\n PROBE COMPLETED                                                                                                       \n\n                                                                                                                       \n herdr-threads: wake up                                                                                                \n                                                                                                                       \n\n PROBE COMPLETED                                                                                                       \n\n\u001b[0m\u001b[38;5;4m\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u001b[0m\n\n\u001b[0m\u001b[38;5;3mOnly showing models from configured providers. Use /login to add providers.\u001b[0m                                            \n\n> \u001b[0m\u001b[7m \u001b[0m                                                                                                                    \n\n\u001b[0m\u001b[38;5;5m\u2192 \u2713 scripted\u001b[0m\u001b[2m (Scripted probe)\u001b[0m \u001b[0m\u001b[2m[ht-fixture]\u001b[0m                                                                             \n\n\u001b[0m\u001b[2m  Model Name: Scripted probe\u001b[0m                                                                                           \n\n\u001b[0m\u001b[38;5;2m  Model catalogs refreshed.\u001b[0m                                                                                            \n\n\u001b[0m\u001b[2m  Enter to select \u00b7 Ctrl+S to set as default \u00b7 Escape/Ctrl+C to cancel\u001b[0m                                                 \n\u001b[0m\u001b[38;5;4m\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u001b[0m\n\u001b[0m\u001b[2m$SCRATCH/project\u001b[0m\n\u001b[0m\u001b[2m2.3%/100k                                                                                                      scripted\u001b[0m",
+        "visible": "\n Qualification baseline. Reply only READY. Do not call tools.\n\n\n PROBE COMPLETED\n\n\n herdr-threads: wake up\n\n\n PROBE COMPLETED\n\n\n herdr-threads: wake up\n\n\n PROBE COMPLETED\n\n\n herdr-threads: wake up\n\n\n PROBE COMPLETED\n\n\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\n\nOnly showing models from configured providers. Use /login to add providers.\n\n>\n\n\u2192 \u2713 scripted (Scripted probe) [ht-fixture]\n\n  Model Name: Scripted probe\n\n  Model catalogs refreshed.\n\n  Enter to select \u00b7 Ctrl+S to set as default \u00b7 Escape/Ctrl+C to cancel\n\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\n$SCRATCH/project\n2.3%/100k                                                                                                      scripted\n"
+      }
+    },
+    "settings-picker": {
+      "before": {
+        "at": 1794728565.124867,
+        "run_starts": 5,
+        "native_observation": {
+          "at": 1794728565066,
+          "event": "state",
+          "state": {
+            "sid": "01a1de26-564d-77b3-b980-6991898853de",
+            "idle": true,
+            "editor": "",
+            "model": "scripted",
+            "provider": "ht-fixture"
+          },
+          "observation": "5a3cf223-6c83-4b09-b9f8-885e5beb3789"
+        },
+        "styled_sha256": "25a6678112fe9b26942b78de383ca82b87f67de84ce98585d60ee1daf41b257b",
+        "styled": "\n                                                                                                                       \n herdr-threads: wake up                                                                                                \n                                                                                                                       \n\n PROBE COMPLETED                                                                                                       \n\n                                                                                                                       \n herdr-threads: wake up                                                                                                \n                                                                                                                       \n\n PROBE COMPLETED                                                                                                       \n\n                                                                                                                       \n herdr-threads: wake up                                                                                                \n                                                                                                                       \n\n PROBE COMPLETED                                                                                                       \n\n\u001b[0m\u001b[38;5;4m\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u001b[0m\n> \u001b[0m\u001b[7m \u001b[0m                                                                                                                    \n\n\u001b[0m\u001b[38;5;5m\u2192 Auto-compact                    \u001b[0m  \u001b[0m\u001b[38;5;5mfalse\u001b[0m\n  Show images                       \u001b[0m\u001b[2mtrue\u001b[0m\n  Image width                       \u001b[0m\u001b[2m60\u001b[0m\n  Auto-resize images                \u001b[0m\u001b[2mtrue\u001b[0m\n  Block images                      \u001b[0m\u001b[2mfalse\u001b[0m\n  Skill commands                    \u001b[0m\u001b[2mtrue\u001b[0m\n  Show hardware cursor              \u001b[0m\u001b[2mfalse\u001b[0m\n  Editor padding                    \u001b[0m\u001b[2m0\u001b[0m\n  Output padding                    \u001b[0m\u001b[2m1\u001b[0m\n  Autocomplete max items            \u001b[0m\u001b[2m5\u001b[0m\n\u001b[0m\u001b[2m  (1/35)\u001b[0m\n\n\u001b[0m\u001b[2m  Automatically compact context when it gets too large\u001b[0m\n\n\u001b[0m\u001b[2m  Type to search \u00b7 Enter/Space to change \u00b7 Esc to cancel\u001b[0m\n\u001b[0m\u001b[38;5;4m\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u001b[0m\n\u001b[0m\u001b[2m$SCRATCH/project\u001b[0m\n\u001b[0m\u001b[2m2.4%/100k                                                                                                      scripted\u001b[0m",
+        "visible": "\n\n herdr-threads: wake up\n\n\n PROBE COMPLETED\n\n\n herdr-threads: wake up\n\n\n PROBE COMPLETED\n\n\n herdr-threads: wake up\n\n\n PROBE COMPLETED\n\n\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\n>\n\n\u2192 Auto-compact                      false\n  Show images                       true\n  Image width                       60\n  Auto-resize images                true\n  Block images                      false\n  Skill commands                    true\n  Show hardware cursor              false\n  Editor padding                    0\n  Output padding                    1\n  Autocomplete max items            5\n  (1/35)\n\n  Automatically compact context when it gets too large\n\n  Type to search \u00b7 Enter/Space to change \u00b7 Esc to cancel\n\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\n$SCRATCH/project\n2.4%/100k                                                                                                      scripted\n"
+      },
+      "after": {
+        "at": 1794728567.1805682,
+        "run_starts": 5,
+        "native_observation": {
+          "at": 1794728567277,
+          "event": "state",
+          "state": {
+            "sid": "01a1de26-564d-77b3-b980-6991898853de",
+            "idle": true,
+            "editor": "",
+            "model": "scripted",
+            "provider": "ht-fixture"
+          },
+          "observation": "f560d04b-2244-479c-afcb-94ec7bdb0701"
+        },
+        "styled_sha256": "25a6678112fe9b26942b78de383ca82b87f67de84ce98585d60ee1daf41b257b",
+        "styled": "\n                                                                                                                       \n herdr-threads: wake up                                                                                                \n                                                                                                                       \n\n PROBE COMPLETED                                                                                                       \n\n                                                                                                                       \n herdr-threads: wake up                                                                                                \n                                                                                                                       \n\n PROBE COMPLETED                                                                                                       \n\n                                                                                                                       \n herdr-threads: wake up                                                                                                \n                                                                                                                       \n\n PROBE COMPLETED                                                                                                       \n\n\u001b[0m\u001b[38;5;4m\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u001b[0m\n> \u001b[0m\u001b[7m \u001b[0m                                                                                                                    \n\n\u001b[0m\u001b[38;5;5m\u2192 Auto-compact                    \u001b[0m  \u001b[0m\u001b[38;5;5mfalse\u001b[0m\n  Show images                       \u001b[0m\u001b[2mtrue\u001b[0m\n  Image width                       \u001b[0m\u001b[2m60\u001b[0m\n  Auto-resize images                \u001b[0m\u001b[2mtrue\u001b[0m\n  Block images                      \u001b[0m\u001b[2mfalse\u001b[0m\n  Skill commands                    \u001b[0m\u001b[2mtrue\u001b[0m\n  Show hardware cursor              \u001b[0m\u001b[2mfalse\u001b[0m\n  Editor padding                    \u001b[0m\u001b[2m0\u001b[0m\n  Output padding                    \u001b[0m\u001b[2m1\u001b[0m\n  Autocomplete max items            \u001b[0m\u001b[2m5\u001b[0m\n\u001b[0m\u001b[2m  (1/35)\u001b[0m\n\n\u001b[0m\u001b[2m  Automatically compact context when it gets too large\u001b[0m\n\n\u001b[0m\u001b[2m  Type to search \u00b7 Enter/Space to change \u00b7 Esc to cancel\u001b[0m\n\u001b[0m\u001b[38;5;4m\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u001b[0m\n\u001b[0m\u001b[2m$SCRATCH/project\u001b[0m\n\u001b[0m\u001b[2m2.4%/100k                                                                                                      scripted\u001b[0m",
+        "visible": "\n\n herdr-threads: wake up\n\n\n PROBE COMPLETED\n\n\n herdr-threads: wake up\n\n\n PROBE COMPLETED\n\n\n herdr-threads: wake up\n\n\n PROBE COMPLETED\n\n\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\n>\n\n\u2192 Auto-compact                      false\n  Show images                       true\n  Image width                       60\n  Auto-resize images                true\n  Block images                      false\n  Skill commands                    true\n  Show hardware cursor              false\n  Editor padding                    0\n  Output padding                    1\n  Autocomplete max items            5\n  (1/35)\n\n  Automatically compact context when it gets too large\n\n  Type to search \u00b7 Enter/Space to change \u00b7 Esc to cancel\n\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\n$SCRATCH/project\n2.4%/100k                                                                                                      scripted\n"
+      }
+    },
+    "inline-select": {
+      "before": {
+        "at": 1794728600.1945999,
+        "run_starts": 6,
+        "native_observation": {
+          "at": 1794728600139,
+          "event": "state",
+          "state": {
+            "sid": "01a1de26-564d-77b3-b980-6991898853de",
+            "idle": true,
+            "editor": "",
+            "model": "scripted",
+            "provider": "ht-fixture"
+          },
+          "observation": "6d402d23-555e-4c80-b43e-771be607e431"
+        },
+        "styled_sha256": "5aa2f76c8bbfa3fe3eac8ebbe3340b8c33f9d67faed3cd46226d3ec2cc631e5a",
+        "styled": "                                                                                                                       \n\n PROBE COMPLETED                                                                                                       \n\n                                                                                                                       \n herdr-threads: wake up                                                                                                \n                                                                                                                       \n\n PROBE COMPLETED                                                                                                       \n\n                                                                                                                       \n herdr-threads: wake up                                                                                                \n                                                                                                                       \n\n PROBE COMPLETED                                                                                                       \n\n                                                                                                                       \n herdr-threads: wake up                                                                                                \n                                                                                                                       \n\n PROBE COMPLETED                                                                                                       \n\n                                                                                                                       \n herdr-threads: wake up                                                                                                \n                                                                                                                       \n\n PROBE COMPLETED                                                                                                       \n\n\u001b[0m\u001b[38;5;4m\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u001b[0m\n\n \u001b[0m\u001b[1m\u001b[38;5;5mPROBE INLINE SELECT\u001b[0m                                                                                                   \n\n \u001b[0m\u001b[38;5;5m\u2192 First\u001b[0m                                                                                                               \n   Second                                                                                                              \n\n \u001b[0m\u001b[2m\u2191\u2193 navigate\u001b[0m  \u001b[0m\u001b[2menter select\u001b[0m  \u001b[0m\u001b[2mescape/ctrl+c cancel\u001b[0m                                                                       \n\n\u001b[0m\u001b[38;5;4m\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u001b[0m\n\u001b[0m\u001b[2m$SCRATCH/project\u001b[0m\n\u001b[0m\u001b[2m2.5%/100k                                                                                                      scripted\u001b[0m",
+        "visible": "\n\n PROBE COMPLETED\n\n\n herdr-threads: wake up\n\n\n PROBE COMPLETED\n\n\n herdr-threads: wake up\n\n\n PROBE COMPLETED\n\n\n herdr-threads: wake up\n\n\n PROBE COMPLETED\n\n\n herdr-threads: wake up\n\n\n PROBE COMPLETED\n\n\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\n\n PROBE INLINE SELECT\n\n \u2192 First\n   Second\n\n \u2191\u2193 navigate  enter select  escape/ctrl+c cancel\n\n\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\n$SCRATCH/project\n2.5%/100k                                                                                                      scripted\n"
+      },
+      "after": {
+        "at": 1794728602.2514932,
+        "run_starts": 6,
+        "native_observation": {
+          "at": 1794728602352,
+          "event": "state",
+          "state": {
+            "sid": "01a1de26-564d-77b3-b980-6991898853de",
+            "idle": true,
+            "editor": "",
+            "model": "scripted",
+            "provider": "ht-fixture"
+          },
+          "observation": "2420dc95-9c00-4120-9dcf-854d298298d5"
+        },
+        "styled_sha256": "5aa2f76c8bbfa3fe3eac8ebbe3340b8c33f9d67faed3cd46226d3ec2cc631e5a",
+        "styled": "                                                                                                                       \n\n PROBE COMPLETED                                                                                                       \n\n                                                                                                                       \n herdr-threads: wake up                                                                                                \n                                                                                                                       \n\n PROBE COMPLETED                                                                                                       \n\n                                                                                                                       \n herdr-threads: wake up                                                                                                \n                                                                                                                       \n\n PROBE COMPLETED                                                                                                       \n\n                                                                                                                       \n herdr-threads: wake up                                                                                                \n                                                                                                                       \n\n PROBE COMPLETED                                                                                                       \n\n                                                                                                                       \n herdr-threads: wake up                                                                                                \n                                                                                                                       \n\n PROBE COMPLETED                                                                                                       \n\n\u001b[0m\u001b[38;5;4m\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u001b[0m\n\n \u001b[0m\u001b[1m\u001b[38;5;5mPROBE INLINE SELECT\u001b[0m                                                                                                   \n\n \u001b[0m\u001b[38;5;5m\u2192 First\u001b[0m                                                                                                               \n   Second                                                                                                              \n\n \u001b[0m\u001b[2m\u2191\u2193 navigate\u001b[0m  \u001b[0m\u001b[2menter select\u001b[0m  \u001b[0m\u001b[2mescape/ctrl+c cancel\u001b[0m                                                                       \n\n\u001b[0m\u001b[38;5;4m\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u001b[0m\n\u001b[0m\u001b[2m$SCRATCH/project\u001b[0m\n\u001b[0m\u001b[2m2.5%/100k                                                                                                      scripted\u001b[0m",
+        "visible": "\n\n PROBE COMPLETED\n\n\n herdr-threads: wake up\n\n\n PROBE COMPLETED\n\n\n herdr-threads: wake up\n\n\n PROBE COMPLETED\n\n\n herdr-threads: wake up\n\n\n PROBE COMPLETED\n\n\n herdr-threads: wake up\n\n\n PROBE COMPLETED\n\n\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\n\n PROBE INLINE SELECT\n\n \u2192 First\n   Second\n\n \u2191\u2193 navigate  enter select  escape/ctrl+c cancel\n\n\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\n$SCRATCH/project\n2.5%/100k                                                                                                      scripted\n"
+      }
+    }
+  },
+  "live": {
+    "state": "automatic-approval rejected before launch; unattempted, no credential read"
+  },
+  "unfiltered_suite": {
+    "summary": "Summary [ 878.113s] 9616 tests run: 9606 passed (1 slow), 10 failed, 65 skipped",
+    "test_runtime_s": 878.113,
+    "compilation": "1m39s",
+    "exit_code": 100,
+    "cap": 4,
+    "performance_budget_s": 300,
+    "performance_budget_pass": false,
+    "attribution": "Cause unestablished. No comparison baseline was run; no second unfiltered run authorized.",
+    "slowest_completed": [
+      {
+        "status": "PASS",
+        "seconds": 180.481,
+        "test": "( 317/9616) herdr-threads::package manifest::failpoints_are_compiled_out_of_release_builds"
+      },
+      {
+        "status": "PASS",
+        "seconds": 34.733,
+        "test": "(  68/9616) herdr-threads::integration trust_policy::a_wake_with_no_session_contact_before_its_retry_is_unreceived_and_not_retyped"
+      },
+      {
+        "status": "PASS",
+        "seconds": 31.469,
+        "test": "(1770/9616) herdr-threads::multinode config_wipe::cold_start_after_the_deadline_holds_overdue_until_a_round_completes"
+      },
+      {
+        "status": "PASS",
+        "seconds": 29.162,
+        "test": "(4600/9616) herdr-threads::multinode remote_addresses::remote_launch_runs_on_the_target_machine_once"
+      },
+      {
+        "status": "PASS",
+        "seconds": 27.533,
+        "test": "( 241/9616) herdr-threads::clone_identity_sweep agent_exit_with_pane_open_keeps_the_seat"
+      },
+      {
+        "status": "PASS",
+        "seconds": 24.039,
+        "test": "(1914/9616) herdr-threads::multinode handoff_atomic::overdue_while_partitioned"
+      },
+      {
+        "status": "PASS",
+        "seconds": 22.489,
+        "test": "(  46/9616) herdr-threads::integration lanes_latency::herdr_stopped_freezes_wake_lane"
+      },
+      {
+        "status": "PASS",
+        "seconds": 20.803,
+        "test": "( 372/9616) herdr-threads::integration session_bindings_e2e::a_one_shot_adds_sends_exits_and_a_later_call_reconnects_until_its_process_exits"
+      },
+      {
+        "status": "PASS",
+        "seconds": 17.629,
+        "test": "(9442/9616) herdr-threads::integration lane_wiring::injected_lane_failure_logs_and_degrades_then_clears"
+      },
+      {
+        "status": "PASS",
+        "seconds": 15.235,
+        "test": "(1831/9616) herdr-threads cli::topology_handoff::tests::live::automatic_live::hc_pipeline::v3_outcome_unknown_is_recorded"
+      },
+      {
+        "status": "PASS",
+        "seconds": 15.024,
+        "test": "(9298/9616) herdr-threads::combined sync_dialer::preamble_then_silence_times_out_and_group_reaped"
+      },
+      {
+        "status": "PASS",
+        "seconds": 13.806,
+        "test": "(9425/9616) herdr-threads::integration latency::history_and_health_stay_fast_under_a_party_with_a_slow_host"
+      },
+      {
+        "status": "PASS",
+        "seconds": 13.245,
+        "test": "(1805/9616) herdr-threads::multinode handoff_atomic::linked_then_overdue_on_the_sender_only"
+      },
+      {
+        "status": "PASS",
+        "seconds": 13.225,
+        "test": "(1899/9616) herdr-threads::multinode handoff_atomic::resend_while_running_launches_once"
+      },
+      {
+        "status": "PASS",
+        "seconds": 13.06,
+        "test": "(9346/9616) herdr-threads::combined update_cli::update_replaces_a_running_owned_daemon_and_leaves_it_stoppable"
+      },
+      {
+        "status": "PASS",
+        "seconds": 12.687,
+        "test": "( 281/9616) herdr-threads::integration hermes_enrollment_smoke::p0_to_hermes_seat_warns_no_sender_and_doctor_lists_no_block"
+      },
+      {
+        "status": "PASS",
+        "seconds": 12.617,
+        "test": "(9414/9616) herdr-threads::integration herdr_states::herdr_stopped_health_says_degraded_see_log"
+      },
+      {
+        "status": "PASS",
+        "seconds": 11.8,
+        "test": "( 600/9616) herdr-threads::multinode config_direct::two_nodes_direct_send_and_ack"
+      },
+      {
+        "status": "PASS",
+        "seconds": 11.778,
+        "test": "(2471/9616) herdr-threads::multinode peer_hygiene::prune_forgets_a_dead_island_and_keeps_referenced_nodes"
+      },
+      {
+        "status": "PASS",
+        "seconds": 11.197,
+        "test": "(9502/9616) herdr-threads::integration operator_text::degraded_lane_in_health_prints_see_log"
+      }
+    ],
+    "failed": [
+      {
+        "status": "FAIL",
+        "seconds": 0.008,
+        "test": "( 387/9616) herdr-threads app::health_v2_observer_tests::health_wording_uses_supplied_registry_and_unknown_optional_metadata"
+      },
+      {
+        "status": "FAIL",
+        "seconds": 0.01,
+        "test": "(1489/9616) herdr-threads cli::launch::tests::stage_a_help_lists_registered_options_keys_in_registry_order"
+      },
+      {
+        "status": "FAIL",
+        "seconds": 0.204,
+        "test": "(4865/9616) herdr-threads service::dispatch::inherited_name_tests::inherited_name_is_refused_other_names_bind_and_restart_frees_it"
+      },
+      {
+        "status": "FAIL",
+        "seconds": 0.211,
+        "test": "(4871/9616) herdr-threads service::dispatch::inherited_name_tests::no_hint_or_no_server_pid_skips_the_check"
+      },
+      {
+        "status": "FAIL",
+        "seconds": 0.419,
+        "test": "(8387/9616) herdr-threads::combined golden_surfaces::health_json_observed_unobserved"
+      },
+      {
+        "status": "FAIL",
+        "seconds": 0.032,
+        "test": "(9040/9616) herdr-threads::combined setup_cli::bare_setup_covers_every_detected_harness_and_unsetup_removes_both"
+      },
+      {
+        "status": "FAIL",
+        "seconds": 0.018,
+        "test": "(9041/9616) herdr-threads::combined setup_cli::bare_setup_exits_nonzero_only_for_a_failed_harness"
+      },
+      {
+        "status": "FAIL",
+        "seconds": 0.033,
+        "test": "(9043/9616) herdr-threads::combined setup_cli::bare_setup_skips_missing_and_installs_available_harnesses"
+      },
+      {
+        "status": "FAIL",
+        "seconds": 0.396,
+        "test": "(9376/9616) herdr-threads::integration harness_adapter_wiring::harness_adapter_end_to_end_wiring_uses_registry_values_across_boundaries"
+      },
+      {
+        "status": "FAIL",
+        "seconds": 0.005,
+        "test": "(9395/9616) herdr-threads::integration hermes_enrollment_sweep::every_registered_adapter_declares_its_enrollment_policy"
+      }
+    ],
+    "resource_snapshot": "unfiltered-resource-snapshot.json",
+    "leak_rc": 0,
+    "budget_issue": "ht-n4xh",
+    "baseline": {
+      "source": "09d3cf7f0",
+      "tests_passed": 9590,
+      "skipped": 64,
+      "cap": 4,
+      "runtime_s": 951,
+      "evidence": "docs/validation/claude-wake-busy-2026-11-14.md:170",
+      "inference": "Current run is faster than this comparable historical same-cap observation; an introduced regression is not established. Both exceed the absolute five-minute budget."
+    },
+    "log_sha256": "f30b070f61d37970fb3101f60d3413f8c945070c584cd721b33adf7cdd8d2aea"
+  },
+  "registry_correction": {
+    "scope": "eight stale Pi registry/Native wake/help/setup/Lifecycle expectations",
+    "frozen_diff_sha256": "d55e7207592806a15497eb106559eec8eab45b48aa315caef7bbc01e168fe370",
+    "review": "approved",
+    "targeted_result": {
+      "selected": 8,
+      "passed": 8,
+      "runtime_s": 1.033,
+      "exit_code": 0,
+      "leak_rc": 0
+    },
+    "first_targeted_attempt": "7 passed; same launch test reached a later stale handoff-options assertion. Corrected that explicit Pi key expectation; original focused failure retained."
+  }
+}
