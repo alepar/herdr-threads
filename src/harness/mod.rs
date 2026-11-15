@@ -57,6 +57,7 @@ pub mod opencode;
 #[cfg(test)]
 #[path = "../../tests/harness/optimistic_render.rs"]
 mod optimistic_render;
+pub mod owned_files;
 pub mod permissions;
 pub mod process;
 pub mod recipe;

@@ -801,3 +801,144 @@ fn doctor_flags_a_second_plugin_copy_and_notes_same_named_skills() {
     let debug = doctor::doctor_text(&hooks, DoctorTextForm::Debug);
     assert!(debug.contains("hooks.opencode.copies: "), "{debug}");
 }
+
+/// Explicit historical gate: the old binary writes every fixture byte itself. This test never
+/// falls back to reconstructed JSON or silently passes without the requested historical binary.
+#[test]
+#[ignore = "requires verified 3.2.0 producer: set HT_SETUP_V320_BINARY and select this test explicitly"]
+fn historical_v320_manifest_upgrades_without_changing_owned_bytes_or_projection() {
+    use crate::test_support::spawn::SpawnOwned;
+    use std::process::Stdio;
+    let binary = std::env::var_os("HT_SETUP_V320_BINARY")
+        .expect("HT_SETUP_V320_BINARY is required for this explicit historical gate");
+    let binary = std::fs::canonicalize(binary).unwrap();
+    let mut version = crate::test_support::spawn::command(&binary);
+    let output = version
+        .arg("--version")
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .spawn_owned()
+        .unwrap()
+        .wait_with_output()
+        .unwrap();
+    assert!(output.status.success());
+    assert_eq!(
+        String::from_utf8(output.stdout).unwrap().trim(),
+        "herdr-threads 3.2.0"
+    );
+    for permissions in [false, true] {
+        let mut fx = Fixture::new();
+        fx.exe = binary.clone();
+        let path = fx.root.join("empty-bin");
+        std::fs::create_dir(&path).unwrap();
+        fx.declared = vec![("OPENCODE_CONFIG_DIR", fx.config.clone())];
+        let old = |args: &[&str]| {
+            let mut command = crate::test_support::spawn::command(&binary);
+            command
+                .current_dir(fx.home.join("proj"))
+                .env("HOME", &fx.home)
+                .env("OPENCODE_CONFIG_DIR", &fx.config)
+                .env("PATH", &path)
+                .args(args)
+                .args([
+                    "--state-dir",
+                    fx.state.to_str().unwrap(),
+                    "--host-endpoint",
+                    fx.root.join("host.sock").to_str().unwrap(),
+                    "--json",
+                ])
+                .stdin(Stdio::null())
+                .stdout(Stdio::piped())
+                .stderr(Stdio::piped());
+            let output = command.spawn_owned().unwrap().wait_with_output().unwrap();
+            assert!(
+                output.status.success() || args.first() == Some(&"doctor"),
+                "old producer: {}",
+                String::from_utf8_lossy(&output.stderr)
+            );
+            serde_json::from_slice::<Value>(&output.stdout).unwrap()
+        };
+        let flag = if permissions {
+            "--with-permissions"
+        } else {
+            "--without-permissions"
+        };
+        old(&["setup", "opencode", flag]);
+        let manifest = std::fs::read(fx.manifest()).unwrap();
+        let raw: Value = serde_json::from_slice(&manifest).unwrap();
+        assert_eq!(raw["version"], 1);
+        assert_eq!(raw["binary_version"], "3.2.0");
+        assert_eq!(raw["permissions"], permissions);
+        assert_eq!(
+            serde_json::to_vec(&read_manifest(&fx.manifest()).unwrap().unwrap()).unwrap(),
+            manifest,
+            "legacy manifest serialization is byte-identical"
+        );
+        let plugin = std::fs::read(fx.plugin()).unwrap();
+        let skill = std::fs::read(fx.skill()).unwrap();
+        assert_eq!(raw["files"][0]["digest"], fingerprint(&plugin));
+        assert_eq!(raw["files"][1]["digest"], fingerprint(&skill));
+        let old_setup = old(&["setup", "opencode"]);
+        let old_status = old(&["setup-status", "opencode"]);
+        let old_doctor = old(&["doctor", "--harness", "opencode"]);
+        let mut env = fx.env();
+        env.path = Some(path.clone().into_os_string());
+        let request = SetupRequest {
+            environment: env.clone(),
+            ..fx.request(PermissionPolicy::Ask)
+        };
+        let new_setup = OpencodeAdapter.setup(&request, &budget()).unwrap();
+        assert_eq!(new_setup.projection["action"], "already_installed");
+        for (key, value) in new_setup.projection.as_object().unwrap() {
+            assert_eq!(value, &old_setup["setup"][key], "setup.{key}");
+        }
+        let status_request = StatusRequest {
+            scope: fx.scope(),
+            environment: env,
+            native_binary: None,
+        };
+        let SetupStatus::Detailed(status) = OpencodeAdapter.status(&status_request, &budget())
+        else {
+            panic!("detailed status")
+        };
+        let mut projection = status.projection.clone();
+        setup_status_extras(&status_request, &mut projection);
+        for (key, value) in projection.as_object().unwrap() {
+            assert_eq!(value, &old_status["setup"][key], "status.{key}");
+        }
+        let new_doctor =
+            doctor::doctor_projection(&status_request, &Value::Null, &budget()).unwrap();
+        assert_eq!(new_doctor.hooks, old_doctor["doctor"]["hooks"]["opencode"]);
+        assert_eq!(std::fs::read(fx.manifest()).unwrap(), manifest);
+        assert_eq!(std::fs::read(fx.plugin()).unwrap(), plugin);
+        assert_eq!(std::fs::read(fx.skill()).unwrap(), skill);
+        let old_removed = old(&["unsetup", "opencode"]);
+        old(&["setup", "opencode", flag]);
+        let new_removed = fx.unsetup().unwrap();
+        for (key, value) in new_removed.projection.as_object().unwrap() {
+            assert_eq!(value, &old_removed["setup"][key], "unsetup.{key}");
+        }
+        assert!(!fx.manifest().exists());
+        assert!(!fx.plugin().exists());
+        assert!(!fx.skill().exists());
+        old(&["setup", "opencode", flag]);
+        fx.write(&fx.plugin(), "edited after historical setup");
+        let before = std::fs::read(fx.manifest()).unwrap();
+        assert!(is_conflict(fx.setup()));
+        assert_eq!(std::fs::read(fx.manifest()).unwrap(), before);
+        fx.write(&fx.config.join("plugins/foreign.js"), "foreign");
+        let removal = fx.unsetup().unwrap();
+        assert_eq!(
+            removal.residue.as_slice(),
+            std::slice::from_ref(&fx.plugin())
+        );
+        assert_eq!(
+            std::fs::read_to_string(fx.plugin()).unwrap(),
+            "edited after historical setup"
+        );
+        assert_eq!(
+            std::fs::read_to_string(fx.config.join("plugins/foreign.js")).unwrap(),
+            "foreign"
+        );
+    }
+}
