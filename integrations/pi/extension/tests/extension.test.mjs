@@ -427,6 +427,46 @@ test('reload requeue keeps a retained slot before newly observed rows with the s
   await h.emit('session_shutdown', { reason: 'quit' })
 })
 
+test('pre-F1 reload drops legacy 256-record hints before fresh canonical 224 plus 32 admission', async () => {
+  const proposals = [], branch = []
+  // Exact pre-F1 recovery shape: no immutable arena/protected discriminator.
+  // This is optional local acceptance metadata, never a canonical notice source.
+  for (let page = 0; page < 8; page++) {
+    const items = [], frames = new Map(), texts = []
+    let offset = '[herdr-threads] new messages:\n\n'.length
+    for (let i = 0; i < 32; i++) {
+      const id = `legacy-${page * 32 + i}`, key = JSON.stringify(['message', id, null])
+      const text = frame({ kind: 'message', id, thread: 't', sender: 's', body: `legacy body ${id}` })
+      items.push({ key, id, kind: 'message', priority: 0, deadline: Infinity, order: page * 32 + i, truncated: false })
+      frames.set(key, [offset, offset + text.length]); offset += text.length + 2; texts.push(text)
+    }
+    const p = { customType: `legacy-proposal-${page}`, text: '[herdr-threads] new messages:\n\n' + texts.join('\n\n'), guidance: 0, items, frames, revision: 0 }
+    // The first F1 bridge could default this flag on old records; the current
+    // record discriminator must also be present before reusing its hints.
+    if (page === 0) p.ordinaryArena = true
+    proposals.push(p); branch.push({ type: 'custom_message', customType: p.customType, content: p.text })
+  }
+  const registry = { [Symbol.for('herdr-threads.pi.recovery')]: { sid: 'native-session-1', proposals } }
+  const h = harness({ registry, branch }); await h.start('reload')
+  await h.context(); await h.flush()
+  assert.equal(h.ackCalls().length, 0, 'unsupported legacy hints cannot import current receipt proof')
+  assert.equal(confirmations(h).length, 0)
+  for (let i = 0; i < 224; i++) h.message(`canonical-${i}`, 0)
+  h.line(packet(Array.from({ length: 32 }, (_, i) => notice(`fresh-${i}`))))
+  let ordinary = 0, protectedSlots = 0
+  for (let i = 0; i < 10 && !confirmations(h).length; i++) {
+    const r = await h.emit('before_agent_start'); assert.ok(r?.message)
+    assert.doesNotMatch(r.message.content, /legacy body/)
+    ordinary += (r.message.content.match(/\[herdr-threads\] message /g) ?? []).length
+    protectedSlots += (r.message.content.match(/\[herdr-threads\] notice /g) ?? []).length
+    h.store(r); await h.context(); await h.flush()
+  }
+  assert.equal(ordinary, 224); assert.equal(protectedSlots, 32)
+  assert.equal(confirmations(h).length, 1)
+  assert.equal(h.ackCalls().flatMap(c => c.argv.slice(c.argv.indexOf('context') + 1)).length, 224)
+  await h.emit('session_shutdown', { reason: 'quit' })
+})
+
 test('per-item framing matches the shared delivery goldens', () => {
   const fixtures = new URL('../../../../tests/fixtures/delivery/', import.meta.url)
   for (const filename of fs.readdirSync(fixtures).filter(name => name.endsWith('.json'))) {

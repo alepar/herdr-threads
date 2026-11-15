@@ -498,17 +498,22 @@ export function register(pi, io) {
     const ticket = ++lifecycle
     await close(owner, false, event.reason === 'reload')
     if (ticket !== lifecycle || io.registry[OWNER] !== token) return
-    const recovery = event.reason === 'reload' && io.registry[RECOVERY]?.sid === sid ? io.registry[RECOVERY] : null
+    let recovery = event.reason === 'reload' && io.registry[RECOVERY]?.sid === sid ? io.registry[RECOVERY] : null
     delete io.registry[RECOVERY]
     owner = { sid, ctx, execution: io.nonce(), source: ['startup', 'reload', 'new', 'resume', 'fork'].includes(event.reason) ? event.reason : null,
       env: { [PREFIX + 'SESSION']: sid, [PREFIX + 'ROLE']: 'top_level', [PREFIX + 'MODE']: 'tui', [PREFIX + 'PID']: String(io.pid) },
       bound: false, closed: false, admission: null, active: false, compacting: false, abort: new AbortController(),
-      pending: new Map(), proposals: recovery?.proposals ?? [], done: new Set(), guidance: '', guidanceAttempted: false, run: 0, revision: 0,
+      pending: new Map(), proposals: recovery?.proposals.filter(p => typeof p.ordinaryArena === 'boolean'
+        && p.items.every(r => (r.protected === false && ordinary(r)) || (r.protected === true
+          && ['notice', 'invitation', 'attention'].includes(r.kind) && /^[0-9a-f]{64}$/.test(r.key)))) ?? [],
+      done: new Set(), guidance: '', guidanceAttempted: false, run: 0, revision: 0,
       timers: new Set(), calls: new Set(), stops: new Set(), closing: null, child: null, watchRun: 0, live: false, backoff: 0,
       replayDebt: false, replaying: false, replacing: null, page: null, confirming: null, pageFailure: false }
+    // Legacy acceptance hints have different record/budget semantics. Discard
+    // them before fresh canonical input; replay may safely deliver them again.
+    recovery = null
     if (!owner.source) { await close(owner); return }
     for (const p of owner.proposals) {
-      p.ordinaryArena ??= true
       p.evidenced = false; p.acking = false; p.retryCancel = null; p.attempt = null; p.revision = 0
       for (const r of p.items) {
         r.attemptedRun = 0
