@@ -71,7 +71,7 @@ refuse. Unknown/custom editor/footer layouts and unavailable styled output refus
 No draft is stashed, edited or restored by this integration. A focused pane still
 needs the existing minute of observed empty composer before native wake.
 
-Two measured screen limits are explicitly accepted:
+Three measured screen limits are explicitly accepted:
 
 - Another extension's custom overlay may keep the same empty composer/footer and
   idle host status while taking keyboard focus. It can intercept native wake.
@@ -81,6 +81,10 @@ Two measured screen limits are explicitly accepted:
   identical to empty, including styled output. Native wake can append to/submit
   that draft. Spaces with a displaced cursor are refused. This is an observation
   limit, not a draft-preservation guarantee.
+- Another extension can set editor text with `ctx.ui.setEditorText` without Pi
+  rendering it. If the terminal still shows an empty composer, native wake can
+  append to and submit that hidden text. This integration never sets editor
+  text; ordinary terminal typing renders the draft and remains guarded.
 
 ## Receipts and lifecycle
 

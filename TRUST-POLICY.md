@@ -2423,6 +2423,15 @@ as limits, never claimed as passing draft preservation. The existing focused-pan
 window mitigates interaction but proves no internal UI focus or buffer content. No readiness widget
 or private runtime field is used. Unknown or missing styled observations still fail closed.
 
+A separate accepted limit is text another extension sets with `ctx.ui.setEditorText` that Pi has
+not rendered. The editor API can report a nonempty buffer while both plain and styled terminal
+captures show an empty composer; native wake can append to and submit that hidden text. This
+integration never sets editor text. Ordinary terminal typing renders the user's draft and remains
+subject to the visible-draft refusal above. The native fixture must verify a genuinely typed draft
+after its source command, not substitute internal editor state for rendered evidence. Follow-up
+`ht-1z1n` covers a supported readiness witness for these screen limits. This finding changes no
+shared native gate or other harness policy.
+
 Accepted limits: the explicit role is the bundled extension's cooperative assertion. A third-party
 launcher that strips ownership/child markers and starts another interactive TUI is indistinguishable
 from a new ordinary owner and must participate in the child contract. Arbitrary SDK/multisession,
