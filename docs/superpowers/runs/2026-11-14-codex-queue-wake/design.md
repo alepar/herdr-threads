@@ -45,6 +45,22 @@ Revised acceptance: no add when already observed busy; eligible idle p0 wakes an
 
 The design owner will issue revised implementation tasks after target/control and retry details are concrete. The earlier negative qualification is complete under its original stricter contract and does not need to be rerun to prove the same race again.
 
+### Authorized first implementation slice: target/control adapter
+
+Task ht-d2jq.3 is authorized independently of scheduler/storage activation. Add a neutral WakeControl port with observe, add, list and exact-ID delete; default adapter support is absent. Scope includes canonical binding/native session/execution/generation and full process fingerprint/kernel boot. The bounded adapter descriptor holds only required paths/file identities, never environment or argv dumps. Add has no body parameter: it constructs only the existing wake marker. Outcomes distinguish accepted ID, definitive pre-effect refusal and uncertain effect. Neither list nor delete supplies receipt or arrival authority; no adapter-internal add retry.
+
+Initial capture is Linux foreground-only. Observe the exact receiver executable, process fingerprint, current session writer-lock file and persistent queue database from proc file descriptors. Deduplicate descriptors by device/inode, require one distinct supported queue database, reject deleted/replaced/ambiguous evidence and recheck identity. Unsupported operating systems/configurations or unreadable observations use native before add. This is observed capability/layout support, not a version-number admission gate.
+
+Source inspection found that the queue retains a detached SQLite connection for data_version polling, independently of its pool. A session writer lock alone does not establish loadedness: a surviving recorder can retain it after a failed shutdown. Canonical connected binding/session, normal SessionEnd disconnect, live fingerprint and matching lock jointly support the observation; failed SessionEnd plus retained recorder remains a limitation. The implementation must not label FD presence as proof of dispatchability. Retain exact source passages with the implementation evidence.
+
+The preferred helper uses the captured executable, private empty HOME/CODEX_HOME/XDG/cwd, cleared inherited environment and an explicit captured sqlite_home. No receiver hooks, credentials, profile or command-line overrides are copied. Only initialization and queue control calls are allowed; no thread load/resume/start. Before implementation, qualify that exact private-home/shared-SQLite recipe in an isolated no-auth check. Failure requires a new explicit recipe review. Verify the helper addresses the same database identity before add.
+
+After helper initialization and storage verification, invoke a neutral final-authorization callback immediately before the first add bytes. Core owns its canonical scope/owedness and existing host idle/UI checks. A false/error result writes no add bytes. This prevents helper startup from separating the last idle check from enqueue unnecessarily; it does not promise an atomic check across processes.
+
+Initial refusal bounds: capture budget 100ms, at most 1024 descriptors, env 64KiB, argv 32KiB, paths 4KiB, descriptor 16KiB and IDs/correlation 128 bytes. Helper operation budget is at most 2s within its caller budget, reserving 250ms for cleanup and refusing startup with less than 500ms available. One helper per target at a time, no unbounded waiting or background owner. JSON line 256KiB, total stdout 1MiB, stderr 8KiB; list 32 entries/page and at most four pages, with explicit incomplete result. These are engineering bounds to test, not measured latency guarantees; process cleanup must account honestly for a nonquiescent helper.
+
+Any partial write of add bytes makes transport failure uncertain; no retry/native fallback follows from an error after that boundary. Known accepted ID remains accepted even if cleanup reports an error. Deterministic tests cover partial writes, initialization and final-callback refusal, mismatched files, overflows, timeouts, descendant cleanup and incomplete list. The slice adds no scheduler selection or persistent wake policy; those follow a separate reviewed retry contract.
+
 ## Historical conditional design (superseded where the amendment differs)
 
 ## Evidence and decision
