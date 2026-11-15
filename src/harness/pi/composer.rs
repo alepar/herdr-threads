@@ -29,11 +29,21 @@ fn bottom(lines: &[&str], width: Option<u16>) -> Option<usize> {
         return None;
     }
     let stats = lines[bottom + 2];
-    let (before, after) = stats.split_once("%/")?;
-    let percent = before.split_whitespace().last()?;
-    if percent != "?" && percent.parse::<f64>().ok().is_none_or(|n| !n.is_finite()) {
-        return None;
-    }
+    let after = if let Some((before, after)) = stats.split_once("%/") {
+        let percent = before.split_whitespace().last()?;
+        if percent.parse::<f64>().ok().is_none_or(|n| !n.is_finite()) {
+            return None;
+        }
+        after
+    } else {
+        // Native post-compaction usage is unknown until a measured response.
+        // Its default token is ?/capacity, without a percent sign.
+        let (before, after) = stats.split_once("?/")?;
+        if !before.is_empty() && !before.ends_with(char::is_whitespace) {
+            return None;
+        }
+        after
+    };
     if after.split_whitespace().count() < 2 {
         return None;
     }

@@ -1,0 +1,41 @@
+ qualification data qualification data qualification data qualification data qualification data qualification data
+ qualification data qualification data qualification data qualification data qualification data qualification data
+ qualification data qualification data qualification data qualification data qualification data qualification data
+ qualification data qualification data qualification data qualification data qualification data qualification data
+ qualification data qualification data qualification data qualification data qualification data qualification data
+ qualification data qualification data qualification data qualification data qualification data qualification data
+ qualification data qualification data qualification data qualification data qualification data qualification data
+ qualification data qualification data qualification data qualification data qualification data qualification data
+ qualification data qualification data
+
+
+ PROBE COMPLETED
+
+
+ [compaction]
+
+ Compacted from 3,058 tokens (ctrl+o to expand)
+
+
+
+ After native compaction, reply READY without tools.
+
+
+ PROBE COMPLETED
+
+ Warning: herdr-threads: pi watch unavailable
+
+
+ Manual channel-disabled turn; reply READY without tools.
+
+
+ PROBE COMPLETED
+
+ Warning: herdr-threads: pi watch unavailable
+
+───────────────────────────────────────────────────────────────────────────────────────────────────────────────────────
+
+───────────────────────────────────────────────────────────────────────────────────────────────────────────────────────
+/fixture
+?/100k                                                                                                         scripted
+

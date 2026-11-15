@@ -108,3 +108,30 @@ fn pi_composer_captures_screen_observability_limits_without_inventing_a_veto() {
         assert_eq!(styled(text), ComposerRead::Empty);
     }
 }
+
+#[test]
+fn pi_composer_accepts_captured_postcompaction_unknown_usage_without_weakening_guards() {
+    let plain = capture!("postcompact-unknown", ".txt");
+    let ansi = capture!("postcompact-unknown", ".ansi");
+    assert_eq!(policy().screen_blocked(plain), Some(false));
+    assert_eq!(policy().screen_turn_running(plain), Some(false));
+    assert!(policy().wants_styled(&policy().read(plain, Some(120))));
+    assert_eq!(styled(ansi), ComposerRead::Empty);
+    assert_ne!(styled(&ansi.replace("?/100k", "?%/100k")), ComposerRead::Empty);
+    assert_ne!(styled(&ansi.replace("?/100k", "unknown/100k")), ComposerRead::Empty);
+    for text in [
+        capture!("idle-draft", ".ansi"),
+        capture!("one-space-end", ".ansi"),
+        capture!("four-spaces-end", ".ansi"),
+        capture!("multiline", ".ansi"),
+        capture!("empty-multiline", ".ansi"),
+        capture!("wrapped-home", ".ansi"),
+        capture!("builtin-model-picker", ".ansi"),
+        capture!("builtin-settings-picker", ".ansi"),
+        capture!("extension-inline-select", ".ansi"),
+    ] {
+        assert_ne!(styled(&text.replace("2.0%/100k", "?/100k")), ComposerRead::Empty);
+    }
+    let malformed = ansi.replacen(&"─".repeat(119), &"─".repeat(118), 1);
+    assert_ne!(styled(&malformed), ComposerRead::Empty);
+}

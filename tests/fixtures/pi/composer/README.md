@@ -12,3 +12,10 @@ The empty capture and spaces-only drafts with their cursor returned home have
 identical composer bytes. The external custom overlay also preserves the default
 composer. Those fixtures record accepted observation limits in TRUST-POLICY;
 they do not assert draft or external-overlay protection.
+
+`postcompact-unknown` is the captured final pane from the integrated native
+compaction→channel attempt: default unknown context usage is `?/100k` (no
+percent sign), empty editor with the styled cursor at column zero, original
+recipient idle and unfocused. Synthetic provider zero usage kept it unknown
+after the following turn. Draft/selector tests also substitute this exact footer
+spelling into their numeric-usage captures; these variants are synthetic.
