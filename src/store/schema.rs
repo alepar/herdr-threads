@@ -172,6 +172,11 @@ pub(crate) const NODE_DELTAS: &[NodeDelta] = &[
         sql: include_str!("../../migrations/node/0017_kept_claim_boot.sql"),
         rebuild: None,
     },
+    NodeDelta {
+        version: 18,
+        sql: include_str!("../../migrations/node/0018_programmatic_wake_intents.sql"),
+        rebuild: None,
+    },
 ];
 
 /// Latest `PRAGMA user_version` supported by this binary's production schema.

@@ -59,6 +59,11 @@ pub mod thread_registers;
 pub mod topology_handoff;
 pub(crate) mod verified;
 pub mod wake;
+mod wake_intents;
+use crate::ports::{
+    PrepareWakeIntent, WakeArmTicket, WakeIntentPage, WakeIntentPreparation, WakeIntentResult,
+    WakeIntentSnapshot,
+};
 pub mod work;
 
 use crate::service::kicks::{self, CommitKicks};
@@ -3551,6 +3556,91 @@ impl StorePort for SqliteStore {
             self.settings.daemon_boot,
             &request,
         )
+    }
+    fn prepare_wake_intent(
+        &self,
+        r: &WakeReservation,
+        p: &WakeIntentPreparation,
+        budget: &CallBudget,
+    ) -> Result<PrepareWakeIntent, ApiError> {
+        wake_intents::prepare(self, r, p, budget)
+    }
+    fn arm_wake_intent(
+        &self,
+        r: &WakeReservation,
+        revision: u64,
+        nonce: uuid::Uuid,
+        budget: &CallBudget,
+    ) -> Result<Option<WakeArmTicket>, ApiError> {
+        wake_intents::arm(self, r, revision, nonce, budget)
+    }
+    fn record_wake_intent_result(
+        &self,
+        ticket: &WakeArmTicket,
+        result: &WakeIntentResult,
+        budget: &CallBudget,
+    ) -> Result<bool, ApiError> {
+        wake_intents::record_result(self, ticket, result, budget)
+    }
+    fn refuse_prepared_wake_intent(
+        &self,
+        attempt: &WakeAttemptId,
+        revision: u64,
+        cleanup_confirmed: bool,
+        diagnostic: &str,
+        budget: &CallBudget,
+    ) -> Result<bool, ApiError> {
+        wake_intents::refuse_prepared(
+            self,
+            attempt,
+            revision,
+            cleanup_confirmed,
+            diagnostic,
+            budget,
+        )
+    }
+    fn record_owned_wake_ids(
+        &self,
+        attempt: &WakeAttemptId,
+        revision: u64,
+        ids: &[String],
+        complete: bool,
+        budget: &CallBudget,
+    ) -> Result<bool, ApiError> {
+        wake_intents::record_ids(self, attempt, revision, ids, complete, budget)
+    }
+    fn wake_intent(
+        &self,
+        attempt: &WakeAttemptId,
+        budget: &CallBudget,
+    ) -> Result<Option<WakeIntentSnapshot>, ApiError> {
+        wake_intents::snapshot(self, attempt, budget)
+    }
+    fn wake_intent_recovery_page(
+        &self,
+        after: u64,
+        limit: u16,
+        budget: &CallBudget,
+    ) -> Result<WakeIntentPage, ApiError> {
+        wake_intents::page(self, None, after, limit, budget)
+    }
+    fn unresolved_wake_intents_for_seat(
+        &self,
+        seat: &SeatId,
+        after: u64,
+        limit: u16,
+        budget: &CallBudget,
+    ) -> Result<WakeIntentPage, ApiError> {
+        wake_intents::page(self, Some(seat), after, limit, budget)
+    }
+    fn recover_wake_intent(
+        &self,
+        attempt: &WakeAttemptId,
+        revision: u64,
+        prior_boot: uuid::Uuid,
+        budget: &CallBudget,
+    ) -> Result<bool, ApiError> {
+        wake_intents::recover(self, attempt, revision, prior_boot, budget)
     }
     fn validate_wake_reservation(
         &self,

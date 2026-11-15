@@ -232,3 +232,6 @@ mod update_cli;
 #[cfg(target_os = "linux")]
 #[path = "harness/codex_wake_observation.rs"]
 mod codex_wake_observation;
+
+#[path = "store/wake_intents.rs"]
+mod wake_intents;

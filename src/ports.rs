@@ -8,6 +8,9 @@
 //! owns volatile monotonic wake guards; clients own only claims, operation keys and
 //! requested page/output bounds. No client supplies a decision timestamp or actor.
 
+mod wake_intents;
+pub use wake_intents::*;
+
 use serde::Serialize;
 use std::time::Duration;
 
@@ -4349,6 +4352,111 @@ pub trait StorePort: ModStoreReads + Send + Sync {
         request: WakeRecoveryRequest,
         budget: &CallBudget,
     ) -> Result<WakeRecoveryOutcome, ApiError>;
+    fn prepare_wake_intent(
+        &self,
+        _reservation: &WakeReservation,
+        _preparation: &WakeIntentPreparation,
+        _budget: &CallBudget,
+    ) -> Result<PrepareWakeIntent, ApiError> {
+        Err(ApiError::new(
+            ErrorCode::InvalidRequest,
+            "wake intent ledger unavailable",
+        ))
+    }
+    fn arm_wake_intent(
+        &self,
+        _reservation: &WakeReservation,
+        _revision: u64,
+        _nonce: uuid::Uuid,
+        _budget: &CallBudget,
+    ) -> Result<Option<WakeArmTicket>, ApiError> {
+        Err(ApiError::new(
+            ErrorCode::InvalidRequest,
+            "wake intent ledger unavailable",
+        ))
+    }
+    fn record_wake_intent_result(
+        &self,
+        _ticket: &WakeArmTicket,
+        _result: &WakeIntentResult,
+        _budget: &CallBudget,
+    ) -> Result<bool, ApiError> {
+        Err(ApiError::new(
+            ErrorCode::InvalidRequest,
+            "wake intent ledger unavailable",
+        ))
+    }
+    fn refuse_prepared_wake_intent(
+        &self,
+        _attempt: &WakeAttemptId,
+        _revision: u64,
+        _cleanup_confirmed: bool,
+        _diagnostic: &str,
+        _budget: &CallBudget,
+    ) -> Result<bool, ApiError> {
+        Err(ApiError::new(
+            ErrorCode::InvalidRequest,
+            "wake intent ledger unavailable",
+        ))
+    }
+    fn record_owned_wake_ids(
+        &self,
+        _attempt: &WakeAttemptId,
+        _revision: u64,
+        _ids: &[String],
+        _complete: bool,
+        _budget: &CallBudget,
+    ) -> Result<bool, ApiError> {
+        Err(ApiError::new(
+            ErrorCode::InvalidRequest,
+            "wake intent ledger unavailable",
+        ))
+    }
+    fn wake_intent(
+        &self,
+        _attempt: &WakeAttemptId,
+        _budget: &CallBudget,
+    ) -> Result<Option<WakeIntentSnapshot>, ApiError> {
+        Err(ApiError::new(
+            ErrorCode::InvalidRequest,
+            "wake intent ledger unavailable",
+        ))
+    }
+    fn wake_intent_recovery_page(
+        &self,
+        _after: u64,
+        _limit: u16,
+        _budget: &CallBudget,
+    ) -> Result<WakeIntentPage, ApiError> {
+        Err(ApiError::new(
+            ErrorCode::InvalidRequest,
+            "wake intent ledger unavailable",
+        ))
+    }
+    fn unresolved_wake_intents_for_seat(
+        &self,
+        _seat: &SeatId,
+        _after: u64,
+        _limit: u16,
+        _budget: &CallBudget,
+    ) -> Result<WakeIntentPage, ApiError> {
+        Err(ApiError::new(
+            ErrorCode::InvalidRequest,
+            "wake intent ledger unavailable",
+        ))
+    }
+    fn recover_wake_intent(
+        &self,
+        _attempt: &WakeAttemptId,
+        _revision: u64,
+        _prior_boot: uuid::Uuid,
+        _budget: &CallBudget,
+    ) -> Result<bool, ApiError> {
+        Err(ApiError::new(
+            ErrorCode::InvalidRequest,
+            "wake intent ledger unavailable",
+        ))
+    }
     /// Final short store fence after a fresh host read and before prompt I/O.
     /// Rechecks live attempt/daemon boot, seat/target/binding identity, and
     /// effective actionable work. No SQL writer is held during prompt I/O.

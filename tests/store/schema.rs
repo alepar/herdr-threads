@@ -7889,3 +7889,33 @@ fn delta_0013_backfills_remote_seat_names() {
         assert_eq!(name(seat), None, "{seat}");
     }
 }
+
+#[test]
+fn queue_wake_ledger_upgrade_preserves_existing_reservation() {
+    let db = Connection::open_in_memory().unwrap();
+    let index = schema::NODE_DELTAS
+        .iter()
+        .position(|delta| delta.sql.contains("CREATE TABLE wake_intents ("))
+        .unwrap();
+    let prior = &schema::NODE_DELTAS[..index];
+    open_with(&db, prior).unwrap();
+    crate::test_support::attach_test_host_to_connection(&db);
+    let host: i64 = db
+        .query_row("SELECT min(host_id) FROM herdr_hosts", [], |r| r.get(0))
+        .unwrap();
+    host_seat_row(&db, "wake-seat", host, "resolved", None);
+    db.execute("INSERT INTO wake_work(seat_id,reservation_id,reservation_boot,last_reservation_id,last_reservation_boot,last_invitation_seq,last_invitation_offset,last_receipt_seq,last_receipt_offset,last_warning_seq,last_warning_offset,last_lazy_ordinal) VALUES('wake-seat','attempt','boot','attempt','boot',11,2,7,3,5,4,9)", []).unwrap();
+    let snapshot = |db: &Connection| -> String {
+        db.query_row("SELECT json_array(seat_id,reservation_id,reservation_boot,last_reservation_id,last_reservation_boot,last_invitation_seq,last_invitation_offset,last_receipt_seq,last_receipt_offset,last_warning_seq,last_warning_offset,last_lazy_ordinal) FROM wake_work WHERE seat_id='wake-seat'", [], |r|r.get(0)).unwrap()
+    };
+    let before = snapshot(&db);
+    open_with(&db, schema::NODE_DELTAS).unwrap();
+    assert_eq!(snapshot(&db), before);
+    assert!(table_exists(&db, "wake_intents"));
+    assert!(table_exists(&db, "wake_intent_ids"));
+    schema::verify_baseline(&db).unwrap();
+    assert!(
+        open_with(&db, prior).is_err(),
+        "an older schema cannot silently ignore retained queue effects"
+    );
+}

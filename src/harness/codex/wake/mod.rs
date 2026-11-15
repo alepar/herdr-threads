@@ -104,6 +104,18 @@ mod implementation {
         Ok(d)
     }
     impl WakeControl for Control {
+        fn replay_scope(
+            &self,
+            target: &WakeControlTarget,
+        ) -> Result<crate::harness::wake::WakeReplayScope, ApiError> {
+            let session = uuid::Uuid::parse_str(target.scope.native_session.as_str())
+                .map_err(|_| control::error("invalid native wake session"))?;
+            if session.to_string() != target.scope.native_session.as_str() {
+                return Err(control::error("noncanonical native wake session"));
+            }
+            crate::harness::wake::WakeReplayScope::parse(format!("session:{session}"))
+        }
+
         fn observe(
             &self,
             scope: &WakeScope,

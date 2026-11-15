@@ -1,0 +1,133 @@
+{
+  "schema": 1,
+  "task": "ht-d2jq.4",
+  "review_base": "b3c3f79a978accbbf1f739a0a19da689957901b5",
+  "control_review_base": "7005f0478edcc6010cf9c4cc6d2d0098d0d25a25",
+  "design_contract": "8dffdf212",
+  "design_cherry_pick": "b3c3f79a9",
+  "scope": "storage, neutral ports and pure replay cohort only; no scheduler activation or external queue effects",
+  "integration": "retain whole feature branch until activation is designed and qualified; migration18 tentative until merge",
+  "tests": [
+    {
+      "command": "cargo test --locked --all-features --test combined wake_intents -- --nocapture",
+      "passed": 18,
+      "failed": 0,
+      "execution_seconds": 1.22,
+      "compile_seconds": 11.28
+    },
+    {
+      "command": "cargo test --locked --all-features --lib queue_wake_ledger_upgrade -- --nocapture",
+      "passed": 1,
+      "failed": 0,
+      "execution_seconds": 1.38,
+      "compile_seconds": 118.0
+    },
+    {
+      "filter": "codex_wake_observation",
+      "target": "combined",
+      "passed": 2,
+      "failed": 0,
+      "execution_seconds": 0.0
+    },
+    {
+      "filter": "every_table_is_classified",
+      "target": "lib",
+      "passed": 1,
+      "failed": 0,
+      "execution_seconds": 0.63
+    },
+    {
+      "filter": "production_deltas_upgrade_baseline_and_reopen_without_losing_data",
+      "target": "lib",
+      "passed": 1,
+      "failed": 0,
+      "execution_seconds": 1.42
+    }
+  ],
+  "checks": {
+    "all_target_all_feature_clippy": {
+      "exit": 0,
+      "compiler_seconds": 16.41
+    },
+    "default_feature_guard": {
+      "exit": 0
+    },
+    "format": {
+      "exit": 0
+    },
+    "harness_neutral": {
+      "exit": 0,
+      "new_exceptions": 0
+    },
+    "wire_compat": {
+      "exit": 0,
+      "baseline_changed": false
+    },
+    "diff": {
+      "exit": 0
+    }
+  },
+  "durability": "restart/arm/result tests use require_commit_durability and assert SQLite synchronous FULL; migration preservation test uses existing in-memory historical-schema framework",
+  "recovery_regression": "recovered Prepared retains no-add phase and cleanup quarantine; repeat recovery and old-owner refusal cannot release it",
+  "red_evidence": [
+    "missing-ledger schema assertion failed0-versus2",
+    "prepare/arm tests failed against conservative inactive default",
+    "replay-scope test failed against unavailable default",
+    "repeated Prepared recovery regression failed before quarantine guard"
+  ],
+  "bounds": {
+    "rows_per_instance": 4096,
+    "owned_ids": 128,
+    "descriptor_bytes": 16384,
+    "scope_json_bytes": 4096,
+    "correlation_bytes": 128,
+    "replay_scope_bytes": 128,
+    "diagnostic_bytes": 2048,
+    "returned_summaries": 32,
+    "summary_lookahead": 1,
+    "pruned_clean_tombstones_per_prepare": 32
+  },
+  "build_observations": {
+    "ordinary_source_edit_all_feature_dev_build_seconds": 48.79,
+    "dev_build_note": "same existing target; included dependency code generation in dev profile; heavy slot acquired immediately",
+    "earlier_over_budget_test_compilations_seconds": [
+      91.0,
+      172.0,
+      118.0
+    ],
+    "final_combined_test_builds_seconds": [
+      11.99,
+      14.63,
+      11.28
+    ],
+    "full_suite_not_run": true
+  },
+  "cleanup": {
+    "run_id": "0875bf2a-86ee-4fd5-90d4-df0be96f77ba",
+    "process_check_exit": 0,
+    "scratch_check_exit": 0,
+    "summary_scratch_removed": true,
+    "warm_target_retained_for_continuing_feature": true
+  },
+  "new_routine_model_visible_bytes": 0,
+  "new_wire_fields_or_variants": 0,
+  "follow_on": "typed cleanup evidence for every control outcome; reviewed canonical obsolescence/quarantine and retry/fallback policy before activation",
+  "source_sha256": {
+    "migrations/node/0018_programmatic_wake_intents.sql": "f7e374ed8c211e7e2360a8f9c7b6b23559904768094c66c3fde2a9cd3c952f46",
+    "src/harness/codex/wake/mod.rs": "4d46e858b98fb39e9b9c59c1bc95052215fe1f46be62051737bdf84f5e94de9c",
+    "src/harness/wake.rs": "a72377b2111447a8256149dd4f9fd126ec9dbf13e83f5b2b12b153c768a1c456",
+    "src/ports.rs": "f53efb2a0fb2a98bc1f40c1766b70220b2398e19ef1d1443e7da49a83be6646b",
+    "src/ports/wake_intents.rs": "eeac4175fc826d9e26133a6710ca25deb954d27c1e8ae8cfbf29357635ab0067",
+    "src/service/kicks.rs": "7f9f65b2617c8f4b97303878f04fc1f6caf961dbea50501f104e58ff50823962",
+    "src/store/mod.rs": "1067367e4c864950cbab2bb5fcb5350e52b9240bf73392ca7e75c02db97ed9d7",
+    "src/store/schema.rs": "2b67cf83fec9adaf628bf07e8949b1622093179da6b1f877eba65c40d064bf69",
+    "src/store/wake_intents.rs": "4b4859d40d6e4511ab9643d06322b9331f06c73f69797f853951f3e7e398f5e7",
+    "tests/combined.rs": "8df9b55532aafa019a8b9b4f002ecc08700a6b9ce490f74d1e2b7da36782e1dd",
+    "tests/harness/codex_wake_observation.rs": "d14c453902f57a4ccd5667978bf437ef1d88ed0af31cf4e5209971dede1e2714",
+    "tests/store/schema.rs": "3885d4e664293035d8976f305163a16836dd05c39827766959fd9238d7b3ab73",
+    "tests/store/wake_intents.rs": "0e12fb4aba7aec3b5d3966a7ba59df1e4851bd7e1683d047be0209b5113b2957"
+  },
+  "artifact_sha256": {
+    "ledger-implementation.md": "14da8d17ccaa3c781b06cb831ecf3fddad2039232f6788d6b5f7ce317f6ab72b"
+  }
+}

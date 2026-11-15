@@ -71,3 +71,41 @@ fn current_scope_qualifies_but_boot_pid_and_inode_changes_refuse() {
     drop(_db);
     fs::remove_dir_all(root).unwrap();
 }
+
+#[test]
+fn replay_cohort_survives_reconnect_and_storage_relocation() {
+    use herdr_threads::harness::wake::WakeControlTarget;
+    let registry = builtins();
+    let control = registry
+        .by_id(registry.agent("codex").unwrap())
+        .unwrap()
+        .wake_control()
+        .unwrap();
+    let mut target = WakeControlTarget {
+        scope: WakeScope {
+            binding: BindingId::new("old-binding"),
+            native_session: NativeSessionId::new("00000000-0000-0000-0000-000000000001"),
+            execution: ExecutionId::new("old-execution"),
+            generation: 1,
+            process: LivenessFingerprint { pid: 10, start: 1 },
+            kernel_boot: "old-boot".into(),
+        },
+        descriptor: b"old storage".to_vec(),
+    };
+    assert_eq!(
+        control.replay_scope(&target).unwrap().as_str(),
+        "session:00000000-0000-0000-0000-000000000001"
+    );
+    target.scope.binding = BindingId::new("new-binding");
+    target.scope.execution = ExecutionId::new("new-execution");
+    target.scope.generation = 4;
+    target.scope.process.pid = 20;
+    target.scope.kernel_boot = "new-boot".into();
+    target.descriptor = b"relocated storage".to_vec();
+    assert_eq!(
+        control.replay_scope(&target).unwrap().as_str(),
+        "session:00000000-0000-0000-0000-000000000001"
+    );
+    target.scope.native_session = NativeSessionId::new("not-a-native-uuid");
+    assert!(control.replay_scope(&target).is_err());
+}

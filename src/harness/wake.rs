@@ -8,9 +8,10 @@ use crate::{
         time::{CallBudget, Clock},
     },
 };
+use serde::{Deserialize, Serialize};
 use std::path::Path;
 
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 /// Canonical connected root scope for observation/add; a saved intent scope for control.
 /// File observations support loadedness; they are not a runtime-manager query.
 pub struct WakeScope {
@@ -49,7 +50,31 @@ pub struct OwnedWakeEntries {
     pub ids: Vec<String>,
     pub complete: bool,
 }
+/// A conservative replay cohort, never storage identity or seat continuity evidence.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct WakeReplayScope(String);
+impl WakeReplayScope {
+    pub fn parse(value: String) -> Result<Self, ApiError> {
+        if value.is_empty() || value.len() > 128 || !value.bytes().all(|b| b.is_ascii_graphic()) {
+            return Err(ApiError::new(
+                crate::protocol::results::ErrorCode::InvalidRequest,
+                "invalid wake replay scope",
+            ));
+        }
+        Ok(Self(value))
+    }
+    pub fn as_str(&self) -> &str {
+        &self.0
+    }
+}
 pub trait WakeControl: Send + Sync {
+    /// Pure stable suppression key; performs no I/O and grants no wake authority.
+    fn replay_scope(&self, _target: &WakeControlTarget) -> Result<WakeReplayScope, ApiError> {
+        Err(ApiError::new(
+            crate::protocol::results::ErrorCode::InvalidRequest,
+            "wake replay scope unavailable",
+        ))
+    }
     /// The caller supplies a canonical connected top-level scope, never a dormant target.
     fn observe(
         &self,

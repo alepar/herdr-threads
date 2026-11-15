@@ -211,6 +211,9 @@ pub const KNOWN_UNMAPPED: &[&str] = &[
     "no_wake_reports",
     // A plain local launch's gate-only record (H3): read only by the gate's own polling.
     "local_launch_gates",
+    // Inactive programmatic-wake effect history; no dispatch consumer yet.
+    "wake_intents",
+    "wake_intent_ids",
     // Current presentation progress/outbox never schedules its own work.
     "invitation_presentation_consumers",
     "invitation_presentation_items",
