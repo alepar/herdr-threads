@@ -33,13 +33,17 @@ Full hashes are in the selected evidence.
 | receipts | r2 | Exact finalized native branch plus model-context receipt with cooperative delivery provenance |
 | ordering | r2 | Retained page priorities 0, 1, 5 |
 | invitations | r2 | Fixed-p0 wake and separate actual public acceptance |
-| negative | r2 | Transformed/truncated drafts cannot earn exact-body receipt; explicit recovery remains possible |
+| negative | F2 focus | Exact target/full-body transform and actual replacement context, pending receipt then true-body recovery; truncated-body refusal |
 | failures | supplement | Provider error/native abort plus specifically cancelled settle proposal; pending receipt/draft preserved and direct user recovery |
 | lifecycle | remaining | Actual reload, tree, fork, new and resume |
 | compaction | footer focus | Public compaction and default unknown-usage composer |
 | handoff | remaining | Current native top-level public handoff; durable body in context |
 | channel | footer focus | Channel-disabled native wake, no false context receipt, explicit inbox fallback and channel reload |
 | named | supplement | Actual verified private tmux startup binding, p0 receipt, eligible passive p1, busy-tool p0 receipt and no trailing wake |
+
+F2 focus replaces the original r2 transformed-negative credit with an exact
+causal target witness on the recorded `198e81ff…` pre-F1 candidate. See
+[F2 evidence](task-3-f2-transform.md); it does not qualify F1 notice-retention changes.
 
 The final production delta after the broad candidate is the narrow default
 post-compaction `?/capacity` footer recognition. The new candidate passed the

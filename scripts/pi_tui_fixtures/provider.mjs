@@ -90,7 +90,13 @@ export default function fixture(pi) {
       await hold('release-settle', ctx.signal)
       log({ event: 'settle_barrier_released' })
     }
-    if (fs.existsSync(path.join(root, 'transform'))) return { entries: event.entries.map(entry => entry.type === 'custom_message' && entry.customType.startsWith('herdr-threads:') ? { ...entry, content: 'qualification replaced draft' } : entry) }
+    const transform = path.join(root, 'transform')
+    if (fs.existsSync(transform)) {
+      const target = JSON.parse(fs.readFileSync(transform, 'utf8'))
+      const result = { entries: event.entries.map(entry => entry.type === 'custom_message' && entry.customType.startsWith('herdr-threads:') ? { ...entry, content: 'qualification replaced draft' } : entry) }
+      log({ event: 'transform_applied', state: snapshot(ctx), target, before: event.entries, after: result.entries })
+      return result
+    }
   })
   pi.on('agent_before_settle', (event, ctx) => {
     if (fs.existsSync(path.join(root, 'cancel-settle'))) {

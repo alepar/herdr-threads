@@ -1,0 +1,92 @@
+{
+  "scope": "F2 qualification-only correction; not F1 notice-retention qualification",
+  "production_candidate_sha256": "198e81ff9307f3e88c29cd47ba8ae425d0ed4f6283e5bb80a676636058895cce",
+  "source_checkpoint": "62bc385d0b3623243db43c2536658eec6451f9bd",
+  "frozen_qualification_patch_sha256": "7c8bfada260aaf1cbdb25c30f63bffb39e517980b792e69ffb92726d0199c1a9",
+  "driver_sha256": "16685284ec989df75783be50cb27d738f280743665c310e258a3a2a032af5941",
+  "fixture_sha256": "e3735804bb43a76c734e010072915737fb479f5ccd70d5497f8ea2ed78b3e1fa",
+  "selftests": {
+    "passed": 16,
+    "seconds": 1.853,
+    "late_watch_old_case_red": "AssertionError not raised; old complete case accepted no target proposal"
+  },
+  "native_results": [
+    {
+      "case": "negative",
+      "outcome": "pass",
+      "elapsed_s": 2.067
+    }
+  ],
+  "transformed_negative": {
+    "message": "mmLcvWT1syyX",
+    "body": "NEGATIVE-EXACT-FRAME 42110bed-9dc1-40d7-807b-eef2af0411f1",
+    "witness": {
+      "at": 1794732648986,
+      "event": "transform_applied",
+      "state": {
+        "sid": "01a1de66-dab1-7188-a898-8b7e8f8eb62a",
+        "idle": false,
+        "editor": "",
+        "model": "scripted",
+        "provider": "ht-fixture"
+      },
+      "target": {
+        "mid": "mmLcvWT1syyX",
+        "body": "NEGATIVE-EXACT-FRAME 42110bed-9dc1-40d7-807b-eef2af0411f1",
+        "sid": "01a1de66-dab1-7188-a898-8b7e8f8eb62a"
+      },
+      "before": [
+        {
+          "type": "custom_message",
+          "customType": "herdr-threads:cafc5ed1-732e-40a7-a8f2-708cecc9c573:432349d1-14a3-40f3-9506-c8cb254d6cec",
+          "content": "[herdr-threads] new messages:\n\n[herdr-threads] message mmLcvWT1syyX in d8E7plUTHwv \"1:1 smLc13n7COW9 smLcucCvlfWH\" from smLcucCvlfWH [p0] [human]:\n  NEGATIVE-EXACT-FRAME 42110bed-9dc1-40d7-807b-eef2af0411f1",
+          "display": false
+        }
+      ],
+      "after": [
+        {
+          "type": "custom_message",
+          "customType": "herdr-threads:cafc5ed1-732e-40a7-a8f2-708cecc9c573:432349d1-14a3-40f3-9506-c8cb254d6cec",
+          "content": "qualification replaced draft",
+          "display": false
+        }
+      ]
+    },
+    "pending": {
+      "seat": "smLc13n7COW9",
+      "status": "pending",
+      "physical_status": "pending",
+      "effective_status": "pending",
+      "retirement_cutover": null,
+      "cleanup_state": null,
+      "ack_provenance": null,
+      "deadline": 1794732768787
+    },
+    "recovered": {
+      "seat": "smLc13n7COW9",
+      "status": "acknowledged",
+      "physical_status": "acknowledged",
+      "effective_status": "acknowledged",
+      "retirement_cutover": null,
+      "cleanup_state": null,
+      "ack_provenance": {
+        "actor": "smLc13n7COW9",
+        "generation": 1,
+        "native_observation": "{\"action_provenance\":\"cooperative_mod_delivery\",\"binding_generation\":1,\"decided_at\":1794732649190,\"execution\":\"5ce6cd3b-dd30-5ed5-b50f-ca25685d07f2\",\"harness\":\"pi\",\"host_boot\":\"<private-host-boot>\",\"observed_at\":1794732649190,\"provenance\":\"cooperative_top_level\",\"session\":\"01a1de66-dab1-7188-a898-8b7e8f8eb62a\",\"target_generation\":1,\"via\":\"context\"}",
+        "decided_at": 1794732649190
+      }
+    },
+    "native_replacement_observed": true
+  },
+  "truncation_pending": true,
+  "cleanup": {
+    "ok": true,
+    "helper_rc": 0,
+    "helper_reaped": true,
+    "root_removed": true,
+    "leak_rc": 0,
+    "errors": {}
+  },
+  "trace_sha256": "fd5345fcb778a0f9ecc1dfd5498235fcea92d929ad4bf3fe11275f9f1b053c1c",
+  "sdk": "Shared production SDK run owned by extension writer; no duplicate F2 SDK rerun. Final integrated SDK remains required after F1."
+}

@@ -591,6 +591,23 @@ read -r _ || true
         self.turn("After native compaction, reply READY without tools.")
         self.facts["native_compaction"] = True
 
+    def transformed_target(self, mid, body, since):
+        for row in self.rows()[since:]:
+            if (row["event"] != "transform_applied" or row["state"]["sid"] != self.main_sid
+                    or row["target"] != {"mid": mid, "body": body, "sid": self.main_sid}):
+                continue
+            for index, before in enumerate(row["before"]):
+                content = before.get("content", "")
+                if (before.get("type") != "custom_message" or not before.get("customType", "").startswith("herdr-threads:")
+                        or not isinstance(content, str) or f"[herdr-threads] message {mid} in " not in content
+                        or "  " + body not in content.splitlines()):
+                    continue
+                after = row["after"][index]
+                if (after.get("type") == "custom_message" and after.get("customType") == before["customType"]
+                        and after.get("content") == "qualification replaced draft"):
+                    return row, before["customType"]
+        raise AssertionError("exact target frame and actual replacement were not observed at the native transformer")
+
     def case_negative(self):
         # A later native boundary transformer rejects the exact full-frame
         # proposal before persistence. A returned draft must not settle a receipt.
@@ -599,14 +616,29 @@ read -r _ || true
         held = self.count("stream_held"); settled = self.count("agent_settled")
         self.prompt("qualification transformed boundary")
         self.wait("held negative run", lambda: self.count("stream_held") > held)
-        mid = self.send("NEGATIVE-EXACT-FRAME", ack=True)
-        (self.root / "transform").touch()
+        since = len(self.rows())
+        body = "NEGATIVE-EXACT-FRAME " + str(uuid.uuid4())
+        mid = self.send(body, ack=True)
+        (self.root / "transform").write_text(json.dumps({"mid": mid, "body": body, "sid": self.main_sid}))
+        # Yield through an actual public-context observation. Only the exact
+        # transform witness below proves that asynchronous watch mail arrived.
+        self.observe_state("")
         (self.root / "release-text").touch()
         self.wait("transformed run settles", lambda: self.count("agent_settled") > settled)
-        assert self.receipt(mid)["effective_status"] == "pending"
+        witness, custom_type = self.transformed_target(mid, body, since)
+        assert any(row["event"] == "context" and row["state"]["sid"] == self.main_sid
+                   and any(message.get("customType") == custom_type and message.get("content") == "qualification replaced draft"
+                           for message in row["data"]["messages"]) for row in self.rows()[since:]), "returned replacement did not reach actual native context"
+        assert not self.model_saw(body, since), "transformed target body reached native model context"
+        pending = self.receipt(mid)
+        assert pending["effective_status"] == "pending"
         (self.root / "transform").unlink()
+        recovery_since = len(self.rows())
         self.turn("User retry after rejected draft. Reply READY without tools.")
         self.wait("retry exact receipt", lambda: self.receipt(mid)["effective_status"] == "acknowledged")
+        assert self.model_saw(body, recovery_since), "retry did not observe the original full target body"
+        self.facts["transformed_negative"] = {"message": mid, "body": body, "witness": witness,
+                                               "pending": pending, "recovered": self.receipt(mid), "native_replacement_observed": True}
         # A truncated native frame never supplies a complete receipt.
         long_mid = self.send("TRUNCATED-BEGIN " + "synthetic " * 1100 + " TRUNCATED-END", ack=True)
         self.wait("truncated frame proposed", lambda: self.model_saw("TRUNCATED-BEGIN"), 45)
@@ -820,6 +852,87 @@ read -r _ || true
 
 
 class DriverTests(unittest.TestCase):
+    def test_negative_case_rejects_late_watch_without_a_target_proposal(self):
+        with tempfile.TemporaryDirectory(prefix="ht-pi-negative-selftest-") as root:
+            run = Run.__new__(Run)
+            run.root, run.facts, run.main_sid = Path(root), {}, "main"
+            counts, statuses, sent, observed = {}, {}, [], []
+            run.rows = lambda: observed
+            run.count = lambda event: counts.get(event, 0)
+            def prompt(text):
+                if text.startswith("/probe-read-ack "):
+                    statuses[text.split()[-1]] = "acknowledged"
+                else:
+                    counts["stream_held"] = counts.get("stream_held", 0) + 1
+            run.prompt = prompt
+            def send(body, **_kwargs):
+                mid = "m-target" if not sent else "m-truncated"
+                sent.append(body); statuses[mid] = "pending"
+                return mid
+            run.send = send
+            run.receipt = lambda mid: {"effective_status": statuses[mid]}
+            def wait(label, predicate, *_args):
+                if label == "transformed run settles":
+                    counts["agent_settled"] = counts.get("agent_settled", 0) + 1
+                result = predicate()
+                self.assertTrue(result, label)
+                return result
+            run.wait = wait
+            def retry(_text):
+                # Delayed watch delivery only arrives for the real retry. The
+                # earlier turn never proposed or transformed the target.
+                statuses["m-target"] = "acknowledged"
+                observed.append({"event": "context", "data": {"messages": sent[:1]}})
+            run.turn = retry
+            run.model_saw = lambda body, *_args: body.startswith("TRUNCATED-BEGIN") or any(body in str(row) for row in observed)
+            run.observe_state = lambda *_args: {"state": {"editor": ""}}
+            with self.assertRaisesRegex(AssertionError, "target frame"):
+                run.case_negative()
+
+    def test_actual_fixture_transform_return_requires_exact_target_observation(self):
+        with tempfile.TemporaryDirectory(prefix="ht-pi-transform-selftest-") as root:
+            code = r'''
+import assert from 'node:assert/strict'
+import fs from 'node:fs'
+import {pathToFileURL} from 'node:url'
+const root=process.env.HT_PI_QUALIFY_ROOT, handlers=new Map()
+const pi={on(name,fn){if(!handlers.has(name))handlers.set(name,[]);handlers.get(name).push(fn)},registerCommand(){},registerTool(){},registerProvider(){}}
+const {default:fixture}=await import(pathToFileURL(process.env.HT_PI_FIXTURE));fixture(pi)
+const ctx={isIdle:()=>false,ui:{getEditorText:()=>''},sessionManager:{getSessionId:()=> 'main',getBranch:()=>[]},model:{id:'scripted',provider:'fixture'}}
+const target={mid:'m-target',body:'FULL TARGET BODY',sid:'main'}
+fs.writeFileSync(root+'/transform',JSON.stringify(target))
+const entry={type:'custom_message',customType:'herdr-threads:proposal',content:'[herdr-threads] message m-target in thread from sender:\n  FULL TARGET BODY'}
+async function emit(entries){let event={outcome:'completed',entries,continue:true};for(const fn of handlers.get('turn_end')){const result=await fn(event,ctx);if(result)event={...event,...result}}return event}
+const returned=await emit([entry]);assert.equal(returned.entries[0].content,'qualification replaced draft')
+await emit([])
+const observed=fs.readFileSync(root+'/native.jsonl','utf8').split('\n').filter(Boolean).map(JSON.parse).filter(row=>row.event==='transform_applied')
+assert.deepEqual(observed[0].after,returned.entries);assert.deepEqual(observed[0].before,[entry]);assert.deepEqual(observed[1].before,[])
+process.stdout.write(JSON.stringify(observed))
+'''
+            env = {"PATH": os.environ["PATH"], "HOME": root, "HT_PI_QUALIFY_ROOT": root,
+                   "HT_PI_QUALIFY_MODULES": str(MODULES), "HT_PI_FIXTURE": str(FIXTURE),
+                   "HT_PI_QUALIFY_LIVE": "1", "HT_TEST_OWNER": str(os.getpid()),
+                   "HT_LEAK_RUN_ID": os.environ.get("HT_LEAK_RUN_ID", str(uuid.uuid4()))}
+            result = subprocess.run(["node", "--input-type=module", "-e", code], env=env, cwd=REPO,
+                                    capture_output=True, text=True, timeout=5)
+            self.assertEqual(result.returncode, 0, result.stderr)
+            observed = json.loads(result.stdout)
+            run = Run.__new__(Run); run.main_sid = "main"
+            run.rows = lambda: observed
+            witness, custom_type = run.transformed_target("m-target", "FULL TARGET BODY", 0)
+            self.assertEqual(witness["after"][0]["customType"], custom_type)
+            with self.assertRaisesRegex(AssertionError, "target frame"):
+                run.transformed_target("m-target", "FULL TARGET BODY", 1)
+            for field, value in (("sid", "other"), ("mid", "m-other"), ("body", "FULL TARGET"), ("replacement", "unchanged")):
+                row = json.loads(json.dumps(observed[0]))
+                if field == "sid": row["state"]["sid"] = value
+                elif field == "mid": row["before"][0]["content"] = row["before"][0]["content"].replace("m-target", value)
+                elif field == "body": row["before"][0]["content"] = row["before"][0]["content"].replace("FULL TARGET BODY", value)
+                else: row["after"][0]["content"] = row["before"][0]["content"]
+                run.rows = lambda: [row]
+                with self.subTest(field=field), self.assertRaisesRegex(AssertionError, "target frame"):
+                    run.transformed_target("m-target", "FULL TARGET BODY", 0)
+
     def test_settle_fixture_barrier_precedes_send_and_follows_production_turn_handler(self):
         with tempfile.TemporaryDirectory(prefix="ht-pi-settle-selftest-") as root:
             code = r'''

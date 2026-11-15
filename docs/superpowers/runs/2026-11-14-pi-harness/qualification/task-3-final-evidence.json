@@ -199,6 +199,30 @@
         "errors": {}
       },
       "native_trace_sha256": "67092b88d9698a82db63599a6545802c35d99e01443c78e706a0a0de2a80b09e"
+    },
+    "f2": {
+      "source": "62bc385d0b3623243db43c2536658eec6451f9bd",
+      "candidate_sha256": "198e81ff9307f3e88c29cd47ba8ae425d0ed4f6283e5bb80a676636058895cce",
+      "driver_sha256": "16685284ec989df75783be50cb27d738f280743665c310e258a3a2a032af5941",
+      "fixture_sha256": "e3735804bb43a76c734e010072915737fb479f5ccd70d5497f8ea2ed78b3e1fa",
+      "frozen_qualification_patch_sha256": "7c8bfada260aaf1cbdb25c30f63bffb39e517980b792e69ffb92726d0199c1a9",
+      "results": [
+        {
+          "case": "negative",
+          "outcome": "pass",
+          "elapsed_s": 2.067
+        }
+      ],
+      "cleanup": {
+        "ok": true,
+        "helper_rc": 0,
+        "helper_reaped": true,
+        "root_removed": true,
+        "leak_rc": 0,
+        "errors": {}
+      },
+      "scope": "F2 qualification-only correction; not F1 notice-retention qualification",
+      "details": "task-3-f2-evidence.json"
     }
   },
   "required_case_mapping": {
@@ -209,7 +233,7 @@
     "receipts": "r2",
     "ordering": "r2",
     "invitations": "r2",
-    "negative": "r2",
+    "negative": "f2",
     "failures": "supplement",
     "lifecycle": "remaining",
     "compaction": "footer",
@@ -221,7 +245,8 @@
     "Original stale-periodic-editor safety comparison is a failed fixture observation, not a pass.",
     "Earlier multiline/passive controls masked by cooldown receive no negative-control credit; supplement replaces them.",
     "r2 whole-run cancellation absence assertion was invalid; supplement isolates the cancelled proposal.",
-    "remaining channel timed out on known native unknown-usage footer; footer run on corrected binary replaces it."
+    "remaining channel timed out on known native unknown-usage footer; footer run on corrected binary replaces it.",
+    "r2 transformed-negative predicate did not prove an exact target proposal or actual replacement; F2 focused witness replaces that qualification credit, without claiming a production false receipt."
   ],
   "accepted_limits": [
     "external custom overlays",
