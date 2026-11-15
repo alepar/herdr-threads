@@ -109,7 +109,8 @@ fn confirm_refuses_agent_evidence() {
     let out = fixture.run(&["--confirm"], &[("CLAUDECODE", "1")]);
     assert_eq!(out.status.code(), Some(2));
     let stderr = text(&out.stderr);
-    assert!(stderr.contains("--operator"), "{stderr}");
+    // The refusal reaches an agent session: it names no override (TRUST-POLICY A4).
+    assert!(!stderr.contains("--operator"), "{stderr}");
     assert!(stderr.contains("CLAUDECODE"), "{stderr}");
     assert_eq!(stderr.trim().lines().count(), 1, "{stderr}");
     assert!(fixture.instances().exists());

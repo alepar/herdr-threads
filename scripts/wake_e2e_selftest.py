@@ -963,6 +963,22 @@ class CoordinatorCalls(TempDir):
         self.assertTrue(literals >= 5 and {"CLAUDECODE", "CODEX_SANDBOX", "ANTIGRAVITY_AGENT"} <= declared, declared)
         self.assertEqual(sorted(declared - set(W.CALLER_SESSION_ENV)), [])
 
+    def test_every_caller_session_var_is_stripped(self):
+        """Caller shapes' session variables refuse `human me init` (TRUST-POLICY A4): each literal one and the
+        opencode witness constants must be in CALLER_SESSION_ENV."""
+        import re
+        src = Path(W.REPO) / "src" / "harness"
+        found = set()
+        for path in src.rglob("*.rs"):
+            text = path.read_text(encoding="utf-8", errors="replace")
+            found |= set(re.findall(r'\b(?:session_var|pid_var):\s*(?:Some\()?"([A-Z0-9_]+)"', text))
+            for block in re.findall(r'session_marker_vars:\s*&\[([^\]]*)\]', text):
+                found |= set(re.findall(r'"([A-Z0-9_]+)"', block))
+            if path.parent.name == "opencode" and path.name == "witness.rs":
+                found |= set(re.findall(r'pub const [A-Z_]+_VAR: &str = "([A-Z0-9_]+)"', text))
+        self.assertTrue({"CLAUDE_CODE_SESSION_ID", "HERMES_SESSION_ID", "CODEX_THREAD_ID", "OPENCODE_PID"} <= found, found)
+        self.assertEqual(sorted(found - set(W.CALLER_SESSION_ENV)), [])
+
     def test_layout_records_person_seats_with_the_guard_kept(self):
         """layout(): `human me init` without --operator in each coordinator pane, no check-in or cooperative claim."""
         calls = []

@@ -740,7 +740,7 @@ fn no_caller_error_text() {
 #[test]
 fn env_marker_detection() {
     let s = Scratch::new(false);
-    let cases: [(&str, Vec<(&str, &str)>); 11] = [
+    let cases: [(&str, Vec<(&str, &str)>); 14] = [
         ("none", vec![]),
         ("CLAUDECODE", vec![("CLAUDECODE", "1")]),
         ("CLAUDECODE-empty", vec![("CLAUDECODE", "")]),
@@ -760,12 +760,46 @@ fn env_marker_detection() {
         ("PI_CODING_AGENT", vec![("PI_CODING_AGENT", "true")]),
         ("OPENCODE", vec![("OPENCODE", "1")]),
         ("AI_AGENT-only", vec![("AI_AGENT", "pi")]),
+        // Session variables: Hermes declares no person-guard marker, so its session is the evidence.
+        ("HERMES_SESSION_ID", vec![("HERMES_SESSION_ID", "h-1")]),
+        (
+            "CLAUDE_CODE_SESSION_ID",
+            vec![("CLAUDE_CODE_SESSION_ID", "c-1")],
+        ),
+        ("CODEX_SESSION_ID", vec![("CODEX_SESSION_ID", "x-1")]),
+    ];
+    // `--operator` never overrides an agent session; a plain shell keeps it (the daemon is down
+    // here, so a plain shell reaches it and stops there).
+    let operator_cases: [(&str, Vec<(&str, &str)>); 5] = [
+        ("operator-none", vec![]),
+        (
+            "operator-HERMES_SESSION_ID",
+            vec![("HERMES_SESSION_ID", "h-1")],
+        ),
+        ("operator-CLAUDECODE", vec![("CLAUDECODE", "1")]),
+        (
+            "operator-CLAUDE_CODE_SESSION_ID",
+            vec![("CLAUDE_CODE_SESSION_ID", "c-1")],
+        ),
+        (
+            "operator-CODEX_THREAD_ID",
+            vec![("CODEX_THREAD_ID", "thread-1")],
+        ),
     ];
     let mut results = Vec::new();
-    for (label, vars) in cases {
+    let all = cases
+        .into_iter()
+        .map(|case| (case, false))
+        .chain(operator_cases.into_iter().map(|case| (case, true)));
+    for ((label, vars), operator) in all {
         let mut command = s.command();
         command.arg("human");
-        s.instance_args(&mut command, &["me", "init"]);
+        let args: &[&str] = if operator {
+            &["me", "init", "--operator"]
+        } else {
+            &["me", "init"]
+        };
+        s.instance_args(&mut command, args);
         command.env("HERDR_PANE_ID", "w1:p1");
         for (key, value) in &vars {
             command.env(key, value);

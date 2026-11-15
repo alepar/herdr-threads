@@ -18,7 +18,7 @@
 //! sent to a human seat; its mail waits to be read and ACKed by hand.
 
 use super::{
-    RunError, agent_evidence, agent_evidence_refusal,
+    RunError,
     commands::{CliAction, CooperativeSelection, MutationSpec, ParsedCli},
     connect, invalid_request, journal, mapping_error, pane_agent, pane_seat_on, parse_pane, retry,
     run_selected, seat_contexts, selected_generation,
@@ -203,16 +203,13 @@ pub(crate) fn run_me_init<W: Write>(
         )
     })?;
     let pane = parse_pane(pane)?;
-    // Never record a person over agent evidence (TRUST-POLICY A4, best
-    // effort; the daemon refuses a person's check-in over an agent binding).
-    // `--operator` is the local account's explicit override.
-    if !operator
-        && let Some(evidence) = agent_evidence(std::env::vars(), || {
-            pane_agent(context, clock, parsed.caller_site.as_ref(), &pane)
-        })
-    {
-        return Err(agent_evidence_refusal(pane.as_str(), &evidence));
-    }
+    // Never record a person from an agent session or over agent evidence
+    // (TRUST-POLICY A4, best effort; the daemon refuses a person's check-in
+    // over an agent binding). `--operator` is the local account's explicit
+    // override of the evidence, never of an agent session.
+    super::person_guard(pane.as_str(), std::env::vars(), operator, || {
+        pane_agent(context, clock, parsed.caller_site.as_ref(), &pane)
+    })?;
     let (instance, _, client) = connect(paths, clock)?;
     let host = context.claim_host().map_err(super::context_error)?;
     // Host-scoped like `resolve_seat` below: a bare `tN` would meet another core's seat.

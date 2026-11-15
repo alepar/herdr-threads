@@ -1469,6 +1469,23 @@ impl Registry {
     pub fn person_guard_markers(&self) -> impl Iterator<Item = &'static AgentEnvMarker> {
         self.env_markers().filter(|marker| marker.person_guard)
     }
+    /// The variables whose presence marks a process inside an agent harness session (TRUST-POLICY
+    /// A4, person attribution): every environment marker (guard or output form) and every caller
+    /// shape's session variables, in registry order, deduplicated. Person attribution and its
+    /// override are refused where one is set.
+    pub fn agent_session_markers(&self) -> Vec<&'static str> {
+        let mut all: Vec<&'static str> = self.env_markers().map(|marker| marker.name).collect();
+        for (_, shape) in self.caller_shapes() {
+            all.extend(shape.session_vars());
+        }
+        let mut vars = Vec::with_capacity(all.len());
+        for var in all {
+            if !vars.contains(&var) {
+                vars.push(var);
+            }
+        }
+        vars
+    }
     /// The delivery policy of an agent harness id; `"human"` and unknown ids give `None`.
     pub fn delivery_policy(&self, harness_id: &str) -> Option<&'static dyn DeliveryPolicy> {
         self.registrations

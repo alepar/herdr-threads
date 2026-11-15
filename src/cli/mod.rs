@@ -475,8 +475,47 @@ pub(crate) fn agent_evidence<K: AsRef<str>, V>(
         .then(|| format!("Herdr reports a `{kind}` agent in this pane"))
 }
 
-/// Refusal shared by `me init` and person-pane commands (TRUST-POLICY A4):
-/// agent evidence where a person's identity was about to act.
+/// First agent-session marker present, by name (`Registry::agent_session_markers`, matched by
+/// presence): the caller runs inside an agent harness session.
+pub(crate) fn agent_session_marker<K: AsRef<str>, V>(
+    vars: impl IntoIterator<Item = (K, V)>,
+) -> Option<&'static str> {
+    let markers = crate::harness::registry::builtins().agent_session_markers();
+    vars.into_iter()
+        .find_map(|(key, _)| markers.iter().copied().find(|m| *m == key.as_ref()))
+}
+
+/// The person-attribution guard of `me init` and person-pane commands (TRUST-POLICY A4, best
+/// effort, client-side). An agent-session marker always refuses, with no override named or
+/// honoured: person attribution is never an agent's. Otherwise agent evidence refuses unless the
+/// local account's `--operator` override applies.
+pub(crate) fn person_guard<K: AsRef<str>, V>(
+    pane: &str,
+    env: impl IntoIterator<Item = (K, V)>,
+    operator_override: bool,
+    read_agent: impl FnOnce() -> Result<Option<crate::ports::PaneAgentObservation>, ApiError>,
+) -> Result<(), RunError> {
+    let keys: Vec<String> = env
+        .into_iter()
+        .map(|(k, _)| k.as_ref().to_owned())
+        .collect();
+    if let Some(marker) = agent_session_marker(keys.iter().map(|k| (k, ()))) {
+        return Err(invalid_request(&format!(
+            "pane {pane}: `human` person commands are for a person in their own shell pane, \
+             never an agent session ({marker} is set); an agent sends as itself"
+        )));
+    }
+    if !operator_override
+        && let Some(evidence) = agent_evidence(keys.iter().map(|k| (k, ())), read_agent)
+    {
+        return Err(agent_evidence_refusal(pane, &evidence));
+    }
+    Ok(())
+}
+
+/// Refusal shared by `me init` and person-pane commands (TRUST-POLICY A4): agent evidence
+/// where a person's identity was about to act, shown only to a caller with no agent-session
+/// marker ([`person_guard`]), so it may name the local account's override.
 pub(crate) fn agent_evidence_refusal(pane: &str, evidence: &str) -> RunError {
     invalid_request(&format!(
         "pane {pane}: `me init` and person-pane commands never act as an agent ({evidence}). \
@@ -4947,10 +4986,10 @@ fn validate_actor_harness(
 }
 
 /// The selection a located seat's recorded context yields. A Human context
-/// is refused when agent evidence is present (TRUST-POLICY A4, best effort;
-/// the daemon's refusal is the guard) per `agent_evidence`, unless the person
-/// recorded the `me init --operator` override for this context
-/// (`operator_override`). A failed Herdr read does not refuse.
+/// is refused per [`person_guard`] (TRUST-POLICY A4, best effort; the daemon's
+/// refusal is the guard): always from an agent session, else on agent evidence
+/// unless the person recorded the `me init --operator` override for this
+/// context (`operator_override`). A failed Herdr read does not refuse.
 fn selection_from_context<K: AsRef<str>, V>(
     pane: crate::protocol::ids::HostTargetId,
     seat: crate::protocol::ids::SeatId,
@@ -4966,11 +5005,8 @@ fn selection_from_context<K: AsRef<str>, V>(
             "local context differs from current service mapping",
         ));
     }
-    if context.harness == crate::harness::context::Harness::Human
-        && !operator_override
-        && let Some(evidence) = agent_evidence(env, || read_agent(&pane))
-    {
-        return Err(agent_evidence_refusal(pane.as_str(), &evidence));
+    if context.harness == crate::harness::context::Harness::Human {
+        person_guard(pane.as_str(), env, operator_override, || read_agent(&pane))?;
     }
     Ok(CooperativeSelection {
         seat,

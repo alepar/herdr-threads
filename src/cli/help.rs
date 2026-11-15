@@ -313,11 +313,11 @@ pub fn me_init_help() -> String {
 
 pub fn me_init_help_in(registry: &Registry) -> String {
     let markers: Vec<_> = registry.person_guard_markers().map(|m| m.name).collect();
-    let refusal = if markers.is_empty() {
-        "a registered agent harness reported by Herdr is".to_owned()
+    let session = if markers.is_empty() {
+        "a registered agent harness's session variable set".to_owned()
     } else {
         format!(
-            "agent markers ({}) or a registered agent harness reported by Herdr are",
+            "agent markers ({}) or a registered agent harness's session variable set",
             markers.join(", ")
         )
     };
@@ -326,8 +326,10 @@ pub fn me_init_help_in(registry: &Registry) -> String {
 read, ack and accept there with no --cooperative-* flags. Your actions are recorded as \
 operator_human, never as an agent. Messages remain readable, but a human seat owes no ACK and \
 gets no overdue-ACK warning, even when a sender uses --require-ack. Re-run `ht human me init` after a daemon restart to \
-mark yourself available again. It is refused where {refusal} present, and over \
-a seat with a connected agent binding; `ht human me init --operator` overrides that as the local account (later \
+mark yourself available again. It and the person commands after it are refused inside an agent \
+session ({session}), with no override; a shell that inherited such a variable from an agent runs \
+them with it unset. Where Herdr reports a registered agent harness in the pane, or over a seat \
+with a connected agent binding, `ht human me init --operator` overrides the refusal as the local account (later \
 commands in this pane then run as you). A seat holds either you or agents: `me init` ends the seat's \
 disconnected agent bindings, and an agent that checks in there later ends yours. Put --state-dir, --host-endpoint and output flags \
 after human. --human changes output only. Recover retained person/operator intents with \

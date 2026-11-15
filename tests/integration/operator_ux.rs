@@ -548,8 +548,9 @@ fn scratch(prefix: &str) -> (PathBuf, Scratch, PathBuf) {
 
 const HUMAN_OVERRIDE_ARGV: &str = "herdr-threads human me init --operator";
 
-/// TRUST-POLICY A4, client side: an agent environment marker refuses `me init`
-/// and names the override; `--operator` is the explicit escape.
+/// TRUST-POLICY A4, client side: an agent-session variable (a Claude, Codex or Hermes session)
+/// refuses `me init` with or without `--operator`, and the refusal names no override. A plain
+/// shell keeps `--operator` and records the person (`operator_human`).
 #[test]
 fn me_init_refuses_with_claudecode_or_codex_marker() {
     let (root, _scratch, socket) = scratch("htmk");
@@ -559,30 +560,65 @@ fn me_init_refuses_with_claudecode_or_codex_marker() {
         host: socket.clone(),
     };
     plugin.ok(None, None, &["daemon", "ensure"]);
-    for marker in [("CLAUDECODE", "1"), ("CODEX_SANDBOX", "seatbelt")] {
-        let refused = plugin.refused_with_env(Some("w1:p1"), &["human", "me", "init"], &[marker]);
-        assert!(refused.contains(HUMAN_OVERRIDE_ARGV), "{refused}");
-        assert!(refused.contains(marker.0), "{refused}");
+    let sessions = [
+        ("CLAUDECODE", "1"),
+        ("CLAUDE_CODE_SESSION_ID", "c-1"),
+        ("CODEX_SANDBOX", "seatbelt"),
+        ("CODEX_THREAD_ID", "x-1"),
+        ("HERMES_SESSION_ID", "h-1"),
+    ];
+    for marker in sessions {
+        for argv in [
+            &["human", "me", "init"][..],
+            &["human", "me", "init", "--operator"][..],
+        ] {
+            let refused = plugin.refused_with_env(Some("w1:p1"), argv, &[marker]);
+            assert!(refused.contains(marker.0), "{refused}");
+            assert!(refused.contains("own shell pane"), "{refused}");
+            assert!(!refused.contains("--operator"), "{argv:?}: {refused}");
+            assert!(!refused.contains("override"), "{argv:?}: {refused}");
+        }
     }
     // Nothing was recorded for the refused attempts.
-    let seats: i64 = plugin
-        .database()
-        .query_row(
-            "SELECT count(*) FROM occupant_bindings WHERE harness='human'",
-            [],
-            |r| r.get(0),
-        )
-        .unwrap();
-    assert_eq!(seats, 0);
-    // The explicit override works with the marker present.
+    let humans = |plugin: &Plugin| -> i64 {
+        plugin
+            .database()
+            .query_row(
+                "SELECT count(*) FROM occupant_bindings WHERE harness='human'",
+                [],
+                |r| r.get(0),
+            )
+            .unwrap()
+    };
+    assert_eq!(humans(&plugin), 0);
+    // A plain shell keeps the override, with the person's provenance.
     let (code, value, stderr) = plugin.run_with_env(
         Some("w1:p1"),
         None,
         &["human", "me", "init", "--operator"],
-        &[("CLAUDECODE", "1")],
+        &[],
     );
     assert_eq!(code, 0, "{stderr}{value}");
     assert_eq!(value["result"]["data"]["context"]["harness"], "human");
+    let provenance: String = plugin
+        .database()
+        .query_row(
+            "SELECT observation_provenance FROM occupant_bindings WHERE harness='human' AND ended_at IS NULL",
+            [],
+            |r| r.get(0),
+        )
+        .unwrap();
+    assert_eq!(provenance, "operator_human");
+    // The recorded operator mark never lets an agent session act as the person.
+    for marker in sessions {
+        let refused = plugin.refused_with_env(
+            Some("w1:p1"),
+            &["human", "thread", "create", "--topic", "t"],
+            &[marker],
+        );
+        assert!(refused.contains(marker.0), "{refused}");
+        assert!(!refused.contains("--operator"), "{refused}");
+    }
 }
 
 #[test]
@@ -726,7 +762,7 @@ fn flagless_command_from_human_context_with_agent_marker_refuses() {
         &["human", "thread", "create", "--topic", "x"],
         &[("CLAUDECODE", "1")],
     );
-    assert!(refused.contains(HUMAN_OVERRIDE_ARGV), "{refused}");
+    assert!(!refused.contains("--operator"), "{refused}");
     assert!(refused.contains("CLAUDECODE"), "{refused}");
 }
 
@@ -747,9 +783,9 @@ fn context_files(state: &Path) -> Vec<PathBuf> {
     out
 }
 
-/// TRUST-POLICY A4: a refusal that names `--operator` is honored. After
-/// `me init --operator` in a pane whose environment carries agent evidence,
-/// the person-pane commands in that pane work with the same environment.
+/// TRUST-POLICY A4: a refusal that names `--operator` is honored from a plain shell. After
+/// `me init --operator` over a connected agent binding, the person-pane commands in that pane
+/// work; the recorded mark never covers an agent session in the same pane.
 #[test]
 fn me_init_operator_then_person_pane_commands_work() {
     let (root, _scratch, socket) = scratch("htop");
@@ -768,30 +804,37 @@ fn me_init_operator_then_person_pane_commands_work() {
         Some((seat.as_str(), "w1:p1")),
         &["check-in", "--lifecycle-event", "agent-start"],
     );
-    let env = [("CODEX_SANDBOX", "seatbelt")];
-    let refused = plugin.refused_with_env(Some("w1:p1"), &["human", "me", "init"], &env);
-    assert!(refused.contains("CODEX_SANDBOX"), "{refused}");
+    let refused = plugin.refused_by_daemon(Some("w1:p1"), &["human", "me", "init"]);
+    assert!(refused.contains(HUMAN_OVERRIDE_ARGV), "{refused}");
     let (code, value, stderr) = plugin.run_with_env(
         Some("w1:p1"),
         None,
         &["human", "me", "init", "--operator"],
-        &env,
+        &[],
     );
     assert_eq!(code, 0, "{stderr}{value}");
     assert_eq!(value["result"]["data"]["context"]["harness"], "human");
-    // The recorded override covers later commands in the same pane.
-    let (code, value, stderr) = plugin.run_with_env(Some("w1:p1"), None, &["human", "inbox"], &env);
+    // The person's later commands in the same pane work.
+    let (code, value, stderr) = plugin.run_with_env(Some("w1:p1"), None, &["human", "inbox"], &[]);
     assert_eq!(code, 0, "{stderr}{value}");
     let (code, value, stderr) = plugin.run_with_env(
         Some("w1:p1"),
         None,
         &["human", "thread", "create", "--topic", "operator override"],
-        &env,
+        &[],
     );
     assert_eq!(code, 0, "{stderr}{value}");
-    // The mark covers person-pane commands only; a plain `me init` still refuses.
-    let refused = plugin.refused_with_env(Some("w1:p1"), &["human", "me", "init"], &env);
-    assert!(refused.contains("CODEX_SANDBOX"), "{refused}");
+    // The mark never covers an agent session (a JSON inbox is a read-only seat default, not
+    // the person acting, so a mutation stands for the person-pane commands).
+    let env = [("CODEX_SANDBOX", "seatbelt")];
+    for argv in [
+        &["human", "thread", "create", "--topic", "agent"][..],
+        &["human", "me", "init", "--operator"][..],
+    ] {
+        let refused = plugin.refused_with_env(Some("w1:p1"), argv, &env);
+        assert!(refused.contains("CODEX_SANDBOX"), "{refused}");
+        assert!(!refused.contains("--operator"), "{refused}");
+    }
 }
 
 #[test]

@@ -325,12 +325,14 @@ def received_in_wake_turn(screen, mid):
         elif "RECEIVED" in text and mid in text:
             hit = prompt is not None and is_wake_line(prompt)
     return hit
-# Session variables and agent env markers (every `AgentEnvMarker` the built-in adapters declare; the self-test
-# checks this list against src/harness) of whatever runs this script: never inherited by the commands it runs.
-CALLER_SESSION_ENV = ("CLAUDE_CODE_SESSION_ID", "CLAUDECODE", "CLAUDE_CODE_ENTRYPOINT", "CODEX_SESSION_ID",
-                      "CODEX_THREAD_ID", "CODEX_SANDBOX", "CODEX_SANDBOX_NETWORK_DISABLED", "HERMES_SESSION_ID",
-                      "ANTIGRAVITY_CONVERSATION_ID", "ANTIGRAVITY_AGENT",
-                      "PI_CODING_AGENT", "OPENCODE")
+# Session variables and agent env markers (every `AgentEnvMarker` the built-in adapters declare and every
+# caller shape's session variables, which refuse `human me init`; the self-test checks this list against
+# src/harness) of whatever runs this script: never inherited by the commands it runs.
+CALLER_SESSION_ENV = ("CLAUDE_CODE_SESSION_ID", "CLAUDECODE", "CLAUDE_CODE_ENTRYPOINT", "CLAUDE_PID",
+                      "CODEX_SESSION_ID", "CODEX_THREAD_ID", "CODEX_SANDBOX", "CODEX_SANDBOX_NETWORK_DISABLED",
+                      "HERMES_SESSION_ID", "ANTIGRAVITY_CONVERSATION_ID", "ANTIGRAVITY_AGENT",
+                      "PI_CODING_AGENT", "OPENCODE", "OPENCODE_PID", "HERDR_THREADS_OPENCODE_SESSION",
+                      "HERDR_THREADS_OPENCODE_PARENT", "HERDR_THREADS_OPENCODE_PID")
 DIALOG = re.compile(r"Trust this folder\?|trust (the files in )?this folder|Do you trust|Allow .* to run|"
                     r"Do you want to proceed\?|Would you like to run", re.I)
 # The linux mode's startup screens, matched on the whole visible screen (macOS keeps DIALOG on the last 400

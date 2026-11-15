@@ -15,7 +15,7 @@
       ]
     ],
     "exit": 2,
-    "stderr": "herdr-threads: pane w1:p1: `me init` and person-pane commands never act as an agent (environment variable CLAUDECODE is set). Run them in your own shell pane, or override as the local account with `herdr-threads human me init --operator` (later commands in this pane then run as you) (invalid_request)\n",
+    "stderr": "herdr-threads: pane w1:p1: `human` person commands are for a person in their own shell pane, never an agent session (CLAUDECODE is set); an agent sends as itself (invalid_request)\n",
     "stdout": ""
   },
   {
@@ -27,7 +27,7 @@
       ]
     ],
     "exit": 2,
-    "stderr": "herdr-threads: pane w1:p1: `me init` and person-pane commands never act as an agent (environment variable CLAUDECODE is set). Run them in your own shell pane, or override as the local account with `herdr-threads human me init --operator` (later commands in this pane then run as you) (invalid_request)\n",
+    "stderr": "herdr-threads: pane w1:p1: `human` person commands are for a person in their own shell pane, never an agent session (CLAUDECODE is set); an agent sends as itself (invalid_request)\n",
     "stdout": ""
   },
   {
@@ -38,8 +38,8 @@
         "thread-1"
       ]
     ],
-    "exit": 3,
-    "stderr": "herdr-threads: daemon is not running for this state/host context; run `herdr-threads daemon ensure` (host_unavailable)\n",
+    "exit": 2,
+    "stderr": "herdr-threads: pane w1:p1: `human` person commands are for a person in their own shell pane, never an agent session (CODEX_THREAD_ID is set); an agent sends as itself (invalid_request)\n",
     "stdout": ""
   },
   {
@@ -51,7 +51,7 @@
       ]
     ],
     "exit": 2,
-    "stderr": "herdr-threads: pane w1:p1: `me init` and person-pane commands never act as an agent (environment variable CODEX_SANDBOX is set). Run them in your own shell pane, or override as the local account with `herdr-threads human me init --operator` (later commands in this pane then run as you) (invalid_request)\n",
+    "stderr": "herdr-threads: pane w1:p1: `human` person commands are for a person in their own shell pane, never an agent session (CODEX_SANDBOX is set); an agent sends as itself (invalid_request)\n",
     "stdout": ""
   },
   {
@@ -63,7 +63,7 @@
       ]
     ],
     "exit": 2,
-    "stderr": "herdr-threads: pane w1:p1: `me init` and person-pane commands never act as an agent (environment variable CODEX_SANDBOX_NETWORK_DISABLED is set). Run them in your own shell pane, or override as the local account with `herdr-threads human me init --operator` (later commands in this pane then run as you) (invalid_request)\n",
+    "stderr": "herdr-threads: pane w1:p1: `human` person commands are for a person in their own shell pane, never an agent session (CODEX_SANDBOX_NETWORK_DISABLED is set); an agent sends as itself (invalid_request)\n",
     "stdout": ""
   },
   {
@@ -79,7 +79,7 @@
       ]
     ],
     "exit": 2,
-    "stderr": "herdr-threads: pane w1:p1: `me init` and person-pane commands never act as an agent (environment variable CLAUDECODE is set). Run them in your own shell pane, or override as the local account with `herdr-threads human me init --operator` (later commands in this pane then run as you) (invalid_request)\n",
+    "stderr": "herdr-threads: pane w1:p1: `human` person commands are for a person in their own shell pane, never an agent session (CLAUDECODE is set); an agent sends as itself (invalid_request)\n",
     "stdout": ""
   },
   {
@@ -103,7 +103,7 @@
       ]
     ],
     "exit": 2,
-    "stderr": "herdr-threads: pane w1:p1: `me init` and person-pane commands never act as an agent (environment variable PI_CODING_AGENT is set). Run them in your own shell pane, or override as the local account with `herdr-threads human me init --operator` (later commands in this pane then run as you) (invalid_request)\n",
+    "stderr": "herdr-threads: pane w1:p1: `human` person commands are for a person in their own shell pane, never an agent session (PI_CODING_AGENT is set); an agent sends as itself (invalid_request)\n",
     "stdout": ""
   },
   {
@@ -115,7 +115,7 @@
       ]
     ],
     "exit": 2,
-    "stderr": "herdr-threads: pane w1:p1: `me init` and person-pane commands never act as an agent (environment variable OPENCODE is set). Run them in your own shell pane, or override as the local account with `herdr-threads human me init --operator` (later commands in this pane then run as you) (invalid_request)\n",
+    "stderr": "herdr-threads: pane w1:p1: `human` person commands are for a person in their own shell pane, never an agent session (OPENCODE is set); an agent sends as itself (invalid_request)\n",
     "stdout": ""
   },
   {
@@ -128,6 +128,97 @@
     ],
     "exit": 3,
     "stderr": "herdr-threads: daemon is not running for this state/host context; run `herdr-threads daemon ensure` (host_unavailable)\n",
+    "stdout": ""
+  },
+  {
+    "case": "HERMES_SESSION_ID",
+    "env": [
+      [
+        "HERMES_SESSION_ID",
+        "h-1"
+      ]
+    ],
+    "exit": 2,
+    "stderr": "herdr-threads: pane w1:p1: `human` person commands are for a person in their own shell pane, never an agent session (HERMES_SESSION_ID is set); an agent sends as itself (invalid_request)\n",
+    "stdout": ""
+  },
+  {
+    "case": "CLAUDE_CODE_SESSION_ID",
+    "env": [
+      [
+        "CLAUDE_CODE_SESSION_ID",
+        "c-1"
+      ]
+    ],
+    "exit": 2,
+    "stderr": "herdr-threads: pane w1:p1: `human` person commands are for a person in their own shell pane, never an agent session (CLAUDE_CODE_SESSION_ID is set); an agent sends as itself (invalid_request)\n",
+    "stdout": ""
+  },
+  {
+    "case": "CODEX_SESSION_ID",
+    "env": [
+      [
+        "CODEX_SESSION_ID",
+        "x-1"
+      ]
+    ],
+    "exit": 2,
+    "stderr": "herdr-threads: pane w1:p1: `human` person commands are for a person in their own shell pane, never an agent session (CODEX_SESSION_ID is set); an agent sends as itself (invalid_request)\n",
+    "stdout": ""
+  },
+  {
+    "case": "operator-none",
+    "env": [],
+    "exit": 3,
+    "stderr": "herdr-threads: daemon is not running for this state/host context; run `herdr-threads daemon ensure` (host_unavailable)\n",
+    "stdout": ""
+  },
+  {
+    "case": "operator-HERMES_SESSION_ID",
+    "env": [
+      [
+        "HERMES_SESSION_ID",
+        "h-1"
+      ]
+    ],
+    "exit": 2,
+    "stderr": "herdr-threads: pane w1:p1: `human` person commands are for a person in their own shell pane, never an agent session (HERMES_SESSION_ID is set); an agent sends as itself (invalid_request)\n",
+    "stdout": ""
+  },
+  {
+    "case": "operator-CLAUDECODE",
+    "env": [
+      [
+        "CLAUDECODE",
+        "1"
+      ]
+    ],
+    "exit": 2,
+    "stderr": "herdr-threads: pane w1:p1: `human` person commands are for a person in their own shell pane, never an agent session (CLAUDECODE is set); an agent sends as itself (invalid_request)\n",
+    "stdout": ""
+  },
+  {
+    "case": "operator-CLAUDE_CODE_SESSION_ID",
+    "env": [
+      [
+        "CLAUDE_CODE_SESSION_ID",
+        "c-1"
+      ]
+    ],
+    "exit": 2,
+    "stderr": "herdr-threads: pane w1:p1: `human` person commands are for a person in their own shell pane, never an agent session (CLAUDE_CODE_SESSION_ID is set); an agent sends as itself (invalid_request)\n",
+    "stdout": ""
+  },
+  {
+    "case": "operator-CODEX_THREAD_ID",
+    "env": [
+      [
+        "CODEX_THREAD_ID",
+        "thread-1"
+      ]
+    ],
+    "exit": 2,
+    "stderr": "herdr-threads: pane w1:p1: `human` person commands are for a person in their own shell pane, never an agent session (CODEX_THREAD_ID is set); an agent sends as itself (invalid_request)\n",
     "stdout": ""
   }
 ]

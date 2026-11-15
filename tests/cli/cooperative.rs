@@ -1833,12 +1833,11 @@ fn herdr_read_error_is_not_agent_evidence() {
 
 #[test]
 fn operator_marked_human_context_is_selected_despite_agent_evidence() {
-    let marker = [("CLAUDECODE", "1")];
-    assert!(select(&marker, Ok(None), true).is_ok());
     assert!(select(&[], Ok(Some(observed(Some("codex")))), true).is_ok());
-    // Negative: without the recorded mark the same evidence refuses.
-    assert!(select(&marker, Ok(None), false).is_err());
+    // Negative: without the recorded mark the same evidence refuses, and an agent session
+    // refuses even with it.
     assert!(select(&[], Ok(Some(observed(Some("codex")))), false).is_err());
+    assert!(select(&[("CLAUDECODE", "1")], Ok(None), true).is_err());
 }
 
 fn human_context(pane: &str) -> crate::harness::context::OccupantContext {
@@ -1892,11 +1891,40 @@ fn refusal_detail(error: crate::cli::RunError) -> String {
 fn derive_selection_refuses_human_context_with_agent_marker() {
     let detail = refusal_detail(select(&[("CLAUDECODE", "1")], Ok(None), false).unwrap_err());
     assert!(detail.contains("CLAUDECODE"), "{detail}");
-    assert!(
-        detail.contains("herdr-threads human me init --operator"),
-        "{detail}"
-    );
+    // Shown to an agent session: no override is named (TRUST-POLICY A4).
+    assert!(!detail.contains("--operator"), "{detail}");
     assert!(select(&[("PATH", "/bin")], Ok(None), false).is_ok());
+}
+
+/// Kills: a person-pane command that honours a recorded `me init --operator` mark inside an
+/// agent session, or names an override to one. Hermes, Claude and Codex sessions each.
+#[test]
+fn derive_selection_refuses_agent_session_even_with_operator_mark() {
+    for var in [
+        "HERMES_SESSION_ID",
+        "CLAUDE_CODE_SESSION_ID",
+        "CODEX_THREAD_ID",
+        "CODEX_SESSION_ID",
+        "CLAUDECODE",
+    ] {
+        for operator_override in [false, true] {
+            let detail =
+                refusal_detail(select(&[(var, "s-1")], Ok(None), operator_override).unwrap_err());
+            assert!(detail.contains(var), "{detail}");
+            assert!(detail.contains("own shell pane"), "{detail}");
+            assert!(!detail.contains("--operator"), "{detail}");
+            assert!(!detail.contains("override"), "{detail}");
+        }
+    }
+    // A plain shell with the operator mark keeps the override over Herdr's report.
+    assert!(
+        select(
+            &[("PATH", "/bin")],
+            Ok(Some(observed(Some("claude")))),
+            true
+        )
+        .is_ok()
+    );
 }
 
 #[test]

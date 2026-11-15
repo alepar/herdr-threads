@@ -1612,7 +1612,8 @@ enum MeSub {
     #[command(after_help = super::help::me_init_help())]
     Init {
         /// Override the agent guard as the local account: record yourself over
-        /// an agent's binding or where agent markers are present.
+        /// an agent's binding or where Herdr reports an agent. Never from inside
+        /// an agent session.
         #[arg(long)]
         operator: bool,
     },

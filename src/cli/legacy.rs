@@ -69,8 +69,7 @@ impl std::fmt::Display for PurgeRefusal {
             Self::AgentEvidence(evidence) => write!(
                 f,
                 "legacy purge --confirm never runs as an agent ({evidence}); run it in your own \
-                 shell, or override as the local account with `herdr-threads legacy purge \
-                 --confirm --operator`"
+                 shell"
             ),
             Self::Symlink => f.write_str("instances is a symlink; not purging"),
             Self::NotDirectory => f.write_str("instances is not a directory; not purging"),

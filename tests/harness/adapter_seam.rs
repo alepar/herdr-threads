@@ -370,6 +370,35 @@ fn adapter_seam_registry_lists_markers_in_registry_order_and_splits_guards() {
     assert!(!guards.contains(&"CODEX_THREAD_ID"));
 }
 
+/// Person attribution is refused in an agent session: every marker and every caller shape's
+/// session variables count, so a harness with no person-guard marker (Hermes) is covered too.
+#[test]
+fn adapter_seam_agent_session_markers_cover_markers_and_session_vars() {
+    let registry = builtins();
+    let markers = registry.agent_session_markers();
+    for marker in registry.env_markers() {
+        assert!(markers.contains(&marker.name), "{}", marker.name);
+    }
+    for (id, shape) in registry.caller_shapes() {
+        for var in shape.session_vars() {
+            assert!(markers.contains(&var), "{id} {var}");
+        }
+    }
+    for var in [
+        "HERMES_SESSION_ID",
+        "CLAUDE_CODE_SESSION_ID",
+        "CODEX_THREAD_ID",
+        "CODEX_SESSION_ID",
+    ] {
+        assert!(markers.contains(&var), "{var}");
+    }
+    let mut unique = markers.clone();
+    unique.sort_unstable();
+    unique.dedup();
+    assert_eq!(unique.len(), markers.len(), "{markers:?}");
+    assert!(!markers.contains(&"AI_AGENT"));
+}
+
 // ---------------------------------------------------------------- values
 
 fn registration(id: &str) -> &'static Registration {
@@ -509,7 +538,9 @@ fn adapter_seam_test_adapter_reaches_markers_and_help_without_core_edits() {
 
     let me = help::me_init_help_in(&registry);
     assert!(
-        me.contains("agent markers (HT_TEST_MARKER) or a registered agent harness"),
+        me.contains(
+            "agent markers (HT_TEST_MARKER) or a registered agent harness's session variable"
+        ),
         "{me}"
     );
     assert!(
@@ -545,7 +576,7 @@ fn adapter_seam_builtin_me_init_help_names_the_guard_markers_only() {
     let me = crate::cli::help::me_init_help();
     assert!(
         me.contains(
-            "agent markers (CLAUDECODE, CODEX_SANDBOX, CODEX_SANDBOX_NETWORK_DISABLED, ANTIGRAVITY_AGENT, OPENCODE, PI_CODING_AGENT) or a registered agent harness reported by Herdr are present"
+            "agent markers (CLAUDECODE, CODEX_SANDBOX, CODEX_SANDBOX_NETWORK_DISABLED, ANTIGRAVITY_AGENT, OPENCODE, PI_CODING_AGENT) or a registered agent harness's session variable set"
         ),
         "{me}"
     );
