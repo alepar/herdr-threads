@@ -1,0 +1,190 @@
+{
+  "schema": 1,
+  "task": "ht-d2jq.5",
+  "review_base": "23171ba07c75d7c2ce8bc9f8b8287891f2521215",
+  "implementation_commits": [
+    "a4e00d77e09a6bf092ddb41c5a06d99c34d6b1df",
+    "16d176853c278fad52300199d3f4dc15872d5800"
+  ],
+  "contracts": [
+    "9f0753d877dbc064dd2625f9818cf08ade028a72",
+    "5f1d460101427289f67cb161f3e26c68053b9d9f"
+  ],
+  "owner_clarifications": [
+    "mnSGtYWizTzy",
+    "mnSGe4GHD4TC",
+    "mnSGFxTJstKU",
+    "mnSGaTLw8IjL"
+  ],
+  "scope": "observed-idle marker-only queue wake activation; hooks retain body delivery and receipts",
+  "tests": [
+    {
+      "command": "cargo nextest run --locked --all-features --lib --test combined -E 'test(/^(scheduler::|host::native::tests::|host::named::|harness::codex::wake::|app::start_into_slot_tests::|daemon::idle_exit::|notification::queue::)/) | test(/owner_lease_outlives/) | (binary(combined) & test(/wake_intents|wake_activation_recovery|wake_queue_selection|wake_frontier_activation|queue_recovery|queue_runtime|codex_wake_observation/))'",
+      "passed": 514,
+      "failed": 0,
+      "skipped": 8486,
+      "library_tests": 439,
+      "combined_tests": 75,
+      "compile_seconds": 40.9,
+      "execution_seconds": 25.484,
+      "nextest_run_id": "3f43facb-c829-439b-ae74-84b30fcafeb3"
+    },
+    {
+      "command": "cargo nextest run --locked --all-features --test hook_entrypoint --test service -E 'test(/codex_stop_continues_once|codex_end_event_stays_disconnected|mail_reaches_the_next_non_bash_codex_tool_hook|elected_shutdown_joins_idle_monitor|elected_wake_hang_allows_health|actual_native_snapshot_cancellation_closes/)' --status-level fail",
+      "passed": 6,
+      "failed": 0,
+      "skipped": 219,
+      "compile_seconds": 1.46,
+      "execution_seconds": 3.142,
+      "nextest_run_id": "e2904ebc-b35a-4aab-954c-84c016ba5ba4"
+    }
+  ],
+  "unique_final_scoped_tests": 520,
+  "full_suite_run": false,
+  "live_model_qualification_run": false,
+  "red_regressions": [
+    {
+      "case": "delayed completion(false) and Accepted cleanup=false after positive probe, retirement and new intent",
+      "passed": 9,
+      "failed": 2,
+      "compile_seconds": 2.61,
+      "execution_seconds": 1.32,
+      "observed": "both independent paths hit UNIQUE cohort conflicts before the monotonic fix"
+    },
+    {
+      "case": "Prepared refusal preserves exact-helper positive evidence",
+      "passed": 0,
+      "failed": 1,
+      "compile_seconds": 3.37,
+      "execution_seconds": 1.01,
+      "observed": "late refusal restored quarantine"
+    },
+    {
+      "case": "new helper resets predecessor-only native exception",
+      "passed": 0,
+      "failed": 1,
+      "compile_seconds": 3.42,
+      "execution_seconds": 0.86,
+      "observed": "new helper inherited the prior native-only exception"
+    }
+  ],
+  "checks": {
+    "all_target_all_feature_clippy": {
+      "command": "cargo clippy --locked --all-targets --all-features -- -D warnings",
+      "exit": 0,
+      "compiler_seconds": 23.06
+    },
+    "default_feature_guard": {
+      "command": "scripts/check-default-features",
+      "exit": 0
+    },
+    "format": {
+      "command": "cargo fmt -- --check",
+      "exit": 0
+    },
+    "harness_neutral": {
+      "command": "scripts/check-harness-neutral",
+      "exit": 0,
+      "new_exceptions": 0
+    },
+    "wire_compat": {
+      "command": "scripts/check-wire-compat",
+      "exit": 0,
+      "baseline_changed": false
+    },
+    "diff": {
+      "command": "git diff --check",
+      "exit": 0
+    }
+  },
+  "execution_context": {
+    "priority": "nice 19",
+    "build_jobs": 4,
+    "test_threads": 4,
+    "target": "existing warm worktree target"
+  },
+  "over_budget_nonfinal_observations": [
+    {
+      "phase": "initial core RED test rebuild",
+      "seconds": 89
+    },
+    {
+      "phase": "initial helper RED lib rebuild",
+      "seconds": 152
+    },
+    {
+      "phase": "initial host RED lib rebuild",
+      "seconds": 194
+    },
+    {
+      "phase": "first integrated Clippy",
+      "seconds": 72
+    },
+    {
+      "phase": "new private composition lib rebuild",
+      "seconds": 194
+    }
+  ],
+  "timing_scope": "Historical nonfinal rebuild observations are retained, not waived. Final Clippy and affected compilation are below one minute; no full-suite timing claim.",
+  "cleanup": {
+    "run_id": "43aa80b8-4600-4940-963e-d3df885b543a",
+    "command": "scripts/check-no-leaked-processes --run-id 43aa80b8-4600-4940-963e-d3df885b543a",
+    "processes_exit": 0,
+    "temp_files_exit": 0,
+    "owned_processes_remaining": 0,
+    "warm_target_retained_for_continuing_epic": true
+  },
+  "routine_model_visible_bytes_added": 0,
+  "existing_wake_marker_bytes": 22,
+  "migration_number": "0018 tentative until whole-feature integration",
+  "source_sha256": {
+    "migrations/node/0018_programmatic_wake_intents.sql": "ca9058b605845b6a2621fc0193f4454924265ee16c9d94db0a7d7de97e0c6b73",
+    "src/app.rs": "c8f1eaf0e16d86359bcb600e201d00c13802111aae78bef9e141579885d8d9fe",
+    "src/daemon/idle_exit.rs": "1146f67743db9ab0f32617c5070ced8854fe1be6d79f6688613bafa7decff4f7",
+    "src/harness/adapter.rs": "889bda75c426c13737170f5dbd9d5c86e94776aee333ac959812557e8a2093cc",
+    "src/harness/codex.rs": "2071af3e760cc996373d5343cd90b09e6608960ab0fd4a31dde793f184991da7",
+    "src/harness/codex/wake/control.rs": "17802a6bec91bd0e99f0ecb686e8edb21721f6783612800c229d709b68684dbd",
+    "src/harness/codex/wake/helper.rs": "216d4249ed134aaf06ab3dc73920da8e3ea0fbeff3f06151397308146e4a6896",
+    "src/harness/codex/wake/mod.rs": "8dec72a98ab5930772d98e9b5b9f041b8f3e5d80a1a9887e9fbda1b0fb41066d",
+    "src/harness/registry.rs": "fbbc4afd25d99d31fc0bcc0c98044aa4727f7e1b17440aa04f6da54a08c0f872",
+    "src/harness/wake.rs": "def3f444975bea08a7b5286abc4df6a9bcfe87f20a219799902f67dc7ab25a8a",
+    "src/host/named.rs": "6b0a866e40391a22508604319f85d06e33f81cda7aa1706d15abc72a90def8eb",
+    "src/host/native.rs": "8e3c93ed27a220834cf1cdcc6753d287f4c17f0f0130cb91f3a30da659ed32de",
+    "src/notification/dispatch.rs": "fb7d5023cdbbe17a6c5671593c5900769ece925ebd4381af3861da7f854b7504",
+    "src/notification/mod.rs": "10d3611ea6dbf85ccb2ba8da4e9ae9c268134195d4ca2a6c1b435e6ff3b25502",
+    "src/notification/queue.rs": "c1b568cf5d75e4dbc160ec3b380ea361eb9132c1f9d44f2f9718e128f8a5a590",
+    "src/notification/queue_recovery.rs": "f29f84ac310cf8dc0b2e88ac1f679b1a28cd3bd7dd61b76e4fb43893ae2a413a",
+    "src/ports.rs": "a745d6a92836e991a9141b0a56b61bea11241989aa593a11bd9a420a183da199",
+    "src/ports/wake_intents.rs": "ff5153ca588ff6b44b9873215c23f20d1d31b9b5f088ad70d60a254cfa55cfe4",
+    "src/scheduler/mod.rs": "9bb9db7d5b9a9c02138bee592050cd2e2e586443b534c45cc6f8c53183680375",
+    "src/service/host_sessions.rs": "8fcafa59c7017028de57f37a629ecfab3bc72243dd466a00954b3f14bf919b3e",
+    "src/service/kicks.rs": "f4ddbd8fd59c5e5540102aee056d7bcc7e00aa75809f2b9050a33d8a581ed46c",
+    "src/service/workers.rs": "a084f7783f9956b11c6e2b7c839b40cd78bd2388497bb5396ed76cd38757b305",
+    "src/store/mod.rs": "42e28f652de73ba82345b324b1d10aa2e01a33c4c69529b1888af8bbd367b101",
+    "src/store/native_turn.rs": "087f9ea62a996d0eccb14cd304ceed1a6aa37d1b5fd04c2e167ddd9223da681c",
+    "src/store/wake_intents.rs": "6e06549006ab8941c63f61f7f064f8ea878448e9b4067ae5df09b8a58d5194a3",
+    "src/store/wake_intents/activation.rs": "3a7930cf40f97f051fad3de7aed39d1f86ed254f191084952ebb64b82abee2c0",
+    "src/store/wake_intents/selection.rs": "222a2534bd4cc237b42118869a4378fe3814efaab5b59548dfd5078a3432b81f",
+    "tests/combined.rs": "787b1cde479411d04067d2b1c8f90c8b2216af255d9e32eed842def73be0ed60",
+    "tests/daemon/lifecycle.rs": "d89ed0fe54fb88cd2042311c46de0b49be390da11c62d2335f1814c3db026b3a",
+    "tests/fixtures/wake_intent.rs": "36e8fb7d740ecca1e2a1f2a0c19f063f98c365ac729c3e2fb020f16ff1eaceae",
+    "tests/harness/codex_wake_control.rs": "b474d63bc116d5a623dbb23432999737f7217b452e3dbacf187b5959bd62ac64",
+    "tests/harness/codex_wake_observation.rs": "07d31ca629f9a3172fa4bda1017c037e4ff22eed8b246bc7c1f6205cafccc0e4",
+    "tests/host/named_tmux.rs": "e64e105c7e3717aa9646815762f063bc5502f463bd791bc3bcce4c675cf6ce0b",
+    "tests/notification/queue_recovery.rs": "dd948872a8dd84081213d475acdab49e810121bb8ffe43bc9d496050e3796090",
+    "tests/notification/queue_runtime.rs": "1a3069f7e8ae78784290f474a24455701956cb4aacde4ed2d474409677bab3b4",
+    "tests/scheduler/queue_transport.rs": "d538e648766b232492b5ab6b849064c6be45711d7391df576d8c4360a6bab3d9",
+    "tests/scheduler/wake_receipt.rs": "38f1e53a943ff6d3d68347cb35a396a340f4785b5a20aeb87b45b8373a76003c",
+    "tests/scheduler/wake_text.rs": "2ce00edd944002a495276277e7c4cb7499055c9331f5ea241ba5c9137bc23bda",
+    "tests/store/wake_activation_recovery.rs": "5e8146165e0d0e1a0a73a298775e31278e110a268807b68179d2dcb891018c84",
+    "tests/store/wake_frontier_activation.rs": "140f9e891e5111a037da96b804c248670e6724286f4e41cb6720e23dc9628f6f",
+    "tests/store/wake_intents.rs": "cc463f41abab0cfe74fee0c23357b0f8ab600291b4e6e24d2837fe6e06328a72",
+    "tests/store/wake_queue_selection.rs": "d8f7399f4b959719f3cec8510b7858a2e7e4f1775b9a86983047e4e89c962d56"
+  },
+  "report_sha256": "303ea7afb20a6144be15a80c18c64a4c96e5e73fe7057fe0dc36577a97e8b802",
+  "privacy": {
+    "json_string_values_checked": 81,
+    "private_strings_found": 0,
+    "relative_links_checked": 2
+  }
+}
