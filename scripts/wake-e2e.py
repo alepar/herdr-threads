@@ -1288,7 +1288,8 @@ class Run:
             argv += ["-m", self.args.codex_model]
         if plain:
             argv += ["-c", "features.codex_hooks=false"]
-        return f"{path} HERDR_AGENT=codex CODEX_HOME={q(str(self.codex_home))} {shlex.join(argv)}"
+        return (f"{path} HERDR_AGENT=codex CODEX_HOME={q(str(self.codex_home))} "
+                f"CODEX_SQLITE_HOME={q(str(self.codex_home))} {shlex.join(argv)}")
 
     @property
     def linux(self):

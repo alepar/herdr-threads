@@ -5,13 +5,6 @@
   "mapping_approval": "mnSGXFkHISI8",
   "review_requirement": "mnSGfJeu1Qf9",
   "scope": "opt-in proof support in existing launcher, no production changes",
-  "self_test": {
-    "command": "python3 scripts/wake-e2e.py --self-test",
-    "passed": 265,
-    "failed": 0,
-    "seconds": 102.773,
-    "live_agents_started": false
-  },
   "regressions": [
     {
       "case": "opt-in controls and bounded sampler configuration",
@@ -41,6 +34,22 @@
     },
     "diff": {
       "exit": 0
+    },
+    "clippy": {
+      "exit": 0,
+      "seconds": 39.79
+    },
+    "default_features": {
+      "exit": 0
+    },
+    "fmt": {
+      "exit": 0
+    },
+    "harness_neutral": {
+      "exit": 0
+    },
+    "wire_compat": {
+      "exit": 0
     }
   },
   "bounds": {
@@ -63,10 +72,36 @@
   "full_suite_timing_gate_satisfied": false,
   "routine_production_model_visible_bytes_added": 0,
   "source_sha256": {
-    "scripts/wake-e2e.py": "2df8b34254571ec021aadaa8d7183a062c3f4542aa148e2a36f9a151db224275",
-    "scripts/wake_e2e_selftest.py": "9d352d959a89f49bcb4a9fbff6dcce09805a87b64c1798160d196cb72ec6e903",
+    "scripts/wake-e2e.py": "6b74cf1ef936b45732953844c5bd1bcf1132bfb6afd60d1b6613948948aab2f7",
+    "scripts/wake_e2e_selftest.py": "26b67383cd8861ce1b8a46d5f67ccaf7b816d712cac0674605eebdd66fc90456",
     "scripts/wake_e2e_queue.py": "32c854fa28fd60b5468f7c931772a44b4b2d8eae9cde4849f06d8cd14bc4cfad",
     "scripts/wake_e2e_queue_selftest.py": "421f5fb880c1d387bd515b39e35d5479f66740680647d615cfc8db7431ee8393"
   },
-  "report_sha256": "a0c13b0877fea3be531814d051bea24a451bed2e3b5544a4cac235743b1268a9"
+  "report_sha256": "6b21aa908116884caca27398b4e5ddaa608e8b9da21fee654072577f8b5977b7",
+  "historical_driver_freeze": "d98cfb3128a7a1bbf74b31232308a7d407875c4b",
+  "prior_self_test": {
+    "command": "python3 scripts/wake-e2e.py --self-test",
+    "passed": 265,
+    "failed": 0,
+    "seconds": 102.773,
+    "live_agents_started": false
+  },
+  "isolation_regression": {
+    "case": "inherited SQLite home cannot escape private test profile",
+    "red_failed": 1,
+    "focused_green_passed": 4,
+    "launcher_snapshot_green_passed": 15,
+    "historical_repeat": {
+      "run": 266,
+      "failed": 3,
+      "reason": "expected launcher strings lacked newly pinned SQLite home"
+    }
+  },
+  "self_test": {
+    "command": "python3 scripts/wake-e2e.py --self-test",
+    "passed": 266,
+    "failed": 0,
+    "seconds": 102.916,
+    "live_agents_started": false
+  }
 }

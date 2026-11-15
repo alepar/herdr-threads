@@ -1886,7 +1886,8 @@ MACOS_CLAUDE_LINE = ('unset CLAUDECODE CLAUDE_CODE_ENTRYPOINT CLAUDE_PID; PATH=/
                      'claude-mod/herdr-threads HERDR_AGENT=claude command claude --setting-sources project,local '
                      '--settings /private/tmp/ht-wake-e2e.X/claude-config/settings.json --permission-mode auto')
 MACOS_CODEX_LINE = ('PATH=/private/tmp/ht-wake-e2e.X/bin:"$PATH" HERDR_AGENT=codex CODEX_HOME=/private/tmp/ht-wake-e2e.X/'
-                    'codex-home command codex --no-daemon -C /repo --dangerously-bypass-hook-trust -c '
+                    'codex-home CODEX_SQLITE_HOME=/private/tmp/ht-wake-e2e.X/codex-home '
+                    'command codex --no-daemon -C /repo --dangerously-bypass-hook-trust -c '
                     'check_for_update_on_startup=false -c features.shell_snapshot=false --approve-for-me')
 
 
@@ -2195,6 +2196,17 @@ class CodexCandidateCli(TempDir):
     def test_a_codex_cell_runs_the_candidate(self):
         self.assertEqual(self.resolve(self.run_.launch_line("codex")), "candidate")
         self.assertEqual(self.resolve(self.run_.launch_line("codex", plain=True)), "candidate")
+
+    def test_codex_sqlite_home_is_private_despite_inherited_override(self):
+        (self.tools / "codex").write_text(
+            '#!/bin/sh\nprintf "%s\\n%s\\n" "$CODEX_HOME" "$CODEX_SQLITE_HOME"\n')
+        env = {"HOME": str(self.home), "PATH": f"{self.tools}:/usr/bin:/bin",
+               "CODEX_SQLITE_HOME": str(self.tmp / "outside-profile")}
+        for plain in (False, True):
+            child = subprocess.run(["/bin/sh", "-c", self.run_.launch_line("codex", plain=plain)],
+                                   env=env, capture_output=True, text=True, timeout=10)
+            self.assertEqual(child.returncode, 0, child.stderr)
+            self.assertEqual(child.stdout.splitlines(), [str(self.run_.codex_home)] * 2)
 
     def test_without_the_fix_the_installed_cli_wins(self):
         # negative control: the same launch line with the snapshot left on resolves the installed CLI
