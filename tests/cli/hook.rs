@@ -8231,6 +8231,7 @@ mod registered_resume {
                 event_id: p.event_id,
                 intent,
                 metadata: EventMetadata {
+                    native_turn_id: None,
                     turn_end: false,
                     enrollment_witness: None,
                     skill_pointer: false,
@@ -12706,6 +12707,7 @@ mod terminal_turn_edge {
             event_id: "e1".into(),
             intent: EventIntent::Current,
             metadata: EventMetadata {
+                native_turn_id: None,
                 turn_end: true,
                 enrollment_witness: None,
                 skill_pointer: false,
@@ -12757,11 +12759,12 @@ mod terminal_turn_edge {
     struct Daemon {
         core: String,
         reports: Mutex<Vec<TurnStateReport>>,
+        native_capability: bool,
     }
     impl LocalClient for Daemon {
         crate::default_output_local_client!();
-        fn supports_capability(&self, _: &str, _: &CallBudget) -> bool {
-            true
+        fn supports_capability(&self, cap: &str, _: &CallBudget) -> bool {
+            cap != crate::protocol::capabilities::NATIVE_TURN_OBSERVATION || self.native_capability
         }
         fn call(&self, command: Command, _: &CallBudget) -> Result<CommandResult, ApiError> {
             match command {
@@ -12840,6 +12843,7 @@ mod terminal_turn_edge {
         let daemon = Daemon {
             core: core.clone(),
             reports: Mutex::new(Vec::new()),
+            native_capability: true,
         };
         let mut target = HostTargetId::new("t3");
         report_turn_edge_on(
@@ -12913,5 +12917,49 @@ mod terminal_turn_edge {
             ),
             "the Herdr pane keeps its env"
         );
+    }
+    #[test]
+    fn native_turn_report_omits_identity_for_older_peers() {
+        let dir = scratch_pane().0;
+        let state = dir.join("state");
+        std::fs::create_dir_all(&state).unwrap();
+        let socket = dir.join("native-edge.sock");
+        std::fs::write(&socket, "").unwrap();
+        let core = socket.to_str().unwrap().to_owned();
+        let original = two_family(&core);
+        let env = caller_env(&original, &decoded(), Guard::Terminal(terminal(&core)))
+            .unwrap_or_else(|_| panic!("terminal"))
+            .unwrap();
+        let args = args(&state);
+        let runtime = hook_runtime_context(&args, &env.caller).unwrap();
+        for capable in [false, true] {
+            let daemon = Daemon {
+                core: core.clone(),
+                reports: Mutex::new(Vec::new()),
+                native_capability: capable,
+            };
+            let mut event = decoded();
+            event.metadata.native_turn_id =
+                Some(crate::protocol::ids::NativeTurnId::new("native-id"));
+            report_turn_edge_on(
+                &daemon,
+                &runtime,
+                crate::node::NodeUuid::from_bytes([7; 16]),
+                &mut HostTargetId::new("t3"),
+                &args,
+                &event,
+                TurnEdge::Busy,
+                &env,
+                Instant::now() + Duration::from_secs(5),
+                &clock(),
+            )
+            .unwrap_or_else(|_| panic!("native turn report"));
+            let reports = daemon.reports.lock().unwrap();
+            assert_eq!(reports.len(), 1);
+            assert_eq!(reports[0].native_turn_id.is_some(), capable);
+            let wire = serde_json::to_value(&reports[0]).unwrap();
+            assert_eq!(wire.get("native_turn_id").is_some(), capable);
+        }
+        std::fs::remove_dir_all(dir).unwrap();
     }
 }

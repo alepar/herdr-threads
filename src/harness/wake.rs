@@ -35,6 +35,25 @@ pub struct WakeControlContext<'a> {
     /// Owned adapter state directory, never the receiver's configuration home.
     pub state_dir: &'a Path,
 }
+/// Failure evidence is separate from uncertainty about helper cleanup.
+#[derive(Debug)]
+pub struct ControlFailure {
+    pub error: ApiError,
+    pub cleanup_error: Option<ApiError>,
+}
+impl From<ApiError> for ControlFailure {
+    fn from(error: ApiError) -> Self {
+        Self {
+            error,
+            cleanup_error: None,
+        }
+    }
+}
+impl From<ApiError> for Box<ControlFailure> {
+    fn from(error: ApiError) -> Self {
+        Box::new(ControlFailure::from(error))
+    }
+}
 #[derive(Debug)]
 pub enum WakeAddOutcome {
     Accepted {
@@ -42,8 +61,8 @@ pub enum WakeAddOutcome {
         /// Failure to confirm helper cleanup never erases known acceptance.
         cleanup_error: Option<ApiError>,
     },
-    RefusedBeforeEffect(ApiError),
-    Unknown(ApiError),
+    RefusedBeforeEffect(ControlFailure),
+    Unknown(ControlFailure),
 }
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct OwnedWakeEntries {
@@ -96,7 +115,7 @@ pub trait WakeControl: Send + Sync {
         target: &WakeControlTarget,
         correlation: &str,
         context: &WakeControlContext<'_>,
-    ) -> Result<OwnedWakeEntries, ApiError>;
+    ) -> Result<OwnedWakeEntries, Box<ControlFailure>>;
     /// The caller authorizes an exact owned saved ID. True means a pending row was deleted,
     /// not that no turn can run. The old receiver need not still exist.
     fn delete(
@@ -104,5 +123,5 @@ pub trait WakeControl: Send + Sync {
         target: &WakeControlTarget,
         id: &str,
         context: &WakeControlContext<'_>,
-    ) -> Result<bool, ApiError>;
+    ) -> Result<bool, Box<ControlFailure>>;
 }

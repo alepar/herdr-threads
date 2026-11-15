@@ -74,6 +74,7 @@ id!(TerminalId);
 id!(HostCallId);
 id!(HostBootId);
 id!(NativeSessionId);
+id!(NativeTurnId);
 id!(ExecutionId);
 // `HERDR_THREADS_CONTINUITY_KEY`: an opaque launcher-supplied seat key. Parsing is the only syntax
 // check, and the core gives it no meaning (spec 4.2).

@@ -440,3 +440,79 @@ fn slow_preflight_with_insufficient_add_budget_writes_no_add() {
     assert!(matches!(result, WakeAddOutcome::RefusedBeforeEffect(_)));
     assert!(!f.trace().iter().any(|v| v["method"] == "thread/queue/add"));
 }
+
+#[test]
+fn cleanup_status_is_typed_without_changing_primary_failure() {
+    let failure = finish_failure(error("request failed"), Some(error("cleanup unconfirmed")));
+    assert!(
+        failure.cleanup_error.is_some(),
+        "cleanup uncertainty must be structural evidence"
+    );
+    assert_eq!(failure.error.detail, "request failed");
+    let failure = finish_failure(error("request failed"), None);
+    assert!(failure.cleanup_error.is_none());
+}
+
+#[test]
+fn every_add_class_preserves_typed_cleanup_separately() {
+    for uncertain_cleanup in [false, true] {
+        for kind in ["refused", "unknown", "accepted"] {
+            let outcome = match kind {
+                "refused" => WakeAddOutcome::RefusedBeforeEffect(error("primary").into()),
+                "unknown" => WakeAddOutcome::Unknown(error("primary").into()),
+                _ => WakeAddOutcome::Accepted {
+                    id: "known".into(),
+                    cleanup_error: None,
+                },
+            };
+            let result = apply_cleanup(outcome, uncertain_cleanup.then(|| error("cleanup")));
+            match result {
+                WakeAddOutcome::RefusedBeforeEffect(failure) if kind == "refused" => {
+                    assert_eq!(failure.error.detail, "primary");
+                    assert_eq!(failure.cleanup_error.is_some(), uncertain_cleanup);
+                }
+                WakeAddOutcome::Unknown(failure) if kind == "unknown" => {
+                    assert_eq!(failure.error.detail, "primary");
+                    assert_eq!(failure.cleanup_error.is_some(), uncertain_cleanup);
+                }
+                WakeAddOutcome::Accepted { id, cleanup_error } if kind == "accepted" => {
+                    assert_eq!(id, "known");
+                    assert_eq!(cleanup_error.is_some(), uncertain_cleanup);
+                }
+                other => panic!("effect classification changed: {other:?}"),
+            }
+        }
+    }
+}
+#[test]
+fn list_delete_mapping_keeps_cleanup_evidence_for_success_and_failure() {
+    for cleanup in [false, true] {
+        let success = finish_read(Ok(false), cleanup.then(|| error("cleanup")));
+        if cleanup {
+            assert!(success.unwrap_err().cleanup_error.is_some());
+        } else {
+            assert!(!success.unwrap());
+        }
+        let failure = finish_read::<bool>(Err(error("primary")), cleanup.then(|| error("cleanup")))
+            .unwrap_err();
+        assert_eq!(failure.error.detail, "primary");
+        assert_eq!(failure.cleanup_error.is_some(), cleanup);
+    }
+}
+#[test]
+fn pre_effect_and_unknown_protocol_failures_report_confirmed_cleanup() {
+    for (mode, unknown) in [
+        ("init_error", false),
+        ("missing_metadata", false),
+        ("lost_reply", true),
+    ] {
+        let f = Fixture::new(mode);
+        let result = f.add(true);
+        let failure = match result {
+            WakeAddOutcome::RefusedBeforeEffect(e) if !unknown => e,
+            WakeAddOutcome::Unknown(e) if unknown => e,
+            other => panic!("{mode}: {other:?}"),
+        };
+        assert!(failure.cleanup_error.is_none(), "{mode}: {failure:?}");
+    }
+}

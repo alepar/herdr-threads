@@ -109,3 +109,75 @@ fn replay_cohort_survives_reconnect_and_storage_relocation() {
     target.scope.native_session = NativeSessionId::new("not-a-native-uuid");
     assert!(control.replay_scope(&target).is_err());
 }
+
+#[test]
+fn decoded_native_turn_identity_survives_fresh_decoder_event_ids() {
+    use herdr_threads::harness::adapter::{
+        AdmissionRequest, HookInput, InstallObservation, TurnEdge,
+    };
+    let registry = builtins();
+    let registration = registry.by_id(registry.agent("codex").unwrap()).unwrap();
+    let budget = CallBudget {
+        deadline: MonoInstant(30000),
+        cancellation: Default::default(),
+    };
+    let admitted = registration
+        .admit(
+            &AdmissionRequest {
+                installed: InstallObservation::NotRequested,
+                input: None,
+                runtime_candidate: None,
+                admitted_at: None,
+            },
+            &budget,
+        )
+        .unwrap();
+    let payload=serde_json::to_vec(&serde_json::json!({"hook_event_name":"UserPromptSubmit","session_id":"session","turn_id":"native-turn","prompt":"normal user input"})).unwrap();
+    let mut event_ids = Vec::new();
+    for _ in 0..2 {
+        let decoded = registration
+            .decode(
+                &admitted,
+                &HookInput {
+                    registered_event: Some("UserPromptSubmit".into()),
+                    bytes: payload.clone(),
+                },
+            )
+            .unwrap();
+        assert_eq!(
+            decoded
+                .metadata
+                .native_turn_id
+                .as_ref()
+                .map(|id| id.as_str()),
+            Some("native-turn")
+        );
+        assert_eq!(registration.turn_state_edge(&decoded), Some(TurnEdge::Busy));
+        event_ids.push(decoded.event_id);
+    }
+    assert_ne!(
+        event_ids[0], event_ids[1],
+        "decoder keys are not native identity"
+    );
+    for id in ["x".repeat(129), "bad id".into()] {
+        let decoded = registration
+            .decode(
+                &admitted,
+                &HookInput {
+                    registered_event: Some("UserPromptSubmit".into()),
+                    bytes: serde_json::to_vec(&serde_json::json!({
+                        "hook_event_name":"UserPromptSubmit", "session_id":"session",
+                        "turn_id":id, "prompt":"normal user input"
+                    }))
+                    .unwrap(),
+                },
+            )
+            .unwrap();
+        assert!(decoded.metadata.native_turn_id.is_none());
+        assert_eq!(
+            registration.turn_state_edge(&decoded),
+            Some(TurnEdge::Busy),
+            "invalid optional identity does not remove the legacy edge"
+        );
+    }
+}

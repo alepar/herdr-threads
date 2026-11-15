@@ -1124,6 +1124,9 @@ pub struct TurnEndDue {
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct TurnStateReport {
+    /// Adapter-native identity, never the hook decoder's random event key.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub native_turn_id: Option<NativeTurnId>,
     pub claim: CallerClaim,
     pub edge: crate::harness::adapter::TurnEdge,
     /// The named caller's tmux wake hint (`ResolveSeat.tmux_hint`'s form), re-established on every

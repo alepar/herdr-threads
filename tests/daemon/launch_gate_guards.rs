@@ -226,6 +226,7 @@ fn turn_state(
 ) -> Result<CommandResult, ApiError> {
     f.service.handle(
         Command::TurnState(TurnStateReport {
+            native_turn_id: None,
             claim,
             edge: crate::harness::adapter::TurnEdge::Busy,
             tmux_hint: hint.map(str::to_owned),
@@ -247,6 +248,27 @@ fn turn_state_hands_the_hint_to_the_host_for_the_harness_process() {
         pid: 4242,
         start: 9,
     };
+
+    assert_eq!(
+        turn_state(
+            &f,
+            claim(CallerRole::TopLevel, Some(harness)),
+            Some(hint),
+            77
+        )
+        .unwrap(),
+        CommandResult::TurnState { recorded: false }
+    );
+    assert!(
+        stub.hints().is_empty(),
+        "an unregistered claim cannot publish a hint"
+    );
+    f.db.execute_batch("INSERT INTO seats(id,instance_id,state,role,target_id,generation,target_generation,created_at,home_node,is_local,host_id)
+        VALUES ('s','34750f98bd59fcfc946da45aaabe933b','resolved','native','alice',1,1,0,(SELECT id FROM local_node),1,(SELECT host_id FROM herdr_hosts WHERE kind='named'));
+        INSERT INTO observed_targets(host_id,target_id,host_boot,epoch,generation,observed_at,provenance,terminal_id,incarnation,incarnation_source_kind,connection_epoch)
+        VALUES ((SELECT host_id FROM herdr_hosts WHERE kind='named'),'alice','b',1,1,0,'fresh','term-alice','inc','native_current_target',1);
+        INSERT INTO occupant_bindings(seat_id,generation,target_generation,target_id,host_boot,host_epoch,harness,native_session,execution_id,observation_provenance,observed_at,registered_at,terminal_id,incarnation,binding_id,liveness_pid,liveness_start)
+        VALUES ('s',1,1,'alice','b',1,'claude','sess','e','cooperative_top_level',0,0,'term-alice','inc','binding',4242,9);").unwrap();
 
     turn_state(
         &f,

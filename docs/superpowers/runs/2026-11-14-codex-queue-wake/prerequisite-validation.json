@@ -1,0 +1,176 @@
+{
+  "schema": 1,
+  "tasks": [
+    "ht-d2jq.5.1",
+    "ht-d2jq.5.2"
+  ],
+  "review_base": "df3e017a01068a7b0074e4819b3e9614b92c385c",
+  "design_contract": "07790bb74",
+  "design_cherry_pick": "df3e017a0",
+  "scope": "inactive canonical current-turn observations and typed cleanup; no arm baseline, intent fulfillment, scheduler selection or queue activation",
+  "integration": "whole feature retained on branch until activation qualification/review; migration18 tentative",
+  "tests": [
+    {
+      "target": "lib",
+      "filter": "codex::wake",
+      "passed": 32,
+      "failed": 0,
+      "execution_seconds": 0.88,
+      "compile_seconds": 175.0
+    },
+    {
+      "target": "lib",
+      "filter": "terminal_turn_edge",
+      "passed": 3,
+      "failed": 0,
+      "execution_seconds": 0.0,
+      "invocation": "just-built unit binary; unchanged production and hook-test source"
+    },
+    {
+      "target": "lib",
+      "filter": "launch_gate_guards_tests",
+      "passed": 4,
+      "failed": 0,
+      "execution_seconds": 0.98,
+      "compile_seconds": 54.32
+    },
+    {
+      "target": "combined",
+      "filter": "wake_intents",
+      "passed": 29,
+      "failed": 0,
+      "execution_seconds": 1.38,
+      "compile_seconds": 40.21,
+      "includes": "18 existing ledger tests and11 native-turn tests, including disconnect retention"
+    },
+    {
+      "target": "combined",
+      "filter": "codex_wake_observation",
+      "passed": 3,
+      "failed": 0,
+      "execution_seconds": 0.0,
+      "includes": "native identity decoding/invalid optional ID fallback and2 existing adapter observations"
+    },
+    {
+      "target": "service",
+      "filter": "turn_state",
+      "passed": 12,
+      "failed": 0,
+      "execution_seconds": 0.0,
+      "compile_seconds": 15.56
+    },
+    {
+      "target": "lib",
+      "filter": "queue_wake_ledger_upgrade",
+      "passed": 1,
+      "failed": 0,
+      "execution_seconds": 1.44,
+      "invocation": "built unit binary; unchanged schema-test source"
+    },
+    {
+      "target": "lib",
+      "filter": "every_table_is_classified",
+      "passed": 1,
+      "failed": 0,
+      "execution_seconds": 0.18,
+      "invocation": "built unit binary; unchanged classification-test source"
+    },
+    {
+      "target": "lib",
+      "filter": "production_deltas_upgrade_baseline_and_reopen_without_losing_data",
+      "passed": 1,
+      "failed": 0,
+      "execution_seconds": 1.47,
+      "invocation": "built unit binary; unchanged schema-test source"
+    }
+  ],
+  "checks": {
+    "all_target_all_feature_clippy": {
+      "exit": 0,
+      "final_compiler_seconds": 16.31,
+      "earlier_compiler_seconds": 49.62
+    },
+    "default_feature_guard": {
+      "exit": 0
+    },
+    "format": {
+      "exit": 0
+    },
+    "harness_neutral": {
+      "exit": 0,
+      "new_exceptions": 0
+    },
+    "wire_compat": {
+      "exit": 0,
+      "baseline_changed": false
+    },
+    "diff": {
+      "exit": 0
+    }
+  },
+  "cleanup": {
+    "run_id": "12fa21e6-edc1-44cc-9ec1-0d892a8e41fc",
+    "processes_exit": 0,
+    "temp_files_exit": 0,
+    "warm_target_retained_for_continuing_epic": true
+  },
+  "red_evidence": [
+    "native decoder/store assertions failed against absent metadata/no-op defaults",
+    "missing native metadata invalidated qualification but initially returned unchanged",
+    "typed cleanup regression failed against flattened diagnostic detail",
+    "existing hint-routing fixture failed because its claim had no canonical binding; fixed fixture and explicitly asserted unregistered refusal"
+  ],
+  "verification_fixes": [
+    "test-only unwrap replaced for existing non-Debug error type",
+    "large Result error boxed without changing ControlFailure fields or effect classification"
+  ],
+  "bounds": {
+    "current_binding_rows_per_instance": 4096,
+    "native_id_bytes": 128,
+    "scope_json_bytes": 4096,
+    "ordinal_max": 9223372036854775807,
+    "live_scope_lru": false
+  },
+  "durability": "store tests use require_commit_durability and FULL SQLite commit settings; restart/response-loss retry and concurrent acceptance covered",
+  "accepted_limit": "first canonical observation order, not runtime chronology; historical ID no longer current may be accepted as fresh",
+  "no_effects": [
+    "no real harness/model turn",
+    "no real user configuration writes",
+    "no intent/arm/fulfillment mutation",
+    "no scheduler selection",
+    "no message receipt settlement"
+  ],
+  "routine_model_visible_bytes_added": 0,
+  "timing_limits": "175-second private lib-test rebuild remains an over-budget observation; following test-only incremental build54.32s and final combined build40.21s. No full-suite timing claim.",
+  "source_sha256": {
+    "migrations/node/0018_programmatic_wake_intents.sql": "089f8dbc4bf618909a6d2456d247d81a06db3d3db9fe9dd086b70d7b56946336",
+    "src/cli/hook.rs": "402e7d2350934648880ba1743cb5130bb7bcf770e5200c46cc30de126b2c12cd",
+    "src/harness/adapter.rs": "b4fbd708991628895942ef55324e75b7bffc8038efbcf108e730431edebb1911",
+    "src/harness/agy/decode.rs": "adf2078ab1b23775004a495e4d130a7eb9bcf3ce7e9f25622cf42293dcbcb54e",
+    "src/harness/codex.rs": "2431c28096b7cd4c032f33b9f17f0607313537f388e022a8beb2ae070f199d81",
+    "src/harness/codex/wake/control.rs": "9ed71799b723ab007782318b395dd9d77ca4e3783e00e60666c84b34798e160b",
+    "src/harness/codex/wake/mod.rs": "0730a0bb34c05d9e9b43d5fa5d3d4c734d180a625b3e9baee40a8dd400f25f49",
+    "src/harness/hermes.rs": "1afc34cec3c3411acbb8a968b220cc9c4b14f7e9abfb1aa1c42cf0354f87bde9",
+    "src/harness/opencode/decode.rs": "6201f3a0942990d42bc3946e4f029f452aeb254f8e80d2e56b6a546fd5abdf6d",
+    "src/harness/registry.rs": "6a98a8019c691055b5239a7f317ad0bca226e4265918846853bbb17c13ec580d",
+    "src/harness/wake.rs": "83b963129504d8de59b7f126d950f7ce2a4735bf725b1e7ea98952c9a48a57f1",
+    "src/ports.rs": "2f1d13ee97cc1264c8fe57e06fb78a495c785bb53329d9be564e5a8913320dc4",
+    "src/ports/native_turn.rs": "50219daf92bcb0636d7f52ee2057bef3cb56d0bfb5c2e9393112bf078e65c6b6",
+    "src/protocol/capabilities.rs": "c49ceff3a67d50f1f654bc821c6fb9947e8f73ba954c95926c38187119b09149",
+    "src/protocol/commands.rs": "9c0a6e8f5dbf1ea7f4aecede96f1469dc326a52bbf07d3635c5b3e8c087145dd",
+    "src/protocol/ids.rs": "631e15e7435c05e81255d91a014c9be559128b30b7533f94f72d103446fd7c7f",
+    "src/service/dispatch.rs": "6930e8ced53a7e5bb6399c555a090af7577a81dd425f8bb129bb2cc3af279c2c",
+    "src/service/kicks.rs": "836d0dad00f4965ac3ed89839f46e286a2d5f54953009e20f5e8e52763b73189",
+    "src/store/mod.rs": "4ffa4e0f06b50f1f1165dc680c09c3514c65c62710576188cd0ce8c54248f51a",
+    "src/store/native_turn.rs": "ad46aaab8474c748fca7b1c8c1fdd41efad497853566bb84dfbce85d37a2594d",
+    "src/test_support/mod.rs": "32d1997e2f152322770e7484e5d949f25264cb67138eba4c9f3874b7ac8ce031",
+    "tests/cli/hook.rs": "e4880fbf23d89bd4c04e40bc2ebfe4665e5faf2985f6a80ee62a100caad9f78e",
+    "tests/daemon/launch_gate_guards.rs": "d082cd8f8f0d94c828d548653fc0418f5978fa66853f97e55d2a25eeee3d5f59",
+    "tests/harness/codex_wake_control.rs": "55265c5c712fa2831f941dfcc24a4f0917dad985b463db88d1acd723b6a0358b",
+    "tests/harness/codex_wake_observation.rs": "b2274d512268ac89102730e7966d6f8dfdc0d92c5806e96d579ddc8ea10fb825",
+    "tests/harness/role_witness.rs": "1a49ef7b9ba595f6ce9ff8feab9f728d4979943996b3bdab7ad6c1c6e8e1bf51",
+    "tests/service/turn_state.rs": "80b487b2ad704fd938eadfc5e3dae64f219873dfd230457165f08246a8283187",
+    "tests/store/wake_intents.rs": "edcd79b2f550895f9ac3a78098ff55b904b473dc4381f4d6f1e817237fb9fb94"
+  },
+  "implementation_report_sha256": "80afd0328a5d44e778afec9b59a1895fbadfdb1af00bb37680ea569a0d6c1bf3"
+}

@@ -1,6 +1,6 @@
 use super::capture::{Descriptor, from_fd, identity};
 use crate::{
-    harness::wake::{OwnedWakeEntries, WakeAddOutcome, WakeControlContext},
+    harness::wake::{ControlFailure, OwnedWakeEntries, WakeAddOutcome, WakeControlContext},
     protocol::results::{ApiError, ErrorCode},
 };
 use serde_json::{Value, json};
@@ -64,14 +64,17 @@ fn nonblocking(pipe: &impl AsRawFd) -> Result<(), ApiError> {
     }
 }
 impl<'a> Peer<'a> {
-    fn start(d: &Descriptor, context: &'a WakeControlContext<'a>) -> Result<Self, ApiError> {
+    fn start(
+        d: &Descriptor,
+        context: &'a WakeControlContext<'a>,
+    ) -> Result<Self, Box<ControlFailure>> {
         let left = context
             .budget
             .deadline
             .0
             .saturating_sub(context.clock.monotonic_now().0);
         if left < 500 || context.budget.is_exhausted(context.clock) {
-            return Err(error("insufficient queue helper budget"));
+            return Err(error("insufficient queue helper budget").into());
         }
         let started = Instant::now();
         let deadline = started + Duration::from_millis(left.min(2000).saturating_sub(250));
@@ -145,7 +148,7 @@ impl<'a> Peer<'a> {
         })();
         if let Err(e) = readiness {
             let cleanup = peer.finish();
-            return Err(cleanup_detail(e, cleanup));
+            return Err(Box::new(finish_failure(e, cleanup)));
         }
         Ok(peer)
     }
@@ -435,7 +438,7 @@ pub(super) fn enqueue(
     authorize: &mut dyn FnMut() -> Result<bool, ApiError>,
     context: &WakeControlContext<'_>,
 ) -> WakeAddOutcome {
-    let no = WakeAddOutcome::RefusedBeforeEffect;
+    let no = |e: ApiError| WakeAddOutcome::RefusedBeforeEffect(e.into());
     if !valid_id(correlation) || !valid_id(session) {
         return no(error("invalid queue identity"));
     }
@@ -444,37 +447,37 @@ pub(super) fn enqueue(
     }
     let mut peer = match Peer::start(d, context) {
         Ok(v) => v,
-        Err(e) => return no(e),
+        Err(e) => return WakeAddOutcome::RefusedBeforeEffect(*e),
     };
     if let Err(e) = peer.preflight(session) {
         let cleanup = peer.finish();
-        return no(cleanup_detail(e, cleanup));
+        return WakeAddOutcome::RefusedBeforeEffect(finish_failure(e, cleanup));
     }
     if let Err(e) = verify() {
         let cleanup = peer.finish();
-        return no(cleanup_detail(e, cleanup));
+        return WakeAddOutcome::RefusedBeforeEffect(finish_failure(e, cleanup));
     }
     if let Err(e) = peer.require_add_budget() {
         let cleanup = peer.finish();
-        return no(cleanup_detail(e, cleanup));
+        return WakeAddOutcome::RefusedBeforeEffect(finish_failure(e, cleanup));
     }
     match authorize() {
         Ok(true) => (),
         Ok(false) => {
             let cleanup = peer.finish();
-            return no(cleanup_detail(
+            return WakeAddOutcome::RefusedBeforeEffect(finish_failure(
                 error("queue wake no longer authorized"),
                 cleanup,
             ));
         }
         Err(e) => {
             let cleanup = peer.finish();
-            return no(cleanup_detail(e, cleanup));
+            return WakeAddOutcome::RefusedBeforeEffect(finish_failure(e, cleanup));
         }
     }
     if let Err(e) = peer.require_add_budget() {
         let cleanup = peer.finish();
-        return no(cleanup_detail(e, cleanup));
+        return WakeAddOutcome::RefusedBeforeEffect(finish_failure(e, cleanup));
     }
     let result=peer.call("thread/queue/add",json!({"threadId":session,"clientUserMessageId":correlation,"input":[{"type":"text","text":crate::notification::policy::WAKE_UP}]}),true);
     let outcome = match result {
@@ -490,9 +493,9 @@ pub(super) fn enqueue(
                     cleanup_error: None,
                 }
             }
-            _ => WakeAddOutcome::Unknown(error("invalid accepted queue identity")),
+            _ => WakeAddOutcome::Unknown(error("invalid accepted queue identity").into()),
         },
-        Err(e) if peer.effect_written => WakeAddOutcome::Unknown(e),
+        Err(e) if peer.effect_written => WakeAddOutcome::Unknown(e.into()),
         Err(e) => no(e),
     };
     apply_cleanup(outcome, peer.finish())
@@ -502,9 +505,9 @@ pub(super) fn list_entries(
     session: &str,
     correlation: &str,
     context: &WakeControlContext<'_>,
-) -> Result<OwnedWakeEntries, ApiError> {
+) -> Result<OwnedWakeEntries, Box<ControlFailure>> {
     if !valid_id(session) || !valid_id(correlation) {
-        return Err(error("invalid queue identity"));
+        return Err(error("invalid queue identity").into());
     }
     let mut peer = Peer::start(d, context)?;
     let result = (|| {
@@ -551,22 +554,16 @@ pub(super) fn list_entries(
         })
     })();
     let cleanup = peer.finish();
-    match result {
-        Ok(v) => match cleanup {
-            Some(e) => Err(e),
-            None => Ok(v),
-        },
-        Err(e) => Err(cleanup_detail(e, cleanup)),
-    }
+    finish_read(result, cleanup)
 }
 pub(super) fn delete_entry(
     d: &Descriptor,
     session: &str,
     id: &str,
     context: &WakeControlContext<'_>,
-) -> Result<bool, ApiError> {
+) -> Result<bool, Box<ControlFailure>> {
     if !valid_id(session) || !valid_id(id) {
-        return Err(error("invalid queue identity"));
+        return Err(error("invalid queue identity").into());
     }
     let mut peer = Peer::start(d, context)?;
     let result = peer
@@ -581,21 +578,29 @@ pub(super) fn delete_entry(
                 .ok_or_else(|| error("invalid queue delete result"))
         });
     let cleanup = peer.finish();
-    match result {
-        Ok(v) => match cleanup {
-            Some(e) => Err(e),
-            None => Ok(v),
-        },
-        Err(e) => Err(cleanup_detail(e, cleanup)),
-    }
+    finish_read(result, cleanup)
 }
 
-fn cleanup_detail(mut original: ApiError, cleanup: Option<ApiError>) -> ApiError {
-    if let Some(cleanup) = cleanup {
-        original.detail.push_str("; ");
-        original.detail.push_str(&cleanup.detail);
+fn finish_failure(error: ApiError, cleanup_error: Option<ApiError>) -> ControlFailure {
+    ControlFailure {
+        error,
+        cleanup_error,
     }
-    original
+}
+fn finish_read<T>(
+    result: Result<T, ApiError>,
+    cleanup: Option<ApiError>,
+) -> Result<T, Box<ControlFailure>> {
+    match result {
+        Ok(value) => match cleanup {
+            None => Ok(value),
+            Some(cleanup) => Err(Box::new(finish_failure(
+                error("queue control cleanup unconfirmed"),
+                Some(cleanup),
+            ))),
+        },
+        Err(error) => Err(Box::new(finish_failure(error, cleanup))),
+    }
 }
 fn apply_cleanup(outcome: WakeAddOutcome, cleanup: Option<ApiError>) -> WakeAddOutcome {
     match outcome {
@@ -603,9 +608,13 @@ fn apply_cleanup(outcome: WakeAddOutcome, cleanup: Option<ApiError>) -> WakeAddO
             id,
             cleanup_error: cleanup_error.or(cleanup),
         },
-        WakeAddOutcome::Unknown(e) => WakeAddOutcome::Unknown(cleanup_detail(e, cleanup)),
-        WakeAddOutcome::RefusedBeforeEffect(e) => {
-            WakeAddOutcome::RefusedBeforeEffect(cleanup_detail(e, cleanup))
+        WakeAddOutcome::Unknown(mut e) => {
+            e.cleanup_error = e.cleanup_error.or(cleanup);
+            WakeAddOutcome::Unknown(e)
+        }
+        WakeAddOutcome::RefusedBeforeEffect(mut e) => {
+            e.cleanup_error = e.cleanup_error.or(cleanup);
+            WakeAddOutcome::RefusedBeforeEffect(e)
         }
     }
 }

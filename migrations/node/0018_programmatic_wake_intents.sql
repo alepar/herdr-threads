@@ -45,3 +45,18 @@ CREATE TABLE wake_intent_ids (
  queue_id TEXT NOT NULL CHECK(length(CAST(queue_id AS BLOB)) BETWEEN 1 AND 128),
  PRIMARY KEY(intent_ordinal,queue_id)
 ) STRICT, WITHOUT ROWID;
+
+-- One current observation per canonical binding, never a lifetime turn journal.
+CREATE TABLE native_turn_state (
+ binding_id TEXT PRIMARY KEY REFERENCES occupant_bindings(binding_id) ON DELETE CASCADE,
+ instance_id TEXT NOT NULL,
+ scope_json BLOB NOT NULL CHECK(length(scope_json)<=4096),
+ turn_id TEXT NOT NULL CHECK(length(CAST(turn_id AS BLOB)) BETWEEN 1 AND 128),
+ phase TEXT NOT NULL CHECK(phase IN ('started','ended','end_first','unknown')),
+ observation_ordinal INTEGER NOT NULL CHECK(observation_ordinal>0)
+) STRICT, WITHOUT ROWID;
+CREATE INDEX native_turn_state_instance ON native_turn_state(instance_id);
+CREATE TRIGGER native_turn_binding_end AFTER UPDATE OF ended_at ON occupant_bindings
+ WHEN NEW.ended_at IS NOT NULL BEGIN
+ DELETE FROM native_turn_state WHERE binding_id=NEW.binding_id;
+END;

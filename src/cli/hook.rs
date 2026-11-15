@@ -4397,6 +4397,17 @@ fn report_turn_edge_on(
     client
         .call(
             Command::TurnState(TurnStateReport {
+                native_turn_id: decoded
+                    .metadata
+                    .native_turn_id
+                    .as_ref()
+                    .filter(|_| {
+                        client.supports_capability(
+                            crate::protocol::capabilities::NATIVE_TURN_OBSERVATION,
+                            &budget(deadline, clock.as_ref()),
+                        )
+                    })
+                    .cloned(),
                 claim,
                 edge,
                 tmux_hint,

@@ -26,6 +26,7 @@ pub mod materialization;
 pub mod materialize;
 pub mod messages;
 pub mod named_seats;
+mod native_turn;
 pub mod no_wake_reports;
 pub mod node_directory;
 pub mod node_prune;
@@ -3556,6 +3557,20 @@ impl StorePort for SqliteStore {
             self.settings.daemon_boot,
             &request,
         )
+    }
+    fn record_native_turn(
+        &self,
+        report: &crate::protocol::commands::TurnStateReport,
+        budget: &CallBudget,
+    ) -> Result<crate::ports::NativeTurnUpdate, ApiError> {
+        native_turn::record(self, report, budget)
+    }
+    fn native_turn_state(
+        &self,
+        binding: &crate::protocol::ids::BindingId,
+        budget: &CallBudget,
+    ) -> Result<Option<crate::ports::NativeTurnState>, ApiError> {
+        native_turn::state(self, binding, budget)
     }
     fn prepare_wake_intent(
         &self,

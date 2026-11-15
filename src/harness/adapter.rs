@@ -709,6 +709,8 @@ pub enum EnrollmentWitness {
 }
 #[derive(Clone)]
 pub struct EventMetadata {
+    /// Optional validated adapter-native turn identity; absent metadata preserves ordinary hooks.
+    pub native_turn_id: Option<crate::protocol::ids::NativeTurnId>,
     pub enrollment_witness: Option<EnrollmentWitness>,
     pub skill_pointer: bool,
     /// An adapter callback can shorten the core end-to-end limit: the native callback's
@@ -1795,6 +1797,7 @@ mod tests {
             event_id: "event".into(),
             intent: EventIntent::Current,
             metadata: EventMetadata {
+                native_turn_id: None,
                 turn_end: false,
                 enrollment_witness: None,
                 context_source: "PreToolUse".into(),
@@ -1835,6 +1838,7 @@ mod tests {
             event_id: "event".into(),
             intent: EventIntent::Current,
             metadata: EventMetadata {
+                native_turn_id: None,
                 turn_end: false,
                 enrollment_witness: None,
                 context_source: "SessionStart".into(),
@@ -2115,6 +2119,7 @@ impl DecodedEvent {
                 EventIntent::Lifecycle(event.kind)
             },
             metadata: EventMetadata {
+                native_turn_id: None,
                 turn_end: false,
                 enrollment_witness: None,
                 context_source: event.source,

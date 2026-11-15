@@ -1749,6 +1749,16 @@ impl HarnessAdapter for CodexAdapter {
                 let turn_start = event.source == "UserPromptSubmit";
                 let turn_end = event.source == "Stop";
                 let mut decoded = DecodedEvent::from_native_payload(event, &input.bytes);
+                if (turn_start || turn_end) && decoded.role == EventRole::TopLevel {
+                    decoded.metadata.native_turn_id = serde_json::from_slice::<Value>(&input.bytes)
+                        .ok()
+                        .and_then(|value| {
+                            value
+                                .get("turn_id")
+                                .and_then(Value::as_str)
+                                .and_then(|id| crate::protocol::ids::NativeTurnId::parse(id).ok())
+                        });
+                }
                 // A Current check-in decodes as a tool boundary; Codex validates the output's
                 // hookEventName against the event that ran.
                 if turn_start {

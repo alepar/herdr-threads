@@ -8,6 +8,8 @@
 //! owns volatile monotonic wake guards; clients own only claims, operation keys and
 //! requested page/output bounds. No client supplies a decision timestamp or actor.
 
+mod native_turn;
+pub use native_turn::*;
 mod wake_intents;
 pub use wake_intents::*;
 
@@ -4352,6 +4354,23 @@ pub trait StorePort: ModStoreReads + Send + Sync {
         request: WakeRecoveryRequest,
         budget: &CallBudget,
     ) -> Result<WakeRecoveryOutcome, ApiError>;
+    fn record_native_turn(
+        &self,
+        _report: &crate::protocol::commands::TurnStateReport,
+        _budget: &CallBudget,
+    ) -> Result<NativeTurnUpdate, ApiError> {
+        Ok(NativeTurnUpdate {
+            edge: None,
+            changed: false,
+        })
+    }
+    fn native_turn_state(
+        &self,
+        _binding: &BindingId,
+        _budget: &CallBudget,
+    ) -> Result<Option<NativeTurnState>, ApiError> {
+        Ok(None)
+    }
     fn prepare_wake_intent(
         &self,
         _reservation: &WakeReservation,

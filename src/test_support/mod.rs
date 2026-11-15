@@ -567,6 +567,7 @@ pub mod synthetic_fourth {
                 event_id: payload.event_id,
                 intent,
                 metadata: EventMetadata {
+                    native_turn_id: None,
                     turn_end: false,
                     enrollment_witness: None,
                     skill_pointer: false,

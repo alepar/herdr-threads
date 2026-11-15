@@ -214,6 +214,7 @@ pub const KNOWN_UNMAPPED: &[&str] = &[
     // Inactive programmatic-wake effect history; no dispatch consumer yet.
     "wake_intents",
     "wake_intent_ids",
+    "native_turn_state",
     // Current presentation progress/outbox never schedules its own work.
     "invitation_presentation_consumers",
     "invitation_presentation_items",

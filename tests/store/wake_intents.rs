@@ -840,3 +840,506 @@ fn missing_canonical_scope_refuses_first_preparation_without_a_row() {
         );
     }
 }
+
+fn native_report(
+    store: &SqliteStore,
+    r: &herdr_threads::ports::WakeReservation,
+    p: &herdr_threads::ports::WakeIntentPreparation,
+    id: &str,
+    edge: herdr_threads::harness::adapter::TurnEdge,
+) -> herdr_threads::protocol::commands::TurnStateReport {
+    use herdr_threads::protocol::{
+        authority::{CallerClaim, CallerRole, Harness},
+        ids::{HostLocator, NativeTurnId},
+    };
+    let host:String=store.context().open_writer().unwrap().query_row("SELECT endpoint FROM herdr_hosts WHERE host_id=(SELECT host_id FROM seats WHERE id='s')",[],|r|r.get(0)).unwrap();
+    herdr_threads::protocol::commands::TurnStateReport {
+        claim: CallerClaim {
+            instance: INSTANCE.into(),
+            host: HostLocator::parse(host).unwrap(),
+            seat: r.seat.clone(),
+            binding_generation: p.target.scope.generation,
+            role: CallerRole::TopLevel,
+            harness: Harness::Codex,
+            native_session: p.target.scope.native_session.clone(),
+            execution: p.target.scope.execution.clone(),
+            target: r.target.clone(),
+            agent_id: None,
+            liveness: Some(p.target.scope.process),
+        },
+        edge,
+        tmux_hint: None,
+        native_turn_id: Some(NativeTurnId::new(id)),
+    }
+}
+#[test]
+fn native_turn_current_retries_end_first_and_mismatched_end_are_idempotent() {
+    use herdr_threads::{harness::adapter::TurnEdge, ports::NativeTurnPhase};
+    let (store, _path, r, p) = fixture();
+    let observe = |id, edge| {
+        StorePort::record_native_turn(&store, &native_report(&store, &r, &p, id, edge), &budget())
+            .unwrap()
+    };
+    assert!(observe("a", TurnEdge::Busy).changed);
+    assert!(!observe("a", TurnEdge::Busy).changed);
+    assert!(observe("a", TurnEdge::Idle).changed);
+    assert!(!observe("a", TurnEdge::Busy).changed);
+    let current = StorePort::native_turn_state(&store, &p.target.scope.binding, &budget())
+        .unwrap()
+        .unwrap();
+    assert_eq!(current.ordinal, 2);
+    assert_eq!(current.phase, NativeTurnPhase::Ended);
+    assert!(observe("b", TurnEdge::Busy).changed);
+    assert!(observe("a", TurnEdge::Idle).edge.is_none());
+    assert_eq!(
+        StorePort::native_turn_state(&store, &p.target.scope.binding, &budget())
+            .unwrap()
+            .unwrap()
+            .ordinal,
+        3
+    );
+    assert!(observe("b", TurnEdge::Idle).changed);
+    assert!(observe("c", TurnEdge::Idle).changed);
+    assert!(!observe("c", TurnEdge::Busy).changed);
+    let current = StorePort::native_turn_state(&store, &p.target.scope.binding, &budget())
+        .unwrap()
+        .unwrap();
+    assert_eq!(current.phase, NativeTurnPhase::EndFirst);
+    assert_eq!(current.ordinal, 5);
+}
+#[test]
+fn native_turn_restart_preserves_current_id_and_scope_change_resets_qualification() {
+    use herdr_threads::{harness::adapter::TurnEdge, ports::NativeTurnPhase};
+    let (store, path, r, p) = fixture();
+    let start = native_report(&store, &r, &p, "turn", TurnEdge::Busy);
+    StorePort::record_native_turn(&store, &start, &budget()).unwrap();
+    drop(store);
+    let store = open(path, r.daemon_boot);
+    assert!(
+        !StorePort::record_native_turn(&store, &start, &budget())
+            .unwrap()
+            .changed
+    );
+    let mut end = start.clone();
+    end.edge = TurnEdge::Idle;
+    StorePort::record_native_turn(&store, &end, &budget()).unwrap();
+    let before = StorePort::native_turn_state(&store, &p.target.scope.binding, &budget())
+        .unwrap()
+        .unwrap();
+    assert_eq!(before.phase, NativeTurnPhase::Ended);
+    let db = store.context().open_writer().unwrap();
+    db.execute("UPDATE occupant_bindings SET liveness='disconnected',disconnected_at=101,disconnect_reason='liveness_end_event'", []).unwrap();
+    assert!(
+        StorePort::record_native_turn(&store, &start, &budget())
+            .unwrap()
+            .edge
+            .is_none()
+    );
+    assert_eq!(
+        StorePort::native_turn_state(&store, &p.target.scope.binding, &budget())
+            .unwrap()
+            .unwrap(),
+        before,
+        "disconnect is not canonical binding finality"
+    );
+    db.execute("UPDATE occupant_bindings SET liveness='connected',disconnected_at=NULL,disconnect_reason=NULL", []).unwrap();
+    drop(db);
+    store
+        .context()
+        .open_writer()
+        .unwrap()
+        .execute("UPDATE occupant_bindings SET liveness_pid=20", [])
+        .unwrap();
+    assert!(
+        StorePort::record_native_turn(&store, &start, &budget())
+            .unwrap()
+            .edge
+            .is_none()
+    );
+    let mut replacement = start;
+    replacement.claim.liveness.as_mut().unwrap().pid = 20;
+    replacement.native_turn_id = Some(herdr_threads::protocol::ids::NativeTurnId::new("new-scope"));
+    assert!(
+        StorePort::record_native_turn(&store, &replacement, &budget())
+            .unwrap()
+            .changed
+    );
+    let after = StorePort::native_turn_state(&store, &p.target.scope.binding, &budget())
+        .unwrap()
+        .unwrap();
+    assert_eq!(after.phase, NativeTurnPhase::Started);
+    assert!(after.ordinal > before.ordinal);
+    assert_eq!(after.scope.process.pid, 20);
+}
+#[test]
+fn native_turn_never_changes_intents_or_qualifies_invalid_claims() {
+    use herdr_threads::harness::adapter::TurnEdge;
+    let (store, _path, r, p) = fixture();
+    let before = prepare(&store, &r, &p);
+    let good = native_report(&store, &r, &p, "turn", TurnEdge::Busy);
+    for index in 0..4 {
+        let mut bad = good.clone();
+        match index {
+            0 => bad.claim.execution = herdr_threads::protocol::ids::ExecutionId::new("foreign"),
+            1 => bad.claim.binding_generation += 1,
+            2 => bad.claim.liveness.as_mut().unwrap().start += 1,
+            _ => {
+                bad.claim.native_session =
+                    herdr_threads::protocol::ids::NativeSessionId::new("sibling")
+            }
+        }
+        assert!(
+            StorePort::record_native_turn(&store, &bad, &budget())
+                .unwrap()
+                .edge
+                .is_none()
+        );
+    }
+    StorePort::record_native_turn(&store, &good, &budget()).unwrap();
+    assert_eq!(
+        StorePort::wake_intent(&store, &r.attempt, &budget())
+            .unwrap()
+            .unwrap(),
+        before
+    );
+    store
+        .context()
+        .open_writer()
+        .unwrap()
+        .execute("UPDATE occupant_bindings SET ended_at=101", [])
+        .unwrap();
+    assert!(
+        StorePort::native_turn_state(&store, &p.target.scope.binding, &budget())
+            .unwrap()
+            .is_none()
+    );
+    assert!(
+        StorePort::record_native_turn(&store, &good, &budget())
+            .unwrap()
+            .edge
+            .is_none()
+    );
+}
+
+#[test]
+fn native_turn_missing_metadata_invalidates_qualification_without_forgetting_id() {
+    use herdr_threads::{harness::adapter::TurnEdge, ports::NativeTurnPhase};
+    let (store, _path, r, p) = fixture();
+    let mut report = native_report(&store, &r, &p, "a", TurnEdge::Busy);
+    StorePort::record_native_turn(&store, &report, &budget()).unwrap();
+    report.edge = TurnEdge::Idle;
+    StorePort::record_native_turn(&store, &report, &budget()).unwrap();
+    report.native_turn_id = None;
+    report.edge = TurnEdge::Busy;
+    assert!(
+        StorePort::record_native_turn(&store, &report, &budget())
+            .unwrap()
+            .changed
+    );
+    let state = StorePort::native_turn_state(&store, &p.target.scope.binding, &budget())
+        .unwrap()
+        .unwrap();
+    assert_eq!(state.phase, NativeTurnPhase::Unknown);
+    assert_eq!(state.id.as_str(), "a");
+    assert_eq!(state.ordinal, 3);
+    report.native_turn_id = Some(herdr_threads::protocol::ids::NativeTurnId::new("a"));
+    assert!(
+        StorePort::record_native_turn(&store, &report, &budget())
+            .unwrap()
+            .edge
+            .is_none()
+    );
+    assert_eq!(
+        StorePort::native_turn_state(&store, &p.target.scope.binding, &budget())
+            .unwrap()
+            .unwrap(),
+        state
+    );
+}
+#[test]
+fn native_turn_first_end_has_no_matched_cycle_and_counter_cannot_wrap() {
+    use herdr_threads::{harness::adapter::TurnEdge, ports::NativeTurnPhase};
+    let (store, _path, r, p) = fixture();
+    let mut report = native_report(&store, &r, &p, "end-first", TurnEdge::Idle);
+    StorePort::record_native_turn(&store, &report, &budget()).unwrap();
+    assert_eq!(
+        StorePort::native_turn_state(&store, &p.target.scope.binding, &budget())
+            .unwrap()
+            .unwrap()
+            .phase,
+        NativeTurnPhase::EndFirst
+    );
+    report.edge = TurnEdge::Busy;
+    assert!(
+        !StorePort::record_native_turn(&store, &report, &budget())
+            .unwrap()
+            .changed
+    );
+    store
+        .context()
+        .open_writer()
+        .unwrap()
+        .execute(
+            "UPDATE native_turn_state SET observation_ordinal=9223372036854775807",
+            [],
+        )
+        .unwrap();
+    report.native_turn_id = Some(herdr_threads::protocol::ids::NativeTurnId::new("later"));
+    assert!(StorePort::record_native_turn(&store, &report, &budget()).is_err());
+    assert_eq!(
+        StorePort::native_turn_state(&store, &p.target.scope.binding, &budget())
+            .unwrap()
+            .unwrap()
+            .ordinal,
+        i64::MAX as u64
+    );
+}
+#[test]
+fn native_turn_refuses_host_hold_child_and_missing_live_scope() {
+    use herdr_threads::{harness::adapter::TurnEdge, protocol::authority::CallerRole};
+    let (store, _path, r, p) = fixture();
+    let good = native_report(&store, &r, &p, "a", TurnEdge::Busy);
+    for index in 0..4 {
+        let mut bad = good.clone();
+        match index {
+            0 => {
+                bad.claim.host =
+                    herdr_threads::protocol::ids::HostLocator::parse("/different.sock").unwrap()
+            }
+            1 => bad.claim.role = CallerRole::Subagent,
+            2 => bad.claim.liveness = None,
+            _ => bad.claim.agent_id = Some(herdr_threads::protocol::ids::AgentId::new("child")),
+        }
+        assert!(
+            StorePort::record_native_turn(&store, &bad, &budget())
+                .unwrap()
+                .edge
+                .is_none()
+        );
+    }
+    let db = store.context().open_writer().unwrap();
+    db.execute("INSERT INTO recovery_holds(host_id,target_id,baseline_boot,baseline_epoch,reason) VALUES((SELECT min(host_id) FROM herdr_hosts),'pane','host',1,'test')",[]).unwrap();
+    assert!(
+        StorePort::record_native_turn(&store, &good, &budget())
+            .unwrap()
+            .edge
+            .is_none()
+    );
+    db.execute("DELETE FROM recovery_holds", []).unwrap();
+    db.execute("UPDATE node_kernel_boot SET boot='different'", [])
+        .unwrap();
+    assert!(
+        StorePort::record_native_turn(&store, &good, &budget())
+            .unwrap()
+            .edge
+            .is_none()
+    );
+}
+#[test]
+fn native_turn_capacity_never_evicts_a_current_binding() {
+    use herdr_threads::harness::adapter::TurnEdge;
+    let (store, _path, r, p) = fixture();
+    let start = native_report(&store, &r, &p, "a", TurnEdge::Busy);
+    StorePort::record_native_turn(&store, &start, &budget()).unwrap();
+    let db = store.context().open_writer().unwrap();
+    db.execute("WITH RECURSIVE seq(n) AS (VALUES(1) UNION ALL SELECT n+1 FROM seq WHERE n<4095) INSERT INTO occupant_bindings(seat_id,generation,target_generation,target_id,host_boot,host_epoch,harness,native_session,execution_id,observation_provenance,observed_at,binding_id,terminal_id,incarnation) SELECT 's',1,1,'pane','host',0,'codex','bulk-'||n,'execution','cooperative_top_level',0,'bulk-'||n,'term-pane','inc' FROM seq",[]).unwrap();
+    db.execute("WITH RECURSIVE seq(n) AS (VALUES(1) UNION ALL SELECT n+1 FROM seq WHERE n<4095) INSERT INTO native_turn_state(binding_id,instance_id,scope_json,turn_id,phase,observation_ordinal) SELECT 'bulk-'||n,base.instance_id,CAST(json_set(base.scope_json,'$.binding','bulk-'||n,'$.native_session','bulk-'||n) AS BLOB),'bulk-turn','started',1 FROM native_turn_state base CROSS JOIN seq WHERE base.binding_id='binding'",[]).unwrap();
+    let before = StorePort::native_turn_state(&store, &p.target.scope.binding, &budget())
+        .unwrap()
+        .unwrap();
+    let mut end = start.clone();
+    end.edge = TurnEdge::Idle;
+    assert!(
+        StorePort::record_native_turn(&store, &end, &budget())
+            .unwrap()
+            .changed,
+        "existing state remains writable at capacity"
+    );
+    assert_eq!(
+        db.query_row("SELECT count(*) FROM native_turn_state", [], |r| r
+            .get::<_, i64>(0))
+            .unwrap(),
+        4096
+    );
+    db.execute(
+        "DELETE FROM native_turn_state WHERE binding_id='binding'",
+        [],
+    )
+    .unwrap();
+    // Replace that slot with another live canonical binding, leaving the subject untracked.
+    db.execute("INSERT INTO occupant_bindings(seat_id,generation,target_generation,target_id,host_boot,host_epoch,harness,native_session,execution_id,observation_provenance,observed_at,binding_id,terminal_id,incarnation) VALUES('s',1,1,'pane','host',0,'codex','last','execution','cooperative_top_level',0,'last','term-pane','inc')",[]).unwrap();
+    db.execute("INSERT INTO native_turn_state SELECT 'last',instance_id,CAST(json_set(scope_json,'$.binding','last','$.native_session','last') AS BLOB),turn_id,phase,observation_ordinal FROM native_turn_state WHERE binding_id='bulk-1'",[]).unwrap();
+    assert!(
+        !StorePort::record_native_turn(&store, &start, &budget())
+            .unwrap()
+            .changed
+    );
+    assert!(
+        StorePort::native_turn_state(&store, &p.target.scope.binding, &budget())
+            .unwrap()
+            .is_none()
+    );
+    assert_eq!(before.id.as_str(), "a");
+    assert_eq!(
+        db.query_row("SELECT count(*) FROM native_turn_state", [], |r| r
+            .get::<_, i64>(0))
+            .unwrap(),
+        4096
+    );
+}
+
+#[test]
+fn native_turn_domain_updates_memory_only_after_canonical_acceptance() {
+    use herdr_threads::{
+        harness::adapter::TurnEdge,
+        ports::LocalService,
+        protocol::{commands::Command, results::CommandResult},
+        service::{
+            dispatch::DomainService,
+            fair_writer::FairWriter,
+            turn_state::{TurnKey, TurnState},
+        },
+    };
+    let (store, _path, r, p) = fixture();
+    let valid = native_report(&store, &r, &p, "a", TurnEdge::Busy);
+    let service = DomainService::new(INSTANCE.into(), Arc::new(store), Arc::new(IntentClock))
+        .with_cooperative_owner(501, Arc::new(FairWriter::new(32)));
+    let key = TurnKey {
+        seat: r.seat.clone(),
+        generation: 1,
+        harness: "codex".into(),
+        native_session: p.target.scope.native_session.clone(),
+    };
+    let mut invalid = valid.clone();
+    invalid.claim.execution = herdr_threads::protocol::ids::ExecutionId::new("foreign");
+    let peer = || herdr_threads::test_support::peer_identity(501);
+    assert!(matches!(
+        service
+            .handle(Command::TurnState(invalid), peer(), &budget())
+            .unwrap(),
+        CommandResult::TurnState { recorded: false }
+    ));
+    assert_eq!(service.turn_state().state(&key), TurnState::Unknown);
+    assert!(matches!(
+        service
+            .handle(Command::TurnState(valid.clone()), peer(), &budget())
+            .unwrap(),
+        CommandResult::TurnState { recorded: true }
+    ));
+    assert_eq!(service.turn_state().state(&key), TurnState::Busy);
+    assert!(matches!(
+        service
+            .handle(Command::TurnState(valid.clone()), peer(), &budget())
+            .unwrap(),
+        CommandResult::TurnState { recorded: false }
+    ));
+    let mut wrong_end = valid.clone();
+    wrong_end.edge = TurnEdge::Idle;
+    wrong_end.native_turn_id = Some(herdr_threads::protocol::ids::NativeTurnId::new(
+        "sibling-turn",
+    ));
+    assert!(matches!(
+        service
+            .handle(Command::TurnState(wrong_end), peer(), &budget())
+            .unwrap(),
+        CommandResult::TurnState { recorded: false }
+    ));
+    assert_eq!(service.turn_state().state(&key), TurnState::Busy);
+    let mut end = valid;
+    end.edge = TurnEdge::Idle;
+    service
+        .handle(Command::TurnState(end), peer(), &budget())
+        .unwrap();
+    assert_eq!(service.turn_state().state(&key), TurnState::Idle);
+}
+
+#[test]
+fn native_turn_concurrent_current_id_has_one_accepted_observation() {
+    use herdr_threads::harness::adapter::TurnEdge;
+    let (store, path, r, p) = fixture();
+    let second = open(path, r.daemon_boot);
+    let report = native_report(&store, &r, &p, "same", TurnEdge::Busy);
+    let barrier = Arc::new(std::sync::Barrier::new(2));
+    let changes = std::thread::scope(|scope| {
+        let a = scope.spawn(|| {
+            barrier.wait();
+            StorePort::record_native_turn(&store, &report, &budget())
+                .unwrap()
+                .changed
+        });
+        let b = scope.spawn(|| {
+            barrier.wait();
+            StorePort::record_native_turn(&second, &report, &budget())
+                .unwrap()
+                .changed
+        });
+        usize::from(a.join().unwrap()) + usize::from(b.join().unwrap())
+    });
+    assert_eq!(changes, 1);
+    assert_eq!(
+        StorePort::native_turn_state(&store, &p.target.scope.binding, &budget())
+            .unwrap()
+            .unwrap()
+            .ordinal,
+        1
+    );
+}
+#[test]
+fn native_turn_retains_only_current_identity_and_accepts_observation_order_limit() {
+    use herdr_threads::harness::adapter::TurnEdge;
+    let (store, _path, r, p) = fixture();
+    for id in ["a", "b"] {
+        for edge in [TurnEdge::Busy, TurnEdge::Idle] {
+            StorePort::record_native_turn(
+                &store,
+                &native_report(&store, &r, &p, id, edge),
+                &budget(),
+            )
+            .unwrap();
+        }
+    }
+    assert!(
+        StorePort::record_native_turn(
+            &store,
+            &native_report(&store, &r, &p, "a", TurnEdge::Busy),
+            &budget()
+        )
+        .unwrap()
+        .changed
+    );
+    let current = StorePort::native_turn_state(&store, &p.target.scope.binding, &budget())
+        .unwrap()
+        .unwrap();
+    assert_eq!(current.ordinal, 5);
+    assert_eq!(current.id.as_str(), "a");
+    assert_eq!(
+        store
+            .context()
+            .open_writer()
+            .unwrap()
+            .query_row("SELECT count(*) FROM native_turn_state", [], |r| r
+                .get::<_, i64>(0))
+            .unwrap(),
+        1
+    );
+}
+#[test]
+fn native_turn_cancelled_recording_changes_no_observation() {
+    use herdr_threads::harness::adapter::TurnEdge;
+    let (store, _path, r, p) = fixture();
+    let call = budget();
+    call.cancellation.cancel();
+    assert!(
+        StorePort::record_native_turn(
+            &store,
+            &native_report(&store, &r, &p, "a", TurnEdge::Busy),
+            &call
+        )
+        .is_err()
+    );
+    assert!(
+        StorePort::native_turn_state(&store, &p.target.scope.binding, &budget())
+            .unwrap()
+            .is_none()
+    );
+}

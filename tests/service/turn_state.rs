@@ -255,12 +255,14 @@ fn turn_edge_reestablishes_the_hint_after_a_restart() {
 #[test]
 fn turn_state_report_without_hint_keeps_its_bytes() {
     let report = TurnStateReport {
+        native_turn_id: None,
         claim: claim(CallerRole::TopLevel, None),
         edge: TurnEdge::Busy,
         tmux_hint: None,
     };
     let text = serde_json::to_string(&report).unwrap();
     assert!(!text.contains("tmux_hint"), "{text}");
+    assert!(!text.contains("native_turn_id"), "{text}");
     assert_eq!(
         serde_json::from_str::<TurnStateReport>(&text).unwrap(),
         report

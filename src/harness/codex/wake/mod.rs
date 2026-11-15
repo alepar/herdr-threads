@@ -9,8 +9,8 @@ mod implementation {
     use super::{capture, control};
     use crate::{
         harness::wake::{
-            OwnedWakeEntries, WakeAddOutcome, WakeControl, WakeControlContext, WakeControlTarget,
-            WakeScope,
+            ControlFailure, OwnedWakeEntries, WakeAddOutcome, WakeControl, WakeControlContext,
+            WakeControlTarget, WakeScope,
         },
         protocol::results::ApiError,
     };
@@ -143,11 +143,11 @@ mod implementation {
         ) -> WakeAddOutcome {
             let _active = match enter(t) {
                 Ok(v) => v,
-                Err(e) => return WakeAddOutcome::RefusedBeforeEffect(e),
+                Err(e) => return WakeAddOutcome::RefusedBeforeEffect(e.into()),
             };
             let d = match validate(t, c) {
                 Ok(v) => v,
-                Err(e) => return WakeAddOutcome::RefusedBeforeEffect(e),
+                Err(e) => return WakeAddOutcome::RefusedBeforeEffect(e.into()),
             };
             control::enqueue(
                 &d,
@@ -163,7 +163,7 @@ mod implementation {
             t: &WakeControlTarget,
             correlation: &str,
             c: &WakeControlContext<'_>,
-        ) -> Result<OwnedWakeEntries, ApiError> {
+        ) -> Result<OwnedWakeEntries, Box<ControlFailure>> {
             let _active = enter(t)?;
             let d = saved_descriptor(t, c)?;
             control::list_entries(&d, t.scope.native_session.as_str(), correlation, c)
@@ -173,7 +173,7 @@ mod implementation {
             t: &WakeControlTarget,
             id: &str,
             c: &WakeControlContext<'_>,
-        ) -> Result<bool, ApiError> {
+        ) -> Result<bool, Box<ControlFailure>> {
             let _active = enter(t)?;
             let d = saved_descriptor(t, c)?;
             control::delete_entry(&d, t.scope.native_session.as_str(), id, c)

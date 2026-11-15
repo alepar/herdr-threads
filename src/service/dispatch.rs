@@ -1437,8 +1437,9 @@ impl DomainService {
         &self,
         request: &crate::protocol::commands::TurnStateReport,
         peer: PeerIdentity,
+        budget: &CallBudget,
     ) -> Result<CommandResult, ApiError> {
-        let (owner_uid, _) = self.cooperative_runtime.as_ref().ok_or_else(|| {
+        let (owner_uid, writer) = self.cooperative_runtime.as_ref().ok_or_else(|| {
             error(
                 ErrorCode::CallerUnverified,
                 "cooperative elected runtime unavailable",
@@ -1456,17 +1457,34 @@ impl DomainService {
                 "caller instance does not match service",
             ));
         }
-        let top_level = request.claim.role == crate::protocol::authority::CallerRole::TopLevel
-            && !request.claim.is_subagent();
-        let recorded = top_level
-            && self.turn_state.record(
-                &Self::turn_key(&request.claim),
-                request.edge,
-                self.clock.monotonic_now().0,
-            );
+        // Keep store observation and memory projection ordered under one short writer turn.
+        let (recorded, valid) = {
+            let _turn = writer.enter_foreground(budget, self.clock.as_ref())?;
+            let update = self.store.record_native_turn(request, budget)?;
+            let key = Self::turn_key(&request.claim);
+            let recorded = if let Some(edge) = update.edge {
+                let desired = match edge {
+                    crate::harness::adapter::TurnEdge::Busy => super::turn_state::TurnState::Busy,
+                    _ => super::turn_state::TurnState::Idle,
+                };
+                if request.native_turn_id.is_none()
+                    || update.changed
+                    || self.turn_state.state(&key) != desired
+                {
+                    self.turn_state
+                        .record(&key, edge, self.clock.monotonic_now().0)
+                } else {
+                    false
+                }
+            } else {
+                false
+            };
+            (recorded, update.edge.is_some())
+        };
         // The hint belongs to the binding: verify it for the harness process the claim names,
         // not for the hook that carried it.
-        if let Some(hint) = &request.tmux_hint
+        if valid
+            && let Some(hint) = &request.tmux_hint
             && let Some(pid) = wake_hint_subject(&request.claim, peer.pid())
         {
             self.note_wake_hint(&request.claim.target, pid, hint);
@@ -2155,7 +2173,7 @@ impl LocalService for DomainService {
             Command::DeliveryPull(pull) => self.delivery_pull(pull, peer, budget, &read),
             Command::DeliveryConfirm(confirm) => self.delivery_confirm(confirm, peer, budget, read),
             Command::TurnEndDue(request) => self.turn_end_due(&request, peer, budget),
-            Command::TurnState(request) => self.turn_state_edge(&request, peer),
+            Command::TurnState(request) => self.turn_state_edge(&request, peer, budget),
             command @ (Command::BeginHandoff(_)
             | Command::CompleteHandoff(_)
             | Command::CheckIn(_)
