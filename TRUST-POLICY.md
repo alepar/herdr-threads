@@ -4036,3 +4036,12 @@ not proof against arbitrary detached descendants. Active possible-effect and
 helper-uncertain rows remain retained; logically retired, quiescent rows may be
 pruned after bounded best-effort cancellation and removal of wake-work references.
 See the design's Activation contract for the complete bounds and CAS rules.
+
+The native-only resource exception also covers a logically retired intent whose
+List/Delete helper remains SpawnPending without a committed witness after
+canonical owner revocation. The uninitialized cleanup helper cannot submit an
+add; retain the original effect phase/IDs and helper uncertainty, forbid further
+programmatic helpers, and require a fresh fully guarded native wake. This does
+not prove cleanup or authorize pruning, and does not cover Active possible effects
+or witnessed helper uncertainty. Durable witness state, not a lost callback reply,
+decides which case applies.

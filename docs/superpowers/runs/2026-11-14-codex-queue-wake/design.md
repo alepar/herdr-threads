@@ -46,6 +46,19 @@ alone is not election proof. Test lease retention through callback shutdown.
 Armed recovery becomes Unknown, never Prepared,
 and always has a committed helper witness. Accepted retains its known ID.
 
+The same native-only resource exception applies after canonical owner revocation
+when a logically retired intent has a List/Delete helper operation still
+SpawnPending with no committed witness. This helper never initialized and cannot
+have submitted an add; the original residual marker already falls under the
+accepted cancellation limit. Preserve original Accepted/Unknown phase, IDs,
+logical retirement and honest helper uncertainty. Block further programmatic
+helpers for the cohort, allow only a new fully guarded native reservation, and
+do not mark cleanup attempted/completed or permit pruning from this exception.
+It does not apply to Active possible effects or witnessed helper uncertainty.
+Test both List and Delete crash gaps, lost witness-commit replies (the durable
+witness controls), and refusal for Active or witnessed cases. Owner-lease
+revocation requirements are unchanged.
+
 ### Logical purpose and submission results
 
 Keep logical Active/Fulfilled/ScopeEnded orthogonal to physical phase, owned IDs
