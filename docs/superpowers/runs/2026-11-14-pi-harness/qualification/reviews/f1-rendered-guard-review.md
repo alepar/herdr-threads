@@ -1,0 +1,15 @@
+# Rendered notice fixture guard review
+
+**Approved. No findings.** Reviewed exact patch SHA256 `5b893790e9270066f9e97df5c72d083fff1c8332d2b338fa814abc37ee389145` on base `f19c7fca453996fbc8f3258d5ee08767279520d6`; independently verified the working diff equals that patch and driver SHA256 is `c5a81559c2ffaa828ca20b1f3abc3a083d1223b34f0b4f1920084180066e75e7`. Only `scripts/pi-tui-qualify.py` changes. Provider, extension, Rust source, shared native gate, and other harness policies are unchanged.
+
+Read the base ruling in `TRUST-POLICY.md`: unrendered third-party editor text is a separately accepted limitation; fixture qualification must establish a genuinely typed/rendered draft. This correction follows that requirement without broadening the accepted limitation.
+
+`restore_fixture_draft` (`scripts/pi-tui-qualify.py:413`) operates only on the selected one of two exact owned literals. It verifies current session, idle state, and exact buffer before input. The physical Ctrl+A / literal typing / Ctrl+K sequence preserves a nonempty buffer: H → H → HH → H. Installed Pi-TUI defaults map Ctrl+A to line start and Ctrl+K to delete-to-line-end (`dist/keybindings.js:29`, `:67`); actual editor dispatch and deletion implement those semantics (`dist/components/editor.js:661`, `:706`, `:1393`). These are fixture assumptions checked against installed source, not new production version gates.
+
+Each action checks the original run count and, for the receipt-cause path, the still-future deadline before and afterward. Fresh API observations require the expected intermediate buffer. The final exact composer row and inverse cursor after the literal are required before the guard succeeds. A failed binding, extra/missing text, wrong session, non-idle state, unexpected model start, expired deadline, unknown layout, or cursor/style mismatch refuses qualification. The short doubled literals fit the owned fixture's existing terminal width.
+
+The shared matcher (`:60`, `:72`) recognizes the bottom composer structure and demands the exact owned literal there, so a copy in transcript history cannot satisfy the check. Initial hold, reload restoration, and sink verification now use it. Sink reconstruction explicitly routes input, state observations, and original run-count checks to the sink; the primary invitation path also checks its own model-start baseline afterward. No previous success assertion is relaxed.
+
+Inspected retained causal RED: the prior controller fails because it performs none of the required physical reconstruction actions. Inspected GREEN: 29 self-tests passed in 2.455 seconds, including hidden API-only text, transcript decoys, unknown layout, wrong binding, unexpected start/deadline expiry at each action, and sink scope. Scoped cleanup reports no leaked processes or temporary files. These are controller tests; they do not substitute for the forthcoming native qualification.
+
+No tests/builds/runtime actions were performed by this reviewer. Approval covers this frozen fixture delta only; root owns execution GO and subsequent runtime evidence review.

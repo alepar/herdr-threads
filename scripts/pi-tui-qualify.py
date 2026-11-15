@@ -57,6 +57,27 @@ def require_pending_cause(receipt, seat, now_ms):
     return deadline
 
 
+def fixture_editor_row(capture):
+    raw = capture["styled"]["raw"].splitlines()
+    lines = [re.sub(r"\x1b\[[0-9;]*m", "", row).rstrip() for row in raw]
+    while lines and not lines[-1]:
+        lines.pop(); raw.pop()
+    assert len(lines) >= 5, "unknown fixture composer layout"
+    top, body, bottom, cwd, stats = lines[-5:]
+    assert len(top) >= 10 and set(top) == {"─"} and top == bottom, "unknown fixture composer rule pair"
+    assert cwd.startswith(("/", "~")) and re.match(r"^(?:[0-9]+(?:\.[0-9]+)?%|\?)/\S+\s+\S", stats), "unknown fixture composer footer"
+    return body, raw[-4]
+
+
+def require_visible_notice_draft(observation, capture, sid, draft=NOTICE_DRAFT):
+    assert draft in (NOTICE_DRAFT, SINK_DRAFT), "not an owned notice fixture literal"
+    state = observation["state"]
+    assert state["sid"] == sid and state["idle"] is True and state["editor"] == draft, "fixture editor is not the exact owned idle draft"
+    body, styled = fixture_editor_row(capture)
+    assert body == draft, "owned draft is not rendered in the fixture composer"
+    assert re.match(re.escape(draft) + r"(?:\x1b\[0m)?\x1b\[7m \x1b\[0m *$", styled), "unknown fixture draft cursor/style"
+
+
 def contains_frame(text, kind, identity, body):
     if not isinstance(text, str) or not isinstance(body, str) or not body:
         return False
@@ -352,7 +373,7 @@ class Run:
         sink["binding"] = require_agent_sink(inspection, sink["seat"], sink["sid"])
         state = self.observe_state(SINK_DRAFT, probe=sink["probe"], sid=sink["sid"])
         capture = self.capture("notice-sink-" + str(len(self.captures)), pane=sink["pane"])
-        assert SINK_DRAFT in capture["styled"]["raw"], "notice sink literal draft is not visible"
+        require_visible_notice_draft(state, capture, sink["sid"], SINK_DRAFT)
         assert sum(r["event"] == "before_agent_start" for r in self.probe_rows(sink["probe"])) == sink["starts"], "notice sink unexpectedly ran"
         for cause in self.notice_causes:
             if not cause.get("recovered"):
@@ -380,21 +401,61 @@ class Run:
         receipt = self.recipient_receipt(mid, self.sink["seat"])
         deadline = require_pending_cause(receipt, self.sink["seat"], int(time.time() * 1000))
         self.verify_notice_sink()
+        terminal_guard = None
         if hold:
             assert row["state"]["editor"] == NOTICE_DRAFT, "source command did not retain its owned draft"
-            self.observe_state(NOTICE_DRAFT, sid=self.main_sid)
-            self.quiet(starts, 0)
+            terminal_guard = self.restore_fixture_draft(label, NOTICE_DRAFT, starts, post_capture, deadline=deadline)
         cause = {"message": mid, "cause_body": body, "initial_receipt": receipt, "deadline": deadline, "event": row,
-                 "run_starts_before_send": starts, "before_send": before}
+                 "run_starts_before_send": starts, "before_send": before, "terminal_guard": terminal_guard}
         self.notice_causes.append(cause)
         return cause
+
+    def restore_fixture_draft(self, label, draft, starts, post_capture, *, deadline=None, sink=False):
+        # Public setEditorText can leave the terminal blank. Reconstruct only
+        # this exact owned literal through actual input, without an empty gap:
+        # H -> H (home) -> H+H (prefix paste) -> H (delete old suffix).
+        assert draft == (SINK_DRAFT if sink else NOTICE_DRAFT), "not the selected owned fixture literal"
+        scope = self.sink if sink else {"pane": self.recipient, "sid": self.main_sid}
+        pane, sid = scope["pane"], scope["sid"]
+        fixture_editor_row(post_capture)
+        trace = {"label": label, "pane": pane, "sid": sid, "steps": []}
+        self.facts.setdefault("notice_guard_inputs", []).append(trace)
+        def check():
+            if sink:
+                assert sum(r["event"] == "before_agent_start" for r in self.probe_rows(scope["probe"])) == starts, "unexpected sink run during terminal guard"
+            else:
+                self.quiet(starts, 0)
+            if deadline is not None:
+                assert int(time.time() * 1000) < deadline, "notice guard deadline expired"
+        def state_is(expected):
+            state = self.observe_state(sid=sid, **({"probe": scope["probe"]} if sink else {}))
+            assert state["state"]["sid"] == sid and state["state"]["idle"] is True and state["state"]["editor"] == expected, "unexpected fixture editor during terminal guard"
+            check()
+            return state
+        check(); state_is(draft)
+        for key, text, expected in (("ctrl+a", None, draft), (None, draft, draft * 2), ("ctrl+k", None, draft)):
+            check()
+            trace["steps"].append({"at": time.time(), "key": key, "text": text})
+            if key:
+                self.keys(key, **({"pane": pane} if sink else {}))
+            else:
+                self.herdr("pane", "send-text", pane, text)
+            check()
+            observed = state_is(expected)
+        capture = self.capture("notice-cause-" + label + "-terminal-guard", **({"pane": pane} if sink else {}))
+        capture["native_observation"] = observed
+        require_visible_notice_draft(observed, capture, sid, draft)
+        check()
+        return {"inputs": trace, "observation": observed, "capture": capture, "verified_at": time.time(), "deadline": deadline}
 
     def hold_notice_editor(self):
         state = self.observe_state(sid=self.main_sid)["state"]
         assert state["editor"] in ("", NOTICE_DRAFT), "refusing to overwrite an unrelated primary draft"
         if not state["editor"]:
             self.herdr("pane", "send-text", self.recipient, NOTICE_DRAFT)
-        self.observe_state(NOTICE_DRAFT, sid=self.main_sid)
+        held = self.observe_state(NOTICE_DRAFT, sid=self.main_sid)
+        capture = self.capture("notice-primary-held-" + str(len(self.captures)))
+        require_visible_notice_draft(held, capture, self.main_sid)
 
     def pending_notice(self, cause):
         def pending():
@@ -416,8 +477,9 @@ class Run:
                       if r["event"] == "reload_draft_held" and r.get("nonce") == nonce and r["state"]["sid"] == self.main_sid), None))
             self.wait("public reload screen restored", lambda: (lambda text: "Reloaded keybindings" in text
                       and "Reloading keybindings, extensions" not in text)(self.herdr("pane", "read", self.recipient, "--source", "visible").get("raw", "")))
-            self.observe_state(NOTICE_DRAFT, sid=self.main_sid)
-            self.capture("notice-reload-restored-" + nonce)
+            restored = self.observe_state(NOTICE_DRAFT, sid=self.main_sid)
+            capture = self.capture("notice-reload-restored-" + nonce)
+            require_visible_notice_draft(restored, capture, self.main_sid)
         finally:
             path.unlink(missing_ok=True)
 
@@ -475,11 +537,15 @@ class Run:
         self.verify_notice_sink()
         sink = self.sink
         before = len(self.probe_rows(sink["probe"]))
+        starts = self.count("before_agent_start")
         command = "/probe-notice-invite " + json.dumps({"sid": sink["sid"], "target": self.seat, "hold": SINK_DRAFT})
         self.probe_command(command, SINK_DRAFT, pane=sink["pane"], probe=sink["probe"], sid=sink["sid"])
         row = self.wait("actual agent-authored invitation", lambda: next((r for r in self.probe_rows(sink["probe"])[before:]
                         if r["event"] == "notice_invitation" and r["state"]["sid"] == sink["sid"] and r["target"] == self.seat), None))
+        post = self.capture("notice-invitation-sink-after-command", pane=sink["pane"])
+        self.restore_fixture_draft("invitation-sink", SINK_DRAFT, sink["starts"], post, sink=True)
         self.verify_notice_sink()
+        self.quiet(starts, 0)
         return row
 
     def case_notice_page(self):
@@ -1258,6 +1324,112 @@ read -r _ || true
 
 
 class DriverTests(unittest.TestCase):
+    def test_notice_guard_requires_real_terminal_input_and_visible_literal(self):
+        # Simulate the observed public setter: API H, rendered editor empty.
+        # These are fixture-controller tests, not canonical/native proof.
+        def trial(bad_binding=False, wake_step=None, expired_step=None):
+            run = Run.__new__(Run); run.main_sid = "main"; run.recipient = "owned-pane"; run.sink = {"seat": "sink"}
+            run.facts = {}; run.notice_causes = []; events, actions, captures = [], [], {}
+            state = {"api": NOTICE_DRAFT, "rendered": NOTICE_DRAFT, "cursor": len(NOTICE_DRAFT), "starts": 0, "now": 1}
+            run.start_notice_sink = run.verify_notice_sink = lambda: None
+            run.rows = lambda: events
+            run.count = lambda _event: state["starts"]
+            run.wait = lambda _label, predicate, *_args: predicate()
+            run.observe_state = lambda *_args, **_kwargs: {"state": {"sid": "main", "editor": state["api"], "idle": True}}
+            def capture(label):
+                text = state["rendered"]; cursor = min(state["cursor"], len(text))
+                body = text + '\x1b[0m\x1b[7m \x1b[0m' if cursor == len(text) else text[:cursor] + '\x1b[7m' + text[cursor] + '\x1b[0m' + text[cursor + 1:]
+                border = '─' * 40
+                value = {"styled": {"raw": '\n'.join([border, body, border, '/owned/project', '2.0%/100k scripted'])}}
+                captures[label] = {"editor": state["api"], "rendered": text, "value": value}
+                return value
+            run.capture = capture
+            def probe(command, *_args):
+                data = json.loads(command.split(' ', 1)[1]); state.update(api=NOTICE_DRAFT, rendered='', cursor=len(NOTICE_DRAFT))
+                events.append({"event": "notice_cause", "state": {"sid": "main", "editor": NOTICE_DRAFT},
+                               "body": data['body'], "target": 'sink', "result": {"result": {"data": 'cause'}}})
+            run.probe_command = probe
+            run.recipient_receipt = lambda *_args: {"seat": "sink", "effective_status": "pending", "deadline": 4000}
+            def completed(action):
+                actions.append(action); state['rendered'] = state['api']
+                if len(actions) - 1 == wake_step: state['starts'] += 1
+                if len(actions) - 1 == expired_step: state['now'] = 5
+            def keys(key):
+                if key == 'ctrl+a' and not bad_binding: state['cursor'] = 0
+                elif key == 'ctrl+k': state['api'] = state['api'][:state['cursor']]
+                else: self.assertEqual(key, 'ctrl+a')
+                completed(key)
+            run.keys = keys
+            def send(*args):
+                self.assertEqual(args, ('pane', 'send-text', 'owned-pane', NOTICE_DRAFT))
+                cursor = state['cursor']; state['api'] = state['api'][:cursor] + NOTICE_DRAFT + state['api'][cursor:]
+                state['cursor'] += len(NOTICE_DRAFT); completed('type-owned-literal')
+            run.herdr = send
+            with mock.patch.object(time, 'time', side_effect=lambda: state['now']):
+                if wake_step is not None or expired_step is not None or bad_binding:
+                    with self.assertRaises(AssertionError): run.new_notice_cause('guard')
+                    if wake_step is not None: self.assertEqual(len(actions), wake_step + 1, 'continued after a run started')
+                    if expired_step is not None: self.assertEqual(len(actions), expired_step + 1, 'continued past the deadline')
+                else:
+                    cause = run.new_notice_cause('guard')
+                    self.assertEqual(actions, ['ctrl+a', 'type-owned-literal', 'ctrl+k'])
+                    post = captures['notice-cause-guard-after-command']
+                    self.assertEqual((post['editor'], post['rendered']), (NOTICE_DRAFT, ''))
+                    with self.assertRaisesRegex(AssertionError, 'not rendered'):
+                        require_visible_notice_draft({'state': {'sid': 'main', 'editor': NOTICE_DRAFT, 'idle': True}}, post['value'], 'main')
+                    guard = captures['notice-cause-guard-terminal-guard']
+                    self.assertEqual((guard['editor'], guard['rendered']), (NOTICE_DRAFT, NOTICE_DRAFT))
+                    self.assertIn('terminal_guard', cause)
+        trial()
+        trial(bad_binding=True)
+        for step in range(3):
+            trial(wake_step=step)
+            trial(expired_step=step)
+
+    def test_fixture_guard_uses_exact_composer_row_for_both_literals(self):
+        border = '─' * 80
+        for draft in (NOTICE_DRAFT, SINK_DRAFT):
+            observed = {'state': {'sid': 'owned', 'idle': True, 'editor': draft}}
+            def capture(body, top=border):
+                return {'styled': {'raw': '\n'.join([draft, 'old transcript', top, body, border, '/owned/project', '2.0%/100k scripted'])}}
+            with self.assertRaisesRegex(AssertionError, 'not rendered'):
+                require_visible_notice_draft(observed, capture('\x1b[7m \x1b[0m'), 'owned', draft)
+            visible = draft + '\x1b[0m\x1b[7m \x1b[0m'
+            require_visible_notice_draft(observed, capture(visible), 'owned', draft)
+            with self.assertRaisesRegex(AssertionError, 'rule pair'):
+                require_visible_notice_draft(observed, capture(visible, 'MODEL PICKER'), 'owned', draft)
+
+    def test_sink_terminal_guard_uses_sink_scope_and_run_baseline(self):
+        run = Run.__new__(Run); run.recipient = 'primary'; run.main_sid = 'primary-sid'; run.facts = {}
+        run.sink = {'pane': 'sink', 'sid': 'sink-sid', 'probe': Path('/owned/sink')}
+        state, events, targets = {'text': SINK_DRAFT, 'cursor': len(SINK_DRAFT)}, [{'event': 'before_agent_start'}], []
+        run.count = lambda _event: 99  # Unrelated primary stream is not the sink.
+        run.probe_rows = lambda probe: events if probe == run.sink['probe'] else []
+        def observe(**kwargs):
+            self.assertEqual(kwargs, {'sid': 'sink-sid', 'probe': run.sink['probe']})
+            return {'state': {'sid': 'sink-sid', 'idle': True, 'editor': state['text']}}
+        run.observe_state = observe
+        def keys(key, **kwargs):
+            self.assertEqual(kwargs, {'pane': 'sink'}); targets.append(('key', key, kwargs['pane']))
+            if key == 'ctrl+a': state['cursor'] = 0
+            elif key == 'ctrl+k': state['text'] = state['text'][:state['cursor']]
+        run.keys = keys
+        def send(*args):
+            self.assertEqual(args, ('pane', 'send-text', 'sink', SINK_DRAFT)); targets.append(('text', SINK_DRAFT, 'sink'))
+            state['text'] = SINK_DRAFT + state['text']; state['cursor'] = len(SINK_DRAFT)
+        run.herdr = send
+        border = '─' * 80
+        def capture(_label, **kwargs):
+            self.assertEqual(kwargs, {'pane': 'sink'})
+            return {'styled': {'raw': '\n'.join([border, state['text'] + '\x1b[0m\x1b[7m \x1b[0m', border, '/owned/project', '2.0%/100k scripted'])}}
+        run.capture = capture
+        post = {'styled': {'raw': '\n'.join([border, '\x1b[7m \x1b[0m', border, '/owned/project', '2.0%/100k scripted'])}}
+        run.restore_fixture_draft('sink', SINK_DRAFT, 1, post, sink=True)
+        self.assertEqual(targets, [('key', 'ctrl+a', 'sink'), ('text', SINK_DRAFT, 'sink'), ('key', 'ctrl+k', 'sink')])
+        events.append({'event': 'before_agent_start'})
+        with self.assertRaisesRegex(AssertionError, 'sink run'):
+            run.restore_fixture_draft('sink-late', SINK_DRAFT, 1, post, sink=True)
+
     def test_sink_launch_uses_actual_public_grammar_and_isolated_profile(self):
         class ParserChecked(Exception):
             pass
@@ -1449,6 +1621,7 @@ assert.ok(!rows.some(r=>r.event==='context'||r.event==='provider_request'))
             run.count = lambda _event: starts[0]
             run.observe_state = lambda *_args, **_kwargs: {}
             run.capture = lambda *_args, **_kwargs: {"styled": {"raw": "owned composer before trigger"}}
+            run.restore_fixture_draft = lambda _label, _draft, starts, *_args, **_kwargs: run.quiet(starts, 0)
             run.start_notice_sink = lambda: order.append("admitted")
             run.verify_notice_sink = lambda: order.append("draft-verified")
             def probe(command, *_args, **_kwargs):

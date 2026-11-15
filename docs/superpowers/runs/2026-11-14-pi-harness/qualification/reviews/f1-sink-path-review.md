@@ -1,0 +1,23 @@
+# Independent sink startup and PATH correction review
+
+Verdict: approved exact frozen driver-only correction. Verified patch `b3b6be277ffccfc5f501c98bc2743d07eacaa4421e8c3adaa8712895ae3e3886`, driver `ce7567bb9bbba0b6f56a0eee2e883a64955c9590dfba111734eca0241d83b5f2` and unchanged fixture `1bbb2f67a76a015beebeb055fb915389fb6aa50178c46d1e7c17e95d7d2380fa` against the frozen manifest. Base `9b784fb729c047ff4f925ce70186735bdb3cf83b`; production binary remains manifest-recorded `a8aef2df56e6954fe3c12b7d02841f521712ceb403d13f9b93fabdabe2224289`.
+
+The previous isolation review missed executable PATH consistency. Public launch correctly refused the second native attempt because its explicit sink executable differed from the native command selected on PATH; reported 9.01s cleanup is not notice behavior evidence. Both unsuccessful attempts remain historical failed setup attempts, not qualified native cases.
+
+## Complete startup source audit
+
+- Executable identity: `src/cli/launch.rs:856` resolves the native executable using the launch caller environment PATH, then compares canonical identity with --harness-binary at line 885. The patch adds sink bin before the inherited primary PATH in extra before env merging. Thus setup/launch caller, tab --env and shim PATH all select the same sink executable. Keeping the original PATH after the prefix preserves the private herdr-threads shim and node discovery.
+- Public launch grammar: LaunchArgs accepts --kind, --pane, --harness-binary and trailing native arguments; it does not accept --profile-dir. The earlier grammar repair remains intact. Native provider/model and extension arguments match the working primary pattern.
+- Scope/isolation: Pi resolve_scope (`src/harness/pi/launch.rs:130`) selects the target pane PI_CODING_AGENT_DIR before launcher/default roots. Sink setup extra_env, tab env and shim exports retain separate HOME/profile/trace root and options. `src/harness/pi/setup.rs:33` resolves the same explicit absolute profile. Shared state/host routing intentionally reaches the same private daemon; no identity or profile is copied from the primary.
+- Binding JSON: `SeatInspection.summary` and `BindingPresence` in `src/protocol/results.rs:1123,1284,1374` match the parser. Seat/native/binding ids serialize as transparent strings (`src/protocol/ids.rs:7`). `--binding-details` routes to SeatInspectBindings; `src/store/queries.rs:1229` fills active/bindings and local availability, while presence_with_details at1825 emits native_session/binding_id/provenance in the same row. The exact SID + connected Pi top-level cooperative binding predicate is supported; no representative/history-row substitution.
+- Trace/readiness: sink has its own fresh native.jsonl root and SID from session_start, real baseline agent_settled before draft staging, fresh nonce/SID draft state plus styled capture, and unchanged native-start count. These observations follow the working primary lifecycle pattern without sharing its trace or mode files.
+- Cause: private fixture pi.exec calls the absolute candidate with private routing, then public send --seat/--body/--require-ack/--deadline, matching SendArgs (`src/cli/commands.rs:1888`). It records actual command JSON, retains the owned primary draft before send, and requires exact sink Pending receipt with future deadline. No fake CLI result, Person sink or controller confirmation was introduced.
+- Ownership: sink pane is recorded before public launch, so refusal still reaches existing independent sink/workspace/helper/root cleanup. The new prefix changes no teardown ownership.
+
+No further concrete startup-contract mismatch found in this bounded audit. This is source reasoning, not proof that native startup/cause succeeds.
+
+## Causal evidence inspected
+
+`sink-path-red.log` records the real /bin/sh command -v pi selecting the primary shim and failing the exact requested-sink assertion (26 tests, one failure). The revised test captures BOTH launch caller merged environment and actual tab --env values and performs real shell lookup for each; it also checks retained PATH suffix and shim export. `sink-path-green.log` records 26 passes in 2.445s. `sink-path-leaks.log` records no leaked test processes or temp files (no ledger for that run); writer confirms exact-run exit0. Source hashes were rechecked after these logs completed.
+
+This reviewer executed no runtime/build/tests/services/credential actions and changed only this private review document. Approval applies to the exact frozen source delta; commit and any native retry remain coordinator-owned. No native, full-suite or live pass is claimed.

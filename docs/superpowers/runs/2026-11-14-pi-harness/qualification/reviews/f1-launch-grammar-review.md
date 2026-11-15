@@ -1,0 +1,11 @@
+# Independent launch grammar correction review
+
+Verdict: approved for the exact frozen delta. Verified patch SHA256 `1b513b57840b6af7252b5810b9525440875b789f4e624816d16f82bea9f9d387`, driver `85cf1abb9bd41c731026c7c9236be09b64a7503b1dec6738299b6387d88ccd3e`, and unchanged fixture `1bbb2f67a76a015beebeb055fb915389fb6aa50178c46d1e7c17e95d7d2380fa` against `launch-grammar-frozen-manifest.json`. Base is `a19fd881e7e8dc6c1b52c9cb2ccda0abbc3a8601`; manifest records unchanged production binary `a8aef2df56e6954fe3c12b7d02841f521712ceb403d13f9b93fabdabe2224289`.
+
+Public `LaunchArgs` in `src/cli/commands.rs:2099` has no `--profile-dir`; the option belongs to `HandoffArgs` at line 2155. Removing that option from the secondary sink launch is correct. The prior independent source review missed this grammar assumption. The first native attempt stopped before a real notice cause; its reported clean 9.25s cleanup is not notice behavior evidence.
+
+Isolation remains intact: `start_notice_sink` retains separate sink HOME, PI_CODING_AGENT_DIR, native trace root and installed extension path in setup extra_env, tab environment and exec-only shim exports. `src/harness/pi/launch.rs:130` reads the target pane's PI_CODING_AGENT_DIR before falling back to launcher/default roots. No production launch semantics or fixture SDK behavior changed.
+
+The additional installed-extension SHA256 captures read the primary and sink files immediately after each public setup. They perform no rewrite or claim model uptake; the synthetic selftest artifact is explicitly test scaffolding. The parser test calls the real candidate binary with the exact pre-separator launch arguments plus --help, avoiding host/seat/process launch. Retained `launch-grammar-red.log` records rc2 for unexpected --profile-dir (26 tests, one failure); `launch-grammar-frozen-green.log` records 26 passes in 2.384s. The frozen leak log records no leaked test processes or temp files (no ledger for that run). These are inspected writer results, not reviewer-executed checks.
+
+No defects found in this narrow delta. This reviewer performed source/log/hash reads only: no runtime, builds, tests, services or credential access, and no native rerun authorization is inferred. Final native/full-suite/live gates remain separate.
