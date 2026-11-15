@@ -18,6 +18,8 @@ struct LadderStore {
     targets: Mutex<Vec<&'static str>>,
     /// The invitation frontier's decision sequence: a larger one is a newer item.
     newest: AtomicU64,
+    /// A warning-only liveness fixture; ordinary tests keep their invitation source.
+    warning_only: bool,
 }
 impl LadderStore {
     fn new(events: Arc<Mutex<Vec<String>>>) -> Self {
@@ -27,6 +29,7 @@ impl LadderStore {
             reserved: AtomicU64::new(0),
             targets: Mutex::new(vec!["binding_a"]),
             newest: AtomicU64::new(1),
+            warning_only: false,
         }
     }
     fn advance(&self, millis: u64) {
@@ -52,6 +55,28 @@ impl LadderStore {
                 ..Default::default()
             },
         ));
+        if self.warning_only {
+            candidate.has_pending_invitation = false;
+            candidate.actionable_warning_generation = Some(9);
+            candidate.actionable_warning_seq = Some(9);
+            candidate.attention_witness = Some(WakeAttentionWitness::from_complete(
+                "34750f98bd59fcfc946da45aaabe933b".into(),
+                SeatId::new("seat"),
+                9,
+                false,
+                false,
+                Some(9),
+                0,
+                false,
+                LogicalAttentionFrontier {
+                    actionable_warning: Some(LogicalPublicationKey {
+                        decision_seq: 9,
+                        event_offset: 0,
+                    }),
+                    ..Default::default()
+                },
+            ));
+        }
         candidate.targets = self
             .targets
             .lock()
@@ -60,7 +85,7 @@ impl LadderStore {
             .map(|binding| WakeTarget {
                 provenance: String::new(),
                 binding: BindingId::new(*binding),
-                harness: "codex".into(),
+                harness: if self.warning_only { "pi" } else { "codex" }.into(),
                 fingerprint_pid: None,
                 dormant: false,
             })
@@ -132,11 +157,22 @@ impl WakePort for LadderStore {
             attempt: WakeAttemptId::new(format!("attempt-{n}")),
             seat: candidate.seat.clone(),
             attention_witness: candidate.attention_witness.clone().unwrap(),
-            reasons: vec!["invitation".into()],
+            reasons: vec![
+                if self.warning_only {
+                    "actionable_warning"
+                } else {
+                    "invitation"
+                }
+                .into(),
+            ],
             retained_effective_delay_ms: 30_000,
             lease_until: MonoInstant(self.clock.monotonic_now().0 + 5_000),
             retained_minimum_delay_ms: 30_000,
-            reserved_at_utc: UtcMillis(i64::try_from(n).unwrap() * 100),
+            reserved_at_utc: if self.warning_only {
+                self.clock.utc_now()
+            } else {
+                UtcMillis(i64::try_from(n).unwrap() * 100)
+            },
             daemon_boot: daemon_boot(),
             host_boot: HostBootId::new("boot"),
             host_epoch: 1,
@@ -438,4 +474,172 @@ fn queue_transport_never_awaits_generic_contact_or_marks_unreceived() {
                 .all(|event| !event.starts_with("unreceived"))
         );
     }
+}
+/// Actual contact tracking with a deliberately empty ordinary pull outlook. This exercises the
+/// actionable-warning exception rather than making a fake pending ordinary message force retry.
+struct WarningContacts(crate::service::delivery_pull::DeliveryPullState);
+impl HookPullOutlook for WarningContacts {
+    fn next_pull(
+        &self,
+        _: &SeatId,
+        _: &[BindingId],
+        _: u64,
+        _: u64,
+        _: UtcMillis,
+    ) -> crate::ports::NextPull {
+        crate::ports::NextPull::Nothing
+    }
+    fn contacted_since(&self, seat: &SeatId, since: UtcMillis) -> Option<bool> {
+        self.0.contacted_since(seat, since)
+    }
+}
+
+// Causal control: the same publication frontier retries only when the prior wake was heard.
+// Canonical old-page confirmation/successor allocation is covered by the paired real-store test;
+// this test models their late availability after a completed turn, not native callback timing.
+#[test]
+fn late_notice_successor_retries_same_warning_frontier_after_contact() {
+    for heard in [false, true] {
+        let events = Arc::new(Mutex::new(Vec::new()));
+        let notifier = SubmittingNotifier(events.clone(), false, Mutex::new(None));
+        let mut store = LadderStore::new(events.clone());
+        store.warning_only = true;
+        let contacts = WarningContacts(Default::default());
+        let due = FakeDeadlinePort {
+            clock: store.clock.clone(),
+            due_calls: AtomicU64::new(0),
+        };
+        let channels = native_notice_channel(store.clock.clone());
+        use crate::ports::ModChannels;
+        assert!(channels.binding_live(&SeatId::new("seat"), &BindingId::new("binding_a")));
+        assert!(
+            !channels.binding_wake_suppressed(&SeatId::new("seat"), &BindingId::new("binding_a"))
+        );
+        let scheduler = Scheduler::new(
+            "i".into(),
+            &due,
+            &store,
+            &notifier,
+            RetryConfig::default(),
+            daemon_boot(),
+        )
+        .with_hook_pull(&contacts)
+        .with_mod_channels(&channels);
+        let frontier = store.candidate().attention_witness.unwrap().frontier();
+        assert!(
+            frontier.invitation.is_none()
+                && frontier.addressed_receipt.is_none()
+                && frontier.lazy.is_none()
+        );
+        assert_eq!(frontier.actionable_warning.unwrap().decision_seq, 9);
+        assert_eq!(scheduler.drive_wakes(&budget(&store)).unwrap().attempted, 1);
+        assert_eq!(drain(&events), ["reserve attempt-1", "typed"]);
+        // The scheduler attempt has completed. Native after-settle successor timing is
+        // independently exercised by the SDK fixture, not fabricated by a boolean here.
+        store.advance(1);
+        assert_eq!(
+            contacts.contacted_since(&SeatId::new("seat"), store.clock.utc_now()),
+            Some(false)
+        );
+        if heard {
+            contacts
+                .0
+                .record_contact(&SeatId::new("seat"), store.clock.utc_now());
+            assert_eq!(
+                contacts.contacted_since(&SeatId::new("seat"), store.clock.utc_now()),
+                Some(true)
+            );
+        }
+        store.advance(STEPS[0] - 2);
+        assert_eq!(scheduler.drive_wakes(&budget(&store)).unwrap().attempted, 0);
+        assert!(drain(&events).is_empty());
+        assert_eq!(
+            store.candidate().attention_witness.unwrap().frontier(),
+            frontier
+        );
+        store.advance(1);
+        assert_eq!(
+            scheduler.drive_wakes(&budget(&store)).unwrap().attempted,
+            u16::from(heard),
+            "same warning requires a second automatic wake after contact"
+        );
+        assert_eq!(
+            store.candidate().attention_witness.unwrap().frontier(),
+            frontier
+        );
+        assert_eq!(
+            drain(&events),
+            if heard {
+                vec!["reserve attempt-2".to_owned(), "typed".to_owned()]
+            } else {
+                vec!["unreceived seat attempt-1".to_owned()]
+            }
+        );
+    }
+}
+
+fn native_notice_channel(
+    clock: Arc<dyn Clock>,
+) -> crate::service::mod_channels::ModChannelRegistry {
+    use crate::ports::{ModChannelSink, ModChannels, ModStoreReads};
+    struct NoReads;
+    impl ModStoreReads for NoReads {
+        fn mod_binding_view(
+            &self,
+            _: &SeatId,
+            _: crate::ports::ModBindingRef<'_>,
+            _: &CallBudget,
+        ) -> Result<Option<crate::ports::ModSeatView>, ApiError> {
+            Ok(None)
+        }
+        fn mod_stall_oldest(
+            &self,
+            _: &SeatId,
+            _: UtcMillis,
+            _: usize,
+            _: &CallBudget,
+        ) -> Result<Option<UtcMillis>, ApiError> {
+            Ok(None)
+        }
+    }
+    struct Sink;
+    impl ModChannelSink for Sink {
+        fn push(&self, _: crate::protocol::watch::WatchFrame) -> bool {
+            true
+        }
+    }
+    let registry = crate::harness::registry::builtins();
+    let id = registry.agent("pi").unwrap();
+    let idle_wake = registry
+        .by_id(id)
+        .unwrap()
+        .delivery_policy()
+        .unwrap()
+        .idle_wake();
+    assert_eq!(idle_wake, crate::harness::adapter::IdleWake::Native);
+    let registered_at = clock.utc_now();
+    let channels = crate::service::mod_channels::ModChannelRegistry::new(
+        clock,
+        Arc::new(NoReads),
+        "i".into(),
+        Arc::new(|| {}),
+        crate::protocol::watch::ModDeliverySetting::On,
+    );
+    channels
+        .register(
+            crate::ports::ModChannelRegistration {
+                mode: crate::ports::ModChannelMode::PresentationV2,
+                seat: SeatId::new("seat"),
+                binding: BindingId::new("binding_a"),
+                binding_generation: 1,
+                native_session: crate::protocol::ids::NativeSessionId::new("native"),
+                harness: Harness::Agent(id),
+                idle_wake,
+                readonly: false,
+                registered_at,
+            },
+            Arc::new(Sink),
+        )
+        .unwrap();
+    channels
 }

@@ -820,3 +820,203 @@ fn pi_channel_owned_checkins_preserve_unoffered_notices_mail_and_read_cursors() 
         .unwrap();
     assert_eq!(warning_before, warning_after);
 }
+
+// A parked old nonwaking Notice is presentation backpressure, never the wake frontier.
+// All warnings/descriptors here come from public send + canonical producer/work paths.
+#[test]
+fn late_notice_successor_preserves_newer_canonical_warning_wake_frontier() {
+    use crate::protocol::{
+        authority::ObligationRef,
+        commands::Accept,
+        delivery::{
+            DeliveryPresentationConfirmV2, DeliveryPresentationConfirmationV2, DeliveryPullReplyV2,
+            PresentationConsumer, PresentationItemV2,
+        },
+    };
+    let (mut f, owner, invitation, _, old_warning) = published_notice();
+    let thread: String =
+        f.db.query_row(
+            "SELECT thread_id FROM invitations WHERE id=?1",
+            [invitation.as_str()],
+            |r| r.get(0),
+        )
+        .unwrap();
+    f.service
+        .handle(
+            Command::Accept(Accept {
+                thread: ThreadId::new(thread),
+                operation: OperationId::new("liveness-accept"),
+                claim: owner.clone(),
+            }),
+            peer(),
+            &budget(),
+        )
+        .unwrap();
+    assert!(!crate::store::attention::warning_wakes_seat(&f.db, "s", &old_warning).unwrap());
+    let binding = binding_for_claim(&f, &owner);
+    let pull = |f: &Fixture| super::legacy_confirm_tests::watch_input(f, &owner, &binding, true);
+    let DeliveryPullReplyV2::Page(old) = f
+        .store
+        .presentation_pull(pull(&f), &budget())
+        .unwrap()
+        .reply
+    else {
+        panic!("old protected page")
+    };
+    assert!(old.items.iter().any(
+        |v| matches!(v,PresentationItemV2::Notice {warning,..} if warning.as_str()==old_warning)
+    ));
+    let old_ordinal: i64 =
+        f.db.query_row(
+            "SELECT ordinal FROM digest_programmatic_warnings WHERE seat_id='s' AND warning_id=?1",
+            [&old_warning],
+            |r| r.get(0),
+        )
+        .unwrap();
+    let sink = check_in(
+        &f,
+        fixture_claim(&f, "c", "pc", fourth(), "liveness-sink"),
+        "liveness-sink-ci",
+    );
+    let CommandResult::MessageSent(message) = f
+        .service
+        .handle(
+            Command::SendMessage(SendMessage {
+                priority: None,
+                delivery_mode: DeliveryMode::Ordinary,
+                user_intent: None,
+                thread: ThreadId::new("t"),
+                body: "new origin receipt warning".into(),
+                direct_recipient: None,
+                invited_recipients: vec![sink.seat.clone()],
+                deadline_millis: Some(1000),
+                operation: OperationId::new("liveness-new-cause"),
+                claim: owner.clone(),
+                relays_user: false,
+            }),
+            peer(),
+            &budget(),
+        )
+        .unwrap()
+    else {
+        panic!("real newer cause")
+    };
+    f.clock.0.fetch_add(2000, Ordering::SeqCst);
+    let newer_warning = {
+        let tx = f.db.transaction().unwrap();
+        let overdue = crate::store::schema::record_overdue_if_pending(
+            &tx,
+            &ObligationRef::Receipt {
+                message,
+                seat: sink.seat,
+            },
+            &crate::ports::TimeBasis::Decision,
+            f.clock.utc_now(),
+        )
+        .unwrap();
+        assert!(overdue.inserted);
+        let warning = overdue.warning.unwrap();
+        tx.commit().unwrap();
+        warning
+    };
+    finish_presentation_attention_job(&f, &format!("work:{}", newer_warning.as_str()));
+    assert!(
+        crate::store::attention::warning_wakes_seat(&f.db, "s", newer_warning.as_str()).unwrap()
+    );
+    let new_ordinal: i64 =
+        f.db.query_row(
+            "SELECT ordinal FROM digest_programmatic_warnings WHERE seat_id='s' AND warning_id=?1",
+            [newer_warning.as_str()],
+            |r| r.get(0),
+        )
+        .unwrap();
+    assert!(new_ordinal > old_ordinal);
+    let candidate = |f: &Fixture| {
+        f.store
+            .wake_candidates(
+                crate::test_support::test_host_id(),
+                Default::default(),
+                &budget(),
+            )
+            .unwrap()
+            .items
+            .into_iter()
+            .find(|c| c.seat == owner.seat)
+            .expect("canonical wake candidate")
+    };
+    let before = candidate(&f);
+    assert!(
+        !before.has_pending_invitation
+            && !before.has_pending_receipt
+            && before.pending_lazy().is_none(),
+        "only the warning may supply this wake"
+    );
+    assert!(before.has_actionable_work());
+    let frontier = before.attention_witness.as_ref().unwrap().frontier();
+    let newer_seq:u64=f.db.query_row("SELECT event_seq FROM digest_programmatic_warnings WHERE seat_id='s' AND warning_id=?1",[newer_warning.as_str()],|r|r.get::<_,i64>(0)).unwrap().try_into().unwrap();
+    assert_eq!(frontier.actionable_warning.unwrap().decision_seq, newer_seq);
+    let DeliveryPullReplyV2::Page(replay) = f
+        .store
+        .presentation_pull(pull(&f), &budget())
+        .unwrap()
+        .reply
+    else {
+        panic!("old replay")
+    };
+    assert_eq!(replay.presentation_token, old.presentation_token);
+    assert!(replay.items.iter().any(
+        |v| matches!(v,PresentationItemV2::Notice {warning,..} if warning.as_str()==old_warning)
+    ));
+    assert!(
+        !replay.items.iter().any(
+            |v| matches!(v,PresentationItemV2::Notice {warning,..} if warning==&newer_warning)
+        )
+    );
+    let request = DeliveryPresentationConfirmV2 {
+        claim: owner.clone(),
+        consumer: PresentationConsumer::Watch,
+        presentation_lease: Some("0123456789abcdef0123456789abcdef".into()),
+        token: old.presentation_token.clone().unwrap(),
+        emitted_controls: old.emitted_controls,
+    };
+    assert_eq!(
+        f.store
+            .presentation_confirm(&request, &budget())
+            .unwrap()
+            .status,
+        DeliveryPresentationConfirmationV2::Confirmed
+    );
+    assert_eq!(
+        crate::store::attention::binding_notice_frontier(&f.db, binding.as_str()).unwrap(),
+        old_ordinal
+    );
+    assert_eq!(
+        candidate(&f).attention_witness.unwrap().frontier(),
+        frontier,
+        "old confirmation creates no newer publication"
+    );
+    let DeliveryPullReplyV2::Page(successor) = f
+        .store
+        .presentation_pull(pull(&f), &budget())
+        .unwrap()
+        .reply
+    else {
+        panic!("successor page")
+    };
+    assert_ne!(successor.presentation_token, old.presentation_token);
+    assert!(
+        successor.items.iter().any(
+            |v| matches!(v,PresentationItemV2::Notice {warning,..} if warning==&newer_warning)
+        )
+    );
+    assert_eq!(
+        crate::store::attention::binding_notice_frontier(&f.db, binding.as_str()).unwrap(),
+        old_ordinal,
+        "buffering successor is not presentation"
+    );
+    assert_eq!(
+        candidate(&f).attention_witness.unwrap().frontier(),
+        frontier,
+        "successor still owes the exact same warning wake"
+    );
+}

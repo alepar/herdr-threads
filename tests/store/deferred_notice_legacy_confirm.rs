@@ -243,7 +243,7 @@ fn dn1_canonical_integer_boundaries_and_kind_separation() {
     );
 }
 
-fn watch_input(
+pub(super) fn watch_input(
     f: &super::notice_replay_tests::Fixture,
     claim: &CallerClaim,
     binding: &BindingId,
