@@ -278,6 +278,7 @@ CHANNEL_WAKE_UP = "wake up"
 # Keep the native and pre-upgrade channel forms ahead of their short suffix.
 WAKE_MARKERS = ("herdr-threads: wake up", "herdr-threads: attention pending", CHANNEL_WAKE_UP)
 WAKE_PATTERN = re.compile("|".join(map(re.escape, WAKE_MARKERS)))
+QUEUE_WAKE_WINDOW_S = 15.0  # accepted external receiver polling, opt-in eligible positives only
 WAKE_WINDOW_S = 6.0     # a woken agent leaves idle well inside this (observed 0.3-1.1 s)
 SPACING_S = 35.0        # the per-seat wake retry guard is 30 s after each reservation (src/notification/policy.rs)
 BUSY_ENTRY_S = 60  # a held tool past this with no throttle to explain it is shown on the report
@@ -1902,6 +1903,9 @@ class QueueCaseEvidence:
         self.publication_monotonic = None
         self.publication_unix_ms = None
         self.host_observations = []
+        self.latest_publication_scope = None
+        self.selected_windows = []
+        self.release_interval_ms = None
 
     def offset(self, at):
         return round((at - self.publication_monotonic) * 1000) if self.publication_monotonic is not None else None
@@ -1949,6 +1953,7 @@ class QueueCaseEvidence:
         return self
 
     def publication(self):
+        from wake_e2e_queue import eligible_scope
         with self.lock:
             if not self.published:
                 self.publication_monotonic = time.monotonic()
@@ -1958,6 +1963,10 @@ class QueueCaseEvidence:
                 self.before = self.read(self.after)
                 self.samples, self.encoded, self.bytes = [], None, 0
                 self.published = True
+                current_scope = self.before
+            else:
+                current_scope = self.read(self.after)
+            self.latest_publication_scope = eligible_scope(current_scope)
             self._capture()
 
     def hold_ended(self):
@@ -2016,6 +2025,18 @@ class QueueCaseEvidence:
             attempt for attempt in proved
             if any(i.get("attempt") == attempt and i.get("logical_status") == "fulfilled" for i in intents)
             and any(i.get("attempt") == attempt and i.get("cleanup_list_attempted") for i in intents))
+        if self.case in WAKE_BLOCK_CASES:
+            from wake_e2e_queue import queue_activity_intervals
+            result["release_interval_ms"] = self.release_interval_ms
+            result["gate_retry_window_s"] = WAKE_BLOCK_WAIT_S
+            result["queue_activity_intervals"] = queue_activity_intervals(self.samples, proved)
+            timely = bool(proved) and all(i["status"] == "passed" for i in result["queue_activity_intervals"])
+            if not timely:
+                result["passed"] = False
+                result["reasons"].append("UI Accepted-to-activity latency failed or ambiguous")
+        elif self.case in RESUME_CASES:
+            result["gate_retry_window_s"] = WAKE_BLOCK_WAIT_S
+            result["queue_latency_proof"] = False
         result["samples"] = self.samples
         self.result = result
         return result
@@ -2193,6 +2214,18 @@ class Recipient:
         text = self.visible()
         return clip(" | ".join(l.strip() for l in text.splitlines() if l.strip()), 400,
                     getattr(self.run, "secrets", None), tail=True)
+
+    def wake_window(self, expect=True):
+        proof = getattr(self, "queue_evidence", None)
+        qualified = bool(proof is not None and proof.published and proof.latest_publication_scope)
+        window = QUEUE_WAKE_WINDOW_S if expect and qualified else WAKE_WINDOW_S
+        if proof is not None:
+            if len(proof.selected_windows) >= 32:
+                proof.overflow = True
+            else:
+                proof.selected_windows.append({"seconds": window, "queue_eligible": qualified,
+                                               "expect_wake": bool(expect)})
+        return window
 
     def watch_for_wake(self, window):
         t0 = time.time()
@@ -2660,7 +2693,7 @@ class Recipient:
         time.sleep(2)
         self.wait_idle()
         # A wake attempted while the side turn was busy is refused and retried after the per-seat guard.
-        checks["sibling_wake_s"] = self.watch_for_wake(SPACING_S + WAKE_WINDOW_S)
+        checks["sibling_wake_s"] = self.watch_for_wake(SPACING_S + self.wake_window())
         checks["sibling_wake_state"] = state = self.wake_state()
         # The retried wake can land while the side turn is being interrupted, before the watch starts: count it when
         # the daemon submitted a wake after the send and the main session printed the message in that wake's turn.
@@ -2777,7 +2810,7 @@ class Recipient:
         if action == "side-nudge":
             expect_wake = True
             ref["message"] = self.send("p0", tag, direct=False)
-            t_wake = self.watch_for_wake(WAKE_WINDOW_S)
+            t_wake = self.watch_for_wake(self.wake_window())
             checks["late_wake_s"] = None if t_wake is not None else self.watch_for_wake(20)
             woke = t_wake is not None
             checks["wake_state"] = self.wake_state()
@@ -2917,7 +2950,12 @@ class Recipient:
                 if proof is not None:
                     proof.hold_ended()
         finally:  # only clear the UI this case opened
+            release_start = time.monotonic()
             self.run.herdr("agent", "send-keys", self.pane, "ctrl+u" if draft else "esc", check=False)
+            proof = getattr(self, "queue_evidence", None)
+            if proof is not None:
+                proof.release_interval_ms = [proof.offset(release_start), proof.offset(time.monotonic())]
+                self.wake_window()
         checks["send_warnings"] = sends
         t0, t_wake = time.time(), None
         while opened and time.time() - t0 < WAKE_BLOCK_WAIT_S:  # the wake is a typed wake line
@@ -3140,7 +3178,7 @@ class Recipient:
             self.pair = "pending"
         else:
             ref = {"message": self.send("p0" if action == "native-fallback" else action.split("-")[1], body, direct=channel == "1:1")}
-        t_wake = self.watch_for_wake(WAKE_WINDOW_S)
+        t_wake = self.watch_for_wake(self.wake_window(expect))
         woke = t_wake is not None
         hello = False
         if action == "pair-open":
@@ -3306,7 +3344,7 @@ class Recipient:
                  {"id": ids["p0"], "priority": 0, "deadline_s": None},
                  {"id": ids["ack"], "priority": 0, "deadline_s": MIXED_DEADLINE_S}]
         # The p0 and the ACK request wake the recipient at every threshold (expect_wake).
-        t_wake = self.watch_for_wake(WAKE_WINDOW_S)
+        t_wake = self.watch_for_wake(self.wake_window())
         woke = t_wake is not None
         hello = False
         checks = {}
@@ -3587,6 +3625,10 @@ def record(self, row):
         if recipient.name == row.get("recipient") and proof is not None:
             evidence = proof.finish(row)
             row["queue_evidence"] = evidence
+            row["wake_windows"] = proof.selected_windows
+            row["actual_transport"] = ("unknown" if evidence.get("observed", {}).get("unknown") else
+                                       "queue" if evidence.get("attempts") else
+                                       "native_inference" if evidence.get("expectation") == "native" else "none")
             row.setdefault("checks", {})["queue_transport_ok"] = evidence["passed"]
             if not evidence["passed"]:
                 row["result"] = "FAIL"

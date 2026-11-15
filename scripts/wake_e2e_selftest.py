@@ -3475,6 +3475,35 @@ class QueueSamplerLifetime(TempDir):
         self.assertFalse(proof.worker.is_alive())
 
 
+class QueueWakeWindow(TempDir):
+    snapshot = QueueSamplerLifetime.snapshot
+    recipient = QueueSamplerLifetime.recipient
+
+    def test_only_positive_published_queue_scope_gets_fifteen_seconds(self):
+        self.assertEqual(W.Recipient.wake_window(SimpleNamespace(queue_evidence=None), True), 6.0)
+        recipient = self.recipient()
+        proof = W.QueueCaseEvidence(recipient, "send-p0/group")
+        target = SimpleNamespace(queue_evidence=proof)
+        self.assertEqual(W.Recipient.wake_window(target, True), 6.0)
+        with mock.patch("wake_e2e_queue.eligible_scope", return_value={"scope": "current"}):
+            proof.publication()
+        self.assertEqual(W.Recipient.wake_window(target, False), 6.0)
+        self.assertEqual(W.Recipient.wake_window(target, True), 15.0)
+
+    def test_second_publication_uses_its_actual_scope_not_first_scope(self):
+        recipient = self.recipient()
+        proof = W.QueueCaseEvidence(recipient, "side-nudge/group")
+        target = SimpleNamespace(queue_evidence=proof)
+        with mock.patch("wake_e2e_queue.eligible_scope", return_value={"scope": "first"}):
+            proof.publication()
+        self.assertEqual(W.Recipient.wake_window(target, True), 15.0)
+        with mock.patch("wake_e2e_queue.eligible_scope", return_value=None):
+            proof.publication()
+        self.assertEqual(W.Recipient.wake_window(target, True), 6.0)
+        self.assertEqual(proof.after, 10)
+
+
+
 class QueueLifecycleCorrelation(TempDir):
     snapshot = QueueSamplerLifetime.snapshot
     recipient = QueueSamplerLifetime.recipient

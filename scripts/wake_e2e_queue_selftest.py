@@ -7,7 +7,7 @@ import tempfile
 import unittest
 from unittest import mock
 
-from wake_e2e_queue import eligible_scope, queue_proof, queue_snapshot
+from wake_e2e_queue import eligible_scope, queue_activity_intervals, queue_proof, queue_snapshot
 
 SESSION = "00000000-0000-0000-0000-000000000001"
 OWNER = "00000000-0000-0000-0000-000000000002"
@@ -56,6 +56,22 @@ class QueueEvidence(unittest.TestCase):
         if phase == "accepted":
             self.db.execute("INSERT INTO wake_intent_ids VALUES(?, 'owned-queue-id', 0)", (ordinal,))
         self.db.commit()
+
+    def test_queue_activity_uses_conservative_observation_bounds(self):
+        def sample(start, end, phase, logical):
+            return {"observation_start_ms": start, "observation_end_ms": end,
+                    "intents": [{"attempt": "a", "phase": phase, "logical_status": logical,
+                                 "updated_at": 12345}]}
+        prefix = [sample(2000, 2010, "prepared", "active"), sample(8000, 8010, "accepted", "active")]
+        passed = queue_activity_intervals(prefix + [sample(14000, 14010, "accepted", "fulfilled")], {"a"})
+        self.assertEqual(passed[0]["accepted_to_activity_upper_ms"], 12010)
+        self.assertEqual(passed[0]["status"], "passed")
+        ambiguous = queue_activity_intervals(prefix + [sample(19000, 19010, "accepted", "fulfilled")], {"a"})
+        self.assertEqual(ambiguous[0]["status"], "ambiguous")
+        failed = queue_activity_intervals(prefix + [sample(30000, 30010, "accepted", "active"),
+                                                  sample(31000, 31010, "accepted", "fulfilled")], {"a"})
+        self.assertEqual(failed[0]["status"], "failed")
+        self.assertEqual(queue_activity_intervals(prefix, {"a"})[0]["status"], "ambiguous")
 
     def test_projection_is_read_only_and_does_not_export_paths_or_descriptors(self):
         self.add_intent()

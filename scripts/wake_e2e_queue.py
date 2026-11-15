@@ -262,3 +262,41 @@ def queue_proof(before: dict, samples: list[dict], expectation: str) -> dict:
     if len(json.dumps(result, separators=(",", ":")).encode()) > MAX_BYTES:
         result.update(passed=False, attempts=[], reasons=["proof_byte_limit"])
     return result
+
+
+def queue_activity_intervals(samples: list[dict], attempts: set[str]) -> list[dict]:
+    """Conservative Accepted-to-fulfilled bounds from consistent timed observations.
+
+    A prior non-Accepted snapshot bounds acceptance from below; first Accepted
+    bounds it from above. The analogous native fulfillment observations bound
+    activity. Missing observations remain ambiguous, never an invented timestamp.
+    """
+    result = []
+    for attempt in sorted(attempts):
+        rows = [(sample, next((i for i in sample.get("intents", ()) if i.get("attempt") == attempt), None))
+                for sample in samples]
+        accepted = next(((s, i) for s, i in rows if i and i.get("phase") == "accepted"), None)
+        activity = next(((s, i) for s, i in rows if i and i.get("logical_status") == "fulfilled"), None)
+        item = {"attempt": attempt, "status": "ambiguous"}
+        if accepted and activity:
+            accepted_sample, accepted_row = accepted
+            activity_sample, _ = activity
+            if all(s.get("observation_start_ms") is not None and s.get("observation_end_ms") is not None
+                   for s, _ in rows):
+                accept_lower = max((s["observation_start_ms"] for s, i in rows
+                                    if s["observation_start_ms"] < accepted_sample["observation_start_ms"]
+                                    and (not i or i.get("phase") != "accepted")), default=0)
+                activity_lower = max((s["observation_start_ms"] for s, i in rows
+                                      if s["observation_start_ms"] < activity_sample["observation_start_ms"]
+                                      and (not i or i.get("logical_status") != "fulfilled")), default=0)
+                lower = max(0, activity_lower - accepted_sample["observation_end_ms"])
+                upper = max(0, activity_sample["observation_end_ms"] - accept_lower)
+                item.update(accepted_row_updated_unix_ms=accepted_row.get("updated_at"),
+                            first_accepted_observation_ms=[accepted_sample["observation_start_ms"],
+                                                           accepted_sample["observation_end_ms"]],
+                            first_activity_observation_ms=[activity_sample["observation_start_ms"],
+                                                           activity_sample["observation_end_ms"]],
+                            accepted_to_activity_lower_ms=lower, accepted_to_activity_upper_ms=upper,
+                            status="passed" if upper <= 15000 else "failed" if lower > 15000 else "ambiguous")
+        result.append(item)
+    return result

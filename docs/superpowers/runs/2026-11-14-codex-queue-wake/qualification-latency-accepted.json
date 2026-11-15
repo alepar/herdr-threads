@@ -1,0 +1,43 @@
+{
+  "schema": 1,
+  "user_acceptance_relay": "mnSGOPld2O8b",
+  "design_boundary_clarification": "mnSGX5hsdq6Y",
+  "contract_source": "07fa43cf72a8f066df525dd939155d8d8a850a19",
+  "contract_cherry": "08cc43ed3",
+  "scope": "15s for opt-in actual pre-publication queue-eligible positive wakes; default/native/silent six-second oracles unchanged",
+  "mixed_publications": "Latest actual canonical scope selected at each publication; the first evidence watermark remains frozen. Each selected window and actual proved transport is recorded per row.",
+  "ui_and_resume": "Existing90s release/resume retry gate retained. UI queue requires separate conservative same-attempt Accepted-to-activity upper bound <=15s; ambiguity fails. Resume remains native/ineligible with no queue15s proof.",
+  "self_test": {
+    "passed": 274,
+    "failed": 0,
+    "seconds": 102.657,
+    "agents_started": false
+  },
+  "regressions": {
+    "window_red": 2,
+    "window_green": 2,
+    "driver_queue_green": 17,
+    "sqlite_green": 18,
+    "conservative_ui_interval_red": 1
+  },
+  "checks": {
+    "clippy": {
+      "exit": 0,
+      "seconds": 33.94
+    },
+    "default_features": 0,
+    "fmt": 0,
+    "harness_neutral": 0,
+    "wire_compat": 0,
+    "python39_syntax": 0,
+    "diff": 0
+  },
+  "source_sha256": {
+    "scripts/wake-e2e.py": "f179ccd86cff62445a8cdb2c420f600511d86def573cbbabfb37a9d51ffc7256",
+    "scripts/wake_e2e_selftest.py": "4bb19f2ee5b495e9fc121c7e49ebca0bf197638c49b5642d148cbc9285c8a12e",
+    "scripts/wake_e2e_queue.py": "6ec5646f779df25ab046340e1a3b47dc4091f2d11e273bb51a90c80b9008e733",
+    "scripts/wake_e2e_queue_selftest.py": "95d003a8a248bab1e0eddd0127be7c70d0f1d1158e815f85715ba878265fc781"
+  },
+  "routine_production_model_visible_bytes_added": 0,
+  "prior_six_second_failures": "Preserved in qualification-latency-baseline.json and qualification-latency-diagnostic.json; not retroactively changed."
+}
