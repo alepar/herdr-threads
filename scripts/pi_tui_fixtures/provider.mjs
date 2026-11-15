@@ -19,9 +19,18 @@ export default function fixture(pi) {
   let timer
   pi.on('session_start', (_event, ctx) => {
     clearInterval(timer)
-    let previous = ''
+    let previous = '', previousObservation
     timer = setInterval(() => {
-      try { const state = snapshot(ctx); const encoded = JSON.stringify(state); if (encoded !== previous) { previous = encoded; log({ event: 'state', state }) } } catch {}
+      try {
+        const state = snapshot(ctx), encoded = JSON.stringify(state)
+        const file = path.join(root, 'observe-state.json')
+        const request = fs.existsSync(file) ? JSON.parse(fs.readFileSync(file, 'utf8')) : null
+        const observation = request?.sid === state.sid && typeof request.nonce === 'string' ? request.nonce : undefined
+        if (encoded !== previous || observation !== previousObservation) {
+          previous = encoded; previousObservation = observation
+          log({ event: 'state', state, observation })
+        }
+      } catch {}
     }, 100)
     timer.unref()
     ctx.ui.onTerminalInput(data => { log({ event: 'terminal_input', data }); return undefined })

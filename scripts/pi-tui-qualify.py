@@ -176,15 +176,33 @@ class Run:
         self.quiet(starts, seconds)
         return result
 
-    def blocked_send(self, label, body):
-        before = self.capture(label + "-before")
+    def observe_state(self, editor=None):
         state = next((r["state"] for r in reversed(self.rows()) if "state" in r), {})
-        self.send_quiet(body, seconds=2)
+        sid = state.get("sid")
+        if not sid:
+            raise RuntimeError("native observation session unavailable")
+        nonce = str(uuid.uuid4())
+        (self.root / "observe-state.json").write_text(json.dumps({"sid": sid, "nonce": nonce}))
+        def observed():
+            row = next((r for r in reversed(self.rows()) if r.get("event") == "state"
+                        and r.get("observation") == nonce and r["state"]["sid"] == sid), None)
+            return row if row and (editor is None or row["state"]["editor"] == editor) else None
+        return self.wait("fresh native editor observation", observed)
+
+    def blocked_send(self, label, body, editor=None):
+        observed = self.observe_state(editor)
+        before = self.capture(label + "-before")
+        starts = self.count("before_agent_start")
+        before.update(native_observation=observed, run_starts=starts)
+        self.send(body)
+        self.quiet(starts, 2)
         after = self.capture(label + "-after")
-        current = next((r["state"] for r in reversed(self.rows()) if "state" in r), {})
+        current = self.observe_state()
+        after.update(native_observation=current, run_starts=self.count("before_agent_start"))
+        self.quiet(starts, 0)
         assert before["styled"]["raw"] == after["styled"]["raw"], "blocked UI/editor changed"
         for field in ("sid", "editor", "provider", "model"):
-            assert field in state and state[field] == current.get(field), "blocked native state changed: " + field
+            assert field in observed["state"] and observed["state"][field] == current["state"].get(field), "blocked native state changed: " + field
 
     def wake_lane(self):
         # A refusal test must not pass merely because the preceding successful
@@ -339,7 +357,7 @@ read -r _ || true
             self.wake_lane()
             self.herdr("pane", "send-text", self.recipient, text)
             time.sleep(.2)
-            self.blocked_send(label, "SAFETY " + label)
+            self.blocked_send(label, "SAFETY " + label, editor=text)
             self.keys("ctrl+c")
             # New attention restarts the ordinary refusal ladder immediately after draft removal.
             settled = self.count("agent_settled")
@@ -355,7 +373,7 @@ read -r _ || true
         self.keys("shift+enter")
         self.herdr("pane", "send-text", self.recipient, "second")
         self.keys("ctrl+a")
-        self.blocked_send("multiline-home", "MULTILINE DRAFT")
+        self.blocked_send("multiline-home", "MULTILINE DRAFT", editor="first\nsecond")
         self.keys("ctrl+c")
         for command, label in ((None, "model-picker"), ("/settings", "settings-picker"), ("/probe-select", "inline-select")):
             self.wake_lane()
@@ -364,7 +382,7 @@ read -r _ || true
             else:
                 self.keys("ctrl+l")
             time.sleep(.3)
-            self.blocked_send(label, "MODAL " + label)
+            self.blocked_send(label, "MODAL " + label, editor="")
             self.keys("esc")
             settled = self.count("agent_settled")
             self.send("MODAL RELEASE " + label)
@@ -864,6 +882,7 @@ while True: time.sleep(.05)
                 run.count = lambda _event: starts[0]
                 run.capture = lambda _label: {"styled": {"raw": "unchanged"}}
                 run.rows = lambda: [{"state": {"sid": "s1", "editor": "draft", "provider": "p1", "model": "m1"}}]
+                run.observe_state = lambda _editor=None: run.rows()[-1]
                 def send(*_args, **_kwargs):
                     starts[0] += 1
                 run.send = send
@@ -881,6 +900,7 @@ while True: time.sleep(.05)
                 screen = ["same selector and composer"]
                 run.count = lambda _event: 0
                 run.rows = lambda: [{"state": dict(state)}]
+                run.observe_state = lambda _editor=None: run.rows()[-1]
                 run.capture = lambda _label: {"styled": {"raw": screen[0]}}
                 def send(*_args, **_kwargs):
                     if changed == "screen":
@@ -890,6 +910,41 @@ while True: time.sleep(.05)
                 run.send = send
                 with mock.patch.object(time, "sleep"), self.assertRaises(AssertionError):
                     run.blocked_send("modal", "synthetic item")
+
+    def test_blocked_send_does_not_compare_a_stale_periodic_editor_sample(self):
+        run = Run.__new__(Run)
+        stale = {"sid": "s1", "editor": "    ", "provider": "p1", "model": "m1"}
+        actual = {**stale, "editor": "first\nsecond"}
+        samples = [stale, actual]
+        run.rows = lambda: [{"state": samples.pop(0) if samples else actual}]
+        run.observe_state = lambda _editor=None: {"state": dict(actual), "observation": "fresh"}
+        run.count = lambda _event: 0
+        run.capture = lambda _label: {"styled": {"raw": "identical rendered first/second draft"}}
+        run.send = lambda *_args, **_kwargs: None
+        with mock.patch.object(time, "sleep"):
+            run.blocked_send("multiline-home", "synthetic item")
+
+    def test_observer_waits_for_matching_nonce_session_and_intended_editor(self):
+        with tempfile.TemporaryDirectory(prefix="ht-pi-observer-selftest-") as root:
+            run = Run.__new__(Run)
+            run.root = Path(root)
+            stale = {"sid": "s1", "editor": "    ", "provider": "p1", "model": "m1"}
+            ticks = [0]
+            def rows():
+                path = run.root / "observe-state.json"
+                if not path.exists():
+                    return [{"state": stale}]
+                request = json.loads(path.read_text())
+                ticks[0] += 1
+                state = {**stale, "editor": "first\nsecond" if ticks[0] >= 3 else "    "}
+                return [{"event": "state", "state": state,
+                         "observation": request["nonce"] if ticks[0] >= 2 else "old-nonce"}]
+            run.rows = rows
+            with mock.patch.object(time, "sleep"):
+                observed = run.observe_state("first\nsecond")
+            self.assertEqual(ticks[0], 3)
+            self.assertEqual(observed["state"]["editor"], "first\nsecond")
+            self.assertEqual(json.loads((run.root / "observe-state.json").read_text())["sid"], "s1")
 
     def test_missing_duplicate_and_failed_case_cannot_pass(self):
         for rows in ([], [{"case": "a", "outcome": "fail"}], [{"case": "a", "outcome": "pass"}] * 2):
