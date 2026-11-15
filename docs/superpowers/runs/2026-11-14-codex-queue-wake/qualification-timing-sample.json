@@ -1,0 +1,295 @@
+{
+  "run_id": "4ef23027-9625-4caf-9245-a1716d43928b",
+  "selected_count": 41,
+  "suite_exit": 0,
+  "leak_exit": 0,
+  "command_wall_seconds": 76.93,
+  "nextest_execution_seconds": 42.989,
+  "compile_seconds": 32.69,
+  "resource_envelope": {
+    "nice": 19,
+    "build_jobs": 4,
+    "explicit_test_threads": 4
+  },
+  "strata": {
+    "integration_lanes": {
+      "count": 10,
+      "sum_seconds": 71.492,
+      "max_seconds": 22.634,
+      "tests": [
+        {
+          "test": "lanes_latency::deadline_commit_creating_a_warning_starts_a_kicked_wake_pass_within_100ms",
+          "seconds": 4.161,
+          "failed": false
+        },
+        {
+          "test": "lanes_latency::send_is_attempted_within_100ms_without_a_tick_wait",
+          "seconds": 3.404,
+          "failed": false
+        },
+        {
+          "test": "lane_wiring::committed_wake_work_insert_kicks_the_wake_pacer",
+          "seconds": 6.0,
+          "failed": false
+        },
+        {
+          "test": "lanes_latency::idle_daemon_commits_nothing_from_deadline_wake_request_for_30s",
+          "seconds": 7.026,
+          "failed": false
+        },
+        {
+          "test": "lane_wiring::every_lane_registers",
+          "seconds": 3.189,
+          "failed": false
+        },
+        {
+          "test": "lane_wiring::spawn_blocking_revoke_counts_as_request_origin",
+          "seconds": 4.408,
+          "failed": false
+        },
+        {
+          "test": "lanes_latency::commit_latency_excludes_delayed_observation",
+          "seconds": 0.005,
+          "failed": false
+        },
+        {
+          "test": "lanes_latency::settled_setup_invitations_do_not_require_a_sender_wake",
+          "seconds": 3.716,
+          "failed": false
+        },
+        {
+          "test": "lanes_latency::herdr_stopped_freezes_wake_lane",
+          "seconds": 22.634,
+          "failed": false
+        },
+        {
+          "test": "lane_wiring::injected_lane_failure_logs_and_degrades_then_clears",
+          "seconds": 16.949,
+          "failed": false
+        }
+      ]
+    },
+    "service_composition": {
+      "count": 23,
+      "sum_seconds": 18.426,
+      "max_seconds": 6.082,
+      "tests": [
+        {
+          "test": "composition::elected_wake_hang_allows_health_deadlines_and_retains_owner_until_joined",
+          "seconds": 0.807,
+          "failed": false
+        },
+        {
+          "test": "composition::actual_native_daemon_restart_keeps_same_terminal_seat_resolvable",
+          "seconds": 0.905,
+          "failed": false
+        },
+        {
+          "test": "composition::actual_native_health_reports_observed_verified_host_evidence",
+          "seconds": 0.676,
+          "failed": false
+        },
+        {
+          "test": "composition::actual_native_private_host_survives_cancellation_before_request_write",
+          "seconds": 0.556,
+          "failed": false
+        },
+        {
+          "test": "composition::actual_native_snapshot_cancellation_closes_peer_before_elected_worker_join_and_owner_release",
+          "seconds": 0.57,
+          "failed": false
+        },
+        {
+          "test": "composition::actual_native_verified_baseline_holds_targets_and_cannot_retire_proofless_seats",
+          "seconds": 0.581,
+          "failed": false
+        },
+        {
+          "test": "composition::actual_native_verified_snapshot_resolves_live_pane_and_retires_it_after_close",
+          "seconds": 0.572,
+          "failed": false
+        },
+        {
+          "test": "composition::configured_timing_reaches_store_and_rejects_unsafe_wake_spacing",
+          "seconds": 0.005,
+          "failed": false
+        },
+        {
+          "test": "composition::daemon_rejects_invalid_instance_settings_before_endpoint_publication",
+          "seconds": 0.02,
+          "failed": false
+        },
+        {
+          "test": "composition::daemon_restart_keeps_joined_cooperative_seat_available_without_warning",
+          "seconds": 0.829,
+          "failed": false
+        },
+        {
+          "test": "composition::daemon_restart_keeps_joined_human_seat_available",
+          "seconds": 0.866,
+          "failed": false
+        },
+        {
+          "test": "composition::elected_daemon_reports_startup_binding_evidence_counts_in_health_and_log",
+          "seconds": 0.683,
+          "failed": false
+        },
+        {
+          "test": "composition::elected_service_opens_real_sqlite_and_routes_health_and_public_query_over_ipc",
+          "seconds": 1.308,
+          "failed": false
+        },
+        {
+          "test": "composition::elected_service_reports_actual_private_settings_over_ipc",
+          "seconds": 6.082,
+          "failed": false
+        },
+        {
+          "test": "composition::elected_shutdown_joins_idle_monitor_before_releasing_native_host",
+          "seconds": 1.704,
+          "failed": false
+        },
+        {
+          "test": "composition::explicit_cooperative_cli_check_in_reaches_elected_service_over_socket",
+          "seconds": 0.885,
+          "failed": false
+        },
+        {
+          "test": "composition::health_unknown_settings_stay_absent_and_resolved_settings_are_forwarded",
+          "seconds": 0.006,
+          "failed": false
+        },
+        {
+          "test": "composition::pending_ops_cli_keeps_explicit_context_in_its_local_journal_route",
+          "seconds": 0.009,
+          "failed": false
+        },
+        {
+          "test": "composition::private_instance_settings_load_overrides_and_reject_unsafe_files",
+          "seconds": 0.006,
+          "failed": false
+        },
+        {
+          "test": "composition::request_with_previous_boot_after_restart_is_daemon_boot_changed",
+          "seconds": 0.755,
+          "failed": false
+        },
+        {
+          "test": "composition::selected_wire_output_is_optional_bounded_and_never_an_authority_field",
+          "seconds": 0.006,
+          "failed": false
+        },
+        {
+          "test": "composition::store_only_daemon_serves_without_host_workers",
+          "seconds": 0.588,
+          "failed": false
+        },
+        {
+          "test": "composition::summary_settings_load_from_the_instance_settings_file",
+          "seconds": 0.007,
+          "failed": false
+        }
+      ]
+    },
+    "query_work_q4": {
+      "count": 8,
+      "sum_seconds": 20.012,
+      "max_seconds": 7.833,
+      "tests": [
+        {
+          "test": "store::queries::tests::query_work_q4::q4_actual_continued_tail_checks_scope_once_and_charges_retirement",
+          "seconds": 0.941,
+          "failed": false
+        },
+        {
+          "test": "store::queries::tests::query_work_q4::q4_episode_private_and_reconciliation_points_have_constant_sqlite_work",
+          "seconds": 7.504,
+          "failed": false
+        },
+        {
+          "test": "store::queries::tests::query_work_q4::q4_private_fresh_excludes_warning_history",
+          "seconds": 0.423,
+          "failed": false
+        },
+        {
+          "test": "store::queries::tests::query_work_q4::q4_private_resumed_excludes_warning_history",
+          "seconds": 0.515,
+          "failed": false
+        },
+        {
+          "test": "store::queries::tests::query_work_q4::q4_public_and_origin_warning_sources_remain_enabled",
+          "seconds": 0.243,
+          "failed": false
+        },
+        {
+          "test": "store::queries::tests::query_work_q4::q4_scalar_agreement_and_strict_retirement_use_exact_scope",
+          "seconds": 0.27,
+          "failed": false
+        },
+        {
+          "test": "store::queries::tests::query_work_q4::q4_raw_hundred_scope_charge_and_lazy_due_fourteen_use_actual_helpers",
+          "seconds": 2.283,
+          "failed": false
+        },
+        {
+          "test": "store::queries::tests::query_work_q4::q4_three_event_keys_and_actual_floor_have_constant_sqlite_work",
+          "seconds": 7.833,
+          "failed": false
+        }
+      ]
+    }
+  },
+  "host_activity": {
+    "samples": 77,
+    "load_average_start": [
+      20.78,
+      14.66,
+      16.32
+    ],
+    "load_average_end": [
+      15.19,
+      14.25,
+      16.04
+    ],
+    "build_process_counts_min": {
+      "cargo": 0,
+      "cargo-nextest": 0,
+      "rustc": 0,
+      "clippy-driver": 0
+    },
+    "build_process_counts_max": {
+      "cargo": 1,
+      "cargo-nextest": 1,
+      "rustc": 1,
+      "clippy-driver": 0
+    },
+    "scope": "aggregate process counts include this measurement; no per-job or contention attribution"
+  },
+  "full_suite_timing_gate_cleared": false,
+  "source_sha": "96064953dcaa27d726334fc16fffc7c3a505af39",
+  "baseline_comparison": "Available same-cap baseline reports give full-run aggregates only; no identical per-stratum baseline timings are available in the cited report. No performance regression attribution follows from this sample.",
+  "representative_test_sources": {
+    "tests/integration/lanes_latency.rs": {
+      "candidate_sha256": "3cc38661f6505ce26d5650d984f607b7f6f01b2e9682da707b2676f9a71b8f9c",
+      "current_main_sha256": "3cc38661f6505ce26d5650d984f607b7f6f01b2e9682da707b2676f9a71b8f9c",
+      "identical_to_current_main": true
+    },
+    "tests/integration/lane_wiring.rs": {
+      "candidate_sha256": "663ef82c90a95f43fa2ca09dfbc99b46af2f34ad2e39007cb78c4a6aec8801c4",
+      "current_main_sha256": "663ef82c90a95f43fa2ca09dfbc99b46af2f34ad2e39007cb78c4a6aec8801c4",
+      "identical_to_current_main": true
+    },
+    "tests/service/composition.rs": {
+      "candidate_sha256": "bddc4f2d8cfd147396f577f8df1fd4b79158fc864d1d9b766f5c1f726bdd7dbd",
+      "current_main_sha256": "bddc4f2d8cfd147396f577f8df1fd4b79158fc864d1d9b766f5c1f726bdd7dbd",
+      "identical_to_current_main": true
+    },
+    "tests/store/query_work_q4.rs": {
+      "candidate_sha256": "70ccbb75994fa4018ecf1e1cd8c00638f68c27b073a12b756a22793f44f24fce",
+      "current_main_sha256": "70ccbb75994fa4018ecf1e1cd8c00638f68c27b073a12b756a22793f44f24fce",
+      "identical_to_current_main": true
+    }
+  },
+  "current_main_sha": "91ce0cdeb8e87dcc16c79f4a556fabffb7946967",
+  "comparison_limit": "Matching same-cap baseline per-test log is being produced independently by main owner; no new baseline build/run requested. Default versus ci profile allows cautious per-test comparison only."
+}

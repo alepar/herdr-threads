@@ -28,6 +28,13 @@ acknowledged inside that turn, with no wake after it.
 busy-tool-p1/group (Codex only) is busy-send-p1 whose turn calls no shell command after the send, only `apply_patch`:
 the item must arrive at that tool's boundary (every tool is one). Claude's mod delivers at every tool already.
 
+Opt-in --queue-proof qualifies Codex programmatic waking using bounded read-only snapshots of the run's own
+canonical store. Ordinary positive cases require exact Accepted intent, arm/native baseline and observed Add-helper
+witness; Unknown is not acceptance. No native typing after a possible queue effect is a compositional inference from
+the reviewed dispatcher invariant, not an independent host-call trace. Native fallback is also labeled inference from
+ineligible canonical scope, a successful wake and no possible-effect intent. Draft-hold/group and native-fallback/group
+are opt-in controls. Nothing reads queue state as body delivery or receipt proof.
+
 Isolation: an isolated daemon and state dir (driven by --bin, default the repo's bin/herdr-threads), owned hooks
 installed by the public `setup` CLI into scratch HOME / CLAUDE_CONFIG_DIR / CODEX_HOME copies, one owned Herdr
 workspace on the current Herdr server (closed at the end unless --keep). The script itself never writes the real
@@ -187,7 +194,10 @@ SIDE_FORKS = 2
 # nor type into the picker (its highlighted `› ` row reads as a draft, a hold that ends by itself), and the sender gets
 # no `wake=` warning (only lasting blocks warn); once the picker is closed the recipient wakes and gets every item.
 # (`wake=unreadable` cannot be staged this way on Codex: no captured Codex screen lacks a `› ` row.)
-WAKE_BLOCK_CASES = ("modal-hold/group",)
+WAKE_BLOCK_CASES = ("modal-hold/group", "draft-hold/group")
+QUEUE_NATIVE_CASES = ("native-fallback/group",)
+QUEUE_SAMPLE_LIMIT = 128
+QUEUE_EVIDENCE_BYTES = 512 * 1024
 WAKE_BLOCK_HOLD_S = 30
 PICKER_ROW = re.compile(r"^\u203a 1\. ")
 WAKE_BLOCK_WAIT_S = 90
@@ -995,7 +1005,7 @@ class Run:
         self.facts = {"run_id": self.run_id, "sha": sha, "dirty": dirty, "versions": versions,
                       "harness_mode": self.args.harness_mode, "codex_args": self.args.codex_args,
                       "bin": self.bin, "bin_sha256": file_sha256(self.bin), "root": str(self.root),
-                      "started_utc": utc()}
+                      "started_utc": utc(), "queue_proof": bool(getattr(self.args, "queue_proof", False))}
         print(f"wake-e2e {self.run_id}: sha {sha[:12]}{' (dirty)' if dirty else ''}, root {self.root}", flush=True)
         for k, v in versions.items():
             print(f"  {k}: {v}", flush=True)
@@ -1211,7 +1221,7 @@ class Run:
                 name = f"{SHORT_NAMES.get(h, h[:2])}-t{threshold}"
                 pane = self.tab(name)
                 self.recipients.append(Recipient(self, name, h, threshold, pane, self.seat(pane)))
-        if "codex" in self.args.harness and getattr(self, "side_cases", False):
+        if "codex" in self.args.harness and (getattr(self, "side_cases", False) or getattr(self, "native_queue_case", False)):
             pane = self.tab("co-plain")
             self.recipients.append(Recipient(self, "co-plain", "codex", 0, pane, self.seat(pane), plain=True))
         if "claude" in self.args.harness and getattr(self, "hooks_cases", False):
@@ -1871,6 +1881,118 @@ def inbox_calls(log_text, pane):
     return sum(1 for argv in pane_calls(log_text, pane) if is_inbox_call(argv))
 
 
+class QueueCaseEvidence:
+    """Bounded canonical observations from this run's private store, joined before case exit."""
+    def __init__(self, recipient, case):
+        from wake_e2e_queue import queue_snapshot
+        self.recipient, self.case = recipient, case
+        self.read = lambda after: queue_snapshot(recipient.run.state, recipient.seat, after)
+        self.before = self.read(0)
+        self.after = self.before.get("watermark", 0)
+        self.samples, self.encoded, self.bytes = [], None, 0
+        self.overflow = False
+        self.error = None
+        self.published = False
+        self.held_samples = None
+        self.stop = threading.Event()
+        self.lock = threading.Lock()
+        self.worker = None
+        self.result = None
+
+    def _capture(self):
+        snapshot = self.read(self.after)
+        encoded = json.dumps(snapshot, sort_keys=True)
+        if encoded != self.encoded:
+            size = len(encoded.encode())
+            if len(self.samples) >= QUEUE_SAMPLE_LIMIT or self.bytes + size > QUEUE_EVIDENCE_BYTES:
+                self.overflow = True
+            else:
+                self.samples.append(snapshot)
+                self.bytes += size
+            self.encoded = encoded
+        return snapshot
+
+    def __enter__(self):
+        if not self.before.get("ok"):
+            raise RuntimeError("queue qualification: canonical bootstrap snapshot unavailable")
+        def observe():
+            while not self.stop.wait(0.1):
+                try:
+                    with self.lock:
+                        self._capture()
+                except Exception:
+                    self.error = "canonical sampler failed"
+                    return
+        self.worker = threading.Thread(target=observe, name="queue-proof-" + self.recipient.name)
+        self.worker.start()
+        return self
+
+    def publication(self):
+        with self.lock:
+            if not self.published:
+                current = self.read(0)
+                self.after = current.get("watermark", self.after)
+                self.before = self.read(self.after)
+                self.samples, self.encoded, self.bytes = [], None, 0
+                self.published = True
+            self._capture()
+
+    def hold_ended(self):
+        with self.lock:
+            self._capture()
+            self.held_samples = list(self.samples)
+
+    def __exit__(self, *_):
+        self.stop.set()
+        if self.worker is not None:
+            self.worker.join(timeout=2)
+            if self.worker.is_alive():
+                self.error = "canonical sampler did not stop"
+                self.worker.join()  # bounded read-only SQLite calls; never leave a case worker behind
+
+    def finish(self, row):
+        from wake_e2e_queue import eligible_scope, queue_proof
+        if self.result is not None:
+            return self.result
+        self.__exit__()
+        with self.lock:
+            self._capture()
+        if self.case in RESUME_CASES + QUEUE_NATIVE_CASES:
+            expectation = "native"
+        elif self.case in SIDE_CASES and row.get("expect_wake"):
+            expectation = "accepted" if eligible_scope(self.before) else "native"
+        else:
+            expectation = "accepted" if row.get("expect_wake") else "none"
+        result = queue_proof(self.before, self.samples, expectation)
+        result["before"] = self.before
+        result["published"] = self.published
+        result["sample_bytes"] = self.bytes
+        if not self.published or self.overflow or self.error:
+            result["passed"] = False
+            result["reasons"].append(self.error or ("canonical evidence bound exceeded" if self.overflow
+                                                   else "no publication checkpoint"))
+        if self.case.startswith("busy-"):
+            result["known_busy_started"] = any(t.get("phase") == "started"
+                                               for t in self.before.get("native", ()))
+            if not result["known_busy_started"]:
+                result["passed"] = False
+                result["reasons"].append("busy publication lacks canonical Started observation")
+        if self.held_samples is not None:
+            held = queue_proof(self.before, self.held_samples, "none")
+            result["held_interval"] = held
+            result["passed"] = result["passed"] and held["passed"]
+        proved = {item["attempt"] for item in result.get("attempts", ())}
+        intents = [i for sample in self.samples for i in sample.get("intents", ())
+                   if i.get("attempt") in proved]
+        result["fulfillment_while_armed_observed"] = any(
+            i.get("phase") == "armed" and i.get("logical_status") == "fulfilled" for i in intents)
+        result["logical_fulfillment_observed"] = any(i.get("logical_status") == "fulfilled" for i in intents)
+        result["cleanup_list_attempted_observed"] = any(i.get("cleanup_list_attempted") for i in intents)
+        result["samples"] = self.samples
+        self.result = result
+        return result
+
+
 class Recipient:
     def __init__(self, run, name, harness, threshold, pane, seat, plain=False, hooks_only=False):
         self.run, self.name, self.harness, self.threshold, self.pane, self.seat = run, name, harness, threshold, pane, seat
@@ -2143,6 +2265,19 @@ class Recipient:
                 break
         else:
             raise RuntimeError(f"{self.name}: agent did not report nudge-threshold {self.threshold}: {self.tail()}")
+        if self.harness == "codex" and not self.plain and getattr(getattr(self.run, "args", None), "queue_proof", False):
+            from wake_e2e_queue import eligible_scope, queue_snapshot
+            end, qualified = time.monotonic() + 5, None
+            while time.monotonic() < end:
+                bootstrap = queue_snapshot(self.run.state, self.seat)
+                qualified = eligible_scope(bootstrap)
+                if qualified is not None:
+                    break
+                self.run.stopping.wait(0.1)
+            if qualified is None:
+                self.run.facts.setdefault("queue_bootstrap_failures", {})[self.name] = bootstrap
+                raise RuntimeError(f"{self.name}: queue qualification bootstrap lacks exact matched native Start/End")
+            self.run.facts.setdefault("queue_bootstrap", {})[self.name] = qualified
 
     def opencode_ready(self, timeout=60):
         """opencode's home screen draws (and Herdr reports it idle) before its composer takes input: a prompt typed
@@ -2172,6 +2307,9 @@ class Recipient:
 
     # ---------- actions ----------
     def coord(self, *argv, role="main"):
+        proof = getattr(self, "queue_evidence", None)
+        if proof is not None and argv[:1] in (("send",), ("invite",)):
+            proof.publication()
         return json.loads(self.run.ht(*argv, pane=self.run.coords[role]["pane"], human=True))
 
     def send(self, kind, body, direct, role="main", deadline_s=None):
@@ -2696,7 +2834,8 @@ class Recipient:
         return None
 
     def wake_block_case(self, case):
-        """modal-hold: an open picker holds the p0 wake without a sender warning; closing it wakes."""
+        """Hold p0 behind an open model picker or a single-session draft, then release it."""
+        draft = case == "draft-hold/group"
         tag = f"{case} {self.run.run_id}"
         checks = {}
         gap = SPACING_S - (time.time() - self.last_wake)
@@ -2709,20 +2848,29 @@ class Recipient:
             return [l.strip() for l in detection().splitlines() if " \u00b7 ~/" in l][-1:]
         checks["footer_before"] = footer()
         wakes_before = wake_count(self.screen(1000))
-        self.run.herdr("pane", "send-text", self.pane, "/model")
-        time.sleep(1)
-        self.run.herdr("agent", "send-keys", self.pane, "enter", check=False)
-        opened = False
-        for _ in range(20):  # the picker is open once its first numbered row is drawn
-            if any(PICKER_ROW.match(l) for l in detection().splitlines()):
-                opened = True
-                break
-            time.sleep(0.5)
-        checks["picker_open"] = opened
+        if draft:
+            self.run.herdr("pane", "send-text", self.pane, SIDE_DRAFT)
+            time.sleep(1)
+            opened = any(l == "› " + SIDE_DRAFT for l in detection().splitlines())
+            checks["draft_open"] = opened
+        else:
+            self.run.herdr("pane", "send-text", self.pane, "/model")
+            time.sleep(1)
+            self.run.herdr("agent", "send-keys", self.pane, "enter", check=False)
+            opened = False
+            for _ in range(20):
+                if any(PICKER_ROW.match(l) for l in detection().splitlines()):
+                    opened = True
+                    break
+                time.sleep(0.5)
+            checks["picker_open"] = opened
         pane = self.run.coords["main"]["pane"]
         sends, mids = [], []
         try:
             if opened:
+                proof = getattr(self, "queue_evidence", None)
+                if proof is not None:
+                    proof.publication()
                 for n in range(2):
                     out, err = self.run.ht_err("send", self.group, "--body", f"{tag} #{n}", "--nudge", pane=pane,
                                                human=True)
@@ -2731,8 +2879,12 @@ class Recipient:
                 self.run.stopping.wait(WAKE_BLOCK_HOLD_S)
                 checks["wakes_while_open"] = wake_count(self.screen(1000)) - wakes_before
                 checks["doctor_wake_open"] = self.doctor_wake()
-        finally:  # never leave the picker open for a later case
-            self.run.herdr("agent", "send-keys", self.pane, "esc", check=False)
+                if draft:
+                    checks["draft_intact"] = any(l == "› " + SIDE_DRAFT for l in detection().splitlines())
+                if proof is not None:
+                    proof.hold_ended()
+        finally:  # only clear the UI this case opened
+            self.run.herdr("agent", "send-keys", self.pane, "ctrl+u" if draft else "esc", check=False)
         checks["send_warnings"] = sends
         t0, t_wake = time.time(), None
         while opened and time.time() - t0 < WAKE_BLOCK_WAIT_S:  # the wake is a typed wake line
@@ -2747,7 +2899,8 @@ class Recipient:
         checks["delivered"] = bool(mids) and all(self.on_screen(m) for m in mids if m)
         checks["footer_after"] = footer()
         passed = (opened and checks["wakes_while_open"] == 0 and sends == [[], []] and woke
-                  and checks["delivered"] and checks["footer_after"] == checks["footer_before"])
+                  and checks["delivered"] and checks["footer_after"] == checks["footer_before"]
+                  and (not draft or checks.get("draft_intact") is True))
         self.settled()
         self.run.record({"case": case, "harness": self.harness, "threshold": self.threshold, "recipient": self.name,
                          "expect_wake": True, "woke": woke, "t_wake_s": t_wake, "checks": checks,
@@ -2796,6 +2949,9 @@ class Recipient:
         wakes_before = wake_count(self.screen(1000))
         pane = self.run.coords["main"]["pane"]
         def send(*flags):
+            proof = getattr(self, "queue_evidence", None)
+            if proof is not None:
+                proof.publication()
             out, _ = self.run.ht_err("send", self.group, "--body", f"{tag} {flags}", *flags, pane=pane, human=True)
             return (json.loads(out).get("result") or {}).get("data")
         silent = send()
@@ -2929,7 +3085,7 @@ class Recipient:
         action, channel = case.split("/")
         if action == "mixed-order":
             return self.mixed_order_case(case)
-        expect = expect_wake(action, channel, self.threshold)
+        expect = True if action == "native-fallback" else expect_wake(action, channel, self.threshold)
         gap = SPACING_S - (time.time() - self.last_wake)
         if gap > 0:
             self.run.stopping.wait(gap)  # spacing ends early when cleanup begins
@@ -2950,7 +3106,7 @@ class Recipient:
             ref = {"message": self.send("p1", f"pair-open {self.run.run_id}", direct=True)}
             self.pair = "pending"
         else:
-            ref = {"message": self.send(action.split("-")[1], body, direct=channel == "1:1")}
+            ref = {"message": self.send("p0" if action == "native-fallback" else action.split("-")[1], body, direct=channel == "1:1")}
         t_wake = self.watch_for_wake(WAKE_WINDOW_S)
         woke = t_wake is not None
         hello = False
@@ -3205,12 +3361,20 @@ class Recipient:
                 try:
                     if case.split("/")[0] not in ("invite", "pair-open"):
                         self.ensure_channel(case.split("/")[1])
-                    self.case(case)
+                    if getattr(getattr(self.run, "args", None), "queue_proof", False) and self.harness == "codex":
+                        proof = QueueCaseEvidence(self, case)
+                        self.queue_evidence = proof
+                        with proof:
+                            self.case(case)
+                    else:
+                        self.case(case)
                 except Stopped:
                     break
                 except Exception as e:  # a driver or agent error fails the case, never passes it
                     self.run.record({"case": case, "harness": self.harness, "threshold": self.threshold,
                                      "recipient": self.name, "result": "FAIL", "checks": {"error": clip(e, 400, getattr(self.run, "secrets", None))}})
+                finally:
+                    self.queue_evidence = None
         except Stopped:
             pass
         except Exception as e:
@@ -3385,6 +3549,15 @@ class TmuxRecipient(Recipient):
 
 
 def record(self, row):
+    for recipient in getattr(self, "recipients", ()):
+        proof = getattr(recipient, "queue_evidence", None)
+        if recipient.name == row.get("recipient") and proof is not None:
+            evidence = proof.finish(row)
+            row["queue_evidence"] = evidence
+            row.setdefault("checks", {})["queue_transport_ok"] = evidence["passed"]
+            if not evidence["passed"]:
+                row["result"] = "FAIL"
+            break
     row = json.loads(redact(json.dumps(row), getattr(self, "secrets", ())))  # error tails may quote a screen
     with self.lock:
         self.results.append(row)
@@ -3400,6 +3573,8 @@ def applies(recipient, case):
     """Side cases run on Codex recipients only; the plain-hooks Codex runs nothing else. Hooks cases run only on the
     hooks-only Claude, which runs nothing else. End-of-turn and busy-tool cases run on hooked Codex recipients
     (Claude's mod delivers at every tool already); Claude cases on the mod Claude recipients."""
+    if case in QUEUE_NATIVE_CASES:
+        return recipient.harness == "codex" and getattr(recipient, "plain", False)
     if getattr(recipient, "tmux", False) or case in TMUX_CASES:
         return getattr(recipient, "tmux", False) and case in TMUX_CASES
     if case in SIDE_CASES:
@@ -3444,10 +3619,17 @@ def summary(run, cases):
         lines.append(f"missing rows: {missing}")
     if extra:
         lines.append(f"unexpected or duplicated rows: {extra}")
+    queue_rows = [r.get("queue_evidence") for r in rows if r.get("queue_evidence")]
+    positive_queue = [q for q in queue_rows if q.get("expectation") == "accepted"]
+    queue_lifecycle_ok = not positive_queue or any(
+        q.get("passed") and q.get("logical_fulfillment_observed") and q.get("cleanup_list_attempted_observed")
+        for q in positive_queue)
+    if positive_queue:
+        lines.append(f"queue logical fulfillment + bounded cancellation observed: {queue_lifecycle_ok}")
     run.table = "\n".join(lines)
     run.completeness = {"expected": len(expected), "collected": len(rows), "missing": missing, "extra": extra}
     print("\n" + run.table, flush=True)
-    return bool(expected) and not missing and not extra and passed == len(rows)
+    return bool(expected) and not missing and not extra and passed == len(rows) and queue_lifecycle_ok
 
 
 def codex_hook_guidance(run):
@@ -3519,11 +3701,13 @@ def main(argv=None):
                                                                            OPENCODE_CREDENTIAL_ENV))
     ap.add_argument("--cases", default=",".join(CASES), help="comma-separated subset of: " + ", ".join(CASES)
                     + "; opt-in, Codex only: " + ", ".join(SIDE_CASES + EOT_CASES + WAKE_BLOCK_CASES + UNRECEIVED_CASES
-                                                      + RESUME_CASES)
+                                                      + RESUME_CASES + QUEUE_NATIVE_CASES)
                     + "; opt-in, hooks-only Claude: " + ", ".join(HOOKS_CASES)
                     + "; opt-in, mod Claude at T=0: " + ", ".join(PROMPT_RACE_CASES)
                     + "; opt-in, a named seat in a private tmux server (claude): " + ", ".join(TMUX_CASES))
     ap.add_argument("--evidence-dir", help="default: sibling ht-wake-evidence.<run id>")
+    ap.add_argument("--queue-proof", action="store_true",
+                    help="Codex qualification: require canonical Accepted queue evidence for eligible idle wakes")
     ap.add_argument("--keep", action="store_true", help="leave the workspace and daemon running for inspection")
     ap.add_argument("--claude-model", help="passed as --model (default: the account default)")
     ap.add_argument("--claude-permission-mode", default="auto")
@@ -3559,10 +3743,12 @@ def main(argv=None):
             print(f"wake-e2e: {CONTAINER_MARKER}=1 but {DOCKERENV} is missing (not Docker?): Codex keeps its sandbox "
                   "(--approve-for-me); pass --codex-args to choose explicitly", file=sys.stderr)
     args.harness = [h for h in args.harness.split(",") if h]
+    if args.queue_proof and "codex" not in args.harness:
+        ap.error("--queue-proof requires Codex recipients")
     cases = [c for c in args.cases.split(",") if c]
     unknown = ([c for c in cases
                 if c not in CASES + SIDE_CASES + HOOKS_CASES + EOT_CASES + WAKE_BLOCK_CASES + UNRECEIVED_CASES
-                                 + RESUME_CASES + TMUX_CASES + PROMPT_RACE_CASES]
+                                 + RESUME_CASES + TMUX_CASES + PROMPT_RACE_CASES + QUEUE_NATIVE_CASES]
                + [h for h in args.harness if h not in HARNESSES])
     if unknown:
         ap.error(f"unknown case/harness: {unknown}")
@@ -3579,6 +3765,7 @@ def main(argv=None):
     saved = {sig: signal.getsignal(sig) for sig in (signal.SIGINT, signal.SIGTERM)}
     signal.signal(signal.SIGTERM, terminate)  # SIGTERM takes the same cleanup path as Ctrl-C
     run.side_cases = any(c in SIDE_CASES for c in cases)
+    run.native_queue_case = any(c in QUEUE_NATIVE_CASES for c in cases)
     run.hooks_cases = any(c in HOOKS_CASES for c in cases)
     run.prompt_race_cases = any(c in PROMPT_RACE_CASES for c in cases)
     run.tmux_cases = any(c in TMUX_CASES for c in cases)
@@ -3648,6 +3835,7 @@ def self_test():
     import unittest
     sys.path.insert(0, str(SELF_TEST.parent))
     suite = unittest.defaultTestLoader.loadTestsFromName(SELF_TEST.stem)
+    suite.addTests(unittest.defaultTestLoader.loadTestsFromName("wake_e2e_queue_selftest"))
     return EXIT_OK if unittest.TextTestRunner(verbosity=2).run(suite).wasSuccessful() else EXIT_FAIL
 
 

@@ -1,0 +1,72 @@
+{
+  "schema": 1,
+  "task": "ht-d2jq.6",
+  "production_base": "96064953dcaa27d726334fc16fffc7c3a505af39",
+  "mapping_approval": "mnSGXFkHISI8",
+  "review_requirement": "mnSGfJeu1Qf9",
+  "scope": "opt-in proof support in existing launcher, no production changes",
+  "self_test": {
+    "command": "python3 scripts/wake-e2e.py --self-test",
+    "passed": 265,
+    "failed": 0,
+    "seconds": 102.773,
+    "live_agents_started": false
+  },
+  "regressions": [
+    {
+      "case": "opt-in controls and bounded sampler configuration",
+      "red_failed": 3,
+      "green_passed": 3
+    },
+    {
+      "case": "lifecycle attribution belongs only to proved Accepted attempt",
+      "red_failed": 1,
+      "green_passed": 1
+    },
+    {
+      "case": "failed cases retain canonical preconditions and joined sampler",
+      "red_failed": 1,
+      "green_passed": 1
+    },
+    {
+      "case": "queue-proof requires Codex before quota",
+      "red_failed": 1,
+      "green_passed": 1
+    }
+  ],
+  "checks": {
+    "python39_syntax": {
+      "files": 4,
+      "exit": 0
+    },
+    "diff": {
+      "exit": 0
+    }
+  },
+  "bounds": {
+    "open_bindings": 64,
+    "intents": 32,
+    "ids_per_intent": 128,
+    "snapshot_bytes": 65536,
+    "distinct_samples": 128,
+    "sample_bytes_per_case": 524288,
+    "sample_period_ms": 100
+  },
+  "matrix": {
+    "total": 72,
+    "co-t0": 25,
+    "co-t-1": 22,
+    "co-t3": 22,
+    "co-plain": 3
+  },
+  "transport_standard": "ordinary positive Accepted only; no-native-typing and fallback are explicitly compositional inference, not host-call traces",
+  "full_suite_timing_gate_satisfied": false,
+  "routine_production_model_visible_bytes_added": 0,
+  "source_sha256": {
+    "scripts/wake-e2e.py": "2df8b34254571ec021aadaa8d7183a062c3f4542aa148e2a36f9a151db224275",
+    "scripts/wake_e2e_selftest.py": "9d352d959a89f49bcb4a9fbff6dcce09805a87b64c1798160d196cb72ec6e903",
+    "scripts/wake_e2e_queue.py": "32c854fa28fd60b5468f7c931772a44b4b2d8eae9cde4849f06d8cd14bc4cfad",
+    "scripts/wake_e2e_queue_selftest.py": "421f5fb880c1d387bd515b39e35d5479f66740680647d615cfc8db7431ee8393"
+  },
+  "report_sha256": "a0c13b0877fea3be531814d051bea24a451bed2e3b5544a4cac235743b1268a9"
+}

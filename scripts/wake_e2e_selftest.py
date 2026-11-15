@@ -3353,3 +3353,134 @@ class CodexHookGuidance(TempDir):
         self.assertIsNone(W.codex_hook_guidance(run))
         self.assertIsNone(W.codex_hook_guidance(SimpleNamespace(codex_home=self.tmp / "none",
                                                                 recipients=[SimpleNamespace(harness="codex")])))
+
+
+class QueueQualificationOptions(unittest.TestCase):
+    def test_queue_hold_and_native_controls_are_opt_in_only(self):
+        self.assertIn("draft-hold/group", getattr(W, "WAKE_BLOCK_CASES", ()))
+        self.assertIn("native-fallback/group", getattr(W, "QUEUE_NATIVE_CASES", ()))
+        self.assertNotIn("draft-hold/group", W.CASES)
+        self.assertNotIn("native-fallback/group", W.CASES)
+
+    def test_native_control_runs_only_on_plain_codex(self):
+        for plain in (False, True):
+            r = SimpleNamespace(harness="codex", threshold=0, plain=plain)
+            self.assertEqual(W.applies(r, "native-fallback/group"), plain)
+
+    def test_queue_sampler_declares_bounded_evidence(self):
+        self.assertEqual(getattr(W, "QUEUE_SAMPLE_LIMIT", None), 128)
+        self.assertEqual(getattr(W, "QUEUE_EVIDENCE_BYTES", None), 512 * 1024)
+
+
+class QueueSamplerLifetime(TempDir):
+    def snapshot(self, after=0):
+        return {"ok": True, "truncated": False, "census_complete": True, "seat": "seat", "after": after,
+                "watermark": self.watermark, "bindings": [], "native": [], "intents": [], "wake_work": None}
+
+    def recipient(self):
+        self.watermark, self.read_after = 10, []
+        def read(state, seat, after=0):
+            self.read_after.append(after)
+            return self.snapshot(after)
+        patcher = mock.patch("wake_e2e_queue.queue_snapshot", side_effect=read)
+        patcher.start()
+        self.addCleanup(patcher.stop)
+        return SimpleNamespace(run=SimpleNamespace(state=self.tmp), seat="seat", name="co-t0")
+
+    def test_publication_freezes_watermark_and_finish_joins_sampler(self):
+        recipient = self.recipient()
+        with W.QueueCaseEvidence(recipient, "send-p1/group") as proof:
+            self.watermark = 20
+            proof.publication()
+            self.watermark = 30  # unrelated recipients publish later; never advance this case's cursor
+            proof.publication()
+            result = proof.finish({"expect_wake": False})
+            self.assertTrue(result["passed"], result)
+            self.assertEqual(proof.after, 20)
+            self.assertEqual(set(a for a in self.read_after if a), {20})
+            self.assertFalse(proof.worker.is_alive())
+        self.assertFalse(proof.worker.is_alive())
+
+    def test_evidence_overflow_fails_without_unbounded_growth(self):
+        recipient = self.recipient()
+        with mock.patch.object(W, "QUEUE_SAMPLE_LIMIT", 2):
+            with W.QueueCaseEvidence(recipient, "send-p1/group") as proof:
+                proof.publication()
+                with proof.lock:
+                    for mark in range(11, 15):
+                        self.watermark = mark
+                        proof._capture()
+                result = proof.finish({"expect_wake": False})
+                self.assertFalse(result["passed"])
+                self.assertIn("canonical evidence bound exceeded", result["reasons"])
+                self.assertEqual(len(proof.samples), 2)
+                self.assertLessEqual(proof.bytes, W.QUEUE_EVIDENCE_BYTES)
+
+    def test_case_exception_stops_the_sampler(self):
+        recipient = self.recipient()
+        with self.assertRaisesRegex(RuntimeError, "case failed"):
+            with W.QueueCaseEvidence(recipient, "send-p1/group") as proof:
+                raise RuntimeError("case failed")
+        self.assertFalse(proof.worker.is_alive())
+
+
+class QueueLifecycleCorrelation(TempDir):
+    snapshot = QueueSamplerLifetime.snapshot
+    recipient = QueueSamplerLifetime.recipient
+
+    def test_lifecycle_evidence_belongs_to_the_proved_accepted_attempt(self):
+        recipient = self.recipient()
+        original_read = self.snapshot
+        def snapshot(after=0):
+            value = original_read(after)
+            value["intents"] = [
+                {"attempt": "other", "phase": "no_effect", "logical_status": "fulfilled", "cleanup_list_attempted": True},
+                {"attempt": "proved", "phase": "accepted", "logical_status": "active", "cleanup_list_attempted": False}]
+            return value
+        self.snapshot = snapshot
+        judged = {"passed": True, "reasons": [], "attempts": [{"attempt": "proved"}]}
+        with mock.patch("wake_e2e_queue.queue_proof", return_value=judged):
+            with W.QueueCaseEvidence(recipient, "send-p0/group") as proof:
+                proof.publication()
+                result = proof.finish({"expect_wake": True})
+        self.assertFalse(result["logical_fulfillment_observed"])
+        self.assertFalse(result["cleanup_list_attempted_observed"])
+
+
+class QueueFailureEvidence(TempDir):
+    snapshot = QueueSamplerLifetime.snapshot
+    recipient = QueueSamplerLifetime.recipient
+
+    def test_case_failure_keeps_bounded_before_evidence_and_stops_sampler(self):
+        self.recipient()  # install the isolated snapshot reader
+        run = SimpleNamespace(state=self.tmp, ev=self.tmp, run_id="test", args=SimpleNamespace(queue_proof=True),
+                              stopping=threading.Event(), lock=threading.Lock(), results=[], secrets=())
+        run.record = lambda row: W.record(run, row)
+        r = W.Recipient(run, "co-t0", "codex", 0, "pane", "seat")
+        run.recipients = [r]
+        r.start = lambda: None
+        r.ensure_channel = lambda channel: None
+        r.screen, r.save_calls = lambda *args: "", lambda: None
+        def fail(case):
+            raise RuntimeError("injected case failure")
+        r.case = fail
+        W.Recipient.run_cases(r, ["send-p1/group"])
+        self.assertEqual(len(run.results), 1)
+        self.assertEqual(run.results[0]["result"], "FAIL")
+        evidence = run.results[0].get("queue_evidence")
+        self.assertIsNotNone(evidence)
+        self.assertEqual(evidence["before"]["seat"], "seat")
+        self.assertFalse(evidence["passed"])
+        self.assertIsNone(r.queue_evidence)
+
+
+class QueueQualificationParsing(unittest.TestCase):
+    def test_opt_in_parses_hold_and_native_controls_without_starting_a_run(self):
+        args = parsed_args(["--queue-proof", "--harness", "codex", "--cases", "draft-hold/group,native-fallback/group"])
+        self.assertTrue(args.queue_proof)
+        self.assertEqual(args.harness, ["codex"])
+
+    def test_queue_proof_requires_codex_before_any_agent_can_start(self):
+        with self.assertRaises(SystemExit) as refused:
+            parsed_args(["--queue-proof", "--harness", "claude"])
+        self.assertEqual(refused.exception.code, 2)
