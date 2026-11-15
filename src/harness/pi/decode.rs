@@ -19,15 +19,22 @@ const MAX_CONTEXT: usize = 4096;
 pub enum PiEvent {
     SessionStart,
     TurnStart,
+    TurnEnd,
     SessionEnd,
 }
 
 impl PiEvent {
-    pub const ALL: [Self; 3] = [Self::SessionStart, Self::TurnStart, Self::SessionEnd];
+    pub const ALL: [Self; 4] = [
+        Self::SessionStart,
+        Self::TurnStart,
+        Self::TurnEnd,
+        Self::SessionEnd,
+    ];
     pub fn as_str(self) -> &'static str {
         match self {
             Self::SessionStart => "SessionStart",
             Self::TurnStart => "TurnStart",
+            Self::TurnEnd => "TurnEnd",
             Self::SessionEnd => "SessionEnd",
         }
     }
@@ -92,6 +99,14 @@ pub(super) fn decode(_: &PiAdmission, input: &HookInput) -> Result<DecodedEvent,
         }
         // A turn start checks in like a tool boundary (Current mode).
         PiEvent::TurnStart => (EventIntent::Current, event.as_str().to_owned(), false),
+        PiEvent::TurnEnd => {
+            if payload["idle"] != true
+                || !matches!(payload["source"].as_str(), Some("startup" | "settled"))
+            {
+                return Err(invalid("TurnEnd requires a current explicit idle witness"));
+            }
+            (EventIntent::Observer, event.as_str().to_owned(), false)
+        }
         PiEvent::SessionEnd => (EventIntent::Observer, event.as_str().to_owned(), false),
     };
     Ok(DecodedEvent {
@@ -114,7 +129,11 @@ pub(super) fn decode(_: &PiAdmission, input: &HookInput) -> Result<DecodedEvent,
             agent_id: None,
             enrollment_witness: None,
         },
-        delivery: DeliveryEligibility::Context,
+        delivery: if event == PiEvent::TurnEnd {
+            DeliveryEligibility::ObserverOnly
+        } else {
+            DeliveryEligibility::Context
+        },
         runtime: RuntimeAttribution::Unavailable {
             diagnostic: "pi payload carries no runtime version".into(),
         },
@@ -134,7 +153,11 @@ pub(super) fn encode(
     event: &DecodedEvent,
     offer: &NeutralOffer,
 ) -> Result<EncodedOutput, EncodeFailure> {
-    let text = &offer.fixed_guidance;
+    let text = if event.metadata.native_event == "TurnEnd" {
+        ""
+    } else {
+        &offer.fixed_guidance
+    };
     if text.len() > MAX_CONTEXT {
         return Err(EncodeFailure::Invalid("context exceeds budget".into()));
     }

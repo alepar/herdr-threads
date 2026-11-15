@@ -1,0 +1,40 @@
+
+ Warning: fd not found. Offline mode enabled, skipping download.
+ Warning: ripgrep not found. Offline mode enabled, skipping download.
+
+
+ probe baseline
+
+
+ PROBE COMPLETED
+
+
+
+
+
+
+
+
+
+
+───────────────────────────────────────────────────────────────────────────────────────────────────────────────────────
+>
+
+→ Auto-compact                      true
+  Show images                       true
+  Image width                       60
+  Auto-resize images                true
+  Block images                      false
+  Skill commands                    false
+  Show hardware cursor              false
+  Editor padding                    0
+  Output padding                    1
+  Autocomplete max items            5
+  (1/35)
+
+  Automatically compact context when it gets too large
+
+  Type to search · Enter/Space to change · Esc to cancel
+───────────────────────────────────────────────────────────────────────────────────────────────────────────────────────
+/fixture/project
+2.0%/100k (auto)                                                                                               scripted

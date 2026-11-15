@@ -1,4 +1,4 @@
-//! Channel-only delivery and wake; the native extension observes context and current branch.
+//! Channel delivery with guarded host wake; receipts require context and current branch.
 use crate::harness::adapter::{DeliveryMechanism, DeliveryPolicy, IdleWake};
 use crate::protocol::authority::COOPERATIVE_MOD_DELIVERY_PROVENANCE;
 
@@ -12,9 +12,9 @@ impl DeliveryPolicy for PiDelivery {
         COOPERATIVE_MOD_DELIVERY_PROVENANCE
     }
     fn idle_wake(&self) -> IdleWake {
-        IdleWake::Channel
+        IdleWake::Native
     }
-    /// The plugin's wake prompt is content-free: the append before it carries the items.
+    /// The native prompt is content-free; the extension supplies mail at the turn boundary.
     fn wake_text(&self) -> &'static str {
         crate::notification::policy::WAKE_UP
     }

@@ -30,7 +30,7 @@ test('real SDK persists native drafts and continues only completed runs', async 
     // No bind/session_start: loader qualification must not execute a real ht CLI.
   })
 
-  for (const mode of ['turn', 'settle', 'error', 'aborted', 'cancel-at-settle', 'transformed', 'transformed-p0', 'self-wake', 'reload', 'reload-urgent-unobserved']) await t.test(mode, async () => {
+  for (const mode of ['turn', 'settle', 'error', 'aborted', 'cancel-at-settle', 'transformed', 'transformed-p0', 'native-wake', 'reload', 'reload-urgent-unobserved']) await t.test(mode, async () => {
     let session, watch, calls = 0, starts = 0, injected = false, nonce = 0, stopped = 0, reloaded = false
     const commands = [], providerContexts = [], errors = []
     const privateRoot = path.join(root, mode); fs.mkdirSync(privateRoot, { recursive: true })
@@ -82,16 +82,11 @@ test('real SDK persists native drafts and continues only completed runs', async 
         })
         return stream
       }
-      if (mode === 'self-wake') {
-        let timer
-        const settled = new Promise((resolve, reject) => {
-          session.subscribe(event => { if (event.type === 'agent_settled') { clearTimeout(timer); resolve() } })
-          timer = setTimeout(() => reject(new Error('self-wake did not settle')), 3000)
-        })
+      if (mode === 'native-wake') {
         send(true)
-        await settled
+        await session.prompt('herdr-threads: wake up')
       } else await session.prompt('isolated boundary test')
-      const successful = ['turn', 'settle', 'self-wake', 'reload'].includes(mode)
+      const successful = ['turn', 'settle', 'native-wake', 'reload'].includes(mode)
       assert.equal(calls, ['turn', 'settle', 'transformed', 'transformed-p0', 'reload'].includes(mode) ? 2 : 1)
       assert.equal(starts, 1, 'native continuation stays within original outer run')
       const acks = commands.filter(argv => argv.includes('ack'))
@@ -102,7 +97,7 @@ test('real SDK persists native drafts and continues only completed runs', async 
         assert.ok(received.indexOf('exact first') < received.indexOf('exact second'))
         assert.ok(received.indexOf('exact second') < received.indexOf('exact third'))
       }
-      assert.deepEqual(errors, ['transformed-p0', 'reload-urgent-unobserved'].includes(mode) ? ['herdr-threads: pi delivery deferred'] : [])
+      assert.deepEqual(errors, [])
       if (mode === 'reload') {
         await session.reload()
         assert.equal(stopped, 1, 'native reload closes its predecessor watch')
@@ -116,13 +111,8 @@ test('real SDK persists native drafts and continues only completed runs', async 
         assert.equal(storedFrames().length, 1, 'cancellation stored a frame without another model request')
         reloaded = true; await session.reload()
         assert.equal(stopped, 1); assert.equal(commands.filter(argv => argv.includes('ack')).length, 0)
-        let timer
-        const settled = new Promise((resolve, reject) => {
-          session.subscribe(event => { if (event.type === 'agent_settled') { clearTimeout(timer); resolve() } })
-          timer = setTimeout(() => reject(new Error('replayed urgent frame did not wake the reloaded owner')), 3000)
-        })
         send(true); send(true)
-        await settled
+        await session.prompt('herdr-threads: wake up')
         assert.equal(calls, 2); assert.equal(starts, 2, 'canonical replay starts exactly one successor run')
         assert.equal(storedFrames().length, 1, 'recovery does not duplicate native body drafts')
         const after = commands.filter(argv => argv.includes('ack'))

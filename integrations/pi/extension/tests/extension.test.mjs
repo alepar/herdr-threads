@@ -31,7 +31,7 @@ function harness(options = {}) {
   const ctx = {
     mode: options.mode ?? 'tui', cwd: '/isolated/project',
     sessionManager: { getSessionId: () => sid, getBranch: () => branch },
-    isIdle: () => idle, ui: { getEditorText: () => draft },
+    isIdle: () => idle, ui: { getEditorText: () => draft, notify: text => diagnostics.push(text) },
   }
   register(pi, io)
   const emit = async (name, event = {}) => callbacks.get(name)?.({ type: name, ...event }, ctx)
@@ -98,17 +98,78 @@ test('only completed active boundaries append mail and preserve foreign entries/
   await h.context(); await h.flush(); assert.equal(h.ackCalls().length, 1)
 })
 
-test('passive idle is silent; admitted wake is content-free, draft/UI guarded and single flight', async () => {
+test('watch delivery never starts a native run; the host owns idle wake', async () => {
   const h = harness(); await h.start(); h.message('passive'); assert.equal(h.wakes.length, 0)
   h.setDraft('human draft'); h.message('urgent', 0, { wakes: true }); assert.equal(h.wakes.length, 0)
   h.setDraft(''); await h.emit('ui_prompt_start'); await h.emit('agent_settled'); assert.equal(h.wakes.length, 0)
-  await h.emit('ui_prompt_end'); assert.equal(h.wakes.length, 1)
-  assert.deepEqual(h.wakes[0][0].content, 'herdr-threads: wake up')
-  assert.deepEqual(h.wakes[0][1], { triggerTurn: true })
-  h.message('urgent2', 0, { wakes: true }); assert.equal(h.wakes.length, 1)
-  await h.tick(30000); assert.equal(h.wakes.length, 1)
-  assert.match(h.diagnostics.join('\n'), /wake unreceived/)
-  await h.emit('agent_settled'); assert.equal(h.wakes.length, 2)
+  await h.emit('ui_prompt_end'); assert.equal(h.wakes.length, 0)
+  h.message('urgent2', 0, { wakes: true }); assert.equal(h.wakes.length, 0)
+  await h.tick(30000); await h.emit('agent_settled'); assert.equal(h.wakes.length, 0)
+  const offered = await h.emit('before_agent_start', { messageType: 'user', prompt: 'herdr-threads: wake up' })
+  assert.match(offered.message.content, /body urgent/)
+})
+
+test('TUI diagnostics use native notifications instead of corrupting the composer with stderr', async () => {
+  const h = harness(), notifications = []
+  h.ctx.ui.notify = (...args) => notifications.push(args)
+  await h.start(); h.watches[0].exit(2)
+  assert.deepEqual(notifications, [['herdr-threads: pi watch unavailable', 'warning']])
+  assert.equal(h.diagnostics.length, 0)
+  await h.emit('session_shutdown')
+})
+
+test('missing or throwing TUI notification does not fall back to unsafe terminal writes', async () => {
+  for (const notify of [undefined, () => { throw new Error('UI unavailable') }]) {
+    const h = harness(); h.ctx.ui.notify = notify
+    await h.start(); h.watches[0].exit(2)
+    assert.equal(h.diagnostics.length, 0)
+    await h.emit('session_shutdown')
+  }
+})
+
+test('named wake edges use explicit startup idle and actual settlement, with no inferred idle', async () => {
+  const h = harness(); await h.start()
+  const edges = () => h.calls.filter(c => c.argv.includes('TurnEnd')).map(c => JSON.parse(c.stdin))
+  assert.equal(edges().length, 1); assert.equal(edges()[0].source, 'startup'); assert.equal(edges()[0].idle, true)
+  h.setIdle(false); await h.emit('before_agent_start', { messageType: 'user' })
+  await h.emit('turn_end', { outcome: 'completed', entries: [], continue: false, context: {} })
+  await h.emit('agent_end'); assert.equal(edges().length, 1)
+  await h.emit('agent_settled'); assert.equal(edges().length, 1, 'busy is not an idle witness')
+  h.setIdle(true); await h.emit('agent_settled'); assert.equal(edges().length, 2)
+  assert.equal(edges()[1].source, 'settled'); assert.equal(edges()[1].idle, true)
+  const unknown = harness(); delete unknown.ctx.isIdle; await unknown.start()
+  assert.equal(unknown.calls.filter(c => c.argv.includes('TurnEnd')).length, 0)
+  await h.emit('session_shutdown'); await unknown.emit('session_shutdown')
+})
+
+test('queued idle is owner fenced and cannot overtake the next busy call', async () => {
+  let finishIdle, block = false
+  const h = harness({ run: async argv => {
+    if (argv.includes('TurnEnd') && block) await new Promise(resolve => { finishIdle = resolve })
+    return { code: 0, stdout: argv.at(-1) === 'SessionStart' ? 'guidance' : '' }
+  } })
+  await h.start(); block = true
+  const settled = h.emit('agent_settled'); await h.flush()
+  assert.ok(finishIdle)
+  h.setIdle(false); const starting = h.emit('before_agent_start', { messageType: 'user' }); await h.flush()
+  assert.equal(h.calls.filter(c => c.argv.includes('TurnStart')).length, 0)
+  finishIdle(); await settled; await starting
+  assert.equal(h.calls.at(-1).argv.at(-1), 'TurnStart')
+  await h.emit('session_shutdown')
+})
+
+test('shutdown fences an idle report still queued behind the previous owner busy call', async () => {
+  let finishBusy
+  const h = harness({ run: async argv => {
+    if (argv.includes('TurnStart')) await new Promise(resolve => { finishBusy = resolve })
+    return { code: 0, stdout: '' }
+  } })
+  await h.start(); h.setIdle(false)
+  const starting = h.emit('before_agent_start'); await h.flush()
+  h.setIdle(true); const settled = h.emit('agent_settled'); const closing = h.emit('session_shutdown')
+  finishBusy(); await Promise.all([starting, settled, closing])
+  assert.equal(h.calls.filter(c => c.argv.includes('TurnEnd')).length, 1, 'only admitted startup supplied Idle')
+  assert.equal(h.calls.at(-1).argv.at(-1), 'SessionEnd')
 })
 
 test('overflow keeps urgent mail and repays every overflow via replacement after ACK release', async () => {
@@ -173,17 +234,17 @@ test('concurrent duplicate starts cannot acquire two process owners', async () =
   const registry = {}, a = harness({ registry }), b = harness({ registry })
   await Promise.all([a.start(), b.start()])
   assert.equal(a.watches.length + b.watches.length, 1)
-  assert.equal(a.calls.length + b.calls.length, 1)
+  assert.equal([...a.calls, ...b.calls].filter(c => c.argv.includes('SessionStart')).length, 1)
 })
 
-test('context consumption clears wake intent even when ACK fails, and settled replay stays silent', async () => {
+test('context delivery retries failed ACK without starting runs on settlement or replay', async () => {
   const h = harness({ run: async argv => ({ code: argv.includes('ack') ? 1 : 0, stdout: '' }) })
-  await h.start(); h.message('m', 0, { wakes: true }); assert.equal(h.wakes.length, 1)
+  await h.start(); h.message('m', 0, { wakes: true }); assert.equal(h.wakes.length, 0)
   const r = await h.emit('before_agent_start'); h.store(r); await h.context(); await h.flush()
-  await h.emit('agent_settled'); assert.equal(h.wakes.length, 1)
+  await h.emit('agent_settled'); assert.equal(h.wakes.length, 0)
   const done = harness(); await done.start(); done.message('m', 0, { wakes: true })
   const first = await done.emit('before_agent_start'); done.store(first); await done.context(); await done.flush(); await done.emit('agent_settled')
-  done.message('m', 0, { wakes: true }); assert.equal(done.wakes.length, 1)
+  done.message('m', 0, { wakes: true }); assert.equal(done.wakes.length, 0)
 })
 
 test('branch changes fence an in-flight ACK result even after new context evidence', async () => {
@@ -252,10 +313,10 @@ test('foreign-session callbacks cannot consume or shut down the successor owner'
   h.message('m'); assert.ok((await h.emit('before_agent_start'))?.message)
 })
 
-test('missing editor API disables only wake; manual compaction prevents boundary continuation', async () => {
+test('boundary delivery needs no editor API; manual compaction prevents continuation', async () => {
   const h = harness(); await h.start(); delete h.ctx.ui.getEditorText
   h.message('m', 0, { wakes: true }); assert.equal(h.wakes.length, 0)
-  assert.match(h.diagnostics.join('\n'), /wake API unavailable/)
+  assert.equal(h.diagnostics.length, 0)
   h.setIdle(false); await h.emit('agent_start'); await h.emit('session_before_compact', { reason: 'manual' })
   assert.equal(await h.emit('turn_end', { outcome: 'completed', entries: [], continue: false, context: {} }), undefined)
   await h.emit('session_compact')
@@ -328,7 +389,7 @@ test('rejected urgent drafts and aborted runs cannot restart themselves at settl
   h.store({ entries: r.entries.map(e => ({ ...e, content: 'rejected urgent frame' })) }); await h.context()
   h.setIdle(true); await h.emit('agent_settled', { aborted: false }); assert.equal(h.wakes.length, 0)
   h.message('m', 0, { wakes: true }); assert.equal(h.wakes.length, 0)
-  h.message('new-attention', 0, { wakes: true }); assert.equal(h.wakes.length, 1)
+  h.message('new-attention', 0, { wakes: true }); assert.equal(h.wakes.length, 0)
   const aborted = harness(); await aborted.start(); aborted.setIdle(false); await aborted.emit('agent_start'); aborted.message('m', 0, { wakes: true })
   await aborted.emit('agent_before_settle', { outcome: 'error', entries: [], continue: false, context: {} })
   aborted.setIdle(true); await aborted.emit('agent_settled', { aborted: false }); assert.equal(aborted.wakes.length, 0)
@@ -378,9 +439,10 @@ test('late lifecycle guidance cannot overwrite a newer branch revision', async (
     const event = JSON.parse(request.stdin || '{}')
     return ['tree', 'compact'].includes(event.source) ? new Promise(resolve => waiting.set(event.source, resolve)) : { code: 0, stdout: '' }
   } })
-  await h.start(); const tree = h.emit('session_tree'), compact = h.emit('session_compact')
+  await h.start(); const tree = h.emit('session_tree'), compact = h.emit('session_compact'); await h.flush()
+  assert.equal(waiting.has('compact'), false, 'lifecycle children are serialized')
+  waiting.get('tree')({ code: 0, stdout: 'stale tree guidance' }); await tree; await h.flush()
   waiting.get('compact')({ code: 0, stdout: 'new compact guidance' }); await compact
-  waiting.get('tree')({ code: 0, stdout: 'stale tree guidance' }); await tree
   const r = await h.emit('before_agent_start')
   assert.match(r.message.content, /new compact guidance/); assert.doesNotMatch(r.message.content, /stale tree/)
 })
@@ -393,41 +455,6 @@ test('failed compact admission retries its own source on the next native run', a
   } })
   await h.start(); await h.emit('session_compact'); await h.emit('before_agent_start')
   assert.equal(compacts, 2)
-})
-
-test('alternating unchanged urgent keys cannot release rejected or error attention', async () => {
-  for (const outcome of ['completed', 'error', 'aborted']) {
-    const h = harness(); await h.start(); h.setIdle(false)
-    await h.emit('before_agent_start', { messageType: 'user' })
-    h.message('urgent-a', 0, { wakes: true }); h.message('urgent-b', 0, { wakes: true })
-    const r = await h.emit('turn_end', { outcome, entries: [], continue: false, context: {} })
-    if (outcome === 'completed') {
-      h.store({ entries: r.entries.map(entry => ({ ...entry, content: 'later extension rejected both urgent frames' })) })
-      await h.context()
-    }
-    h.setIdle(true); await h.emit('agent_settled', { aborted: outcome === 'aborted' })
-    assert.equal(h.wakes.length, 0, outcome)
-    h.line({ kind: 'status', id: 'status:duplicate', state: 'connected' })
-    assert.equal(h.wakes.length, 0, 'repeated same-channel status is not a replacement')
-    for (const id of ['urgent-a', 'urgent-b', 'urgent-a', 'urgent-b']) {
-      h.message(id, 0, { wakes: true })
-      assert.equal(h.wakes.length, 0, `${outcome}: unchanged ${id}`)
-    }
-    h.message('genuinely-new-urgent', 0, { wakes: true })
-    assert.equal(h.wakes.length, 1, `${outcome}: new attention may wake`)
-    await h.emit('session_shutdown')
-  }
-})
-
-test('unchanged urgent keys cannot release no-progress wake suspension', async () => {
-  const h = harness(); await h.start(); h.setDraft('hold wake')
-  h.message('urgent-a', 0, { wakes: true }); h.message('urgent-b', 0, { wakes: true })
-  h.setDraft(''); await h.emit('agent_settled'); assert.equal(h.wakes.length, 1)
-  await h.tick(30000)
-  for (const id of ['urgent-a', 'urgent-b', 'urgent-a']) h.message(id, 0, { wakes: true })
-  assert.equal(h.wakes.length, 1)
-  h.message('new-urgent', 0, { wakes: true }); assert.equal(h.wakes.length, 2)
-  await h.emit('session_shutdown')
 })
 
 test('shutdown joins a watch detached by overflow replacement before reporting completion', async () => {
@@ -469,36 +496,7 @@ test('reload waits for a detached predecessor watch, including an already closin
   }
 })
 
-test('saturated discarded urgent history cannot turn old or ambiguous keys into new wake authority', async () => {
-  for (const outcome of ['error', 'no-progress']) {
-    const h = harness(); await h.start(); h.setDraft('hold idle wake')
-    if (outcome === 'error') { h.setIdle(false); await h.emit('before_agent_start', { messageType: 'user' }) }
-    // Keep 256 better passive records. All lower-ranked admitted urgent bodies
-    // are discarded; their waking identities must still fence later reoffers.
-    for (let i = 0; i < 256; i++) h.message(`retained-${i}`, 0)
-    for (let i = 0; i < 300; i++) h.message(`discarded-${i}`, 9, { wakes: true })
-    if (outcome === 'error') {
-      await h.emit('turn_end', { outcome: 'error', entries: [], continue: false, context: {} })
-      h.setIdle(true); h.setDraft(''); await h.emit('agent_settled')
-    } else {
-      h.setDraft(''); await h.emit('agent_settled'); assert.equal(h.wakes.length, 1)
-      await h.tick(30000)
-    }
-    const before = h.wakes.length
-    for (const i of [0, 299, 1, 298, 0, 299]) h.message(`discarded-${i}`, 9, { wakes: true })
-    for (let i = 300; i < 600; i++) h.message(`discarded-${i}`, 9, { wakes: true })
-    assert.equal(h.wakes.length, before, `${outcome}: bounded history cannot classify ambiguous keys as new`)
-    await h.emit('agent_settled'); assert.equal(h.wakes.length, before, 'settlement alone does not reset saturated history')
-    // An explicitly permitted user transition starts a fresh bounded history.
-    h.setIdle(false); await h.emit('before_agent_start', { messageType: 'user' })
-    h.message('after-user-transition', 9, { wakes: true })
-    h.setIdle(true); await h.emit('agent_settled')
-    assert.equal(h.wakes.length, before + 1)
-    await h.emit('session_shutdown')
-  }
-})
-
-test('canonical urgent replay re-arms a recovered unobserved frame only for the successor owner', async () => {
+test('canonical urgent replay retains one recovered frame until the successor host turn observes it', async () => {
   const first = harness(); await first.start(); first.setIdle(false)
   const guidance = await first.emit('before_agent_start', { messageType: 'user' }); first.store(guidance); await first.context()
   first.message('urgent-recovered', 0, { wakes: true })
@@ -513,9 +511,8 @@ test('canonical urgent replay re-arms a recovered unobserved frame only for the 
   next.message('urgent-recovered', 0, { wakes: false })
   assert.equal(next.wakes.length, 0, 'a current passive replay cannot inherit old wake eligibility')
   next.message('urgent-recovered', 0, { wakes: true })
-  assert.equal(next.wakes.length, 1)
-  assert.deepEqual(next.wakes[0], [{ customType: 'herdr-threads-wake', content: 'herdr-threads: wake up', display: false }, { triggerTurn: true }])
-  next.message('urgent-recovered', 0, { wakes: true }); assert.equal(next.wakes.length, 1)
+  assert.equal(next.wakes.length, 0)
+  next.message('urgent-recovered', 0, { wakes: true }); assert.equal(next.wakes.length, 0)
   assert.equal(next.ackCalls().length, 0)
   const startup = await next.emit('before_agent_start', { messageType: 'custom' })
   assert.doesNotMatch(startup?.message?.content ?? '', /body urgent-recovered/)

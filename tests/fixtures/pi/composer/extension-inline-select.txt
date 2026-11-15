@@ -1,0 +1,40 @@
+
+ Warning: fd not found. Offline mode enabled, skipping download.
+ Warning: ripgrep not found. Offline mode enabled, skipping download.
+
+
+ probe baseline
+
+
+ PROBE COMPLETED
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+───────────────────────────────────────────────────────────────────────────────────────────────────────────────────────
+
+ PROBE INLINE SELECT
+
+ → First
+   Second
+
+ ↑↓ navigate  enter select  escape/ctrl+c cancel
+
+───────────────────────────────────────────────────────────────────────────────────────────────────────────────────────
+/fixture/project
+2.0%/100k (auto)                                                                                               scripted

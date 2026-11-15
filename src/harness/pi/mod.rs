@@ -1,4 +1,5 @@
-//! Pi TUI adapter. The native extension owns delivery and wake through its watch channel.
+//! Pi TUI adapter. The extension delivers bodies; the host guards native composer wake.
+mod composer;
 pub mod contract;
 pub mod decode;
 mod delivery;
@@ -214,6 +215,16 @@ impl HarnessAdapter for PiAdapter {
     }
     fn delivery_policy(&self) -> Option<&dyn DeliveryPolicy> {
         Some(&delivery::PiDelivery)
+    }
+    fn composer_policy(&self) -> Option<&dyn ComposerPolicy> {
+        Some(&composer::PiComposer)
+    }
+    fn turn_state_edge(&self, event: &DecodedEvent) -> Option<TurnEdge> {
+        match event.metadata.native_event.as_str() {
+            "TurnStart" => Some(TurnEdge::Busy),
+            "TurnEnd" => Some(TurnEdge::Idle),
+            _ => None,
+        }
     }
     fn launch_policy(&self) -> Option<&dyn LaunchPolicy> {
         Some(&launch::PiLaunch)

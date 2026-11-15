@@ -1079,8 +1079,9 @@ model open work, and summary closure never changes receipt state or installs glo
   (`liveness_fingerprint_required`), or that runs under `codex app-server --managed-daemon`
   (`managed_daemon_refused`, client-local). A process with no harness ancestor and no harness marker is a
   person and keeps the pane-context path; a person's shell cannot act through an agent seat. The markers
-  include those of agent harnesses that have no adapter (`harness::unsupported`: `PI_CODING_AGENT` for Pi;
-  not `AI_AGENT`, which Claude Code sets too): such a caller is refused (`session_claim_required`,
+  include registered harness guard markers (`PI_CODING_AGENT` for Pi) and those of
+  harnesses without an adapter (`harness::unsupported`; not `AI_AGENT`, which Claude Code sets too):
+  a marker without a usable harness claim is refused (`session_claim_required`,
   client-local, naming the marker), never attributed to the person of its pane. Accepted limit: a person's
   shell that inherits one of these markers (for example a terminal opened from inside such a harness) is
   refused too; it acts from a clean shell or runs the command with the inherited variable unset. `human me
@@ -2393,15 +2394,34 @@ invitations are never automatically accepted. Failed ACKs retry only already evi
 under their original execution/branch fences. Tree changes invalidate unconsumed evidence;
 previously valid receipts remain settled.
 
-Wake is channel-only and content-free, using the existing wake marker. With no admitted live
-extension/channel there is no native composer fallback; explicit inbox remains available.
-Threshold admission still comes from the daemon. Fresh native idle, current owner, editor-empty
-and UI-span checks gate the extension's synchronous submission. Missing required native APIs,
-watch failure, rejected/altered drafts, non-completed boundaries, saturated wake novelty history
-or an unreceived wake conservatively degrade the affected delivery/wake capability; unchanged
-attention cannot repeatedly start runs. Reconnect, a new owner or a qualifying authentic native
-event may retry admission under the existing bounded backoff. Omitted/displaced bodies remain
+Wake uses the existing guarded native host lane and content-free marker, never the extension's
+sendMessage API. PushChannel delivers bodies and IdleWake::Native keeps that channel from
+suppressing native wake. Threshold admission, process/seat/host fences, idle rechecks, submitted-wake
+receipt accounting and the focused-pane minute of observed emptiness retain their existing rules.
+The pi-local parser requires the observed default editor's full-width rule pair, one blank row,
+expected cwd/stats footer and styled reverse-video cursor at column zero. Visible drafts,
+multiline/wrapped input, text/tool Working headers, built-in model/settings selectors, inline
+extension prompts and unknown layouts refuse typing. No stash, editor takeover or key tracking.
+The named/tmux host additionally requires its verified binding and explicit turn edges: TurnStart
+reports Busy, and Observer-only TurnEnd reports Idle only with source=settled from actual
+agent_settled or source=startup after successful admission, each carrying idle:true from a fresh
+current-owner native check. Queued calls are serialized and owner-fenced before execution; missing,
+false, malformed or stale idle evidence never authorizes an Idle report. No hook mail or receipt
+authority is added. A host without composer wake (today hc and unverified named seats) reports
+no_wake even if its channel delivers during a user-driven run. Missing channel delivery falls
+back to explicit inbox; reconnect retains bounded backoff. Omitted/displaced bodies remain
 canonical and unacknowledged for replay.
+
+Accepted native-screen limits (explicit coordinator decisions after real-TUI captures): another
+extension's focus-capturing custom overlay can preserve the same empty composer/footer and idle
+host metadata, so it can intercept native wake. This integration opens no overlays. Public UI
+spans are queued asynchronously before handlers run and cannot guarantee a pre-open veto; a hook
+Busy report is not a native Herdr guard. A spaces-only draft whose cursor has been moved back to
+column zero is byte-identical to empty even in styled output; native wake can type into/submit it.
+Spaces with the cursor elsewhere are refused by the styled read. These equivalences are recorded
+as limits, never claimed as passing draft preservation. The existing focused-pane observation
+window mitigates interaction but proves no internal UI focus or buffer content. No readiness widget
+or private runtime field is used. Unknown or missing styled observations still fail closed.
 
 Accepted limits: the explicit role is the bundled extension's cooperative assertion. A third-party
 launcher that strips ownership/child markers and starts another interactive TUI is indistinguishable
@@ -2410,9 +2430,9 @@ RPC/JSON/print and unknown-child hosts are excluded. Custom or remote shells tha
 cannot be attributed. Current-branch and context observation are not disk flush, provider receipt
 or model consumption: later context handlers can transform/remove data and downstream transport can
 fail. Late callbacks that escaped an extension/runtime's own fences cannot supply native
-attestation; local evidence is only the cooperative claim carried by that invocation. Built-in
-modal behavior beyond observed editor/UI APIs remains a qualification limit, never permission to
-type into the composer. No new provenance, wire field, seat merge or heuristic continuity rule is
+attestation; local evidence is only the cooperative claim carried by that invocation. An upstream
+layout change beyond the captured default grammar refuses native wake until qualified. No new
+provenance, wire field, seat merge or heuristic continuity rule is
 introduced.
 
 ## Accepted limits

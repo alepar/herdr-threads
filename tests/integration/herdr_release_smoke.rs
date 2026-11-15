@@ -126,6 +126,10 @@ impl Matrix {
             &bin.join("opencode"),
             "#!/bin/sh\npython3 \"$HOME/record-child.py\" opencode \"$@\"\nprintf 'opencode stand-in\\n> '\nwhile IFS= read -r line; do [ \"$line\" = exit ] && exit 0; done\n",
         );
+        executable(
+            &bin.join("pi"),
+            "#!/bin/sh\npython3 \"$HOME/record-child.py\" pi \"$@\"\nprintf 'pi stand-in\\n'\nwhile IFS= read -r line; do [ \"$line\" = exit ] && exit 0; done\n",
+        );
         fs::create_dir_all(host.root().join("home")).unwrap();
         fs::write(host.root().join("home/record-child.py"),
             "import json,os,sys,time\nfrom pathlib import Path\np=Path(os.environ['HOME'])/('.fake-'+sys.argv[1]);p.mkdir(exist_ok=True)\n(p/(str(time.time_ns())+'.json')).write_text(json.dumps({'pane':os.environ.get('HERDR_PANE_ID'),'cwd':os.getcwd(),'home':os.environ['HOME'],'config_home':os.environ.get('CLAUDE_CONFIG_DIR') if sys.argv[1]=='claude' else None,'argv':sys.argv[1:]}))\n").unwrap();
@@ -483,7 +487,13 @@ impl Drop for Matrix {
         });
         if let Some(dir) = &evidence {
             let _ = fs::create_dir_all(dir);
-            for name in [".fake-codex", ".fake-claude", ".fake-agy", ".fake-opencode"] {
+            for name in [
+                ".fake-codex",
+                ".fake-claude",
+                ".fake-agy",
+                ".fake-opencode",
+                ".fake-pi",
+            ] {
                 if let Ok(entries) = fs::read_dir(self.home().join(name)) {
                     let target = dir.join(name);
                     let _ = fs::create_dir_all(&target);
@@ -741,6 +751,7 @@ fn herdr_release_launch_and_handoff() {
     m.setup("codex");
     m.setup("claude");
     m.setup("opencode");
+    m.setup("pi");
 
     // launch: codex (checks in through its hooks) and claude, in existing panes.
     let caller_pane = m.workspace("handoff-caller");
@@ -843,6 +854,7 @@ fn herdr_release_launch_and_handoff() {
     m.turn(&peer_pane, "next");
     received(&peer_pane, "handoff-existing");
     opencode_smoke(&m, &caller_pane);
+    pi_smoke(&m, &caller_pane);
     profile_directory_smoke(&m, &caller_pane);
     let _ = caller;
     println!("herdr {}: launch and handoff matrix passed", m.version);
@@ -898,6 +910,52 @@ fn opencode_smoke(m: &Matrix, caller: &str) {
         assert!(
             args[0].starts_with("--prompt=") && args[0].len() > "--prompt=".len(),
             "{options}: {args:?}"
+        );
+    }
+}
+
+/// Pi stand-in: public argv composition only. Real boundary/wake/receipts are
+/// qualified by scripts/pi-tui-qualify.py against the official native TUI.
+fn pi_smoke(m: &Matrix, caller: &str) {
+    let args = |pane: &str| {
+        let row = wait_for("pi child record", Duration::from_secs(20), || {
+            child_start(m, "pi", pane).ok_or_else(|| pane.to_owned())
+        });
+        row["argv"].as_array().unwrap()[1..]
+            .iter()
+            .map(|arg| arg.as_str().unwrap().to_owned())
+            .collect::<Vec<_>>()
+    };
+    let pane = m.tab(caller, "launch-pi");
+    let launched = m.launch("pi", &pane);
+    assert_eq!(launched["outcome"], "started", "{launched}");
+    assert!(args(&pane).is_empty(), "plain launch owns no startup body");
+    let thread = id(&m.agent_ht(caller, "thread create --topic pi-handoff"));
+    let empty = m.tab(caller, "pi-pane");
+    for options in [
+        "--new-tab pi-auto".to_owned(),
+        format!("--new-tab pi-thread --thread {thread}"),
+        format!("--pane {empty}"),
+    ] {
+        let result = m.agent_ht(
+            caller,
+            &format!("handoff {options} --kind pi -- pi-exact-work"),
+        );
+        let frame = result
+            .get("bootstrap")
+            .or_else(|| result.get("handoff"))
+            .unwrap();
+        assert_eq!(frame["outcome"], "started", "{result}");
+        let pane = frame["pane"]
+            .as_str()
+            .or_else(|| frame["launch"]["pane"].as_str())
+            .unwrap();
+        let argv = args(pane);
+        assert_eq!(argv.len(), 2, "one native positional input: {argv:?}");
+        assert_eq!(argv[0], "--");
+        assert!(
+            argv[1].starts_with("Handoff") && !argv[1].contains("pi-exact-work"),
+            "body stays canonical: {argv:?}"
         );
     }
 }
@@ -1098,6 +1156,11 @@ fn effect_counts(m: &Matrix, caller: &str) -> Vec<i64> {
     );
     counts.push(
         fs::read_dir(m.home().join(".fake-opencode"))
+            .map(|d| d.count() as i64)
+            .unwrap_or(0),
+    );
+    counts.push(
+        fs::read_dir(m.home().join(".fake-pi"))
             .map(|d| d.count() as i64)
             .unwrap_or(0),
     );

@@ -2,6 +2,9 @@
 use crate::harness::{adapter::*, context::EventKind, registry::builtins};
 use serde_json::json;
 
+#[path = "pi_composer.rs"]
+mod composer;
+
 fn adapter() -> &'static crate::harness::registry::Registration {
     builtins()
         .by_id(builtins().agent("pi").expect("pi is registered"))
@@ -24,10 +27,11 @@ fn budget() -> crate::protocol::time::CallBudget {
     }
 }
 #[test]
-fn pi_registers_channel_only_without_hook_mail_or_composer() {
+fn pi_registers_push_delivery_with_guarded_native_wake_without_hook_mail() {
     let row = adapter();
-    assert!(builtins().wakes_only_through_channel("pi"));
-    assert!(row.composer_policy().is_none());
+    assert!(!builtins().wakes_only_through_channel("pi"));
+    assert!(row.composer_policy().is_some());
+    assert_eq!(row.delivery_policy().unwrap().idle_wake(), IdleWake::Native);
     assert!(!builtins().binding_turn_delivery("pi", None));
     assert!(!builtins().binding_turn_delivery(
         "pi",
@@ -84,6 +88,60 @@ fn pi_lifecycle_current_and_end_decode_without_hook_receipt_authority() {
         end.binding_event.unwrap().kind,
         crate::protocol::commands::BindingEventKind::SessionEnd
     );
+}
+
+#[test]
+fn pi_idle_turn_edge_requires_an_explicit_current_owner_idle_witness() {
+    let row = adapter();
+    let admitted = row
+        .admit(
+            &AdmissionRequest {
+                installed: InstallObservation::NotRequested,
+                input: None,
+                runtime_candidate: None,
+                admitted_at: None,
+            },
+            &budget(),
+        )
+        .unwrap();
+    let start = row.decode(&admitted, &input("TurnStart", "")).unwrap();
+    assert_eq!(row.turn_state_edge(&start), Some(TurnEdge::Busy));
+    let lifecycle = row
+        .decode(&admitted, &input("SessionStart", "startup"))
+        .unwrap();
+    assert_eq!(row.turn_state_edge(&lifecycle), None);
+    for source in ["startup", "settled"] {
+        let mut hook = input("TurnEnd", source);
+        let mut payload: serde_json::Value = serde_json::from_slice(&hook.bytes).unwrap();
+        for idle in [serde_json::Value::Null, json!(false), json!("true")] {
+            payload["idle"] = idle;
+            hook.bytes = serde_json::to_vec(&payload).unwrap();
+            assert!(row.decode(&admitted, &hook).is_err());
+        }
+        payload["idle"] = json!(true);
+        hook.bytes = serde_json::to_vec(&payload).unwrap();
+        let idle = row.decode(&admitted, &hook).unwrap();
+        assert!(matches!(idle.intent, EventIntent::Observer));
+        assert_eq!(row.turn_state_edge(&idle), Some(TurnEdge::Idle));
+        assert!(matches!(idle.delivery, DeliveryEligibility::ObserverOnly));
+        let encoded = row
+            .encode(
+                &admitted,
+                &idle,
+                &NeutralOffer {
+                    fixed_guidance: "must not appear".into(),
+                    peer_data: serde_json::Value::Null,
+                    ready_argv: vec![],
+                },
+            )
+            .unwrap();
+        assert!(matches!(encoded, EncodedOutput::ObserverOnly { bytes } if bytes.is_empty()));
+    }
+    let mut bad = input("TurnEnd", "error");
+    let mut payload: serde_json::Value = serde_json::from_slice(&bad.bytes).unwrap();
+    payload["idle"] = json!(true);
+    bad.bytes = serde_json::to_vec(&payload).unwrap();
+    assert!(row.decode(&admitted, &bad).is_err());
 }
 
 struct Table(Vec<crate::ports::ProcessRecord>);
@@ -415,7 +473,7 @@ fn pi_hook_owner_mismatch_refuses_every_event_including_session_end() {
         "HERDR_THREADS_PI_PID" => Some("80".into()),
         _ => None,
     };
-    for name in ["SessionStart", "TurnStart", "SessionEnd"] {
+    for name in ["SessionStart", "TurnStart", "TurnEnd", "SessionEnd"] {
         let i = input(name, "startup");
         let fingerprint = || {
             Ok(crate::protocol::authority::LivenessFingerprint {

@@ -6,7 +6,6 @@ const LAUNCH = null // herdr-threads:launch
 const OWNER = Symbol.for('herdr-threads.pi.owner')
 const RECOVERY = Symbol.for('herdr-threads.pi.recovery')
 const PREFIX = 'HERDR_THREADS_PI_'
-const WAKE = 'herdr-threads: wake up'
 const HEADER = '[herdr-threads] new messages:'
 const MAX_RECORDS = 256
 const MAX_BYTES = 2 * 1024 * 1024
@@ -47,7 +46,18 @@ export function register(pi, io) {
   let sequence = 0
   let lifecycle = 0
   const cmd = (...args) => [...(io.argv ?? ['herdr-threads']), ...args]
-  const diagnostic = reason => { try { io.diagnostic(`herdr-threads: pi ${reason}`) } catch {} }
+  const diagnostic = (reason, o = owner) => {
+    try {
+      const text = `herdr-threads: pi ${reason}`
+      if (o) {
+        if (!current(o)) return
+        // Raw stderr bypasses Pi's renderer and can land in its composer.
+        // Missing/throwing native notification never falls back to that path.
+        if (o.ctx.mode === 'tui') { o.ctx.ui?.notify?.(text, 'warning'); return }
+      }
+      io.diagnostic(text)
+    } catch {}
+  }
   const current = o => owner === o && !o.closed && io.registry[OWNER] === token
     && o.ctx.mode === 'tui' && o.ctx.sessionManager.getSessionId() === o.sid
   const callbackOwner = ctx => owner && current(owner) && ctx?.mode === 'tui'
@@ -73,17 +83,25 @@ export function register(pi, io) {
     o.timers.add(cancel)
     return cancel
   }
-  async function hook(o, event, source) {
-    try {
-      const result = await run(o, cmd('hook-event', 'pi', event), {
-        stdin: JSON.stringify({ ...claims(o), event, ...(source ? { source } : {}) }),
-        env: childEnv(o), timeoutMs: 8000, maxBytes: 4096,
-        signal: event === 'SessionEnd' ? undefined : o.abort.signal,
-      })
-      if (result.code !== 0 || typeof result.stdout !== 'string' || size(result.stdout) > 4096
-          || result.stdout.includes('herdr-threads: check-in unavailable (')) throw new Error('unavailable')
-      return result.stdout
-    } catch { if (current(o)) diagnostic('check-in unavailable'); return null }
+  function hook(o, event, source) {
+    // Preserve native event order even if a lifecycle or Idle child is slow.
+    // Check a queued Idle against the current native state at actual emission.
+    const task = (o.hooks ?? Promise.resolve()).then(async () => {
+      if (event !== 'SessionEnd' && !current(o)) return null
+      try {
+        if (event === 'TurnEnd' && o.ctx.isIdle?.() !== true) return null
+        const result = await run(o, cmd('hook-event', 'pi', event), {
+          stdin: JSON.stringify({ ...claims(o), event, ...(source ? { source } : {}), ...(event === 'TurnEnd' ? { idle: true } : {}) }),
+          env: childEnv(o), timeoutMs: 8000, maxBytes: 4096,
+          signal: event === 'SessionEnd' ? undefined : o.abort.signal,
+        })
+        if (result.code !== 0 || typeof result.stdout !== 'string' || size(result.stdout) > 4096
+            || result.stdout.includes('herdr-threads: check-in unavailable (')) throw new Error('unavailable')
+        return result.stdout
+      } catch { if (current(o)) diagnostic('check-in unavailable'); return null }
+    })
+    o.hooks = task
+    return task
   }
   async function admit(o) {
     if (!current(o)) return false
@@ -94,7 +112,7 @@ export function register(pi, io) {
       if (!current(o) || guidance === null) return false
       o.bound = true; o.guidance = guidance
       startWatch(o)
-      if (['startup', 'reload'].includes(o.source)) o.idle = o.ctx.isIdle() === true
+      await hook(o, 'TurnEnd', 'startup')
       return true
     })()
     try { return await o.admission } finally { o.admission = null }
@@ -121,7 +139,7 @@ export function register(pi, io) {
   }
   function stopWatch(o, child) {
     if (!child) return Promise.resolve()
-    return ownStop(o, Promise.resolve().then(() => child.stop()).catch(() => diagnostic('watch cleanup failed')))
+    return ownStop(o, Promise.resolve().then(() => child.stop()).catch(() => diagnostic('watch cleanup failed', o)))
   }
   // A connected replacement pays debt only after actual capacity release. Merely
   // being full never creates a reconnect loop asking for the same excess bodies.
@@ -158,46 +176,13 @@ export function register(pi, io) {
       later(o, BACKOFF[Math.min(o.backoff++, BACKOFF.length - 1)], () => startWatch(o))
     }
   }
-  function progress(o) {
-    o.wakeCancel?.(); o.wakeCancel = null; o.waking = false; o.suspended = false
-  }
-  function resetAttentionHistory(o) {
-    o.attentionKeys.clear(); o.attentionHistoryBlocked = false
-  }
-  function blockAttention(o) {
-    if (o.intent && o.attentionKeys.size === MAX_RECORDS) o.attentionHistoryBlocked = true
-    if (o.intent && !o.intent.blocked) { o.intent.blocked = true; diagnostic('delivery deferred') }
-  }
-  function wake(o) {
-    // No await between final owner/idle/UI/intent checks and the content-free call.
-    if (!current(o) || !o.bound || !o.live || !o.idle || o.active || o.compacting || o.prompts
-        || o.branchMissing || o.waking || o.suspended || o.attentionHistoryBlocked || !o.intent || o.intent.blocked || o.ctx.isIdle() !== true) return
-    try {
-      if (typeof o.ctx.ui?.getEditorText !== 'function' || typeof pi.sendMessage !== 'function') {
-        if (!o.wakeMissing) { o.wakeMissing = true; diagnostic('wake API unavailable') }
-        return
-      }
-      if (o.ctx.ui.getEditorText() !== '') return
-      o.waking = true
-      o.wakeCancel = later(o, 30000, () => {
-        o.waking = false; o.suspended = true
-        if (o.attentionKeys.size === MAX_RECORDS) o.attentionHistoryBlocked = true
-        diagnostic('wake unreceived')
-      })
-      pi.sendMessage({ customType: 'herdr-threads-wake', content: WAKE, display: false }, { triggerTurn: true })
-    } catch { o.wakeCancel?.(); o.waking = false; o.suspended = true; diagnostic('wake unavailable') }
-  }
   function onLine(o, line) {
     if (!line || line.schema !== 1 || typeof line.id !== 'string' || size(line.id) > 128) return
     if (line.kind === 'status') {
       if (line.state === 'connected') {
-        if (!o.live) {
-          resetAttentionHistory(o); o.suspended = false
-          if (o.intent) o.intent.blocked = false
-        }
         o.live = true
         if (o.replaying) { o.replaying = false; o.replayDebt = false }
-        retryAcks(o); wake(o)
+        retryAcks(o)
       } else if (['closing', 'refused'].includes(line.state)) {
         o.live = false
         if (['no_binding', 'session_mismatch', 'binding_changed'].includes(line.reason)) o.bound = false
@@ -207,7 +192,6 @@ export function register(pi, io) {
     if (line.kind === 'attention_cleared') {
       for (const [key, record] of o.pending) if (record.kind === 'attention'
           && (line.presentation_epoch === undefined || record.epoch === line.presentation_epoch)) o.pending.delete(key)
-      if (o.intent?.kind === 'attention' && (line.presentation_epoch === undefined || o.intent.epoch === line.presentation_epoch)) o.intent = null
       released(o); return
     }
     if (!['message', 'lazy', 'invitation', 'attention', 'notice'].includes(line.kind)) return
@@ -215,31 +199,16 @@ export function register(pi, io) {
     if (typeof body !== 'string' || size(body) > PAGE_BYTES) { overflow(o); return }
     const key = JSON.stringify([line.kind, line.id, line.kind === 'invitation' ? [line.topic_revision ?? null, line.command_context_epoch ?? null] : line.kind === 'attention' ? line.presentation_epoch ?? line.attention_version : null])
     if (o.done.has(key)) return
-    const waking = line.wakes === true || line.kind === 'attention'
     const existing = o.pending.get(key) ?? o.proposals.flatMap(p => p.items).find(r => r.key === key)
-    // Reoffers of any known urgent ID belong to the same attention generation,
-    // not just reoffers of its last key. Retained records keep this witness even
-    // when the bounded cache of discarded waking keys is full. At that bound,
-    // unknown keys cannot release a rejection/timeout fence by evicting history.
-    if (waking && !existing?.waking && !o.attentionKeys.has(key) && o.intent?.key !== key) {
-      if (o.attentionKeys.size === MAX_RECORDS && (o.suspended || o.intent?.blocked)) o.attentionHistoryBlocked = true
-      if (!o.attentionHistoryBlocked) {
-        if (o.attentionKeys.size < MAX_RECORDS) o.attentionKeys.add(key)
-        o.intent = { key, kind: line.kind, epoch: line.presentation_epoch }
-        o.suspended = false
-      }
-    }
-    if (existing) { existing.waking ||= waking; wake(o); return }
+    if (existing) return
     // Coalesced invitations are presentation, never automatic acceptance or mail ACK.
     if (line.kind === 'invitation') for (const [oldKey, r] of o.pending) if (r.kind === 'invitation' && r.id === line.id) o.pending.delete(oldKey)
     retain(o, {
       key, id: line.id, kind: line.kind, epoch: line.presentation_epoch,
-      waking,
       priority: Number.isInteger(line.priority) && line.priority >= 0 && line.priority <= 9 ? line.priority : line.kind === 'lazy' ? 1 : 0,
       deadline: Number.isFinite(line.deadline_at) ? line.deadline_at : Infinity,
       order: sequence++, truncated: line.truncated === true, rendered: frame(line),
     })
-    wake(o)
   }
   function remember(o, key) { o.done.add(key); while (o.done.size > MAX_RECORDS) o.done.delete(o.done.values().next().value) }
   function reconcile(o, entries = branch(o)) {
@@ -247,7 +216,6 @@ export function register(pi, io) {
     for (const p of [...o.proposals]) {
       if (entries.some(e => exact(e, p))) continue
       o.proposals.splice(o.proposals.indexOf(p), 1)
-      if (p.items.some(r => r.key === o.intent?.key)) blockAttention(o)
       if (p.guidance) o.guidance ||= p.text.slice(0, p.guidance)
       for (const r of p.items) { const [start, end] = p.frames.get(r.key); retain(o, { ...r, rendered: p.text.slice(start, end) }) }
     }
@@ -304,7 +272,7 @@ export function register(pi, io) {
     if (!current(o) || revision !== o.revision || p.attempt !== attempt || !o.proposals.includes(p)) return
     p.acking = false
     const complete = p.items.filter(r => !ids.includes(r.id) || settled.has(r.id))
-    for (const r of complete) { remember(o, r.key); p.frames.delete(r.key); if (o.intent?.key === r.key) o.intent = null }
+    for (const r of complete) { remember(o, r.key); p.frames.delete(r.key) }
     p.items = p.items.filter(r => !complete.includes(r))
     if (!p.items.length) o.proposals.splice(o.proposals.indexOf(p), 1)
     else { diagnostic('ACK pending'); p.retryCancel = later(o, 30000, () => { p.retryCancel = null; void acknowledge(o, p) }) }
@@ -340,7 +308,7 @@ export function register(pi, io) {
   }
   pi.on('session_start', async (event, ctx) => {
     if (forbidden || ctx.mode !== 'tui' || (io.registry[OWNER] && io.registry[OWNER] !== token)) return
-    if (typeof ctx.sessionManager?.getSessionId !== 'function' || typeof ctx.sessionManager?.getBranch !== 'function' || typeof ctx.isIdle !== 'function') { diagnostic('boundary API unavailable'); return }
+    if (typeof ctx.sessionManager?.getSessionId !== 'function' || typeof ctx.sessionManager?.getBranch !== 'function') { diagnostic('boundary API unavailable'); return }
     const sid = ctx.sessionManager.getSessionId()
     if (typeof sid !== 'string' || !sid || size(sid) > 128 || /[\x00-\x20\x7f]/.test(sid)) { diagnostic('session unavailable'); return }
     // Reserve synchronously: two duplicate callbacks may otherwise both check in
@@ -353,16 +321,14 @@ export function register(pi, io) {
     delete io.registry[RECOVERY]
     owner = { sid, ctx, execution: io.nonce(), source: ['startup', 'reload', 'new', 'resume', 'fork'].includes(event.reason) ? event.reason : null,
       env: { [PREFIX + 'SESSION']: sid, [PREFIX + 'ROLE']: 'top_level', [PREFIX + 'MODE']: 'tui', [PREFIX + 'PID']: String(io.pid) },
-      bound: false, closed: false, admission: null, idle: false, active: false, compacting: false, prompts: 0, abort: new AbortController(),
+      bound: false, closed: false, admission: null, active: false, compacting: false, abort: new AbortController(),
       pending: new Map(), proposals: recovery?.proposals ?? [], done: new Set(), guidance: '', guidanceAttempted: false, run: 0, revision: 0,
-      timers: new Set(), calls: new Set(), stops: new Set(), closing: null, child: null, watchRun: 0, live: false, backoff: 0, intent: null, attentionKeys: new Set(), attentionHistoryBlocked: false,
-      replayDebt: false, replaying: false, waking: false, suspended: false }
+      timers: new Set(), calls: new Set(), stops: new Set(), closing: null, child: null, watchRun: 0, live: false, backoff: 0,
+      replayDebt: false, replaying: false }
     if (!owner.source) { await close(owner); return }
     for (const p of owner.proposals) {
       p.evidenced = false; p.acking = false; p.retryCancel = null; p.attempt = null; p.revision = 0
-      // Recovered frames remain deduplicated, but their predecessor's waking
-      // witness cannot suppress the new owner's first canonical urgent replay.
-      for (const r of p.items) { r.attemptedRun = 0; r.waking = false }
+      for (const r of p.items) r.attemptedRun = 0
     }
     Object.assign(io.env, owner.env)
     await admit(owner)
@@ -370,8 +336,7 @@ export function register(pi, io) {
   pi.on('before_agent_start', async (event, ctx) => {
     const o = callbackOwner(ctx)
     if (!o) return
-    o.ctx = ctx; o.idle = false; o.active = true; o.run++; o.guidanceAttempted = false; progress(o)
-    if (event.messageType === 'user') { resetAttentionHistory(o); if (o.intent) o.intent.blocked = false }
+    o.ctx = ctx; o.active = true; o.run++; o.guidanceAttempted = false
     if (!await admit(o)) return
     const live = await hook(o, 'TurnStart')
     if (!current(o) || live === null) return
@@ -382,7 +347,7 @@ export function register(pi, io) {
   for (const name of ['turn_end', 'agent_before_settle']) pi.on(name, (event, ctx) => {
     const o = callbackOwner(ctx)
     if (!o || !o.bound || !o.active || o.compacting) return
-    if (event.outcome !== 'completed') { if (['error', 'aborted'].includes(event.outcome)) blockAttention(o); return }
+    if (event.outcome !== 'completed') return
     if (!Array.isArray(event.entries) || typeof event.continue !== 'boolean' || !event.context) { diagnostic('boundary API unavailable'); return }
     o.ctx = ctx
     if (!branch(o)) return
@@ -392,27 +357,23 @@ export function register(pi, io) {
   pi.on('context', (event, ctx) => {
     const o = callbackOwner(ctx)
     if (!o || !o.bound || !Array.isArray(event.messages)) return
-    o.ctx = ctx; progress(o)
+    o.ctx = ctx
     const entries = branch(o)
     if (!reconcile(o, entries)) return
     for (const p of o.proposals) if (entries.some(e => exact(e, p)) && event.messages.some(m => m.role === 'custom' && m.customType === p.customType && m.content === p.text)) {
       p.evidenced = true; p.revision = o.revision
-      for (const r of p.items) o.attentionKeys.delete(r.key)
-      if (p.items.some(r => r.key === o.intent?.key)) o.intent = null
       void acknowledge(o, p)
     }
   })
-  pi.on('agent_start', (_event, ctx) => { const o = callbackOwner(ctx); if (o) { o.ctx = ctx; o.active = true; o.idle = false; progress(o) } })
-  pi.on('agent_settled', (event, ctx) => {
+  pi.on('agent_start', (_event, ctx) => { const o = callbackOwner(ctx); if (o) { o.ctx = ctx; o.active = true } })
+  pi.on('agent_settled', async (_event, ctx) => {
     const o = callbackOwner(ctx)
     if (o) {
-      if (event.aborted || [...o.pending.values(), ...o.proposals.flatMap(p => p.items)].some(r => r.key === o.intent?.key && r.attemptedRun === o.run)) blockAttention(o)
-      o.ctx = ctx; o.active = false; o.idle = ctx.isIdle() === true; progress(o); wake(o)
+      o.ctx = ctx; o.active = false
+      if (o.bound) await hook(o, 'TurnEnd', 'settled')
     }
   })
-  pi.on('ui_prompt_start', (_event, ctx) => { const o = callbackOwner(ctx); if (o) o.prompts++ })
-  pi.on('ui_prompt_end', (_event, ctx) => { const o = callbackOwner(ctx); if (o) { o.prompts = Math.max(0, o.prompts - 1); wake(o) } })
-  pi.on('session_before_compact', (_event, ctx) => { const o = callbackOwner(ctx); if (o) { o.compacting = true; o.idle = false } })
+  pi.on('session_before_compact', (_event, ctx) => { const o = callbackOwner(ctx); if (o) o.compacting = true })
   pi.on('session_compact_failed', (_event, ctx) => { const o = callbackOwner(ctx); if (o) o.compacting = false })
   async function reenter(source, ctx) {
     const o = callbackOwner(ctx)

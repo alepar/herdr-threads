@@ -1,0 +1,40 @@
+
+ Warning: fd not found. Offline mode enabled, skipping download.
+ Warning: ripgrep not found. Offline mode enabled, skipping download.
+
+
+ probe baseline
+
+
+ PROBE COMPLETED
+
+
+ herdr-threads: wake up
+
+
+ PROBE COMPLETED
+
+
+ probe busy-text
+
+
+ PROBE STREAM HOLD
+
+ PROBE COMPLETED
+
+
+ probe busy-tool
+
+
+
+ probe_hold
+
+
+
+
+
+── ⠹ Working ──────────────────────────────────────────────────────────────────────────────────────────────────────────
+
+───────────────────────────────────────────────────────────────────────────────────────────────────────────────────────
+/fixture/project
+2.1%/100k (auto)                                                                                               scripted

@@ -1,0 +1,40 @@
+
+ Warning: fd not found. Offline mode enabled, skipping download.
+ Warning: ripgrep not found. Offline mode enabled, skipping download.
+
+
+ probe baseline
+
+
+ PROBE COMPLETED
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+───────────────────────────────────────────────────────────────────────────────────────────────────────────────────────
+
+Only showing models from configured providers. Use /login to add providers.
+
+>
+
+→ ✓ scripted (Scripted probe) [ht-fixture] · default
+
+  Model Name: Scripted probe
+
+  Model catalogs refreshed.
+
+  Enter to select · Ctrl+S to set as default · Escape/Ctrl+C to cancel
+───────────────────────────────────────────────────────────────────────────────────────────────────────────────────────
+/fixture/project
+2.0%/100k (auto)                                                                                               scripted

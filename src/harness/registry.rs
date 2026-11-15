@@ -1836,7 +1836,7 @@ mod tests {
             ("hermes", [Composer, Composer, NoWake, NoWake]),
             ("agy", [Composer, Composer, NoWake, NoWake]),
             ("opencode", [NoWake, Channel, NoWake, Channel]),
-            ("pi", [NoWake, Channel, NoWake, Channel]),
+            ("pi", [Composer, Composer, NoWake, NoWake]),
         ];
         #[cfg(feature = "test-support")]
         rows.push(("synthetic_fourth", [NoWake; 4]));

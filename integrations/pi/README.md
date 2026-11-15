@@ -1,114 +1,122 @@
-# Pi native extension
+# Pi terminal integration
 
-`extension/herdr-threads.js` is a dependency-free native pi extension. Its default
-export registers callbacks; the named exports support focused qualification. Pi's
-recorded native loader imports the default factory, so helper exports are inert.
-Setup owns the extension directory and replaces the marked `LAUNCH` constant with
-its CLI argv prefix. Without that replacement, the executable is `herdr-threads`
-from PATH. The Rust adapter/setup task is required before this is an integrated
-installation; these assets alone do not establish daemon admission.
-
-Only an explicit native `tui` context enrolls. The extension captures inherited pi
-ownership markers before writing its own session, top-level role, mode and PID.
-An inherited foreign/malformed PID, child/unknown role, nonterminal mode, or session
-without same-process ownership prevents enrollment. Other harnesses' variables
-are not role evidence. One process owner prevents duplicate global/project loads.
-
-Lifecycle commands stage at most 4096 bytes of guidance, separately from mail.
-Only successful admission starts `watch --harness pi --session SESSION`. The CLI
-negotiates presentation leases and confirms nonordinary output after flushing it;
-the extension neither duplicates those confirmations nor accepts invitations.
-Watch loss reconnects with 1, 2, 5, 10 and then 30 second backoff. A terminal watch
-refusal waits for a later eligible native callback to retry lifecycle admission.
-
-Mail stays in a local buffer with a combined limit of 256 pending/proposed records
-and 2 MiB of UTF-8 rendered text, including proposed frames and staged guidance.
-Metadata and JavaScript allocation overhead are additional. Every admission sorts
-the whole retained union by priority, deadline with none last, then stable first
-observation. WatchLine has no creation timestamp: exact age across reconnects is
-not reconstructed. Better arrivals can displace worse pending records; proposed
-records cannot be displaced. Every dropped incoming or displaced record creates
-replay debt. Capacity release replaces the watch to request canonical pending
-replay, independently of exhausted logical reoffers. Failures keep that debt and
-use bounded reconnect backoff. Saturation itself does not loop reconnects.
-
-Bodies enter only native `before_agent_start` or completed `turn_end` /
-`agent_before_settle` draft results. Each page has at most 32 items / 64 KiB. Other
-extensions' entries and continuation are preserved. Each retained item gets at
-most one proposal per outer run; rejected drafts wait for another run. No body is
-put into pi's steer, follow-up or next-turn queues.
-
-A receipt requires an exact custom-type nonce and full unchanged frame both in
-the finalized current native branch and in a later model-bound `context` callback
-for the admitted session. Only then does `watch ack --via context` name complete
-ordinary/lazy IDs. Truncated mail retains its existing explicit-inbox continuation
-and never ACKs. Guidance, invitations, warnings and attention are never mail ACKs.
-Failed ACKs retry only exact previously evidenced IDs, fenced by owner and branch.
-Tree/compaction callbacks invalidate old context evidence; reload reconciles only
-this integration's bounded known unacknowledged proposals. A void API return,
-preview, message-end event or accepted entry alone supplies no receipt evidence.
-Reload retains accepted frames but clears their old owner's waking witnesses.
-A current canonical urgent replay can then wake the successor once, without a
-duplicate body proposal or an ACK before successor context observation.
-
-An admitted waking item can submit only `herdr-threads: wake up`. The final owner,
-channel, fresh idle, UI span and editor checks run synchronously with submission.
-Nonempty drafts block wake without being edited; missing/unreadable editor APIs
-disable wake while boundary delivery remains available. Wakes never select a
-model or provider. A single flight times out after 30 seconds without native
-progress and suspends unchanged attention. Pending passive mail starts no run.
-Rejected/altered drafts, error/aborted boundaries and attempted mail left without
-context at settlement also block unchanged attention from restarting itself. A
-later user run, new attention or channel replacement can retry; receipts stay pending.
-Already known urgent keys share their attention fence, including alternating
-reoffers of different retained IDs. A bounded cache remembers up to 256 waking
-keys in addition to the witnesses on retained records. It never evicts a key to
-infer new attention. If rejection or no-progress suspension reaches that history
-bound, ambiguous identities cannot start automatic runs until an authentic user
-run, new owner or successful channel transition resets the fence. This degrades
-only wake; boundary delivery and canonical pending mail remain available. Repeated
-connected status on the same live channel is not such a transition.
-Wake is rechecked on new watch attention/connection, final settlement and extension
-UI prompt completion. There is no editor-change polling; merely deleting a draft
-may leave attention pending until one of those events or a manual turn.
-
-Shutdown fences old callbacks first, cancels retries, aborts owned command children
-and stops/reaps the watch. Its best-effort old-owner SessionEnd reports liveness;
-it never retires a seat.
-Detached watches remain owned until their replacement/stop promises settle;
-shutdown and reload join those promises before releasing the process owner or
-admitting a successor.
-Environment cleanup compares exact old values so a
-successor's markers survive. Every child has bounded output; one-shot commands
-have a deadline and owned processes receive TERM then KILL if necessary.
-
-## Focused qualification
-
-Use the repository's heavy/toolbox wrappers:
+Install into Pi's agent directory, then start an ordinary native terminal session:
 
 ```sh
-/var/home/alepar/.cache/herdr-threads-heavy/heavy /var/home/alepar/.cache/herdr-threads-heavy/tb node --test integrations/pi/extension/tests/extension.test.mjs
+herdr-threads setup pi
+herdr-threads setup-status pi
+herdr-threads launch --kind pi --pane PANE -- --model PROVIDER/MODEL
 ```
 
-The real-SDK fixture uses the existing locked research probe dependencies, or an
-explicit `HT_PI_SDK_MODULES` pointing at that `node_modules` directory. Install the
-research lockfile with `npm ci --ignore-scripts` through the same wrapper, then:
+Setup resolves `PI_CODING_AGENT_DIR`, otherwise `~/.pi/agent`. It owns only
+`extensions/herdr-threads/index.js` and `skills/herdr-threads/SKILL.md`, records
+their digests, and grants no permissions. Repeated setup is idempotent; modified
+or foreign files are preserved. `herdr-threads unsetup pi` removes unchanged owned
+files. Use an explicit profile directory for handoff when selecting another root.
+
+Launch accepts separate-value model/provider/thinking, continue/resume/session/fork
+selection, session directory, extension and skill options. A provider requires a
+model. Noninteractive, extension-disabling, secret-bearing and unknown arguments
+are refused. Handoff owns its single positional startup prompt; the assignment
+body remains in the thread. Credentials stay with Pi's provider configuration.
+No exact Pi version is an admission requirement.
+
+Only an explicit native `tui` context enrolls. RPC/JSON/print, arbitrary SDK hosts,
+unknown/child roles and inherited foreign owner PID claims do not enroll. The
+bundled extension declares its current native session, TUI mode, role and process;
+the adapter checks agreement against the actual supported Pi process. One owner
+per process keeps duplicate global/project installations inert. These are
+cooperative claims, not adversarial identity proof.
+
+## Delivery and wake
+
+The native extension registers the session and starts an owned watch channel.
+Lifecycle output supplies bounded guidance, with no mail receipt. The channel
+buffers at most 256 pending/proposed records and 2 MiB of rendered UTF-8 text,
+including staged guidance; metadata and JavaScript overhead are additional.
+Each model boundary selects at most 32 items / 64 KiB, sorted across all retained
+batches by priority, deadline and stable first observation. Watch has no creation
+timestamp, so exact age across replay is not reconstructed. Displaced/omitted
+bodies remain pending; capacity release replaces the watch for canonical replay,
+with bounded reconnect/ACK backoff. Saturation itself does not loop reconnects.
+
+Bodies enter `before_agent_start` or completed `turn_end`/`agent_before_settle`
+results. Other extensions' entries/continuation are preserved. Each retained item
+is proposed at most once per outer run; rejected drafts wait for another run.
+The integration never queues bodies through steer/follow-up/next-turn APIs and
+never starts an idle run through `sendMessage`.
+
+The daemon instead uses the existing native host wake lane. Priority 1 at threshold
+0 stays silent; admitted priorities start a turn only when host identity, idle,
+composer and focused-pane safety guards pass. The typed `herdr-threads: wake up`
+contains no body and preserves the selected model/provider. The boundary supplies
+mail in that ordinary user turn. A connected watch does not suppress native wake.
+Without the channel, explicit `herdr-threads inbox` remains available. Hc has no
+composer wake; named seats need a verified tmux hint and explicit current turn
+state. Hosts without that wake path report `wake=no_wake`.
+
+Runtime diagnostics use Pi's public warning notifications, which preserve its
+renderer and composer. If that notification API is absent or throws, the TUI
+diagnostic is omitted rather than written into the terminal behind the renderer.
+
+The default composer recognizer requires two full-width rules, one blank editor
+row, the expected cwd/stats footer and a styled cursor at column zero. Visible
+drafts, multiline/wrapped input, busy text/tool headers and built-in selectors
+refuse. Unknown/custom editor/footer layouts and unavailable styled output refuse.
+No draft is stashed, edited or restored by this integration. A focused pane still
+needs the existing minute of observed empty composer before native wake.
+
+Two measured screen limits are explicitly accepted:
+
+- Another extension's custom overlay may keep the same empty composer/footer and
+  idle host status while taking keyboard focus. It can intercept native wake.
+  This integration opens no overlays; asynchronously reported UI spans cannot
+  guarantee a veto before an external overlay opens.
+- A spaces-only draft with its cursor moved back to column zero is visually
+  identical to empty, including styled output. Native wake can append to/submit
+  that draft. Spaces with a displaced cursor are refused. This is an observation
+  limit, not a draft-preservation guarantee.
+
+## Receipts and lifecycle
+
+A receipt requires the full exact custom frame/nonce both in the finalized current
+native branch and a subsequent model-bound context callback for the same admitted
+owner/branch. Only then does `watch ack --via context` name complete ordinary/lazy
+IDs. Returned drafts, previews, void API returns, queue acceptance and message-end
+events alone supply no receipt. Truncated mail retains its explicit continuation
+and never ACKs; invitations are accepted separately. Later context transforms or
+provider transport failures remain cooperative observation limits, not proof of
+disk flush or model consumption.
+
+Reload, tree navigation and compaction fence stale context/retries; accepted unseen
+frames are reconciled without duplication. Fixed guidance re-enters after lifecycle
+changes. Startup idle initialization and actual `agent_settled` emit serialized,
+owner-fenced Observer-only Idle reports for named/tmux wake. Shutdown aborts owned
+commands, stops/reaps watch and detached replacement children, and reports liveness
+disconnect without retiring the seat. Cleanup removes only matching old owner env.
+
+## Qualification
+
+Use the repository's configured heavy/toolbox wrappers for development checks:
 
 ```sh
-/var/home/alepar/.cache/herdr-threads-heavy/heavy /var/home/alepar/.cache/herdr-threads-heavy/tb node --test integrations/pi/extension/tests/sdk.test.mjs
+node --test integrations/pi/extension/tests/extension.test.mjs
+node --test integrations/pi/extension/tests/sdk.test.mjs
+python3 scripts/pi-tui-qualify.py --self-test
+python3 scripts/pi-tui-qualify.py --bin target/debug/herdr-threads
+# Same isolated driver through the common e2e entry point:
+python3 scripts/wake-e2e.py --harness pi --bin target/debug/herdr-threads
 ```
 
-It uses private HOME/agent/session directories, a scripted provider and controlled
-CLI transport. It runs the real SDK callbacks, persistence, context and native
-continuation; it makes no authenticated provider request. Its explicit native
-shutdown event exercises cleanup; SDK `dispose()` alone does not emit that event.
+The SDK test uses retained research dependencies or `HT_PI_SDK_MODULES`. The native
+driver uses the official runtime at `--pi`/`--modules`, public isolated setup and
+launch, a scripted provider that refuses model fallback, owned test identities and
+scoped cleanup. It does not install dependencies or touch real profiles. Live
+OpenRouter/DeepSeek is a separate explicit `--live --openrouter-env-file FILE`
+mode: only the named key reaches a private child env file, never argv or logs.
+Artifacts are sanitized and checked against the exact secret before retention.
 
-Real TUI draft/modal behavior remains a qualification gate. Extension UI spans
-are not a universal built-in modal detector. This implementation does not attest
-disk flush, provider receipt or model consumption; a later extension may transform
-context after observation, and downstream transport may fail. Real tools,
-credentialed providers, native reload/resume/fork and integrated daemon replay
-need separate real TUI/integrated qualification. The fixture does exercise actual
-SDK `reload()` and confirms predecessor shutdown and successor admission. Native
-branch inspection uses pi's
-read-only current-branch API, not a transcript-wide history search.
+The Herdr release matrix's Pi stand-in checks launch/handoff argv only. It cannot
+substitute for real native draft/modal, scheduler, delivery or receipt evidence.
+Qualification evidence is recorded under
+`docs/superpowers/runs/2026-11-14-pi-harness/qualification/` with its exact scope.

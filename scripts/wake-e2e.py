@@ -3880,6 +3880,11 @@ def main(argv=None):
                                               "(default $CODEX_HOME or ~/.codex)")
     ap.add_argument("--opencode-model", default=OPENCODE_MODEL,
                     help="--harness opencode: the provider/model its scratch opencode.json selects (default %(default)s)")
+    ap.add_argument("--pi", help="--harness pi: native runtime for the dedicated isolated driver")
+    ap.add_argument("--pi-cases", help="--harness pi: comma-separated cases from the dedicated native driver")
+    ap.add_argument("--pi-live", action="store_true", help="--harness pi: opt-in authorized live OpenRouter qualification")
+    ap.add_argument("--pi-openrouter-env-file", help="--pi-live: explicitly authorized env file; only OPENROUTER_API_KEY is read")
+    ap.add_argument("--pi-model", help="--pi-live: deliberately selected DeepSeek model id")
     ap.add_argument("--hermes-home", help="--harness hermes: a scratch HOME Hermes is installed and logged in to "
                                           "(setup and the plugin enable write there)")
     ap.add_argument("--self-test", action="store_true",
@@ -3887,6 +3892,17 @@ def main(argv=None):
     args = ap.parse_args(argv)
     if args.self_test:
         return self_test()
+    if args.harness == "pi":
+        if args.keep or args.cases != ",".join(CASES):
+            ap.error("pi uses its own driver: select --pi-cases; --keep is unsupported")
+        command = [sys.executable, str(REPO / "scripts/pi-tui-qualify.py"), "--bin", args.bin]
+        for flag, value in (("--pi", args.pi), ("--cases", args.pi_cases), ("--evidence-dir", args.evidence_dir),
+                            ("--openrouter-env-file", args.pi_openrouter_env_file), ("--model", args.pi_model)):
+            if value:
+                command.extend([flag, value])
+        if args.pi_live:
+            command.append("--live")
+        os.execv(sys.executable, command)
     if args.harness_mode == "linux" and args.claude_config_dir:
         ap.error("--claude-config-dir: the linux harness mode never uses a real Claude config")
     if args.harness_mode == "macos" and args.claude_config_dir is None:

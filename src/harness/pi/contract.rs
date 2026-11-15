@@ -35,6 +35,14 @@ pub static CONTRACT: HarnessContract = HarnessContract {
             fields: common_fields![],
         },
         EventContract {
+            event: "TurnEnd",
+            class: EventClass::Other,
+            fields: common_fields![
+                field("source", JsonType::String, true),
+                field("idle", JsonType::Bool, true)
+            ],
+        },
+        EventContract {
             event: "SessionEnd",
             class: EventClass::Other,
             fields: common_fields![],
@@ -59,6 +67,11 @@ pub static DESCRIPTORS: [ContractDescriptor; 1] = [ContractDescriptor {
         },
         EvidenceEvent {
             native_event: "SessionEnd",
+            milestone: None,
+            always_send: false,
+        },
+        EvidenceEvent {
+            native_event: "TurnEnd",
             milestone: None,
             always_send: false,
         },
