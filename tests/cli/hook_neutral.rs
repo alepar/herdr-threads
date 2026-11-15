@@ -194,7 +194,12 @@ fn adapter_completion_requires_successful_stdout_write_and_flush() {
             bytes: vec![],
             flushed: false,
         };
-        let delivered = write_and_flush(b"native hook output", &mut writer);
+        let successful_emit = AtomicBool::new(false);
+        let delivered = {
+            let _guard = OUTPUT.lock().unwrap_or_else(|p| p.into_inner());
+            write_response(b"native hook output", &mut writer, &successful_emit)
+        };
+        assert_eq!(successful_emit.load(Ordering::SeqCst), completed);
         let mut calls = 0;
         complete_after_emit(delivered, || {
             assert!(writer.flushed);
@@ -202,6 +207,102 @@ fn adapter_completion_requires_successful_stdout_write_and_flush() {
             calls += 1;
         });
         assert_eq!(calls, usize::from(completed));
+    }
+}
+
+mod watchdog_emit {
+    use super::*;
+    use crate::test_support::spawn::SpawnOwned;
+
+    const CHILD: &str = "cli::hook::neutral_tests::watchdog_emit::child";
+    const STAGE: &str = "HT_TEST_HOOK_WATCHDOG_STAGE";
+
+    #[test]
+    #[ignore = "owned subprocess of watchdog_preserves_flushed_response_during_blocked_completion"]
+    fn child() {
+        let stage = std::env::var(STAGE).unwrap();
+        let deadline = Arc::new(AtomicU64::new(u64::MAX));
+        let successful_emit = Arc::new(AtomicBool::new(false));
+        spawn_watchdog(
+            Instant::now(),
+            Arc::clone(&deadline),
+            Arc::new(AtomicBool::new(false)),
+            Arc::clone(&successful_emit),
+            !stage.starts_with("legacy"),
+        );
+        if stage.ends_with("pre") {
+            eprintln!("watchdog test: blocked before emit");
+            deadline.store(0, Ordering::SeqCst);
+            loop {
+                std::thread::park();
+            }
+        }
+        let outcome = HookOutcome {
+            stdout: if stage == "empty" {
+                vec![]
+            } else {
+                b"valid hook response\n".to_vec()
+            },
+            diagnostic: None,
+            attention: None,
+            lazy: None,
+            step_completion: None,
+        };
+        let delivered = emit(&outcome, &successful_emit);
+        assert!(delivered);
+        complete_after_emit(delivered, || {
+            eprintln!("watchdog test: blocked after emit");
+            deadline.store(0, Ordering::SeqCst);
+            loop {
+                std::thread::park();
+            }
+        });
+    }
+
+    #[test]
+    fn watchdog_preserves_flushed_response_during_blocked_completion() {
+        for stage in ["post", "empty", "pre", "legacy-post", "legacy-pre"] {
+            let mut command = crate::test_support::spawn::command(std::env::current_exe().unwrap());
+            command
+                .args([
+                    "--exact",
+                    CHILD,
+                    "--ignored",
+                    "--nocapture",
+                    "--test-threads=1",
+                ])
+                .env(STAGE, stage)
+                .stdin(std::process::Stdio::null())
+                .stdout(std::process::Stdio::piped())
+                .stderr(std::process::Stdio::piped());
+            let mut child = command.spawn_owned().unwrap();
+            let bound =
+                Instant::now() + crate::protocol::time::external_bound(Duration::from_secs(3));
+            loop {
+                if child.try_wait().unwrap().is_some() {
+                    break;
+                }
+                assert!(
+                    Instant::now() < bound,
+                    "{stage}: watchdog child did not exit"
+                );
+                std::thread::sleep(Duration::from_millis(10));
+            }
+            let output = child.wait_with_output().unwrap();
+            let stdout = String::from_utf8_lossy(&output.stdout);
+            let stderr = String::from_utf8_lossy(&output.stderr);
+            assert!(output.status.success(), "{stage}: {stdout}\n{stderr}");
+            assert!(
+                stderr.contains("watchdog test: blocked"),
+                "{stage}: {stderr}"
+            );
+            assert!(stderr.contains("hook: budget expired"), "{stage}: {stderr}");
+            assert_eq!(
+                stdout.contains("check-in unavailable (hook refused)"),
+                stage == "pre",
+                "{stage}: {stdout}\n{stderr}"
+            );
+        }
     }
 }
 

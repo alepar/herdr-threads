@@ -339,9 +339,11 @@ pub struct CallerEnvShape {
     pub process_match: Option<fn(&crate::ports::ProcessRecord) -> bool>,
     /// Optional consistency check against the already selected actual ancestor. Refusal never
     /// searches past it for an outer owner. No process is identified by this assertion alone.
+    /// Mutually exclusive with `pid_var`: this checked ancestor must also supply the fingerprint.
     pub validate_process_claim: Option<ProcessClaimValidator>,
     /// A variable in which the harness exports its own pid to its descendants: a process with
     /// that pid is this harness, and its record is preferred for the fingerprint while it exists.
+    /// Mutually exclusive with `validate_process_claim`.
     pub pid_var: Option<&'static str>,
     /// A process of this harness that has no pane (a managed daemon): a caller under it is
     /// refused `managed_daemon`.

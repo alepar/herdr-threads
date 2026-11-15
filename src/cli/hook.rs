@@ -4958,6 +4958,17 @@ static OUTPUT: Mutex<()> = Mutex::new(());
 fn write_and_flush(bytes: &[u8], writer: &mut impl Write) -> bool {
     writer.write_all(bytes).is_ok() && writer.flush().is_ok()
 }
+
+// The caller holds OUTPUT, so the watchdog cannot observe flushed output
+// before its success is recorded. Quiet successful output performs no IO.
+fn write_response(bytes: &[u8], writer: &mut impl Write, successful_emit: &AtomicBool) -> bool {
+    let delivered = bytes.is_empty() || write_and_flush(bytes, writer);
+    if delivered {
+        successful_emit.store(true, Ordering::SeqCst);
+    }
+    delivered
+}
+
 fn complete_after_emit(delivered: bool, complete: impl FnOnce()) {
     if delivered {
         complete();
@@ -4965,13 +4976,14 @@ fn complete_after_emit(delivered: bool, complete: impl FnOnce()) {
 }
 
 /// Returns whether stdout (if any) was fully written and flushed.
-fn emit(outcome: &HookOutcome) -> bool {
+fn emit(outcome: &HookOutcome, successful_emit: &AtomicBool) -> bool {
     let _guard = OUTPUT.lock().unwrap_or_else(|p| p.into_inner());
-    let mut delivered = true;
-    if !outcome.stdout.is_empty() {
+    let delivered = if outcome.stdout.is_empty() {
+        write_response(&[], &mut io::sink(), successful_emit)
+    } else {
         let mut stdout = io::stdout().lock();
-        delivered = write_and_flush(&outcome.stdout, &mut stdout);
-    }
+        write_response(&outcome.stdout, &mut stdout, successful_emit)
+    };
     if let Some(detail) = &outcome.diagnostic {
         let _ = writeln!(io::stderr(), "herdr-threads hook: {detail}");
     }
@@ -5075,11 +5087,13 @@ fn run_hook_process(
     // A foreign session must stay silent: when set, the watchdog exits 0
     // without its "budget expired" line.
     let quiet = Arc::new(AtomicBool::new(false));
+    let successful_emit = Arc::new(AtomicBool::new(false));
     if watchdog == Watchdog::Armed {
         spawn_watchdog(
             started,
             Arc::clone(&deadline_ms),
             Arc::clone(&quiet),
+            Arc::clone(&successful_emit),
             channel_owned,
         );
     }
@@ -5098,10 +5112,13 @@ fn run_hook_process(
     {
         quiet.store(true, Ordering::SeqCst);
         if channel_owned {
-            emit(&channel_owned_outcome(
-                true,
-                quiet_outcome("not running at a supported caller site".into()),
-            ));
+            emit(
+                &channel_owned_outcome(
+                    true,
+                    quiet_outcome("not running at a supported caller site".into()),
+                ),
+                &successful_emit,
+            );
         }
         // Silent, but the payload is still evidence about the harness: a
         // bounded read, then a short best-effort note (never a version probe
@@ -5122,7 +5139,7 @@ fn run_hook_process(
     let args = match parsed {
         Ok(args) => args,
         Err(detail) => {
-            emit(&parse_failure_outcome(detail, env));
+            emit(&parse_failure_outcome(detail, env), &successful_emit);
             return 0;
         }
     };
@@ -5240,7 +5257,7 @@ fn run_hook_process(
             })();
             let outcome = channel_owned_outcome(channel_owned, outcome);
             let outcome = with_subagent_rewrite(&args, &stdin, outcome);
-            let delivered = emit(&outcome);
+            let delivered = emit(&outcome, &successful_emit);
             // Only suppress unchanged-attention delivery after every required
             // canonical completion reports success. Unknown outcomes retry normally.
             let completed = if let (true, Some(lazy)) = (delivered, outcome.lazy) {
@@ -5276,11 +5293,14 @@ fn run_hook_process(
             deadline
         },
         |detail| {
-            emit(&with_subagent_rewrite(
-                &args,
-                &stdin,
-                channel_owned_outcome(channel_owned, quiet_outcome(detail)),
-            ));
+            emit(
+                &with_subagent_rewrite(
+                    &args,
+                    &stdin,
+                    channel_owned_outcome(channel_owned, quiet_outcome(detail)),
+                ),
+                &successful_emit,
+            );
         },
         |deadline| {
             if read_ok {
@@ -5301,11 +5321,13 @@ fn run_hook_process(
 /// Enforce the end-to-end budget even if a call ignores its deadline. The
 /// limit is `deadline_ms` (milliseconds since `started`), which a parsed
 /// lifecycle event raises. `quiet` suppresses the stderr line (foreign
-/// sessions stay silent).
+/// sessions stay silent). A successfully emitted response is final even if
+/// later completion bookkeeping or advisory evidence exceeds the budget.
 fn spawn_watchdog(
     started: Instant,
     deadline_ms: Arc<AtomicU64>,
     quiet: Arc<AtomicBool>,
+    successful_emit: Arc<AtomicBool>,
     channel_owned: bool,
 ) {
     std::thread::spawn(move || {
@@ -5316,7 +5338,7 @@ fn spawn_watchdog(
                 if !quiet.load(Ordering::SeqCst) {
                     let _ = writeln!(io::stderr(), "herdr-threads hook: budget expired");
                 }
-                if channel_owned {
+                if channel_owned && !successful_emit.load(Ordering::SeqCst) {
                     let refused =
                         channel_owned_outcome(true, quiet_outcome("budget expired".into()));
                     let mut stdout = io::stdout().lock();

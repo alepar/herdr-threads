@@ -46,6 +46,18 @@ fn claude_table() -> FakeTable {
 const CLAUDE_ENV: &[(&str, &str)] = &[("CLAUDE_CODE_SESSION_ID", "s1"), ("CLAUDE_PID", "80")];
 
 #[test]
+fn process_claim_validation_has_no_exported_pid_override() {
+    let shapes: Vec<_> = builtins().caller_shapes().collect();
+    assert!(!shapes.is_empty());
+    for (id, shape) in shapes {
+        assert!(
+            shape.validate_process_claim.is_none() || shape.pid_var.is_none(),
+            "{id}: validating the selected ancestor cannot fingerprint a different exported pid"
+        );
+    }
+}
+
+#[test]
 fn claude_top_level_from_session_and_claude_pid() {
     let claim = run(&claude_table(), CLAUDE_ENV, None).unwrap();
     assert_eq!(claim.harness, Harness::Claude);
