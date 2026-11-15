@@ -475,7 +475,7 @@ pub struct InstalledVersion {
 
 /// Fixed first-party guidance: permission requests remain Codex's decision,
 /// never a grant from hook text or from untrusted peer messages.
-pub const CODEX_COMMAND_GUIDANCE: &str = "Codex: run herdr-threads (ht) commands outside the sandbox through an approved CLI-only command rule. Without a rule, request sandbox_permissions=\"require_escalated\" with a short justification and CLI-only prefix_rule, never a shell rule. With approval never (including exec), use ordinary shell calls with a preapproved CLI rule; explicit escalation is unavailable. Keep other commands sandboxed. If approval is refused or unavailable, report it; never bypass policy or enable networking.\n";
+pub const CODEX_COMMAND_GUIDANCE: &str = "Codex: herdr-threads (ht) needs host access, so run its commands outside the sandbox through an approved CLI-only command rule. Without a rule, request sandbox_permissions=\"require_escalated\" with a short justification and CLI-only prefix_rule, never a shell rule. With approval never (including exec), use ordinary shell calls with a preapproved CLI rule; explicit escalation is unavailable. This covers only herdr-threads (ht); other commands follow your usual policy. If approval is refused or unavailable, report it; never bypass policy.\n";
 
 /// Codex's registered HooksV1 input contract.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]

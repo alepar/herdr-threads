@@ -160,7 +160,7 @@ Managed launch requires the owned hooks; it does not require a measured socket-p
 version or a socket allowance. Launch leaves the approval mode and network permissions
 unchanged. The hook and [agent guide](../skill/SKILL.md) tell Codex to run only
 `herdr-threads` / `ht` commands outside the sandbox through an approved CLI-specific
-rule or approval request. Other commands stay sandboxed. This is separate from the
+rule or approval request; other commands follow Codex's usual policy. This is separate from the
 unqualified `updatedInput` invocation rewrite described above.
 
 ```sh

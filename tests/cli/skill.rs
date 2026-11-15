@@ -383,11 +383,11 @@ fn user_intent_guidance_schema2_and_lifetimes() {
 
 #[test]
 fn user_intent_guidance_preserves_codex_permissions_verbatim() {
-    const PARAGRAPH: &str = "Codex: run `herdr-threads` / `ht` outside the sandbox through a CLI-only approved rule; otherwise request `sandbox_permissions=\"require_escalated\"` with justification and a CLI-only `prefix_rule`, never a shell rule. With approval `never` (including `exec`), use ordinary calls with a preapproved rule. Keep other commands sandboxed; report refused/unavailable permission, never bypass policy or enable networking.";
+    const PARAGRAPH: &str = "Codex: `herdr-threads` / `ht` needs host access, so run it outside the sandbox through a CLI-only approved rule; otherwise request `sandbox_permissions=\"require_escalated\"` with justification and a CLI-only `prefix_rule`, never a shell rule. With approval `never` (including `exec`), use ordinary calls with a preapproved rule. This covers only `herdr-threads` / `ht`; other commands follow your usual policy. Report refused/unavailable permission; never bypass policy.";
     assert!(SKILL_MD.lines().any(|line| line == PARAGRAPH));
     assert_eq!(
         CODEX_COMMAND_GUIDANCE,
-        "Codex: run herdr-threads (ht) commands outside the sandbox through an approved CLI-only command rule. Without a rule, request sandbox_permissions=\"require_escalated\" with a short justification and CLI-only prefix_rule, never a shell rule. With approval never (including exec), use ordinary shell calls with a preapproved CLI rule; explicit escalation is unavailable. Keep other commands sandboxed. If approval is refused or unavailable, report it; never bypass policy or enable networking.\n"
+        "Codex: herdr-threads (ht) needs host access, so run its commands outside the sandbox through an approved CLI-only command rule. Without a rule, request sandbox_permissions=\"require_escalated\" with a short justification and CLI-only prefix_rule, never a shell rule. With approval never (including exec), use ordinary shell calls with a preapproved CLI rule; explicit escalation is unavailable. This covers only herdr-threads (ht); other commands follow your usual policy. If approval is refused or unavailable, report it; never bypass policy.\n"
     );
 }
 

@@ -2983,7 +2983,8 @@ fn lazy_mail_reaches_the_next_codex_tool_hook() {
 fn codex_static_guidance_rides_lifecycle_check_ins_only() {
     const INSTRUCTION: &str = "Before using threads, run herdr-threads skill";
     const CHILD: &str = "Subagents may discover, read and summarize";
-    const GUIDANCE: &str = "Codex: run herdr-threads (ht) commands outside the sandbox";
+    const GUIDANCE: &str =
+        "Codex: herdr-threads (ht) needs host access, so run its commands outside the sandbox";
     let fx = Fixture::start();
     fx.register("w9:p2", "peer-sess");
     let started = fx.codex_hook(

@@ -46,7 +46,7 @@ An ACK records **receipt only**: the top-level agent claims receipt of this exac
 - **First contact and fast-forward.** A session new to the seat starts at the seat's furthest-read point. The hook shows `history: #NAME (ID): N earlier messages, M from people (K open requests), last Xm ago` per joined thread (at most 8, then `+N more threads`). A resumed session with more unread than one inbox page shows `history: resumed past N messages:` with per-thread counts and the last message, and skips ahead (pending ACK obligations stay). Catch up with `herdr-threads summary THREAD`.
 - **Presence.** `thread participants`, `thread show` and `seat list` show `active` (a connected binding) or `inactive` on every row; `--json` or `--human` also lists each binding's `connected` state.
 
-Codex: run `herdr-threads` / `ht` outside the sandbox through a CLI-only approved rule; otherwise request `sandbox_permissions="require_escalated"` with justification and a CLI-only `prefix_rule`, never a shell rule. With approval `never` (including `exec`), use ordinary calls with a preapproved rule. Keep other commands sandboxed; report refused/unavailable permission, never bypass policy or enable networking.
+Codex: `herdr-threads` / `ht` needs host access, so run it outside the sandbox through a CLI-only approved rule; otherwise request `sandbox_permissions="require_escalated"` with justification and a CLI-only `prefix_rule`, never a shell rule. With approval `never` (including `exec`), use ordinary calls with a preapproved rule. This covers only `herdr-threads` / `ht`; other commands follow your usual policy. Report refused/unavailable permission; never bypass policy.
 
 ## Hook output and ready commands
 
