@@ -1,0 +1,299 @@
+{
+  "version": "codex-cli 0.167.0",
+  "cases": [
+    {
+      "case": "idle_marker_hook_delivery",
+      "passed": true,
+      "queue": {
+        "returncode": 0,
+        "stdout": "Queued message 01a1dc7b-0ec3-7843-8d7e-5c048e6aa7e7 for thread 01a1dc7a-fbb1-7933-b27e-f6539922c3fa.\n",
+        "stderr": "WARNING: proceeding, even though we could not create PATH aliases: Refusing to create helper binaries under temporary dir \"/tmp\" (codex_home: AbsolutePathBuf(\"$SPIKE_ROOT/codex\"))\n",
+        "seconds": 0.2
+      },
+      "seconds_to_stop": 6.813,
+      "counts_before": {
+        "UserPromptSubmit": 1,
+        "Stop": 1,
+        "Interrupt": 0
+      },
+      "counts_after": {
+        "UserPromptSubmit": 2,
+        "Stop": 2,
+        "Interrupt": 0
+      },
+      "injection_events": [
+        {
+          "session_id": "01a1dc7a-fbb1-7933-b27e-f6539922c3fa",
+          "turn_id": "01a1dc7b-2030-7321-87f8-10b9e4e3cc3d",
+          "prompt": "herdr-threads: wake up",
+          "event": "UserPromptSubmit",
+          "at": 1794700419.310426,
+          "injected": [
+            "MAIL_93a78baecccd"
+          ]
+        }
+      ],
+      "model_token_in_legacy_rollout": true
+    }
+  ],
+  "error": null,
+  "session": "01a1dc7a-fbb1-7933-b27e-f6539922c3fa",
+  "hooks": [
+    {
+      "session_id": "01a1dc7a-fbb1-7933-b27e-f6539922c3fa",
+      "event": "SessionStart",
+      "at": 1794700411.1949484
+    },
+    {
+      "session_id": "01a1dc7a-fbb1-7933-b27e-f6539922c3fa",
+      "turn_id": "01a1dc7a-fbd2-7ce2-92a7-e14ce3afaf43",
+      "prompt": "Reply exactly SPIKE_READY without using tools.",
+      "event": "UserPromptSubmit",
+      "at": 1794700411.3548963
+    },
+    {
+      "session_id": "01a1dc7a-fbb1-7933-b27e-f6539922c3fa",
+      "turn_id": "01a1dc7a-fbd2-7ce2-92a7-e14ce3afaf43",
+      "stop_hook_active": false,
+      "event": "Stop",
+      "at": 1794700414.594192
+    },
+    {
+      "session_id": "01a1dc7a-fbb1-7933-b27e-f6539922c3fa",
+      "turn_id": "01a1dc7b-2030-7321-87f8-10b9e4e3cc3d",
+      "prompt": "herdr-threads: wake up",
+      "event": "UserPromptSubmit",
+      "at": 1794700419.310426,
+      "injected": [
+        "MAIL_93a78baecccd"
+      ]
+    },
+    {
+      "session_id": "01a1dc7a-fbb1-7933-b27e-f6539922c3fa",
+      "turn_id": "01a1dc7b-2030-7321-87f8-10b9e4e3cc3d",
+      "stop_hook_active": false,
+      "event": "Stop",
+      "at": 1794700421.269746
+    }
+  ],
+  "database_schema": [
+    {
+      "database": "thread_history_1.sqlite",
+      "table": "thread_turns",
+      "columns": [
+        "thread_id",
+        "turn_id",
+        "rollout_ordinal",
+        "status",
+        "error_json",
+        "started_at",
+        "completed_at",
+        "duration_ms",
+        "first_user_item_id",
+        "final_agent_item_id",
+        "rollout_byte_offset",
+        "rollout_end_ordinal",
+        "rollout_end_byte_offset",
+        "root_turn_id"
+      ],
+      "rows": 2
+    },
+    {
+      "database": "thread_history_1.sqlite",
+      "table": "thread_items",
+      "columns": [
+        "thread_id",
+        "turn_id",
+        "item_id",
+        "rollout_ordinal",
+        "created_at_ms",
+        "item_json",
+        "item_type",
+        "updated_at_ordinal",
+        "started_at_ms",
+        "completed_at_ms"
+      ],
+      "rows": 4
+    },
+    {
+      "database": "thread_history_1.sqlite",
+      "table": "thread_history_projection_state",
+      "columns": [
+        "thread_id",
+        "next_rollout_byte_offset",
+        "next_rollout_ordinal"
+      ],
+      "rows": 1
+    },
+    {
+      "database": "thread_history_1.sqlite",
+      "table": "thread_realtime_items",
+      "columns": [
+        "thread_id",
+        "item_id",
+        "rollout_ordinal",
+        "created_at_ms",
+        "item_type",
+        "item_json"
+      ],
+      "rows": 0
+    },
+    {
+      "database": "queue_1.sqlite",
+      "table": "queued_items",
+      "columns": [
+        "id",
+        "thread_id",
+        "payload_json",
+        "queue_order",
+        "created_at_ms",
+        "updated_at_ms"
+      ],
+      "rows": 0
+    },
+    {
+      "database": "queue_1.sqlite",
+      "table": "queued_thread_revisions",
+      "columns": [
+        "revision",
+        "thread_id"
+      ],
+      "rows": 1
+    },
+    {
+      "database": "goals_1.sqlite",
+      "table": "thread_goals",
+      "columns": [
+        "thread_id",
+        "goal_id",
+        "objective",
+        "status",
+        "token_budget",
+        "tokens_used",
+        "time_used_seconds",
+        "created_at_ms",
+        "updated_at_ms"
+      ],
+      "rows": 0
+    },
+    {
+      "database": "goals_1.sqlite",
+      "table": "thread_goal_continuation_deferrals",
+      "columns": [
+        "thread_id"
+      ],
+      "rows": 0
+    },
+    {
+      "database": "state_5.sqlite",
+      "table": "threads",
+      "columns": [
+        "id",
+        "rollout_path",
+        "created_at",
+        "updated_at",
+        "source",
+        "model_provider",
+        "cwd",
+        "title",
+        "sandbox_policy",
+        "approval_mode",
+        "tokens_used",
+        "has_user_event",
+        "archived",
+        "archived_at",
+        "git_sha",
+        "git_branch",
+        "git_origin_url",
+        "cli_version",
+        "first_user_message",
+        "agent_nickname",
+        "agent_role",
+        "memory_mode",
+        "model",
+        "reasoning_effort",
+        "agent_path",
+        "created_at_ms",
+        "updated_at_ms",
+        "thread_source",
+        "preview",
+        "recency_at",
+        "recency_at_ms",
+        "history_mode",
+        "name",
+        "is_pinned",
+        "thread_section_id",
+        "section_position",
+        "section_entered_at_ms",
+        "project_id",
+        "originator",
+        "daybreak_enabled",
+        "creator_user_id",
+        "creator_account_id",
+        "attached_thread_parent_id"
+      ],
+      "rows": 1
+    },
+    {
+      "database": "state_5.sqlite",
+      "table": "thread_dynamic_tools",
+      "columns": [
+        "thread_id",
+        "position",
+        "name",
+        "description",
+        "input_schema",
+        "defer_loading",
+        "namespace"
+      ],
+      "rows": 0
+    },
+    {
+      "database": "state_5.sqlite",
+      "table": "thread_spawn_edges",
+      "columns": [
+        "parent_thread_id",
+        "child_thread_id",
+        "status"
+      ],
+      "rows": 0
+    },
+    {
+      "database": "state_5.sqlite",
+      "table": "thread_sections",
+      "columns": [
+        "id",
+        "name",
+        "appearance"
+      ],
+      "rows": 1
+    },
+    {
+      "database": "state_5.sqlite",
+      "table": "thread_attachments",
+      "columns": [
+        "id",
+        "thread_id",
+        "attachment_type",
+        "identity_key",
+        "payload",
+        "created_at"
+      ],
+      "rows": 0
+    },
+    {
+      "database": "state_5.sqlite",
+      "table": "thread_read_receipts",
+      "columns": [
+        "thread_id",
+        "first_unread_turn",
+        "revision",
+        "last_published_turn"
+      ],
+      "rows": 1
+    }
+  ],
+  "source_auth_unchanged": true,
+  "private_auth_refreshed": false,
+  "cleanup_tagged_descendants": []
+}

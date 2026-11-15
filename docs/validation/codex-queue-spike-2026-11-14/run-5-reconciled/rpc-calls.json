@@ -1,0 +1,220 @@
+{
+  "calls": [
+    {
+      "method": "initialize",
+      "response": {
+        "id": 1,
+        "result": {
+          "userAgent": "herdr_threads_queue_spike/0.167.0 (Fedora 44.0.0; x86_64) herdr/0.9.5 (herdr_threads_queue_spike; 0.1.0)",
+          "codexHome": "$SPIKE_ROOT/codex",
+          "platformFamily": "unix",
+          "platformOs": "linux"
+        }
+      }
+    },
+    {
+      "method": "thread/queue/add",
+      "response": {
+        "id": 2,
+        "result": {
+          "queuedSubmission": {
+            "id": "01a1dc81-6fc7-73c0-a32f-64fd51e36a2d",
+            "input": [
+              {
+                "type": "text",
+                "text": "herdr-threads: wake up",
+                "text_elements": []
+              }
+            ],
+            "clientUserMessageId": "aeebc517-8c02-4cbd-940c-2a25467eef22"
+          }
+        }
+      }
+    },
+    {
+      "method": "thread/queue/add",
+      "response": {
+        "id": 3,
+        "result": {
+          "queuedSubmission": {
+            "id": "01a1dc81-702b-73f0-b837-2a3706f45546",
+            "input": [
+              {
+                "type": "text",
+                "text": "herdr-threads: wake up",
+                "text_elements": []
+              }
+            ],
+            "clientUserMessageId": "aeebc517-8c02-4cbd-940c-2a25467eef22"
+          }
+        }
+      }
+    },
+    {
+      "method": "thread/queue/list",
+      "response": {
+        "id": 4,
+        "result": {
+          "data": [
+            {
+              "id": "01a1dc81-6fc7-73c0-a32f-64fd51e36a2d",
+              "input": [
+                {
+                  "type": "text",
+                  "text": "herdr-threads: wake up",
+                  "text_elements": []
+                }
+              ],
+              "clientUserMessageId": "aeebc517-8c02-4cbd-940c-2a25467eef22"
+            },
+            {
+              "id": "01a1dc81-702b-73f0-b837-2a3706f45546",
+              "input": [
+                {
+                  "type": "text",
+                  "text": "herdr-threads: wake up",
+                  "text_elements": []
+                }
+              ],
+              "clientUserMessageId": "aeebc517-8c02-4cbd-940c-2a25467eef22"
+            }
+          ],
+          "nextCursor": null
+        }
+      }
+    },
+    {
+      "method": "thread/queue/delete",
+      "response": {
+        "id": 5,
+        "result": {
+          "deleted": true
+        }
+      }
+    },
+    {
+      "method": "thread/queue/delete",
+      "response": {
+        "id": 6,
+        "result": {
+          "deleted": false
+        }
+      }
+    },
+    {
+      "method": "thread/queue/delete",
+      "response": {
+        "id": 7,
+        "result": {
+          "deleted": true
+        }
+      }
+    },
+    {
+      "method": "thread/queue/list",
+      "response": {
+        "id": 8,
+        "result": {
+          "data": [],
+          "nextCursor": null
+        }
+      }
+    },
+    {
+      "method": "thread/queue/add",
+      "response": {
+        "id": 9,
+        "result": {
+          "queuedSubmission": {
+            "id": "01a1dc81-c755-7ec3-ab5a-6eaf937092b0",
+            "input": [
+              {
+                "type": "text",
+                "text": "herdr-threads: wake up",
+                "text_elements": []
+              }
+            ],
+            "clientUserMessageId": "ea19504f-047f-401a-a2a1-3346866a2b94"
+          }
+        }
+      }
+    },
+    {
+      "method": "thread/queue/list",
+      "response": {
+        "id": 10,
+        "result": {
+          "data": [],
+          "nextCursor": null
+        }
+      }
+    },
+    {
+      "method": "thread/queue/add",
+      "response": {
+        "id": 11,
+        "result": {
+          "queuedSubmission": {
+            "id": "01a1dc81-d446-7db1-94a6-1773a27bb232",
+            "input": [
+              {
+                "type": "text",
+                "text": "herdr-threads: wake up",
+                "text_elements": []
+              }
+            ],
+            "clientUserMessageId": "ea19504f-047f-401a-a2a1-3346866a2b94"
+          }
+        }
+      }
+    },
+    {
+      "method": "thread/queue/list",
+      "response": {
+        "id": 12,
+        "result": {
+          "data": [],
+          "nextCursor": null
+        }
+      }
+    },
+    {
+      "method": "thread/loaded/list",
+      "response": {
+        "id": 13,
+        "result": {
+          "data": [],
+          "nextCursor": null
+        }
+      }
+    }
+  ],
+  "notifications": [
+    {
+      "method": "configWarning",
+      "params": {
+        "summary": "Codex is ignoring 1 unrecognized configuration setting. Check for typos or deprecated settings.\n  user ($SPIKE_ROOT/codex/config.toml): `disable_update_check` is ignored.",
+        "details": null
+      },
+      "emittedAtMs": 1794700829855
+    },
+    {
+      "method": "remoteControl/status/changed",
+      "params": {
+        "status": "disabled",
+        "serverName": "blacky",
+        "installationId": "27110452-8644-4997-aae2-7433e21306b5",
+        "environmentId": null
+      },
+      "emittedAtMs": 1794700829855
+    },
+    {
+      "method": "account/updated",
+      "params": {
+        "authMode": "chatgpt",
+        "planType": "pro"
+      },
+      "emittedAtMs": 1794700830213
+    }
+  ]
+}

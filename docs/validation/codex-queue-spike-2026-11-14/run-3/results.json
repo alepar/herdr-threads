@@ -1,0 +1,1422 @@
+{
+  "version": "codex-cli 0.167.0",
+  "cases": [
+    {
+      "case": "idle_marker_hook_delivery",
+      "passed": true,
+      "queue": {
+        "returncode": 0,
+        "stdout": "Queued message 01a1dc7d-104f-77c0-9638-e1c60307f1aa for thread 01a1dc7d-03aa-7912-b0db-5b99b05f51c9.\n",
+        "stderr": "WARNING: proceeding, even though we could not create PATH aliases: Refusing to create helper binaries under temporary dir \"/tmp\" (codex_home: AbsolutePathBuf(\"$SPIKE_ROOT/codex\"))\n",
+        "seconds": 0.2,
+        "pending_rows_after_return": [
+          {
+            "id": "01a1dc7d-104f-77c0-9638-e1c60307f1aa",
+            "thread": "01a1dc7d-03aa-7912-b0db-5b99b05f51c9"
+          }
+        ]
+      },
+      "seconds_to_stop": 8.014,
+      "counts_before": {
+        "UserPromptSubmit": 1,
+        "Stop": 1,
+        "Interrupt": 0
+      },
+      "counts_after": {
+        "UserPromptSubmit": 2,
+        "Stop": 2,
+        "Interrupt": 0
+      },
+      "injection_events": [
+        {
+          "session_id": "01a1dc7d-03aa-7912-b0db-5b99b05f51c9",
+          "turn_id": "01a1dc7d-2809-7113-9b1b-ef4d5cde3ef0",
+          "prompt": "herdr-threads: wake up",
+          "event": "UserPromptSubmit",
+          "at": 1794700552.3865619,
+          "injected": [
+            "MAIL_e838ebd2d3ae"
+          ]
+        }
+      ],
+      "model_token_in_legacy_rollout": true,
+      "draft_survived_and_submitted": null,
+      "pending_rows_after_delivery": []
+    },
+    {
+      "case": "draft_is_preserved",
+      "passed": true,
+      "queue": {
+        "returncode": 0,
+        "stdout": "Queued message 01a1dc7d-3380-7961-8cae-66843e2a8074 for thread 01a1dc7d-03aa-7912-b0db-5b99b05f51c9.\n",
+        "stderr": "WARNING: proceeding, even though we could not create PATH aliases: Refusing to create helper binaries under temporary dir \"/tmp\" (codex_home: AbsolutePathBuf(\"$SPIKE_ROOT/codex\"))\n",
+        "seconds": 0.2,
+        "pending_rows_after_return": [
+          {
+            "id": "01a1dc7d-3380-7961-8cae-66843e2a8074",
+            "thread": "01a1dc7d-03aa-7912-b0db-5b99b05f51c9"
+          }
+        ]
+      },
+      "seconds_to_stop": 11.02,
+      "counts_before": {
+        "UserPromptSubmit": 2,
+        "Stop": 2,
+        "Interrupt": 0
+      },
+      "counts_after": {
+        "UserPromptSubmit": 4,
+        "Stop": 4,
+        "Interrupt": 0
+      },
+      "injection_events": [
+        {
+          "session_id": "01a1dc7d-03aa-7912-b0db-5b99b05f51c9",
+          "turn_id": "01a1dc7d-4f20-7c53-8c77-55d31b1fac25",
+          "prompt": "herdr-threads: wake up",
+          "event": "UserPromptSubmit",
+          "at": 1794700562.4453866,
+          "injected": [
+            "MAIL_e9f8a0bc822d"
+          ]
+        }
+      ],
+      "model_token_in_legacy_rollout": true,
+      "draft_survived_and_submitted": true,
+      "pending_rows_after_delivery": []
+    },
+    {
+      "case": "duplicate_submissions_are_not_deduplicated",
+      "passed": true,
+      "queue_a": {
+        "returncode": 0,
+        "stdout": "Queued message 01a1dc7d-5e8b-7ab1-a551-2c1ae897dfbc for thread 01a1dc7d-03aa-7912-b0db-5b99b05f51c9.\n",
+        "stderr": "WARNING: proceeding, even though we could not create PATH aliases: Refusing to create helper binaries under temporary dir \"/tmp\" (codex_home: AbsolutePathBuf(\"$SPIKE_ROOT/codex\"))\n",
+        "seconds": 0.2,
+        "pending_rows_after_return": [
+          {
+            "id": "01a1dc7d-5e8b-7ab1-a551-2c1ae897dfbc",
+            "thread": "01a1dc7d-03aa-7912-b0db-5b99b05f51c9"
+          }
+        ]
+      },
+      "queue_b": {
+        "returncode": 0,
+        "stdout": "Queued message 01a1dc7d-5f53-77a0-8605-d3428ac12e37 for thread 01a1dc7d-03aa-7912-b0db-5b99b05f51c9.\n",
+        "stderr": "WARNING: proceeding, even though we could not create PATH aliases: Refusing to create helper binaries under temporary dir \"/tmp\" (codex_home: AbsolutePathBuf(\"$SPIKE_ROOT/codex\"))\n",
+        "seconds": 0.2,
+        "pending_rows_after_return": [
+          {
+            "id": "01a1dc7d-5e8b-7ab1-a551-2c1ae897dfbc",
+            "thread": "01a1dc7d-03aa-7912-b0db-5b99b05f51c9"
+          },
+          {
+            "id": "01a1dc7d-5f53-77a0-8605-d3428ac12e37",
+            "thread": "01a1dc7d-03aa-7912-b0db-5b99b05f51c9"
+          }
+        ]
+      },
+      "counts_before": {
+        "UserPromptSubmit": 4,
+        "Stop": 4,
+        "Interrupt": 0
+      },
+      "counts_after": {
+        "UserPromptSubmit": 6,
+        "Stop": 6,
+        "Interrupt": 0
+      }
+    },
+    {
+      "case": "busy_deferral_and_stale_marker",
+      "passed": true,
+      "queue": {
+        "returncode": 0,
+        "stdout": "Queued message 01a1dc7d-948a-7381-80ab-ddae65eafffe for thread 01a1dc7d-03aa-7912-b0db-5b99b05f51c9.\n",
+        "stderr": "WARNING: proceeding, even though we could not create PATH aliases: Refusing to create helper binaries under temporary dir \"/tmp\" (codex_home: AbsolutePathBuf(\"$SPIKE_ROOT/codex\"))\n",
+        "seconds": 0.2,
+        "pending_rows_after_return": [
+          {
+            "id": "01a1dc7d-948a-7381-80ab-ddae65eafffe",
+            "thread": "01a1dc7d-03aa-7912-b0db-5b99b05f51c9"
+          }
+        ]
+      },
+      "no_second_turn_while_tool_running": true,
+      "delivered_in_busy_turn": true,
+      "injection": {
+        "session_id": "01a1dc7d-03aa-7912-b0db-5b99b05f51c9",
+        "turn_id": "01a1dc7d-87f1-7c13-9df3-11526ed9aa30",
+        "tool_name": "Bash",
+        "event": "PostToolUse",
+        "at": 1794700592.3983378,
+        "injected": [
+          "BUSY_MAIL_7573bb2b9d"
+        ]
+      },
+      "counts_before": {
+        "UserPromptSubmit": 6,
+        "Stop": 6,
+        "Interrupt": 0
+      },
+      "counts_after": {
+        "UserPromptSubmit": 8,
+        "Stop": 8,
+        "Interrupt": 0
+      },
+      "deferred_marker_started_extra_turn": true
+    },
+    {
+      "case": "interrupted_queue_is_held",
+      "passed": true,
+      "queue": {
+        "returncode": 0,
+        "stdout": "Queued message 01a1dc7d-e8fb-7ae2-adae-8997e7c548c7 for thread 01a1dc7d-03aa-7912-b0db-5b99b05f51c9.\n",
+        "stderr": "WARNING: proceeding, even though we could not create PATH aliases: Refusing to create helper binaries under temporary dir \"/tmp\" (codex_home: AbsolutePathBuf(\"$SPIKE_ROOT/codex\"))\n",
+        "seconds": 0.2,
+        "pending_rows_after_return": [
+          {
+            "id": "01a1dc7d-e8fb-7ae2-adae-8997e7c548c7",
+            "thread": "01a1dc7d-03aa-7912-b0db-5b99b05f51c9"
+          }
+        ]
+      },
+      "counts_before": {
+        "UserPromptSubmit": 8,
+        "Stop": 8,
+        "Interrupt": 0
+      },
+      "counts_after": {
+        "UserPromptSubmit": 9,
+        "Stop": 8,
+        "Interrupt": 1
+      },
+      "pending_rows": [
+        {
+          "id": "01a1dc7d-e8fb-7ae2-adae-8997e7c548c7",
+          "thread": "01a1dc7d-03aa-7912-b0db-5b99b05f51c9"
+        }
+      ]
+    },
+    {
+      "case": "explicit_turn_releases_interrupted_queue",
+      "passed": true,
+      "counts_after": {
+        "UserPromptSubmit": 11,
+        "Stop": 10,
+        "Interrupt": 1
+      }
+    },
+    {
+      "case": "wrong_storage_does_not_reach_target",
+      "passed": true,
+      "queue": {
+        "returncode": 1,
+        "stdout": "",
+        "stderr": "WARNING: proceeding, even though we could not create PATH aliases: Refusing to create helper binaries under temporary dir \"/tmp\" (codex_home: AbsolutePathBuf(\"$SPIKE_ROOT/other-codex\"))\nError: failed to queue session message: thread/queue/add failed: failed to read thread: invalid thread-store request: no rollout found for thread id 01a1dc7d-03aa-7912-b0db-5b99b05f51c9 (code -32603)\n",
+        "seconds": 0.2,
+        "pending_rows_after_return": []
+      },
+      "counts_before": {
+        "UserPromptSubmit": 11,
+        "Stop": 10,
+        "Interrupt": 1
+      },
+      "counts_after": {
+        "UserPromptSubmit": 11,
+        "Stop": 10,
+        "Interrupt": 1
+      }
+    },
+    {
+      "case": "modal_picker_queue_behavior",
+      "passed": true,
+      "observational": true,
+      "turn_started_while_picker_open": true,
+      "queue": {
+        "returncode": 0,
+        "stdout": "Queued message 01a1dc7e-bb3c-7171-b20c-b614a8eb034f for thread 01a1dc7d-03aa-7912-b0db-5b99b05f51c9.\n",
+        "stderr": "WARNING: proceeding, even though we could not create PATH aliases: Refusing to create helper binaries under temporary dir \"/tmp\" (codex_home: AbsolutePathBuf(\"$SPIKE_ROOT/codex\"))\n",
+        "seconds": 0.2,
+        "pending_rows_after_return": [
+          {
+            "id": "01a1dc7e-bb3c-7171-b20c-b614a8eb034f",
+            "thread": "01a1dc7d-03aa-7912-b0db-5b99b05f51c9"
+          }
+        ]
+      },
+      "counts_before": {
+        "UserPromptSubmit": 11,
+        "Stop": 10,
+        "Interrupt": 1
+      },
+      "counts_while_open": {
+        "UserPromptSubmit": 12,
+        "Stop": 11,
+        "Interrupt": 1
+      },
+      "counts_after_close": {
+        "UserPromptSubmit": 12,
+        "Stop": 11,
+        "Interrupt": 1
+      }
+    }
+  ],
+  "error": null,
+  "session": "01a1dc7d-03aa-7912-b0db-5b99b05f51c9",
+  "hooks": [
+    {
+      "session_id": "01a1dc7d-03aa-7912-b0db-5b99b05f51c9",
+      "event": "SessionStart",
+      "at": 1794700544.2401865
+    },
+    {
+      "session_id": "01a1dc7d-03aa-7912-b0db-5b99b05f51c9",
+      "turn_id": "01a1dc7d-03c2-78f0-9ce1-787b91df1300",
+      "prompt": "Reply exactly SPIKE_READY without using tools.",
+      "event": "UserPromptSubmit",
+      "at": 1794700544.4177356
+    },
+    {
+      "session_id": "01a1dc7d-03aa-7912-b0db-5b99b05f51c9",
+      "turn_id": "01a1dc7d-03c2-78f0-9ce1-787b91df1300",
+      "stop_hook_active": false,
+      "event": "Stop",
+      "at": 1794700545.977424
+    },
+    {
+      "session_id": "01a1dc7d-03aa-7912-b0db-5b99b05f51c9",
+      "turn_id": "01a1dc7d-2809-7113-9b1b-ef4d5cde3ef0",
+      "prompt": "herdr-threads: wake up",
+      "event": "UserPromptSubmit",
+      "at": 1794700552.3865619,
+      "injected": [
+        "MAIL_e838ebd2d3ae"
+      ]
+    },
+    {
+      "session_id": "01a1dc7d-03aa-7912-b0db-5b99b05f51c9",
+      "turn_id": "01a1dc7d-2809-7113-9b1b-ef4d5cde3ef0",
+      "stop_hook_active": false,
+      "event": "Stop",
+      "at": 1794700553.9182546
+    },
+    {
+      "session_id": "01a1dc7d-03aa-7912-b0db-5b99b05f51c9",
+      "turn_id": "01a1dc7d-4f20-7c53-8c77-55d31b1fac25",
+      "prompt": "herdr-threads: wake up",
+      "event": "UserPromptSubmit",
+      "at": 1794700562.4453866,
+      "injected": [
+        "MAIL_e9f8a0bc822d"
+      ]
+    },
+    {
+      "session_id": "01a1dc7d-03aa-7912-b0db-5b99b05f51c9",
+      "turn_id": "01a1dc7d-4f20-7c53-8c77-55d31b1fac25",
+      "stop_hook_active": false,
+      "event": "Stop",
+      "at": 1794700563.9165154
+    },
+    {
+      "session_id": "01a1dc7d-03aa-7912-b0db-5b99b05f51c9",
+      "turn_id": "01a1dc7d-55dc-78a3-964f-069c7a4f9c06",
+      "prompt": "UNSUBMITTED_DRAFT_6942",
+      "event": "UserPromptSubmit",
+      "at": 1794700564.1218908
+    },
+    {
+      "session_id": "01a1dc7d-03aa-7912-b0db-5b99b05f51c9",
+      "turn_id": "01a1dc7d-55dc-78a3-964f-069c7a4f9c06",
+      "stop_hook_active": false,
+      "event": "Stop",
+      "at": 1794700565.9799566
+    },
+    {
+      "session_id": "01a1dc7d-03aa-7912-b0db-5b99b05f51c9",
+      "turn_id": "01a1dc7d-7635-70b0-8bf9-49bfa91da403",
+      "prompt": "herdr-threads: wake up",
+      "event": "UserPromptSubmit",
+      "at": 1794700572.3762717
+    },
+    {
+      "session_id": "01a1dc7d-03aa-7912-b0db-5b99b05f51c9",
+      "turn_id": "01a1dc7d-7635-70b0-8bf9-49bfa91da403",
+      "stop_hook_active": false,
+      "event": "Stop",
+      "at": 1794700574.5423324
+    },
+    {
+      "session_id": "01a1dc7d-03aa-7912-b0db-5b99b05f51c9",
+      "turn_id": "01a1dc7d-7f55-7251-b8a7-1643d3794c2f",
+      "prompt": "herdr-threads: wake up",
+      "event": "UserPromptSubmit",
+      "at": 1794700574.710771
+    },
+    {
+      "session_id": "01a1dc7d-03aa-7912-b0db-5b99b05f51c9",
+      "turn_id": "01a1dc7d-7f55-7251-b8a7-1643d3794c2f",
+      "stop_hook_active": false,
+      "event": "Stop",
+      "at": 1794700576.7137198
+    },
+    {
+      "session_id": "01a1dc7d-03aa-7912-b0db-5b99b05f51c9",
+      "turn_id": "01a1dc7d-87f1-7c13-9df3-11526ed9aa30",
+      "prompt": "BUSY: execute exactly `python3 barrier.py` once with exec_command, yield_time_ms=1000, then wait for completion with write_stdin as needed. Do not run any other command. Reply BUSY_DONE after completion.",
+      "event": "UserPromptSubmit",
+      "at": 1794700576.928895
+    },
+    {
+      "session_id": "01a1dc7d-03aa-7912-b0db-5b99b05f51c9",
+      "turn_id": "01a1dc7d-87f1-7c13-9df3-11526ed9aa30",
+      "tool_name": "Bash",
+      "event": "PreToolUse",
+      "at": 1794700579.727191
+    },
+    {
+      "session_id": "01a1dc7d-03aa-7912-b0db-5b99b05f51c9",
+      "turn_id": "01a1dc7d-87f1-7c13-9df3-11526ed9aa30",
+      "tool_name": "Bash",
+      "event": "PostToolUse",
+      "at": 1794700592.3983378,
+      "injected": [
+        "BUSY_MAIL_7573bb2b9d"
+      ]
+    },
+    {
+      "session_id": "01a1dc7d-03aa-7912-b0db-5b99b05f51c9",
+      "turn_id": "01a1dc7d-87f1-7c13-9df3-11526ed9aa30",
+      "stop_hook_active": false,
+      "event": "Stop",
+      "at": 1794700594.147357
+    },
+    {
+      "session_id": "01a1dc7d-03aa-7912-b0db-5b99b05f51c9",
+      "turn_id": "01a1dc7d-cbf5-7622-96d5-723e47ef18e8",
+      "prompt": "herdr-threads: wake up",
+      "event": "UserPromptSubmit",
+      "at": 1794700594.3995738
+    },
+    {
+      "session_id": "01a1dc7d-03aa-7912-b0db-5b99b05f51c9",
+      "turn_id": "01a1dc7d-cbf5-7622-96d5-723e47ef18e8",
+      "stop_hook_active": false,
+      "event": "Stop",
+      "at": 1794700598.6036599
+    },
+    {
+      "session_id": "01a1dc7d-03aa-7912-b0db-5b99b05f51c9",
+      "turn_id": "01a1dc7d-ddf2-7c62-8dd8-f2661dcc04ff",
+      "prompt": "BUSY: execute exactly `python3 barrier.py` once with exec_command, yield_time_ms=1000, then wait for completion with write_stdin as needed. Do not run any other command. Reply BUSY_DONE after completion.",
+      "event": "UserPromptSubmit",
+      "at": 1794700598.975324
+    },
+    {
+      "session_id": "01a1dc7d-03aa-7912-b0db-5b99b05f51c9",
+      "turn_id": "01a1dc7d-ddf2-7c62-8dd8-f2661dcc04ff",
+      "tool_name": "Bash",
+      "event": "PreToolUse",
+      "at": 1794700601.29968
+    },
+    {
+      "session_id": "01a1dc7d-03aa-7912-b0db-5b99b05f51c9",
+      "turn_id": "01a1dc7d-ddf2-7c62-8dd8-f2661dcc04ff",
+      "event": "Interrupt",
+      "at": 1794700614.1287742
+    },
+    {
+      "session_id": "01a1dc7d-03aa-7912-b0db-5b99b05f51c9",
+      "turn_id": "01a1dc7e-7013-7ee3-9767-3e27da44ca85",
+      "prompt": "Reply exactly RESUMED_BY_DRIVER without tools.",
+      "event": "UserPromptSubmit",
+      "at": 1794700636.395207,
+      "injected": [
+        "BUSY_MAIL_e802e1ff56"
+      ]
+    },
+    {
+      "session_id": "01a1dc7d-03aa-7912-b0db-5b99b05f51c9",
+      "turn_id": "01a1dc7e-7013-7ee3-9767-3e27da44ca85",
+      "stop_hook_active": false,
+      "event": "Stop",
+      "at": 1794700639.000612
+    },
+    {
+      "session_id": "01a1dc7d-03aa-7912-b0db-5b99b05f51c9",
+      "turn_id": "01a1dc7e-7b25-7421-b2be-b16dd6d724ee",
+      "prompt": "herdr-threads: wake up",
+      "event": "UserPromptSubmit",
+      "at": 1794700639.2163234
+    },
+    {
+      "session_id": "01a1dc7d-03aa-7912-b0db-5b99b05f51c9",
+      "turn_id": "01a1dc7e-7b25-7421-b2be-b16dd6d724ee",
+      "stop_hook_active": false,
+      "event": "Stop",
+      "at": 1794700641.062721
+    },
+    {
+      "session_id": "01a1dc7d-03aa-7912-b0db-5b99b05f51c9",
+      "turn_id": "01a1dc7e-d5b9-7a13-be8a-390aa2df4528",
+      "prompt": "herdr-threads: wake up",
+      "event": "UserPromptSubmit",
+      "at": 1794700662.385038
+    },
+    {
+      "session_id": "01a1dc7d-03aa-7912-b0db-5b99b05f51c9",
+      "turn_id": "01a1dc7e-d5b9-7a13-be8a-390aa2df4528",
+      "stop_hook_active": false,
+      "event": "Stop",
+      "at": 1794700664.487324
+    }
+  ],
+  "message_history": [
+    {
+      "type": "response_item",
+      "timestamp": "2026-11-14T23:55:44.088Z",
+      "payload": {
+        "type": "message",
+        "id": "msg_01a1dc7d-0858-76c0-9ae9-4979d0b36e9d",
+        "role": "user",
+        "content": [
+          {
+            "type": "input_text",
+            "text": "# AGENTS.md instructions for $SPIKE_ROOT/work\n\n<INSTRUCTIONS>\nYou are an isolated transport test recipient. Do not access any account files or network, create subagents, or run herdr-threads. Reply briefly. For a queued 'herdr-threads: wake up', include any Controlled spike mail tokens in your reply. When no tokens exist, reply QUEUE_EMPTY. If instructed BUSY, execute exactly the supplied Python barrier command once, wait for it to finish, then reply BUSY_DONE plus any mail tokens.\n\n</INSTRUCTIONS>"
+          },
+          {
+            "type": "input_text",
+            "text": "<environment_context>\n  <cwd>$SPIKE_ROOT/work</cwd>\n  <shell>bash</shell>\n  <current_date>2026-11-14</current_date>\n  <timezone>America/Los_Angeles</timezone>\n  <filesystem><workspace_roots><root>$SPIKE_ROOT/work</root></workspace_roots><permission_profile type=\"managed\"><file_system type=\"restricted\"><entry access=\"read\"><special>:root</special></entry><entry access=\"write\"><path>$SPIKE_ROOT/work</path></entry><entry access=\"write\"><special>:slash_tmp</special></entry><entry access=\"write\"><special>:tmpdir</special></entry><entry access=\"read\"><path>$SPIKE_ROOT/work/.git</path></entry><entry access=\"read\"><path>$SPIKE_ROOT/work/.agents</path></entry><entry access=\"read\"><path>$SPIKE_ROOT/work/.codex</path></entry><entry access=\"read\"><path>$SPIKE_ROOT/work/.aws</path></entry></file_system></permission_profile></filesystem>\n</environment_context>"
+          }
+        ],
+        "internal_chat_message_metadata_passthrough": {
+          "turn_id": "01a1dc7d-03c2-78f0-9ce1-787b91df1300",
+          "create_time": 1794700544.0886045,
+          "content_item_kinds": [
+            "agents_md.instructions",
+            "environments.environment_context"
+          ],
+          "content_item_metadata": [
+            {
+              "provenance": {
+                "type": "agents_md"
+              }
+            },
+            {
+              "provenance": {
+                "type": "harness",
+                "hook": false
+              }
+            }
+          ]
+        }
+      }
+    },
+    {
+      "type": "response_item",
+      "timestamp": "2026-11-14T23:55:44.423Z",
+      "payload": {
+        "type": "message",
+        "id": "msg_01a1dc7d-09a7-7243-839c-db01d66e5803",
+        "role": "user",
+        "content": [
+          {
+            "type": "input_text",
+            "text": "Reply exactly SPIKE_READY without using tools."
+          }
+        ],
+        "internal_chat_message_metadata_passthrough": {
+          "turn_id": "01a1dc7d-03c2-78f0-9ce1-787b91df1300",
+          "create_time": 1794700544.423559,
+          "content_item_kinds": [
+            "user.text"
+          ],
+          "content_item_metadata": [
+            {
+              "provenance": {
+                "type": "user"
+              }
+            }
+          ]
+        }
+      }
+    },
+    {
+      "type": "response_item",
+      "timestamp": "2026-11-14T23:55:45.803Z",
+      "payload": {
+        "type": "message",
+        "status": "completed",
+        "id": "msg_009536915f3a0d97016af8f501b3b887d1acafd9246937b0c8",
+        "role": "assistant",
+        "content": [
+          {
+            "type": "output_text",
+            "text": "SPIKE_READY",
+            "annotations": [],
+            "logprobs": []
+          }
+        ],
+        "phase": "final_answer",
+        "internal_chat_message_metadata_passthrough": {
+          "turn_id": "01a1dc7d-03c2-78f0-9ce1-787b91df1300",
+          "create_time": 1794700545.7102332,
+          "content_item_kinds": [
+            "unknown"
+          ]
+        }
+      }
+    },
+    {
+      "type": "response_item",
+      "timestamp": "2026-11-14T23:55:52.392Z",
+      "payload": {
+        "type": "message",
+        "id": "msg_01a1dc7d-28c8-7662-955b-59b8b9c6a815",
+        "role": "user",
+        "content": [
+          {
+            "type": "input_text",
+            "text": "herdr-threads: wake up"
+          }
+        ],
+        "internal_chat_message_metadata_passthrough": {
+          "turn_id": "01a1dc7d-2809-7113-9b1b-ef4d5cde3ef0",
+          "create_time": 1794700552.392765,
+          "content_item_kinds": [
+            "user.text"
+          ],
+          "content_item_metadata": [
+            {
+              "provenance": {
+                "type": "user"
+              }
+            }
+          ]
+        }
+      }
+    },
+    {
+      "type": "response_item",
+      "timestamp": "2026-11-14T23:55:53.745Z",
+      "payload": {
+        "type": "message",
+        "status": "completed",
+        "id": "msg_009536915f3a0d97016af8f509a81887d1af1a9ffd0cc939fc",
+        "role": "assistant",
+        "content": [
+          {
+            "type": "output_text",
+            "text": "MAIL_e838ebd2d3ae",
+            "annotations": [],
+            "logprobs": []
+          }
+        ],
+        "phase": "final_answer",
+        "internal_chat_message_metadata_passthrough": {
+          "turn_id": "01a1dc7d-2809-7113-9b1b-ef4d5cde3ef0",
+          "create_time": 1794700553.6615922,
+          "content_item_kinds": [
+            "unknown"
+          ]
+        }
+      }
+    },
+    {
+      "type": "response_item",
+      "timestamp": "2026-11-14T23:56:02.451Z",
+      "payload": {
+        "type": "message",
+        "id": "msg_01a1dc7d-5013-7143-8884-fdb3e23aa5bb",
+        "role": "user",
+        "content": [
+          {
+            "type": "input_text",
+            "text": "herdr-threads: wake up"
+          }
+        ],
+        "internal_chat_message_metadata_passthrough": {
+          "turn_id": "01a1dc7d-4f20-7c53-8c77-55d31b1fac25",
+          "create_time": 1794700562.4517822,
+          "content_item_kinds": [
+            "user.text"
+          ],
+          "content_item_metadata": [
+            {
+              "provenance": {
+                "type": "user"
+              }
+            }
+          ]
+        }
+      }
+    },
+    {
+      "type": "response_item",
+      "timestamp": "2026-11-14T23:56:03.745Z",
+      "payload": {
+        "type": "message",
+        "status": "completed",
+        "id": "msg_009536915f3a0d97016af8f513994c87d18ba9d64b857bf327",
+        "role": "assistant",
+        "content": [
+          {
+            "type": "output_text",
+            "text": "MAIL_e9f8a0bc822d",
+            "annotations": [],
+            "logprobs": []
+          }
+        ],
+        "phase": "final_answer",
+        "internal_chat_message_metadata_passthrough": {
+          "turn_id": "01a1dc7d-4f20-7c53-8c77-55d31b1fac25",
+          "create_time": 1794700563.6255906,
+          "content_item_kinds": [
+            "unknown"
+          ]
+        }
+      }
+    },
+    {
+      "type": "response_item",
+      "timestamp": "2026-11-14T23:56:04.127Z",
+      "payload": {
+        "type": "message",
+        "id": "msg_01a1dc7d-569f-76d3-b1eb-d6803e8841c0",
+        "role": "user",
+        "content": [
+          {
+            "type": "input_text",
+            "text": "UNSUBMITTED_DRAFT_6942"
+          }
+        ],
+        "internal_chat_message_metadata_passthrough": {
+          "turn_id": "01a1dc7d-55dc-78a3-964f-069c7a4f9c06",
+          "create_time": 1794700564.1276917,
+          "content_item_kinds": [
+            "user.text"
+          ],
+          "content_item_metadata": [
+            {
+              "provenance": {
+                "type": "user"
+              }
+            }
+          ]
+        }
+      }
+    },
+    {
+      "type": "response_item",
+      "timestamp": "2026-11-14T23:56:05.816Z",
+      "payload": {
+        "type": "message",
+        "status": "completed",
+        "id": "msg_009536915f3a0d97016af8f515b11c87d1a83898d96420d9d6",
+        "role": "assistant",
+        "content": [
+          {
+            "type": "output_text",
+            "text": "QUEUE_EMPTY",
+            "annotations": [],
+            "logprobs": []
+          }
+        ],
+        "phase": "final_answer",
+        "internal_chat_message_metadata_passthrough": {
+          "turn_id": "01a1dc7d-55dc-78a3-964f-069c7a4f9c06",
+          "create_time": 1794700565.7161689,
+          "content_item_kinds": [
+            "unknown"
+          ]
+        }
+      }
+    },
+    {
+      "type": "response_item",
+      "timestamp": "2026-11-14T23:56:12.382Z",
+      "payload": {
+        "type": "message",
+        "id": "msg_01a1dc7d-76de-7640-8161-888c9e0e0a54",
+        "role": "user",
+        "content": [
+          {
+            "type": "input_text",
+            "text": "herdr-threads: wake up"
+          }
+        ],
+        "internal_chat_message_metadata_passthrough": {
+          "turn_id": "01a1dc7d-7635-70b0-8bf9-49bfa91da403",
+          "create_time": 1794700572.3820846,
+          "content_item_kinds": [
+            "user.text"
+          ],
+          "content_item_metadata": [
+            {
+              "provenance": {
+                "type": "user"
+              }
+            }
+          ]
+        }
+      }
+    },
+    {
+      "type": "response_item",
+      "timestamp": "2026-11-14T23:56:14.380Z",
+      "payload": {
+        "type": "message",
+        "status": "completed",
+        "id": "msg_009536915f3a0d97016af8f51e47a087d1927575f935eaeecf",
+        "role": "assistant",
+        "content": [
+          {
+            "type": "output_text",
+            "text": "QUEUE_EMPTY",
+            "annotations": [],
+            "logprobs": []
+          }
+        ],
+        "phase": "final_answer",
+        "internal_chat_message_metadata_passthrough": {
+          "turn_id": "01a1dc7d-7635-70b0-8bf9-49bfa91da403",
+          "create_time": 1794700574.2858925,
+          "content_item_kinds": [
+            "unknown"
+          ]
+        }
+      }
+    },
+    {
+      "type": "response_item",
+      "timestamp": "2026-11-14T23:56:14.717Z",
+      "payload": {
+        "type": "message",
+        "id": "msg_01a1dc7d-7ffc-7c71-8bb1-f07494a6cea2",
+        "role": "user",
+        "content": [
+          {
+            "type": "input_text",
+            "text": "herdr-threads: wake up"
+          }
+        ],
+        "internal_chat_message_metadata_passthrough": {
+          "turn_id": "01a1dc7d-7f55-7251-b8a7-1643d3794c2f",
+          "create_time": 1794700574.7169447,
+          "content_item_kinds": [
+            "user.text"
+          ],
+          "content_item_metadata": [
+            {
+              "provenance": {
+                "type": "user"
+              }
+            }
+          ]
+        }
+      }
+    },
+    {
+      "type": "response_item",
+      "timestamp": "2026-11-14T23:56:16.463Z",
+      "payload": {
+        "type": "message",
+        "status": "completed",
+        "id": "msg_009536915f3a0d97016af8f52029c087d18d59431230022331",
+        "role": "assistant",
+        "content": [
+          {
+            "type": "output_text",
+            "text": "QUEUE_EMPTY",
+            "annotations": [],
+            "logprobs": []
+          }
+        ],
+        "phase": "final_answer",
+        "internal_chat_message_metadata_passthrough": {
+          "turn_id": "01a1dc7d-7f55-7251-b8a7-1643d3794c2f",
+          "create_time": 1794700576.2952285,
+          "content_item_kinds": [
+            "unknown"
+          ]
+        }
+      }
+    },
+    {
+      "type": "response_item",
+      "timestamp": "2026-11-14T23:56:16.935Z",
+      "payload": {
+        "type": "message",
+        "id": "msg_01a1dc7d-88a7-73f2-9147-a1b388697d8c",
+        "role": "user",
+        "content": [
+          {
+            "type": "input_text",
+            "text": "BUSY: execute exactly `python3 barrier.py` once with exec_command, yield_time_ms=1000, then wait for completion with write_stdin as needed. Do not run any other command. Reply BUSY_DONE after completion."
+          }
+        ],
+        "internal_chat_message_metadata_passthrough": {
+          "turn_id": "01a1dc7d-87f1-7c13-9df3-11526ed9aa30",
+          "create_time": 1794700576.9353096,
+          "content_item_kinds": [
+            "user.text"
+          ],
+          "content_item_metadata": [
+            {
+              "provenance": {
+                "type": "user"
+              }
+            }
+          ]
+        }
+      }
+    },
+    {
+      "type": "response_item",
+      "timestamp": "2026-11-14T23:56:19.144Z",
+      "payload": {
+        "type": "message",
+        "status": "completed",
+        "id": "msg_009536915f3a0d97016af8f522c5d887d1be902a68e07da388",
+        "role": "assistant",
+        "content": [
+          {
+            "type": "output_text",
+            "text": "I\u2019ll run the barrier once and wait for completion.",
+            "annotations": [],
+            "logprobs": []
+          }
+        ],
+        "phase": "commentary",
+        "internal_chat_message_metadata_passthrough": {
+          "turn_id": "01a1dc7d-87f1-7c13-9df3-11526ed9aa30",
+          "create_time": 1794700578.7772415,
+          "content_item_kinds": [
+            "unknown"
+          ]
+        }
+      }
+    },
+    {
+      "type": "response_item",
+      "timestamp": "2026-11-14T23:56:33.924Z",
+      "payload": {
+        "type": "message",
+        "status": "completed",
+        "id": "msg_009536915f3a0d97016af8f531c94087d1b8a698fc62a6c8da",
+        "role": "assistant",
+        "content": [
+          {
+            "type": "output_text",
+            "text": "BUSY_DONE BUSY_MAIL_7573bb2b9d",
+            "annotations": [],
+            "logprobs": []
+          }
+        ],
+        "phase": "final_answer",
+        "internal_chat_message_metadata_passthrough": {
+          "turn_id": "01a1dc7d-87f1-7c13-9df3-11526ed9aa30",
+          "create_time": 1794700593.7912395,
+          "content_item_kinds": [
+            "unknown"
+          ]
+        }
+      }
+    },
+    {
+      "type": "response_item",
+      "timestamp": "2026-11-14T23:56:34.413Z",
+      "payload": {
+        "type": "message",
+        "id": "msg_01a1dc7d-cced-7b21-8810-628d4f1ff2d2",
+        "role": "user",
+        "content": [
+          {
+            "type": "input_text",
+            "text": "herdr-threads: wake up"
+          }
+        ],
+        "internal_chat_message_metadata_passthrough": {
+          "turn_id": "01a1dc7d-cbf5-7622-96d5-723e47ef18e8",
+          "create_time": 1794700594.4133017,
+          "content_item_kinds": [
+            "user.text"
+          ],
+          "content_item_metadata": [
+            {
+              "provenance": {
+                "type": "user"
+              }
+            }
+          ]
+        }
+      }
+    },
+    {
+      "type": "response_item",
+      "timestamp": "2026-11-14T23:56:38.358Z",
+      "payload": {
+        "type": "message",
+        "status": "completed",
+        "id": "msg_009536915f3a0d97016af8f534908c87d1a825fc337dc9eb1f",
+        "role": "assistant",
+        "content": [
+          {
+            "type": "output_text",
+            "text": "QUEUE_EMPTY",
+            "annotations": [],
+            "logprobs": []
+          }
+        ],
+        "phase": "final_answer",
+        "internal_chat_message_metadata_passthrough": {
+          "turn_id": "01a1dc7d-cbf5-7622-96d5-723e47ef18e8",
+          "create_time": 1794700596.9971278,
+          "content_item_kinds": [
+            "unknown"
+          ]
+        }
+      }
+    },
+    {
+      "type": "response_item",
+      "timestamp": "2026-11-14T23:56:38.986Z",
+      "payload": {
+        "type": "message",
+        "id": "msg_01a1dc7d-deca-7df2-80e1-d7853323ecc0",
+        "role": "user",
+        "content": [
+          {
+            "type": "input_text",
+            "text": "BUSY: execute exactly `python3 barrier.py` once with exec_command, yield_time_ms=1000, then wait for completion with write_stdin as needed. Do not run any other command. Reply BUSY_DONE after completion."
+          }
+        ],
+        "internal_chat_message_metadata_passthrough": {
+          "turn_id": "01a1dc7d-ddf2-7c62-8dd8-f2661dcc04ff",
+          "create_time": 1794700598.9861538,
+          "content_item_kinds": [
+            "user.text"
+          ],
+          "content_item_metadata": [
+            {
+              "provenance": {
+                "type": "user"
+              }
+            }
+          ]
+        }
+      }
+    },
+    {
+      "type": "response_item",
+      "timestamp": "2026-11-14T23:56:40.790Z",
+      "payload": {
+        "type": "message",
+        "status": "completed",
+        "id": "msg_009536915f3a0d97016af8f538693887d1a2c8b8380c27c5b6",
+        "role": "assistant",
+        "content": [
+          {
+            "type": "output_text",
+            "text": "I\u2019ll run the barrier once and wait for completion.",
+            "annotations": [],
+            "logprobs": []
+          }
+        ],
+        "phase": "commentary",
+        "internal_chat_message_metadata_passthrough": {
+          "turn_id": "01a1dc7d-ddf2-7c62-8dd8-f2661dcc04ff",
+          "create_time": 1794700600.4294536,
+          "content_item_kinds": [
+            "unknown"
+          ]
+        }
+      }
+    },
+    {
+      "type": "response_item",
+      "timestamp": "2026-11-14T23:57:16.403Z",
+      "payload": {
+        "type": "message",
+        "id": "msg_01a1dc7e-70f3-7fd2-b480-84e0357dea2c",
+        "role": "user",
+        "content": [
+          {
+            "type": "input_text",
+            "text": "Reply exactly RESUMED_BY_DRIVER without tools."
+          }
+        ],
+        "internal_chat_message_metadata_passthrough": {
+          "turn_id": "01a1dc7e-7013-7ee3-9767-3e27da44ca85",
+          "create_time": 1794700636.4033434,
+          "content_item_kinds": [
+            "user.text"
+          ],
+          "content_item_metadata": [
+            {
+              "provenance": {
+                "type": "user"
+              }
+            }
+          ]
+        }
+      }
+    },
+    {
+      "type": "response_item",
+      "timestamp": "2026-11-14T23:57:18.716Z",
+      "payload": {
+        "type": "message",
+        "status": "completed",
+        "id": "msg_009536915f3a0d97016af8f55e9af487d18c95fbc75e80f963",
+        "role": "assistant",
+        "content": [
+          {
+            "type": "output_text",
+            "text": "RESUMED_BY_DRIVER BUSY_MAIL_e802e1ff56",
+            "annotations": [],
+            "logprobs": []
+          }
+        ],
+        "phase": "final_answer",
+        "internal_chat_message_metadata_passthrough": {
+          "turn_id": "01a1dc7e-7013-7ee3-9767-3e27da44ca85",
+          "create_time": 1794700638.6099858,
+          "content_item_kinds": [
+            "unknown"
+          ]
+        }
+      }
+    },
+    {
+      "type": "response_item",
+      "timestamp": "2026-11-14T23:57:19.223Z",
+      "payload": {
+        "type": "message",
+        "id": "msg_01a1dc7e-7bf7-7d90-afb8-865a54f01c99",
+        "role": "user",
+        "content": [
+          {
+            "type": "input_text",
+            "text": "herdr-threads: wake up"
+          }
+        ],
+        "internal_chat_message_metadata_passthrough": {
+          "turn_id": "01a1dc7e-7b25-7421-b2be-b16dd6d724ee",
+          "create_time": 1794700639.223803,
+          "content_item_kinds": [
+            "user.text"
+          ],
+          "content_item_metadata": [
+            {
+              "provenance": {
+                "type": "user"
+              }
+            }
+          ]
+        }
+      }
+    },
+    {
+      "type": "response_item",
+      "timestamp": "2026-11-14T23:57:20.836Z",
+      "payload": {
+        "type": "message",
+        "status": "completed",
+        "id": "msg_009536915f3a0d97016af8f560b87487d192d0c494035913a2",
+        "role": "assistant",
+        "content": [
+          {
+            "type": "output_text",
+            "text": "QUEUE_EMPTY",
+            "annotations": [],
+            "logprobs": []
+          }
+        ],
+        "phase": "final_answer",
+        "internal_chat_message_metadata_passthrough": {
+          "turn_id": "01a1dc7e-7b25-7421-b2be-b16dd6d724ee",
+          "create_time": 1794700640.7304995,
+          "content_item_kinds": [
+            "unknown"
+          ]
+        }
+      }
+    },
+    {
+      "type": "response_item",
+      "timestamp": "2026-11-14T23:57:42.391Z",
+      "payload": {
+        "type": "message",
+        "id": "msg_01a1dc7e-d677-71c2-af11-bb3e76784cf2",
+        "role": "user",
+        "content": [
+          {
+            "type": "input_text",
+            "text": "herdr-threads: wake up"
+          }
+        ],
+        "internal_chat_message_metadata_passthrough": {
+          "turn_id": "01a1dc7e-d5b9-7a13-be8a-390aa2df4528",
+          "create_time": 1794700662.3914757,
+          "content_item_kinds": [
+            "user.text"
+          ],
+          "content_item_metadata": [
+            {
+              "provenance": {
+                "type": "user"
+              }
+            }
+          ]
+        }
+      }
+    },
+    {
+      "type": "response_item",
+      "timestamp": "2026-11-14T23:57:44.294Z",
+      "payload": {
+        "type": "message",
+        "status": "completed",
+        "id": "msg_009536915f3a0d97016af8f577e73c87d184f8ebff89193c31",
+        "role": "assistant",
+        "content": [
+          {
+            "type": "output_text",
+            "text": "QUEUE_EMPTY",
+            "annotations": [],
+            "logprobs": []
+          }
+        ],
+        "phase": "final_answer",
+        "internal_chat_message_metadata_passthrough": {
+          "turn_id": "01a1dc7e-d5b9-7a13-be8a-390aa2df4528",
+          "create_time": 1794700663.9477837,
+          "content_item_kinds": [
+            "unknown"
+          ]
+        }
+      }
+    }
+  ],
+  "database_schema": [
+    {
+      "database": "thread_history_1.sqlite",
+      "table": "thread_turns",
+      "columns": [
+        "thread_id",
+        "turn_id",
+        "rollout_ordinal",
+        "status",
+        "error_json",
+        "started_at",
+        "completed_at",
+        "duration_ms",
+        "first_user_item_id",
+        "final_agent_item_id",
+        "rollout_byte_offset",
+        "rollout_end_ordinal",
+        "rollout_end_byte_offset",
+        "root_turn_id"
+      ],
+      "rows": 12
+    },
+    {
+      "database": "thread_history_1.sqlite",
+      "table": "thread_items",
+      "columns": [
+        "thread_id",
+        "turn_id",
+        "item_id",
+        "rollout_ordinal",
+        "created_at_ms",
+        "item_json",
+        "item_type",
+        "updated_at_ordinal",
+        "started_at_ms",
+        "completed_at_ms"
+      ],
+      "rows": 28
+    },
+    {
+      "database": "thread_history_1.sqlite",
+      "table": "thread_history_projection_state",
+      "columns": [
+        "thread_id",
+        "next_rollout_byte_offset",
+        "next_rollout_ordinal"
+      ],
+      "rows": 1
+    },
+    {
+      "database": "thread_history_1.sqlite",
+      "table": "thread_realtime_items",
+      "columns": [
+        "thread_id",
+        "item_id",
+        "rollout_ordinal",
+        "created_at_ms",
+        "item_type",
+        "item_json"
+      ],
+      "rows": 0
+    },
+    {
+      "database": "queue_1.sqlite",
+      "table": "queued_items",
+      "columns": [
+        "id",
+        "thread_id",
+        "payload_json",
+        "queue_order",
+        "created_at_ms",
+        "updated_at_ms"
+      ],
+      "rows": 0
+    },
+    {
+      "database": "queue_1.sqlite",
+      "table": "queued_thread_revisions",
+      "columns": [
+        "revision",
+        "thread_id"
+      ],
+      "rows": 1
+    },
+    {
+      "database": "goals_1.sqlite",
+      "table": "thread_goals",
+      "columns": [
+        "thread_id",
+        "goal_id",
+        "objective",
+        "status",
+        "token_budget",
+        "tokens_used",
+        "time_used_seconds",
+        "created_at_ms",
+        "updated_at_ms"
+      ],
+      "rows": 0
+    },
+    {
+      "database": "goals_1.sqlite",
+      "table": "thread_goal_continuation_deferrals",
+      "columns": [
+        "thread_id"
+      ],
+      "rows": 0
+    },
+    {
+      "database": "state_5.sqlite",
+      "table": "threads",
+      "columns": [
+        "id",
+        "rollout_path",
+        "created_at",
+        "updated_at",
+        "source",
+        "model_provider",
+        "cwd",
+        "title",
+        "sandbox_policy",
+        "approval_mode",
+        "tokens_used",
+        "has_user_event",
+        "archived",
+        "archived_at",
+        "git_sha",
+        "git_branch",
+        "git_origin_url",
+        "cli_version",
+        "first_user_message",
+        "agent_nickname",
+        "agent_role",
+        "memory_mode",
+        "model",
+        "reasoning_effort",
+        "agent_path",
+        "created_at_ms",
+        "updated_at_ms",
+        "thread_source",
+        "preview",
+        "recency_at",
+        "recency_at_ms",
+        "history_mode",
+        "name",
+        "is_pinned",
+        "thread_section_id",
+        "section_position",
+        "section_entered_at_ms",
+        "project_id",
+        "originator",
+        "daybreak_enabled",
+        "creator_user_id",
+        "creator_account_id",
+        "attached_thread_parent_id"
+      ],
+      "rows": 1
+    },
+    {
+      "database": "state_5.sqlite",
+      "table": "thread_dynamic_tools",
+      "columns": [
+        "thread_id",
+        "position",
+        "name",
+        "description",
+        "input_schema",
+        "defer_loading",
+        "namespace"
+      ],
+      "rows": 0
+    },
+    {
+      "database": "state_5.sqlite",
+      "table": "thread_spawn_edges",
+      "columns": [
+        "parent_thread_id",
+        "child_thread_id",
+        "status"
+      ],
+      "rows": 0
+    },
+    {
+      "database": "state_5.sqlite",
+      "table": "thread_sections",
+      "columns": [
+        "id",
+        "name",
+        "appearance"
+      ],
+      "rows": 1
+    },
+    {
+      "database": "state_5.sqlite",
+      "table": "thread_attachments",
+      "columns": [
+        "id",
+        "thread_id",
+        "attachment_type",
+        "identity_key",
+        "payload",
+        "created_at"
+      ],
+      "rows": 0
+    },
+    {
+      "database": "state_5.sqlite",
+      "table": "thread_read_receipts",
+      "columns": [
+        "thread_id",
+        "first_unread_turn",
+        "revision",
+        "last_published_turn"
+      ],
+      "rows": 1
+    }
+  ],
+  "source_auth_unchanged": true,
+  "private_auth_refreshed": false,
+  "cleanup_tagged_descendants": []
+}

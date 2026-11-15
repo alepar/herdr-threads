@@ -1,0 +1,222 @@
+{
+  "observation": "Selected fields from codex-cli 0.167.0 generated schema with --experimental; not a complete schema or a runtime admission gate.",
+  "methods": {
+    "v2/ThreadQueueAddParams.json": {
+      "properties": {
+        "clientUserMessageId": {
+          "type": "string"
+        },
+        "input": {
+          "items": {
+            "$ref": "#/definitions/UserInput"
+          },
+          "type": "array"
+        },
+        "threadId": {
+          "type": "string"
+        }
+      },
+      "required": [
+        "clientUserMessageId",
+        "input",
+        "threadId"
+      ]
+    },
+    "v2/ThreadQueueAddResponse.json": {
+      "properties": {
+        "queuedSubmission": {
+          "$ref": "#/definitions/QueuedSubmission"
+        }
+      },
+      "required": [
+        "queuedSubmission"
+      ]
+    },
+    "v2/ThreadQueueChangedNotification.json": {
+      "properties": {
+        "threadId": {
+          "type": "string"
+        }
+      },
+      "required": [
+        "threadId"
+      ]
+    },
+    "v2/ThreadQueueDeleteParams.json": {
+      "properties": {
+        "queuedSubmissionId": {
+          "type": "string"
+        },
+        "threadId": {
+          "type": "string"
+        }
+      },
+      "required": [
+        "queuedSubmissionId",
+        "threadId"
+      ]
+    },
+    "v2/ThreadQueueDeleteResponse.json": {
+      "properties": {
+        "deleted": {
+          "type": "boolean"
+        }
+      },
+      "required": [
+        "deleted"
+      ]
+    },
+    "v2/ThreadQueueListParams.json": {
+      "properties": {
+        "cursor": {
+          "description": "Opaque pagination cursor returned by a previous call.",
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "limit": {
+          "description": "Optional page size; defaults to the standard thread-list page size.",
+          "format": "uint32",
+          "minimum": 0.0,
+          "type": [
+            "integer",
+            "null"
+          ]
+        },
+        "threadId": {
+          "type": "string"
+        }
+      },
+      "required": [
+        "threadId"
+      ]
+    },
+    "v2/ThreadQueueListResponse.json": {
+      "properties": {
+        "data": {
+          "items": {
+            "$ref": "#/definitions/QueuedSubmission"
+          },
+          "type": "array"
+        },
+        "nextCursor": {
+          "description": "Opaque cursor for the next page, or `null` when no submissions remain.",
+          "type": [
+            "string",
+            "null"
+          ]
+        }
+      },
+      "required": [
+        "data"
+      ]
+    },
+    "v2/ThreadQueueReorderParams.json": {
+      "properties": {
+        "queuedSubmissionIds": {
+          "items": {
+            "type": "string"
+          },
+          "type": "array"
+        },
+        "threadId": {
+          "type": "string"
+        }
+      },
+      "required": [
+        "queuedSubmissionIds",
+        "threadId"
+      ]
+    },
+    "v2/ThreadQueueReorderResponse.json": {
+      "properties": {},
+      "required": []
+    },
+    "v2/ThreadQueueStartParams.json": {
+      "properties": {
+        "queuedSubmissionId": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "threadId": {
+          "type": "string"
+        }
+      },
+      "required": [
+        "threadId"
+      ]
+    },
+    "v2/ThreadQueueStartResponse.json": {
+      "properties": {
+        "turn": {
+          "$ref": "#/definitions/Turn"
+        }
+      },
+      "required": [
+        "turn"
+      ]
+    },
+    "v2/ThreadQueueUpdateParams.json": {
+      "properties": {
+        "input": {
+          "items": {
+            "$ref": "#/definitions/UserInput"
+          },
+          "type": "array"
+        },
+        "queuedSubmissionId": {
+          "type": "string"
+        },
+        "threadId": {
+          "type": "string"
+        }
+      },
+      "required": [
+        "input",
+        "queuedSubmissionId",
+        "threadId"
+      ]
+    },
+    "v2/ThreadQueueUpdateResponse.json": {
+      "properties": {
+        "queuedSubmission": {
+          "$ref": "#/definitions/QueuedSubmission"
+        }
+      },
+      "required": [
+        "queuedSubmission"
+      ]
+    }
+  },
+  "text_input_shape": {
+    "properties": {
+      "text": {
+        "type": "string"
+      },
+      "text_elements": {
+        "default": [],
+        "description": "UI-defined spans within `text` used to render or persist special elements.",
+        "items": {
+          "$ref": "#/definitions/TextElement"
+        },
+        "type": "array"
+      },
+      "type": {
+        "enum": [
+          "text"
+        ],
+        "title": "TextUserInputType",
+        "type": "string"
+      }
+    },
+    "required": [
+      "text",
+      "type"
+    ],
+    "title": "TextUserInput",
+    "type": "object"
+  }
+}

@@ -1,0 +1,59 @@
+{
+  "python_syntax": "pass",
+  "json_evidence": "pass",
+  "cargo_fmt_check": "pass",
+  "cargo_clippy": "pass: nice cargo clippy --locked --all-targets --all-features -- -D warnings; cold worktree crate rebuild 1m42s",
+  "default_features": "pass: nice scripts/check-default-features",
+  "harness_neutral": "pass",
+  "wire_compat": "pass",
+  "source_auth_unchanged_all_runs": true,
+  "private_auth_refreshed_any_run": false,
+  "production_changes": false,
+  "full_suite_run": false,
+  "actual_herdr_threads_priority_and_receipts_tested": false,
+  "known_qualification_failure": "Repeated clientUserMessageId is not idempotent; bare queue can cause duplicate and stale turns",
+  "runs": {
+    "run-1": {
+      "driver_error": null,
+      "cases": 1,
+      "passed": 1,
+      "failed": 0,
+      "observational": 0
+    },
+    "run-2": {
+      "driver_error": "owned TUI exited while waiting for SessionStart hook",
+      "cases": 0,
+      "passed": 0,
+      "failed": 0,
+      "observational": 0
+    },
+    "run-3": {
+      "driver_error": null,
+      "cases": 8,
+      "passed": 8,
+      "failed": 0,
+      "observational": 1
+    },
+    "run-4-rpc": {
+      "driver_error": null,
+      "cases": 6,
+      "passed": 3,
+      "failed": 3,
+      "observational": 1
+    },
+    "run-5-reconciled": {
+      "driver_error": null,
+      "cases": 6,
+      "passed": 6,
+      "failed": 0,
+      "observational": 1
+    },
+    "run-6-lifecycle": {
+      "driver_error": null,
+      "cases": 3,
+      "passed": 3,
+      "failed": 0,
+      "observational": 0
+    }
+  }
+}

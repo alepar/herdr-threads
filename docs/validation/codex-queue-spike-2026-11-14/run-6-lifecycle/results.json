@@ -1,0 +1,590 @@
+{
+  "version": "codex-cli 0.167.0",
+  "cases": [
+    {
+      "case": "root_queue_target_with_side_displayed",
+      "passed": true,
+      "root_session": "01a1dc83-f3bb-7371-9ef9-7e4a9865ea5a",
+      "side_session": "01a1dc84-0035-7ab0-9caa-a016ed23364d",
+      "queue": {
+        "returncode": 0,
+        "stdout": "Queued message 01a1dc84-0c01-70c3-b3d3-ac19dabca8ac for thread 01a1dc83-f3bb-7371-9ef9-7e4a9865ea5a.\n",
+        "stderr": "WARNING: proceeding, even though we could not create PATH aliases: Refusing to create helper binaries under temporary dir \"/tmp\" (codex_home: AbsolutePathBuf(\"$SPIKE_ROOT/codex\"))\n",
+        "seconds": 0.2,
+        "pending_rows_after_return": [
+          {
+            "id": "01a1dc84-0c01-70c3-b3d3-ac19dabca8ac",
+            "thread": "01a1dc83-f3bb-7371-9ef9-7e4a9865ea5a"
+          }
+        ]
+      },
+      "new_prompts": [
+        {
+          "session_id": "01a1dc83-f3bb-7371-9ef9-7e4a9865ea5a",
+          "turn_id": "01a1dc84-174d-7012-8aad-98bcbd74b54e",
+          "prompt": "herdr-threads: wake up",
+          "event": "UserPromptSubmit",
+          "at": 1794701006.925693,
+          "injected": [
+            "ROOT_MAIL_dc7194a12b22"
+          ]
+        }
+      ],
+      "model_token_seen": true
+    },
+    {
+      "case": "unloaded_embedded_target_does_not_wake",
+      "passed": true,
+      "queue": {
+        "returncode": 0,
+        "stdout": "Queued message 01a1dc84-1fb1-74f1-baf0-bcd9a875f049 for thread 01a1dc83-f3bb-7371-9ef9-7e4a9865ea5a.\n",
+        "stderr": "WARNING: proceeding, even though we could not create PATH aliases: Refusing to create helper binaries under temporary dir \"/tmp\" (codex_home: AbsolutePathBuf(\"$SPIKE_ROOT/codex\"))\n",
+        "seconds": 0.2,
+        "pending_rows_after_return": [
+          {
+            "id": "01a1dc84-1fb1-74f1-baf0-bcd9a875f049",
+            "thread": "01a1dc83-f3bb-7371-9ef9-7e4a9865ea5a"
+          }
+        ]
+      },
+      "pending": [
+        {
+          "id": "01a1dc84-1fb1-74f1-baf0-bcd9a875f049",
+          "thread": "01a1dc83-f3bb-7371-9ef9-7e4a9865ea5a"
+        }
+      ],
+      "counts_before": {
+        "UserPromptSubmit": 3,
+        "Stop": 3,
+        "Interrupt": 0
+      },
+      "counts_after": {
+        "UserPromptSubmit": 3,
+        "Stop": 3,
+        "Interrupt": 0
+      }
+    },
+    {
+      "case": "explicit_resume_consumes_queued_marker",
+      "passed": true,
+      "queued_session": "01a1dc83-f3bb-7371-9ef9-7e4a9865ea5a",
+      "counts_after": {
+        "UserPromptSubmit": 4,
+        "Stop": 3,
+        "Interrupt": 0
+      },
+      "pending": [],
+      "model_token_seen": true
+    }
+  ],
+  "error": null,
+  "session": "01a1dc83-f3bb-7371-9ef9-7e4a9865ea5a",
+  "hooks": [
+    {
+      "session_id": "01a1dc83-f3bb-7371-9ef9-7e4a9865ea5a",
+      "event": "SessionStart",
+      "at": 1794700999.0678313
+    },
+    {
+      "session_id": "01a1dc83-f3bb-7371-9ef9-7e4a9865ea5a",
+      "turn_id": "01a1dc83-f3da-7131-8dbb-a8dbe533c2e1",
+      "prompt": "Reply exactly SPIKE_READY without using tools.",
+      "event": "UserPromptSubmit",
+      "at": 1794700999.2470193
+    },
+    {
+      "session_id": "01a1dc83-f3bb-7371-9ef9-7e4a9865ea5a",
+      "turn_id": "01a1dc83-f3da-7131-8dbb-a8dbe533c2e1",
+      "stop_hook_active": false,
+      "event": "Stop",
+      "at": 1794701000.7151403
+    },
+    {
+      "session_id": "01a1dc84-0035-7ab0-9caa-a016ed23364d",
+      "event": "SessionStart",
+      "at": 1794701001.7367182
+    },
+    {
+      "session_id": "01a1dc84-0035-7ab0-9caa-a016ed23364d",
+      "turn_id": "01a1dc84-004b-7ff2-91ba-0136f17d4dfd",
+      "prompt": "Reply exactly SIDE_READY without tools.",
+      "event": "UserPromptSubmit",
+      "at": 1794701001.9770603
+    },
+    {
+      "session_id": "01a1dc84-0035-7ab0-9caa-a016ed23364d",
+      "turn_id": "01a1dc84-004b-7ff2-91ba-0136f17d4dfd",
+      "stop_hook_active": false,
+      "event": "Stop",
+      "at": 1794701003.7485368
+    },
+    {
+      "session_id": "01a1dc83-f3bb-7371-9ef9-7e4a9865ea5a",
+      "turn_id": "01a1dc84-174d-7012-8aad-98bcbd74b54e",
+      "prompt": "herdr-threads: wake up",
+      "event": "UserPromptSubmit",
+      "at": 1794701006.925693,
+      "injected": [
+        "ROOT_MAIL_dc7194a12b22"
+      ]
+    },
+    {
+      "session_id": "01a1dc83-f3bb-7371-9ef9-7e4a9865ea5a",
+      "turn_id": "01a1dc84-174d-7012-8aad-98bcbd74b54e",
+      "stop_hook_active": false,
+      "event": "Stop",
+      "at": 1794701008.643354
+    },
+    {
+      "session_id": "01a1dc83-f3bb-7371-9ef9-7e4a9865ea5a",
+      "event": "SessionStart",
+      "at": 1794701025.9299695
+    },
+    {
+      "session_id": "01a1dc83-f3bb-7371-9ef9-7e4a9865ea5a",
+      "turn_id": "01a1dc84-5e53-78b1-bcc4-f409e8db1212",
+      "prompt": "herdr-threads: wake up",
+      "event": "UserPromptSubmit",
+      "at": 1794701026.1378198,
+      "injected": [
+        "RESUME_MAIL_4a70fdfe38bd"
+      ]
+    },
+    {
+      "session_id": "01a1dc83-f3bb-7371-9ef9-7e4a9865ea5a",
+      "turn_id": "01a1dc84-5e53-78b1-bcc4-f409e8db1212",
+      "stop_hook_active": false,
+      "event": "Stop",
+      "at": 1794701027.8801243
+    }
+  ],
+  "message_history": [
+    {
+      "type": "response_item",
+      "timestamp": "2026-11-15T00:03:18.888Z",
+      "payload": {
+        "type": "message",
+        "id": "msg_01a1dc83-f8e8-74f0-9697-5635c5e5aa6d",
+        "role": "user",
+        "content": [
+          {
+            "type": "input_text",
+            "text": "# AGENTS.md instructions for $SPIKE_ROOT/work\n\n<INSTRUCTIONS>\nYou are an isolated transport test recipient. Do not access any account files or network, create subagents, or run herdr-threads. Reply briefly. For a queued 'herdr-threads: wake up', include any Controlled spike mail tokens in your reply. When no tokens exist, reply QUEUE_EMPTY. If instructed BUSY, execute exactly the supplied Python barrier command once, wait for it to finish, then reply BUSY_DONE plus any mail tokens.\n\n</INSTRUCTIONS>"
+          },
+          {
+            "type": "input_text",
+            "text": "<environment_context>\n  <cwd>$SPIKE_ROOT/work</cwd>\n  <shell>bash</shell>\n  <current_date>2026-11-14</current_date>\n  <timezone>America/Los_Angeles</timezone>\n  <filesystem><workspace_roots><root>$SPIKE_ROOT/work</root></workspace_roots><permission_profile type=\"managed\"><file_system type=\"restricted\"><entry access=\"read\"><special>:root</special></entry><entry access=\"write\"><path>$SPIKE_ROOT/work</path></entry><entry access=\"write\"><special>:slash_tmp</special></entry><entry access=\"write\"><special>:tmpdir</special></entry><entry access=\"read\"><path>$SPIKE_ROOT/work/.git</path></entry><entry access=\"read\"><path>$SPIKE_ROOT/work/.agents</path></entry><entry access=\"read\"><path>$SPIKE_ROOT/work/.codex</path></entry><entry access=\"read\"><path>$SPIKE_ROOT/work/.aws</path></entry></file_system></permission_profile></filesystem>\n</environment_context>"
+          }
+        ],
+        "internal_chat_message_metadata_passthrough": {
+          "turn_id": "01a1dc83-f3da-7131-8dbb-a8dbe533c2e1",
+          "create_time": 1794700998.8883948,
+          "content_item_kinds": [
+            "agents_md.instructions",
+            "environments.environment_context"
+          ],
+          "content_item_metadata": [
+            {
+              "provenance": {
+                "type": "agents_md"
+              }
+            },
+            {
+              "provenance": {
+                "type": "harness",
+                "hook": false
+              }
+            }
+          ]
+        }
+      }
+    },
+    {
+      "type": "response_item",
+      "timestamp": "2026-11-15T00:03:19.254Z",
+      "payload": {
+        "type": "message",
+        "id": "msg_01a1dc83-fa56-7ab3-87a8-677acc583e23",
+        "role": "user",
+        "content": [
+          {
+            "type": "input_text",
+            "text": "Reply exactly SPIKE_READY without using tools."
+          }
+        ],
+        "internal_chat_message_metadata_passthrough": {
+          "turn_id": "01a1dc83-f3da-7131-8dbb-a8dbe533c2e1",
+          "create_time": 1794700999.2548783,
+          "content_item_kinds": [
+            "user.text"
+          ],
+          "content_item_metadata": [
+            {
+              "provenance": {
+                "type": "user"
+              }
+            }
+          ]
+        }
+      }
+    },
+    {
+      "type": "response_item",
+      "timestamp": "2026-11-15T00:03:20.537Z",
+      "payload": {
+        "type": "message",
+        "status": "completed",
+        "id": "msg_0fa19004666dae2d016af8f6c86b6887d1b64e480bff8b7dcc",
+        "role": "assistant",
+        "content": [
+          {
+            "type": "output_text",
+            "text": "SPIKE_READY",
+            "annotations": [],
+            "logprobs": []
+          }
+        ],
+        "phase": "final_answer",
+        "internal_chat_message_metadata_passthrough": {
+          "turn_id": "01a1dc83-f3da-7131-8dbb-a8dbe533c2e1",
+          "create_time": 1794701000.4289415,
+          "content_item_kinds": [
+            "unknown"
+          ]
+        }
+      }
+    },
+    {
+      "type": "response_item",
+      "timestamp": "2026-11-15T00:03:26.939Z",
+      "payload": {
+        "type": "message",
+        "id": "msg_01a1dc84-185b-7052-9dd4-26a4f7fb58bf",
+        "role": "user",
+        "content": [
+          {
+            "type": "input_text",
+            "text": "herdr-threads: wake up"
+          }
+        ],
+        "internal_chat_message_metadata_passthrough": {
+          "turn_id": "01a1dc84-174d-7012-8aad-98bcbd74b54e",
+          "create_time": 1794701006.9395695,
+          "content_item_kinds": [
+            "user.text"
+          ],
+          "content_item_metadata": [
+            {
+              "provenance": {
+                "type": "user"
+              }
+            }
+          ]
+        }
+      }
+    },
+    {
+      "type": "response_item",
+      "timestamp": "2026-11-15T00:03:28.391Z",
+      "payload": {
+        "type": "message",
+        "status": "completed",
+        "id": "msg_0fa19004666dae2d016af8f6d04cd087d1a71aca65f96c53d8",
+        "role": "assistant",
+        "content": [
+          {
+            "type": "output_text",
+            "text": "ROOT_MAIL_dc7194a12b22",
+            "annotations": [],
+            "logprobs": []
+          }
+        ],
+        "phase": "final_answer",
+        "internal_chat_message_metadata_passthrough": {
+          "turn_id": "01a1dc84-174d-7012-8aad-98bcbd74b54e",
+          "create_time": 1794701008.304526,
+          "content_item_kinds": [
+            "unknown"
+          ]
+        }
+      }
+    },
+    {
+      "type": "response_item",
+      "timestamp": "2026-11-15T00:03:46.148Z",
+      "payload": {
+        "type": "message",
+        "id": "msg_01a1dc84-6364-7393-8d60-a21b9592f664",
+        "role": "user",
+        "content": [
+          {
+            "type": "input_text",
+            "text": "herdr-threads: wake up"
+          }
+        ],
+        "internal_chat_message_metadata_passthrough": {
+          "turn_id": "01a1dc84-5e53-78b1-bcc4-f409e8db1212",
+          "create_time": 1794701026.1482184,
+          "content_item_kinds": [
+            "user.text"
+          ],
+          "content_item_metadata": [
+            {
+              "provenance": {
+                "type": "user"
+              }
+            }
+          ]
+        }
+      }
+    },
+    {
+      "type": "response_item",
+      "timestamp": "2026-11-15T00:03:47.655Z",
+      "payload": {
+        "type": "message",
+        "status": "completed",
+        "id": "msg_05795441740e194b016af8f6e38f8887d1a5ce89c41b490f0e",
+        "role": "assistant",
+        "content": [
+          {
+            "type": "output_text",
+            "text": "RESUME_MAIL_4a70fdfe38bd",
+            "annotations": [],
+            "logprobs": []
+          }
+        ],
+        "phase": "final_answer",
+        "internal_chat_message_metadata_passthrough": {
+          "turn_id": "01a1dc84-5e53-78b1-bcc4-f409e8db1212",
+          "create_time": 1794701027.5667038,
+          "content_item_kinds": [
+            "unknown"
+          ]
+        }
+      }
+    }
+  ],
+  "database_schema": [
+    {
+      "database": "thread_history_1.sqlite",
+      "table": "thread_turns",
+      "columns": [
+        "thread_id",
+        "turn_id",
+        "rollout_ordinal",
+        "status",
+        "error_json",
+        "started_at",
+        "completed_at",
+        "duration_ms",
+        "first_user_item_id",
+        "final_agent_item_id",
+        "rollout_byte_offset",
+        "rollout_end_ordinal",
+        "rollout_end_byte_offset",
+        "root_turn_id"
+      ],
+      "rows": 3
+    },
+    {
+      "database": "thread_history_1.sqlite",
+      "table": "thread_items",
+      "columns": [
+        "thread_id",
+        "turn_id",
+        "item_id",
+        "rollout_ordinal",
+        "created_at_ms",
+        "item_json",
+        "item_type",
+        "updated_at_ordinal",
+        "started_at_ms",
+        "completed_at_ms"
+      ],
+      "rows": 6
+    },
+    {
+      "database": "thread_history_1.sqlite",
+      "table": "thread_history_projection_state",
+      "columns": [
+        "thread_id",
+        "next_rollout_byte_offset",
+        "next_rollout_ordinal"
+      ],
+      "rows": 1
+    },
+    {
+      "database": "thread_history_1.sqlite",
+      "table": "thread_realtime_items",
+      "columns": [
+        "thread_id",
+        "item_id",
+        "rollout_ordinal",
+        "created_at_ms",
+        "item_type",
+        "item_json"
+      ],
+      "rows": 0
+    },
+    {
+      "database": "queue_1.sqlite",
+      "table": "queued_items",
+      "columns": [
+        "id",
+        "thread_id",
+        "payload_json",
+        "queue_order",
+        "created_at_ms",
+        "updated_at_ms"
+      ],
+      "rows": 0
+    },
+    {
+      "database": "queue_1.sqlite",
+      "table": "queued_thread_revisions",
+      "columns": [
+        "revision",
+        "thread_id"
+      ],
+      "rows": 1
+    },
+    {
+      "database": "goals_1.sqlite",
+      "table": "thread_goals",
+      "columns": [
+        "thread_id",
+        "goal_id",
+        "objective",
+        "status",
+        "token_budget",
+        "tokens_used",
+        "time_used_seconds",
+        "created_at_ms",
+        "updated_at_ms"
+      ],
+      "rows": 0
+    },
+    {
+      "database": "goals_1.sqlite",
+      "table": "thread_goal_continuation_deferrals",
+      "columns": [
+        "thread_id"
+      ],
+      "rows": 0
+    },
+    {
+      "database": "state_5.sqlite",
+      "table": "threads",
+      "columns": [
+        "id",
+        "rollout_path",
+        "created_at",
+        "updated_at",
+        "source",
+        "model_provider",
+        "cwd",
+        "title",
+        "sandbox_policy",
+        "approval_mode",
+        "tokens_used",
+        "has_user_event",
+        "archived",
+        "archived_at",
+        "git_sha",
+        "git_branch",
+        "git_origin_url",
+        "cli_version",
+        "first_user_message",
+        "agent_nickname",
+        "agent_role",
+        "memory_mode",
+        "model",
+        "reasoning_effort",
+        "agent_path",
+        "created_at_ms",
+        "updated_at_ms",
+        "thread_source",
+        "preview",
+        "recency_at",
+        "recency_at_ms",
+        "history_mode",
+        "name",
+        "is_pinned",
+        "thread_section_id",
+        "section_position",
+        "section_entered_at_ms",
+        "project_id",
+        "originator",
+        "daybreak_enabled",
+        "creator_user_id",
+        "creator_account_id",
+        "attached_thread_parent_id"
+      ],
+      "rows": 1
+    },
+    {
+      "database": "state_5.sqlite",
+      "table": "thread_dynamic_tools",
+      "columns": [
+        "thread_id",
+        "position",
+        "name",
+        "description",
+        "input_schema",
+        "defer_loading",
+        "namespace"
+      ],
+      "rows": 0
+    },
+    {
+      "database": "state_5.sqlite",
+      "table": "thread_spawn_edges",
+      "columns": [
+        "parent_thread_id",
+        "child_thread_id",
+        "status"
+      ],
+      "rows": 0
+    },
+    {
+      "database": "state_5.sqlite",
+      "table": "thread_sections",
+      "columns": [
+        "id",
+        "name",
+        "appearance"
+      ],
+      "rows": 1
+    },
+    {
+      "database": "state_5.sqlite",
+      "table": "thread_attachments",
+      "columns": [
+        "id",
+        "thread_id",
+        "attachment_type",
+        "identity_key",
+        "payload",
+        "created_at"
+      ],
+      "rows": 0
+    },
+    {
+      "database": "state_5.sqlite",
+      "table": "thread_read_receipts",
+      "columns": [
+        "thread_id",
+        "first_unread_turn",
+        "revision",
+        "last_published_turn"
+      ],
+      "rows": 1
+    }
+  ],
+  "source_auth_unchanged": true,
+  "private_auth_refreshed": false,
+  "cleanup_tagged_descendants": [
+    614076
+  ]
+}

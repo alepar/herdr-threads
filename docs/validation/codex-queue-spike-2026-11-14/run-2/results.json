@@ -1,0 +1,12 @@
+{
+  "version": "codex-cli 0.167.0",
+  "cases": [],
+  "error": "owned TUI exited while waiting for SessionStart hook",
+  "session": null,
+  "hooks": [],
+  "message_history": [],
+  "database_schema": [],
+  "source_auth_unchanged": true,
+  "private_auth_refreshed": false,
+  "cleanup_tagged_descendants": []
+}
