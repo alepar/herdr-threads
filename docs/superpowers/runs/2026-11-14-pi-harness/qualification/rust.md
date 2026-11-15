@@ -1,6 +1,6 @@
 # Pi Rust adapter verification
 
-Implementation snapshot: `ca4474c06ae263c8bc253aea623c029ba0a31801`. Independent task review is pending; this records completed implementation checks, not review acceptance or native runtime qualification.
+Implementation snapshot: `ca4474c06ae263c8bc253aea623c029ba0a31801`. The initial independent task review found setup duplication and malformed trust-section placement. Both were repaired and the scoped re-review approved them; see [initial review](rust-review.md), [fix evidence and SHA map](rust-fix1.md) and [re-review](rust-rereview-1.md). The accepted refactor source is `4a784faa9`; native runtime qualification remains separate.
 
 The shared changes are split into `64f087e4b` (optional selected-process validation), `3e1e6664f` (fallible local evidence before orchestration) and `564bd13a9` (channel-owned lifecycle selection/output). Pi activation, trust amendments and public fixtures are in `ca4474c06`.
 
