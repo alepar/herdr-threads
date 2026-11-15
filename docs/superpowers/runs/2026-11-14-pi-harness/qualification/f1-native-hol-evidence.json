@@ -1,0 +1,195 @@
+{
+  "scope": "Fresh scripted native HOL progression; this does not claim the remaining compatibility/full/live gates. Prior failures are preserved separately.",
+  "production_build_source": "a19fd881e7e8dc6c1b52c9cb2ccda0abbc3a8601",
+  "candidate_sha256": "a8aef2df56e6954fe3c12b7d02841f521712ceb403d13f9b93fabdabe2224289",
+  "source_head": "0042fcf3847acc1fa3f215d5184f86f983f27997",
+  "driver_sha256": "50a3f9fb56665889ec8c4e6af9966083d9163476167902cc733606a08fbd44ed",
+  "fixture_sha256": "08174d104a0e5fdbdee5f91cfe2acb169ef49f16b980d0130fa6a846dcf7ee33",
+  "official_runtime_entry_sha256": "e79626f2dd6f94aa45d30f3fa63cd84319a6eefcd150b353cfaf274366926774",
+  "installed_extensions": {
+    "primary": {
+      "path": "$SCRATCH/agent/extensions/herdr-threads/index.js",
+      "sha256": "82305a070b94f7c4a41e1a57b7f779ab791fd31607bf471cd2527a820852d002"
+    },
+    "sink": {
+      "path": "$SCRATCH/notice-sink/agent/extensions/herdr-threads/index.js",
+      "sha256": "82305a070b94f7c4a41e1a57b7f779ab791fd31607bf471cd2527a820852d002"
+    }
+  },
+  "run_id": "2288516a-5f51-4bcf-a16c-c270ab7bc6c7",
+  "case": {
+    "case": "notice_hol",
+    "outcome": "pass",
+    "elapsed_s": 59.536
+  },
+  "wall_s": 68.12,
+  "cleanup": {
+    "ok": true,
+    "leak_rc": 0,
+    "helper_reaped": true,
+    "root_removed": true
+  },
+  "nonwaking_trigger": {
+    "canonical": {
+      "body": "OWNED NONWAKING HOL PULL TRIGGER 21b00f8d-b148-49c8-bee3-758c988d0123",
+      "priority": 1,
+      "recipient_priority": 1,
+      "publication_sequence": 21,
+      "ack_required": 0,
+      "threshold": 0,
+      "pending_invitations": 0
+    },
+    "selection": {
+      "invitation": null,
+      "outcome": "already_joined"
+    },
+    "at": 1794749876.3690693,
+    "protected_at": 1794749876.500922
+  },
+  "old_notice": {
+    "warning": "exSnNbJLkTDz",
+    "ordinal": 3,
+    "body": "informational, no ACK; read: herdr-threads --state-dir $SCRATCH/state body exSnNbJLkTDz",
+    "descriptor": {
+      "item": {
+        "kind": "notice",
+        "warning": "exSnNbJLkTDz",
+        "thread": "dDTBO1lBO4y",
+        "body": "informational, no ACK; read: herdr-threads --state-dir $SCRATCH/state body exSnNbJLkTDz"
+      },
+      "context_key": "dn1:5:16:3"
+    }
+  },
+  "old_protected_page": {
+    "token": "99526a0fa2c74a3aad56c85e55d11f7a",
+    "frontier": 1
+  },
+  "new_pending_before_release": {
+    "warning_id": "exSnJXWDyBSH",
+    "ordinal": 5,
+    "frontier": 1,
+    "outbox_token": "99526a0fa2c74a3aad56c85e55d11f7a",
+    "pending": true,
+    "notice_descriptor": null
+  },
+  "new_body_assertion_reference": {
+    "source": "renderer-derived assertion reference; not an observed packet",
+    "body": "informational, no ACK; read: herdr-threads --state-dir $SCRATCH/state body exSnJXWDyBSH"
+  },
+  "actual_new_descriptor_observed": {
+    "sampled_at": 1794749919.0358524,
+    "descriptor": {
+      "item": {
+        "kind": "notice",
+        "warning": "exSnJXWDyBSH",
+        "thread": "dDTBO1lBO4y",
+        "body": "informational, no ACK; read: herdr-threads --state-dir $SCRATCH/state body exSnJXWDyBSH"
+      },
+      "context_key": "dn1:8:23:5"
+    }
+  },
+  "release_input": {
+    "at": 1794749887126,
+    "event": "terminal_input",
+    "data": "\u001b[99;5u",
+    "key": "ctrl+c"
+  },
+  "release_controller_at": 1794749887.1242645,
+  "actual_automatic_wakes": [
+    {
+      "at": 1794749887888,
+      "prompt": "herdr-threads: wake up"
+    },
+    {
+      "at": 1794749919069,
+      "prompt": "herdr-threads: wake up"
+    }
+  ],
+  "path": "later_automatic_wake",
+  "outer_wakes": 2,
+  "delivery_wake_ordinal": 2,
+  "old_native_context": {
+    "at": 1794749887896,
+    "sid": "01a1df6d-7b4e-74f8-bdf4-06de2a997bce",
+    "customType": "herdr-threads:326282ab-91d1-4a3e-a7d6-2c2242dba61e:f7bc7f26-2ccc-4251-ba26-01ecb07c10eb",
+    "content": "[herdr-threads] new messages:\n\n[herdr-threads] notice notice:exSnNbJLkTDz in dDTBO1lBO4y from unknown:\n  informational, no ACK; read: herdr-threads --state-dir $SCRATCH/state body exSnNbJLkTDz\n\n[herdr-threads] message mxSnRR8nyMig in dcq4dhf9rq7 \"1:1 sxSn6Cee54Xu sxSnVBqEy6GE\" from sxSnVBqEy6GE [human]:\n  OWNED NONWAKING HOL PULL TRIGGER 21b00f8d-b148-49c8-bee3-758c988d0123"
+  },
+  "new_native_context": {
+    "at": 1794749919072,
+    "sid": "01a1df6d-7b4e-74f8-bdf4-06de2a997bce",
+    "customType": "herdr-threads:326282ab-91d1-4a3e-a7d6-2c2242dba61e:738a630c-188f-4aae-9078-d28df7db8663",
+    "content": "[herdr-threads] new messages:\n\n[herdr-threads] notice notice:exSnJXWDyBSH in dDTBO1lBO4y from unknown:\n  informational, no ACK; read: herdr-threads --state-dir $SCRATCH/state body exSnJXWDyBSH"
+  },
+  "settled_events": [
+    1794749887924,
+    1794749919091
+  ],
+  "canonical_frontier_after": 5,
+  "sink_receipt_still_pending": true,
+  "earlier_hol_attempts": [
+    {
+      "attempt": "native-hol",
+      "source_head": "658634ec4c24b1f74aecaf311c496fb0bad0403f",
+      "driver_sha256": "2e7966fb06090b5c5f3e0f367e5a369a6a30621313752522cef242923d456eed",
+      "run_id": "331c7058-3907-4ec5-9b96-085a82054839",
+      "wall_s": 58.79,
+      "results": [
+        {
+          "case": "notice_hol",
+          "outcome": "fail",
+          "error": "RuntimeError: timed out: actual old protected clear Notice"
+        }
+      ],
+      "classification": "Setup overconstraint; informational clear alone need not trigger a settled watch pull. Post-ACK canonical rows were not retained.",
+      "cleanup": {
+        "ok": true,
+        "leak_rc": 0,
+        "helper_reaped": true,
+        "root_removed": true
+      }
+    },
+    {
+      "attempt": "native-hol-diagnostic",
+      "source_head": "bc1aabfda8d918a82f42d8df467d19605e452542",
+      "driver_sha256": "29e6d847201fe7316763914f8f694a5a9cea53fcab0f163b7324d60a3b0b0571",
+      "run_id": "64034987-39ab-4cba-bdec-9775f99653de",
+      "wall_s": 59.88,
+      "results": [
+        {
+          "case": "notice_hol",
+          "outcome": "fail",
+          "error": "RuntimeError: timed out: actual old protected clear Notice"
+        }
+      ],
+      "classification": "Same setup failure with retained clear projection and completed attribution, but no protected outbox. No successor cause or release.",
+      "cleanup": {
+        "ok": true,
+        "leak_rc": 0,
+        "helper_reaped": true,
+        "root_removed": true
+      }
+    },
+    {
+      "attempt": "native-hol-p1",
+      "source_head": "cc15b5fa22bc2b7b4adefbcd06b3d59103c5e49f",
+      "driver_sha256": "0af1e42cfd1c5ecb48b4366a77c83ded9a90b5c922c46cee7b1a49bcbd9f3bf0",
+      "run_id": "96f5e149-1842-4729-8ff3-e1c6bffa10da",
+      "wall_s": 25.08,
+      "results": [
+        {
+          "case": "notice_hol",
+          "outcome": "fail",
+          "error": "AssertionError: HOL trigger lacks one actual canonical recipient"
+        }
+      ],
+      "classification": "Observer representation error: noACK p1 uses a lazy audience, not a prepared receipt row. Protected old clear observed; no successor cause or release.",
+      "cleanup": {
+        "ok": true,
+        "leak_rc": 0,
+        "helper_reaped": true,
+        "root_removed": true
+      }
+    }
+  ],
+  "proof_boundary": "Exact accepted custom-message entries in the current native branch plus later exact native context and canonical frontier advance. No presentation-confirm stdout or lease is observed/inferred. No controller input between critical release and completed proof; cleanup follows proof."
+}

@@ -66,5 +66,10 @@ independently of the retained page. Retry follows the existing completion-anchor
 30/60/120/300-second ladder and safety checks. These are conditional policy facts,
 not a universal delivery deadline: an unsafe composer, focus protection, service
 failure or failure to establish body uptake can defer progress. The separate
-native `notice_hol` case is still pending here and must report actual same-turn
-or later-wake behavior without claiming a forced interleaving.
+native `notice_hol` case has now passed on the unchanged production candidate.
+After one owned draft release, two actual host wakes presented the old clear
+Notice and then the newer actionable warning, 31.181 seconds apart, with exact
+branch/context evidence and canonical frontier advancement. This observed the
+later-wake path without forcing packet timing. The complete native result,
+identities, failed setup attempts and cleanup are recorded in
+[f1-native-hol.md](f1-native-hol.md).

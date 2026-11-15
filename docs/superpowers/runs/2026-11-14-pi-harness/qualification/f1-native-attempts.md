@@ -4,7 +4,7 @@ Production build anchor: `a19fd881e`; candidate SHA256
 `a8aef2df56e6954fe3c12b7d02841f521712ceb403d13f9b93fabdabe2224289`.
 All attempts below used this unchanged binary and the retained official runtime
 entry `e79626f2dd6f94aa45d30f3fa63cd84319a6eefcd150b353cfaf274366926774`.
-The scripted provider fixture remained
+The three-case and isolated-wake attempts used scripted provider fixture
 `1bbb2f67a76a015beebeb055fb915389fb6aa50178c46d1e7c17e95d7d2380fa`.
 No live request or credential read occurred. Shared format, clippy, default,
 neutral and wire guards passed before the single 43.21-second warm build.
@@ -127,3 +127,23 @@ Thus reload/page and isolated wake have explicit passing evidence on the same
 production binary, **not a contiguous three-case pass**. Final compatibility,
 whole-branch review, corrected unfiltered attempt2 and the authorized live test
 remain pending; no credential read or paid request is claimed here.
+
+## Native protected-page successor progression
+
+The later standalone HOL case adds fixture `08174d10…`; production candidate
+and official runtime remain unchanged. Three setup/observer failures are
+preserved: `658634ec4` (58.79s) and diagnostic `bc1aabfda` (59.88s) incorrectly
+waited for informational clear-only watch allocation; `cc15b5fa2` (25.08s)
+observed the protected clear but used an invalid prepared-receipt query for a
+noACK lazy audience. None reached the newer cause or critical draft release.
+
+The corrected `0042fcf38` run passed `notice_hol` in59.536s (68.12s total).
+The actual old clear page remained protected while the newer warning was
+pending separately. After the single Ctrl+C release, two automatic host wakes
+delivered old then new, with canonical frontier advancement and no further
+controller input before completion. All four HOL attempts cleaned their owned
+resources and passed scoped leak scans. Exact evidence and the observed later
+automatic-wake path are in [f1-native-hol.md](f1-native-hol.md) and
+[f1-native-hol-evidence.json](f1-native-hol-evidence.json). This supersedes only
+the earlier native-progression-pending status; final compatibility, R2,
+unfiltered attempt2, live and budget disposition remain separate gates.
