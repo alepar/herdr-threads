@@ -790,10 +790,17 @@ class Run:
         trigger = {'at': time.time(), 'clear_projection_before_send': projection, 'send': result, 'held': held, 'screen': screen}
         self.facts['notice_hol']['nonwaking_trigger'] = trigger
         assert result['selection']['invitation'] is None, 'HOL trigger created an invitation'
-        rows = self.canonical_read("SELECT m.body,m.priority,pr.ack_required,s.nudge_threshold threshold,EXISTS(SELECT 1 FROM invitations i WHERE i.seat_id=s.id AND i.state='pending') pending_invitations FROM messages m JOIN send_manifests sm ON sm.message_id=m.id JOIN prepared_recipients pr ON pr.preparation_id=sm.preparation_id JOIN seats s ON s.id=pr.seat_id WHERE m.id=?1 AND pr.seat_id=?2 LIMIT 2", (result['data'], self.seat))
+        rows = self.canonical_read("""SELECT m.body,m.priority,lr.priority recipient_priority,sm.decision_seq publication_sequence,
+            (EXISTS(SELECT 1 FROM prepared_recipients pr WHERE pr.preparation_id=sm.preparation_id AND pr.seat_id=s.id AND pr.ack_required=1)
+             OR EXISTS(SELECT 1 FROM receipts r WHERE r.message_id=m.id AND r.seat_id=s.id AND r.ack_required=1)
+             OR EXISTS(SELECT 1 FROM receipt_state rs WHERE rs.message_id=m.id AND rs.seat_id=s.id AND rs.ack_required=1)) ack_required,
+            s.nudge_threshold threshold,EXISTS(SELECT 1 FROM invitations i WHERE i.seat_id=s.id AND i.state='pending') pending_invitations
+            FROM messages m JOIN send_manifests sm ON sm.message_id=m.id AND sm.thread_id=m.thread_id AND sm.decision_seq=m.decision_seq
+            JOIN lazy_recipients lr ON lr.message_id=m.id AND lr.preparation_id=sm.preparation_id AND lr.thread_id=m.thread_id AND lr.decision_seq=sm.decision_seq
+            JOIN seats s ON s.id=lr.seat_id WHERE m.id=?1 AND lr.seat_id=?2 AND sm.decision_seq>0 LIMIT 2""", (result['data'], self.seat))
         assert len(rows) == 1, 'HOL trigger lacks one actual canonical recipient'
         trigger['canonical'] = row = rows[0]
-        assert row['body'] == body and row['priority'] == 1 and row['ack_required'] == 0 and row['threshold'] == 0 and row['pending_invitations'] == 0, 'HOL pull trigger is not exclusively nonwaking p1/noACK at T0'
+        assert row['body'] == body and row['priority'] == 1 and row['recipient_priority'] == 1 and row['ack_required'] == 0 and row['threshold'] == 0 and row['pending_invitations'] == 0, 'HOL pull trigger is not exclusively nonwaking p1/noACK at T0'
         self.quiet(starts, 0)
         clear = self.wait('actual old protected clear Notice', lambda: self.parked_clear_notice(seed), 35)
         assert not self.canonical_read("SELECT open_warning_id FROM warning_conditions WHERE condition_kind='receipt' AND affected_seat_id=? AND clear_warning_id IS NULL LIMIT 2", (self.sink['seat'],)), 'new actionable warning existed before the new cause'
@@ -1606,8 +1613,60 @@ read -r _ || true
 
 
 class DriverTests(unittest.TestCase):
+    def test_hol_trigger_observes_real_lazy_recipient_without_receipt_obligation(self):
+        # Producer-shaped SQLite rows test the actual read-only observer query;
+        # they are not canonical/native delivery evidence.
+        with tempfile.TemporaryDirectory(prefix='ht-pi-hol-trigger-') as root:
+            path = Path(root) / 'state/node/herdr-threads.db'; path.parent.mkdir(parents=True)
+            db = sqlite3.connect(path)
+            db.executescript("""
+                CREATE TABLE messages(id,body,priority,thread_id,decision_seq);
+                CREATE TABLE send_manifests(preparation_id,message_id,thread_id,decision_seq);
+                CREATE TABLE lazy_recipients(preparation_id,message_id,thread_id,seat_id,priority,decision_seq);
+                CREATE TABLE prepared_recipients(preparation_id,seat_id,ack_required);
+                CREATE TABLE receipts(message_id,seat_id,ack_required);
+                CREATE TABLE receipt_state(message_id,seat_id,ack_required);
+                CREATE TABLE seats(id,nudge_threshold);
+                CREATE TABLE invitations(seat_id,state);
+                CREATE TABLE warning_conditions(open_warning_id,condition_kind,affected_seat_id,clear_warning_id);
+                INSERT INTO messages VALUES('trigger','pending-body',1,'thread',33);
+                INSERT INTO send_manifests VALUES('prep','trigger','thread',33);
+                INSERT INTO lazy_recipients VALUES('prep','trigger','thread','primary',1,33);
+                INSERT INTO seats VALUES('primary',0);
+            """)
+            db.commit()
+            self.assertEqual(db.execute('SELECT COUNT(*) FROM prepared_recipients').fetchone()[0], 0)
+            run = Run.__new__(Run); run.root = Path(root); run.facts = {'notice_hol': {}}; run.main_sid = 'main'
+            run.seat = 'primary'; run.sender = 'sender'; run.sink = {'seat': 'sink'}
+            run.clear_notice_projection = lambda _cause: {'warning': 'clear', 'ordinal': 3}
+            run.parked_clear_notice = lambda _cause: {'warning': 'clear', 'page': {'outbox_token': 'old'}}
+            run.count = lambda _event: 0
+            run.observe_state = lambda **_kwargs: {'state': {'sid': 'main', 'idle': True, 'editor': NOTICE_DRAFT}}
+            border = '─' * 80
+            run.capture = lambda *_args: {'styled': {'raw': '\n'.join([border, NOTICE_DRAFT + '\x1b[0m\x1b[7m \x1b[0m', border, '/owned/project', '2.0%/100k scripted'])}}
+            def send(*args, **_kwargs):
+                db.execute('UPDATE messages SET body=?', (args[4],)); db.commit()
+                return {'result': {'data': 'trigger', 'selection': {'invitation': None}}}
+            run.ht = send
+            def wait(_label, predicate, *_args):
+                result = predicate(); self.assertTrue(result); return result
+            run.wait = wait
+            self.assertEqual(run.stage_notice_hol_clear({'warning': 'open'})['warning'], 'clear')
+            for mutation, restore in (
+                ("UPDATE messages SET priority=0", "UPDATE messages SET priority=1"),
+                ("UPDATE lazy_recipients SET priority=0", "UPDATE lazy_recipients SET priority=1"),
+                ("UPDATE lazy_recipients SET seat_id='foreign'", "UPDATE lazy_recipients SET seat_id='primary'"),
+                ("UPDATE lazy_recipients SET decision_seq=32", "UPDATE lazy_recipients SET decision_seq=33"),
+                ("INSERT INTO prepared_recipients VALUES('prep','primary',1)", "DELETE FROM prepared_recipients"),
+                ("INSERT INTO receipts VALUES('trigger','primary',1)", "DELETE FROM receipts"),
+                ("INSERT INTO receipt_state VALUES('trigger','primary',1)", "DELETE FROM receipt_state")):
+                db.execute(mutation); db.commit()
+                with self.assertRaises(AssertionError): run.stage_notice_hol_clear({'warning': 'open'})
+                db.execute(restore); db.commit()
+            db.close()
+
     def test_hol_clear_requires_nonwaking_public_trigger_before_protected_page(self):
-        for bad in (None, 'priority', 'ack_required', 'threshold', 'pending_invitations', 'invitation', 'native_run'):
+        for bad in (None, 'priority', 'recipient_priority', 'ack_required', 'threshold', 'pending_invitations', 'invitation', 'native_run'):
             run = Run.__new__(Run); run.facts = {'notice_hol': {}}; run.main_sid = 'main'; run.seat = 'primary'; run.sender = 'sender'; run.sink = {'seat': 'sink'}
             actions = []; state = {'sent': False, 'starts': 2}
             clear = {'warning': 'clear', 'ordinal': 3}
@@ -1630,8 +1689,8 @@ class DriverTests(unittest.TestCase):
                 self.assertTrue(sql.startswith('SELECT '))
                 if 'FROM messages m' in sql:
                     self.assertEqual(args, ('trigger', 'primary'))
-                    row = {'priority': 1, 'ack_required': 0, 'threshold': 0, 'pending_invitations': 0, 'body': state['body']}
-                    if bad in row: row[bad] = 0 if bad == 'priority' else 1
+                    row = {'priority': 1, 'recipient_priority': 1, 'ack_required': 0, 'threshold': 0, 'pending_invitations': 0, 'body': state['body']}
+                    if bad in row: row[bad] = 0 if bad in ('priority', 'recipient_priority') else 1
                     return [row]
                 self.assertIn('warning_conditions', sql)
                 return []
