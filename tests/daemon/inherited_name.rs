@@ -1,7 +1,7 @@
 //! ht-kqrt.72 (N4-inherit): a per-command seat name equal to the one the host server's own
 //! environment carries is refused with M6 and never bound; any other name is honoured, and the
 //! refused name binds once the server restarts without the variable.
-use crate::ports::LocalService;
+use crate::ports::{HostCallContext, HostPort, LocalService};
 use crate::{
     host::named::{NamedHost, NoBootstrap},
     ports::HostKind,
@@ -58,6 +58,7 @@ struct Fixture {
     service: DomainService,
     db: Connection,
     host: Arc<EnvHost>,
+    named: Arc<NamedHost>,
     sessions: Arc<HostSessions>,
     _directory: PrivateDirectory,
 }
@@ -92,15 +93,17 @@ fn fixture(server: Option<u32>) -> Fixture {
     ));
     // Named allocation needs real cooperative observation, independently of the pane server
     // whose environment the inheritance guard examines.
+    let named_host_id = sessions.reserve_host_id(&locator, HostKind::Named).unwrap();
+    let named = Arc::new(NamedHost::new(
+        INSTANCE,
+        named_host_id,
+        store.clone(),
+        clock.clone(),
+    ));
     sessions
         .attach_builtin(
             HostKind::Named,
-            Arc::new(NamedHost::new(
-                INSTANCE,
-                HostId::from_row(0),
-                store.clone(),
-                clock.clone(),
-            )),
+            named.clone(),
             Arc::new(NoBootstrap),
             &locator,
         )
@@ -117,6 +120,7 @@ fn fixture(server: Option<u32>) -> Fixture {
         service,
         db,
         host,
+        named,
         sessions,
         _directory: directory,
     }
@@ -128,7 +132,7 @@ fn resolve(
     operation: &str,
     hint: Option<&str>,
 ) -> Result<CommandResult, ApiError> {
-    f.service.handle(
+    let result = f.service.handle(
         Command::ResolveSeat(ResolveSeat {
             target: HostTargetId::new(name),
             host: HostLocator::parse(NAMED_HOST_LOCATOR).unwrap(),
@@ -139,7 +143,23 @@ fn resolve(
         }),
         PeerIdentity::from_kernel(501),
         &budget(),
-    )
+    )?;
+    // A successful current-target read alone cannot prove that this fixture's complete
+    // enumeration is wired to the same host's persisted named seats.
+    let snapshot = f.named.enumerate_targets(&HostCallContext {
+        budget: budget(),
+        expected_boot: None,
+        expected_epoch: None,
+    })?;
+    assert!(snapshot.complete);
+    assert!(
+        snapshot
+            .targets
+            .iter()
+            .any(|target| target.target.as_str() == name),
+        "complete named enumeration must include the resolved name"
+    );
+    Ok(result)
 }
 
 fn seats_named(db: &Connection, name: &str) -> i64 {
