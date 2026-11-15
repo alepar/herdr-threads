@@ -458,13 +458,76 @@ class Run:
         require_visible_notice_draft(held, capture, self.main_sid)
 
     def pending_notice(self, cause):
+        evidence = {"cause": {key: cause.get(key) for key in ("message", "cause_body", "deadline", "initial_receipt")},
+                    "samples": 0, "transitions": [], "last_snapshot": None}
+        self.facts["notice_wait"] = evidence
         def pending():
             value = self.notice_snapshot(cause)
+            stage = ("no_exact_snapshot" if value is None else "frontier_covers_target" if not value["pending"]
+                     else "tagged_pending_target" if value["notice_descriptor"] else "pending_without_target_descriptor")
+            evidence.update(samples=evidence["samples"] + 1, last_snapshot=value, sampled_at=time.time())
+            if not evidence["transitions"] or evidence["transitions"][-1]["stage"] != stage:
+                evidence["transitions"].append({"at": time.time(), "stage": stage})
+                evidence["transitions"] = evidence["transitions"][-8:]
             return value if value and value["pending"] and value["notice_descriptor"] else None
-        state = self.wait("real tagged pending canonical notice", pending, 35)
+        try:
+            state = self.wait("real tagged pending canonical notice", pending, 35)
+        except BaseException as failure:
+            evidence["error"] = type(failure).__name__ + ": " + str(failure)
+            try:
+                evidence["failure_snapshot"] = self.notice_failure_diagnostics(cause)
+            except Exception as diagnostic:
+                evidence["diagnostic_error"] = type(diagnostic).__name__ + ": " + str(diagnostic)
+            raise
         cause.update(warning=state["warning_id"], ordinal=state["ordinal"], body=state["notice_descriptor"]["item"]["body"])
         assert cause["warning"] not in {c["warning"] for c in self.notice_causes if c is not cause and "warning" in c}, "old coalesced warning cannot prove a new case"
         return state
+
+    def notice_failure_diagnostics(self, cause):
+        # Observe before cleanup. No CLI command, pull, ACK, re-admission or
+        # confirmation runs here; volatile live lease remains unobserved.
+        mid, target = cause["message"], self.sink["seat"]
+        result = {"at": time.time(), "read_consistency": "sequential read-only statements",
+                  "presentation_lease": "unobserved: not exposed by read-only canonical rows"}
+        queries = {
+            "receipts": ("SELECT 'receipt_state' storage,state,deadline_at,warning_message_id,acked_at FROM receipt_state WHERE message_id=?1 AND seat_id=?2 UNION ALL SELECT 'receipts',state,deadline_at,warning_message_id,acked_at FROM receipts WHERE message_id=?1 AND seat_id=?2", (mid, target)),
+            "projection": ("SELECT d.* FROM digest_programmatic_warnings d WHERE d.warning_id IN (SELECT warning_message_id FROM receipt_state WHERE message_id=?1 AND seat_id=?2 UNION SELECT warning_message_id FROM receipts WHERE message_id=?1 AND seat_id=?2) LIMIT 8", (mid, target)),
+            "conditions": ("SELECT * FROM warning_conditions WHERE affected_seat_id=? ORDER BY ordinal DESC LIMIT 8", (target,)),
+            "bindings": ("SELECT b.binding_id,b.harness,b.role,b.agent_id,b.generation,b.target_generation,b.target_id,b.native_session,b.execution_id,b.observation_provenance,b.registered_at,b.ended_at,b.liveness,b.liveness_pid,b.liveness_start,s.state seat_state,s.generation seat_generation,s.target_id seat_target,s.target_generation seat_target_generation,s.instance_id,COALESCE(f.offered_ordinal,0) frontier FROM occupant_bindings b JOIN seats s ON s.id=b.seat_id LEFT JOIN digest_notice_offer f ON f.binding_id=b.binding_id WHERE b.seat_id=? ORDER BY b.ordinal DESC LIMIT 8", (self.seat,)),
+            "consumers": ("SELECT c.binding_id,c.generation,c.execution,c.instance_id,c.seat_id,c.outbox_token,c.outbox_descriptors,c.outbox_retired_mask,c.outbox_confirmed_mask,c.control_state,c.outbox_more,c.mod_generation,c.mod_execution FROM invitation_presentation_consumers c JOIN occupant_bindings b ON b.binding_id=c.binding_id WHERE b.seat_id=? AND c.consumer='watch' ORDER BY b.ordinal DESC LIMIT 4", (self.seat,))}
+        for name, (sql, args) in queries.items():
+            try:
+                result[name] = self.canonical_read(sql, args)
+            except Exception as error:
+                result[name] = {"error": type(error).__name__ + ": " + str(error)}
+        try:
+            owner = next(row for row in result["bindings"] if row["native_session"] == self.main_sid
+                         and row["ended_at"] is None and row["liveness"] == "connected"
+                         and row["harness"] == 'pi' and row["role"] == 'top_level' and not row["agent_id"])
+            pid = owner["liveness_pid"]; proc = Path('/proc') / str(pid)
+            assert (proc / 'cwd').resolve() == (self.root / 'project').resolve(), 'owner cwd is not the owned project'
+            children = (proc / 'task' / str(pid) / 'children').read_text().split()
+            result["watch_children"] = []
+            for child in children[:16]:
+                entry = Path('/proc') / child
+                if (entry / 'cwd').resolve() != (self.root / 'project').resolve():
+                    continue
+                with (entry / 'cmdline').open('rb') as stream:
+                    args = stream.read(8192).rstrip(b'\0').decode().split('\0')
+                if 'watch' in args and '--session' in args and args[args.index('--session') + 1] == self.main_sid:
+                    result["watch_children"].append({"pid": int(child), "argv": args,
+                        "state": (entry / 'stat').read_text().rsplit(')', 1)[1].split()[0]})
+            result["child_scan_truncated"] = len(children) > 16
+        except Exception as error:
+            result["watch_child_error"] = type(error).__name__ + ": " + str(error)
+        log = self.root / 'state/node/daemon.log'
+        try:
+            with log.open('rb') as stream:
+                stream.seek(0, 2); stream.seek(max(0, stream.tell() - 16384))
+                result["daemon_log_tail"] = stream.read(16384).decode(errors='replace')
+        except OSError as error:
+            result["daemon_log_error"] = str(error)
+        return result
 
     def reload_notice_draft(self):
         self.observe_state(NOTICE_DRAFT, sid=self.main_sid)
@@ -1324,6 +1387,45 @@ read -r _ || true
 
 
 class DriverTests(unittest.TestCase):
+    def test_notice_timeout_retains_bounded_null_stages_before_cleanup(self):
+        run = Run.__new__(Run); run.facts = {}; run.sink = {'seat': 'sink'}
+        samples = [None, {'pending': True, 'notice_descriptor': None, 'ordinal': 1},
+                   {'pending': True, 'notice_descriptor': None, 'ordinal': 2}]
+        order = []
+        def sample(_cause):
+            order.append('sample'); return samples.pop(0)
+        run.notice_snapshot = sample
+        def wait(_label, predicate, seconds):
+            self.assertEqual(seconds, 35)
+            for _ in range(3): self.assertIsNone(predicate())
+            raise RuntimeError('synthetic pending timeout')
+        run.wait = wait
+        run.notice_failure_diagnostics = lambda _cause: order.append('failure-snapshot') or {'readonly': True}
+        cause = {'message': 'third', 'deadline': 1234, 'initial_receipt': {'effective_status': 'pending'}}
+        with self.assertRaisesRegex(RuntimeError, 'synthetic pending timeout'): run.pending_notice(cause)
+        evidence = run.facts['notice_wait']
+        self.assertEqual(evidence['cause']['message'], 'third')
+        self.assertEqual(evidence['samples'], 3)
+        self.assertEqual(evidence['last_snapshot']['ordinal'], 2)
+        self.assertEqual([x['stage'] for x in evidence['transitions']], ['no_exact_snapshot', 'pending_without_target_descriptor'])
+        self.assertEqual(evidence['failure_snapshot'], {'readonly': True})
+        self.assertEqual(order, ['sample'] * 3 + ['failure-snapshot'])
+        def broken(_cause):
+            raise RuntimeError('diagnostic unavailable')
+        run.notice_failure_diagnostics = broken
+        samples.extend([None, {'pending': True, 'notice_descriptor': None, 'ordinal': 1}, None])
+        with self.assertRaisesRegex(RuntimeError, 'synthetic pending timeout'): run.pending_notice(cause)
+        self.assertIn('diagnostic unavailable', run.facts['notice_wait']['diagnostic_error'])
+        samples.extend([None, {'pending': False, 'notice_descriptor': None}] * 10)
+        def transitions(_label, predicate, seconds):
+            self.assertEqual(seconds, 35)
+            for _ in range(20): self.assertIsNone(predicate())
+            raise RuntimeError('synthetic pending timeout')
+        run.wait = transitions
+        with self.assertRaisesRegex(RuntimeError, 'synthetic pending timeout'): run.pending_notice(cause)
+        self.assertEqual(run.facts['notice_wait']['samples'], 20)
+        self.assertEqual(len(run.facts['notice_wait']['transitions']), 8)
+
     def test_notice_guard_requires_real_terminal_input_and_visible_literal(self):
         # Simulate the observed public setter: API H, rendered editor empty.
         # These are fixture-controller tests, not canonical/native proof.
