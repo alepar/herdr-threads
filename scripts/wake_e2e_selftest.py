@@ -3609,58 +3609,76 @@ class QueueUIStaleViewport(TempDir):
     def test_exact_queue_turn_delivery_passes_without_jumping_stale_viewport(self):
         for case in ("modal-hold/group", "draft-hold/group"):
             with self.subTest(case=case):
-                clock, rows, keys, state = [100.0], [], [], {"draft": False, "picker": False}
-                def advance(seconds):
-                    clock[0] += seconds
-                proof = SimpleNamespace(published=True, latest_publication_scope={"scope": "current"},
-                                        selected_windows=[], release_interval_ms=None, publication=lambda: None,
-                                        hold_ended=lambda: None, offset=lambda at: round((at - 100) * 1000))
-                def activity():
-                    advance(1)
-                    return {"attempt": "attempt", "native_session": "session", "turn_id": "turn",
-                            "observed_at_ms": round((clock[0] - 100) * 1000)}
-                proof.qualified_activity = activity
-                sent = []
-                def send(*args, **kwargs):
-                    mid = ("mONE", "mTWO")[len(sent)]
-                    sent.append(mid)
-                    return json.dumps({"result": {"data": mid}}), ""
-                def herdr(*args, **kwargs):
-                    if args[:2] == ("pane", "send-text"):
-                        state["draft"] = args[-1] == W.SIDE_DRAFT
-                    elif args[1] == "send-keys":
-                        keys.append(args[-1])
-                        state["picker"] = args[-1] == "enter"
-                        if args[-1] == "ctrl+u":
-                            state["draft"] = False
-                    return {"raw": "GPT test · ~/fixture\nNew activity · Back to bottom · esc\n"
-                            + ("› " + W.SIDE_DRAFT if state["draft"] else "› 1. model" if state["picker"] else "› ")}
-                run = SimpleNamespace(run_id="test", codex_home=self.tmp, coords={"main": {"pane": "sender"}},
-                                      stopping=SimpleNamespace(wait=advance), herdr=herdr, ht_err=send,
-                                      record=rows.append)
-                recipient = W.Recipient(run, "co-t0", "codex", 0, "pane", "seat")
-                recipient.group, recipient.queue_evidence = "thread", proof
-                recipient.last_wake = clock[0]
-                recipient.wait_idle = recipient.settled = lambda: None
-                recipient.screen = lambda *args: "Old turn\nNew activity · Back to bottom · esc"
-                recipient.on_screen = lambda *args: False
-                recipient.doctor_wake = lambda: None
-                text = "\n".join(f"RECEIVED {mid}: {case} test #{n}" for n, mid in enumerate(("mONE", "mTWO")))
-                records = [{"timestamp": "2026-11-15T00:00:00Z", "type": "event_msg",
-                            "payload": {"type": "task_started", "turn_id": "turn"}},
-                           {"timestamp": "2026-11-15T00:00:01Z", "type": "response_item",
-                            "payload": {"type": "message", "role": "developer", "content": [{"text": text}]}},
-                           {"timestamp": "2026-11-15T00:00:02Z", "type": "event_msg",
-                            "payload": {"type": "task_complete", "turn_id": "turn", "last_agent_message": text}}]
-                path = self.tmp / "sessions" / "rollout-session.jsonl"
-                path.parent.mkdir(exist_ok=True)
-                path.write_text("".join(json.dumps(r) + "\n" for r in records))
-                with mock.patch.object(W, "time", SimpleNamespace(time=lambda: clock[0],
-                                       monotonic=lambda: clock[0], sleep=advance)):
-                    recipient.wake_block_case(case)
-                self.assertEqual(rows[-1]["result"], "PASS", rows[-1])
-                self.assertTrue(rows[-1]["checks"]["delivered"])
-                self.assertEqual(keys, ["ctrl+u"] if case.startswith("draft") else ["enter", "esc"])
+                self.exercise(case)
+
+    def test_cleanup_cancels_the_private_rollout_wait_without_recording_success(self):
+        self.exercise("modal-hold/group", cancel=True)
+
+    def exercise(self, case, cancel=False):
+        cancelled = [False]
+        clock, rows, keys, state = [100.0], [], [], {"draft": False, "picker": False}
+        def advance(seconds):
+            clock[0] += seconds
+        proof = SimpleNamespace(published=True, latest_publication_scope={"scope": "current"},
+                                selected_windows=[], release_interval_ms=None, publication=lambda: None,
+                                hold_ended=lambda: None, offset=lambda at: round((at - 100) * 1000))
+        def activity():
+            advance(1)
+            return {"attempt": "attempt", "native_session": "session", "turn_id": "turn",
+                    "observed_at_ms": round((clock[0] - 100) * 1000)}
+        proof.qualified_activity = activity
+        sent = []
+        def send(*args, **kwargs):
+            mid = ("mONE", "mTWO")[len(sent)]
+            sent.append(mid)
+            return json.dumps({"result": {"data": mid}}), ""
+        def herdr(*args, **kwargs):
+            if args[:2] == ("pane", "send-text"):
+                state["draft"] = args[-1] == W.SIDE_DRAFT
+            elif args[1] == "send-keys":
+                keys.append(args[-1])
+                state["picker"] = args[-1] == "enter"
+                if args[-1] == "ctrl+u":
+                    state["draft"] = False
+            return {"raw": "GPT test · ~/fixture\nNew activity · Back to bottom · esc\n"
+                    + ("› " + W.SIDE_DRAFT if state["draft"] else "› 1. model" if state["picker"] else "› ")}
+        run = SimpleNamespace(run_id="test", codex_home=self.tmp, coords={"main": {"pane": "sender"}},
+                              stopping=SimpleNamespace(wait=advance, is_set=lambda: cancelled[0]), herdr=herdr, ht_err=send,
+                              record=rows.append)
+        recipient = W.Recipient(run, "co-t0", "codex", 0, "pane", "seat")
+        recipient.group, recipient.queue_evidence = "thread", proof
+        recipient.last_wake = clock[0]
+        recipient.wait_idle = recipient.settled = lambda: None
+        recipient.screen = lambda *args: "Old turn\nNew activity · Back to bottom · esc"
+        recipient.on_screen = lambda *args: False
+        recipient.doctor_wake = lambda: None
+        text = "\n".join(f"RECEIVED {mid}: {case} test #{n}" for n, mid in enumerate(("mONE", "mTWO")))
+        records = [{"timestamp": "2026-11-15T00:00:00Z", "type": "event_msg",
+                    "payload": {"type": "task_started", "turn_id": "turn"}},
+                   {"timestamp": "2026-11-15T00:00:01Z", "type": "response_item",
+                    "payload": {"type": "message", "role": "developer", "content": [{"text": "\n".join(
+                        f"[herdr-threads] message {mid} in t1 from s1:\n  {case} test #{n}"
+                        for n, mid in enumerate(("mONE", "mTWO")))}]}},
+                   {"timestamp": "2026-11-15T00:00:02Z", "type": "event_msg",
+                    "payload": {"type": "task_complete", "turn_id": "turn", "last_agent_message": text}}]
+        path = self.tmp / "sessions" / "rollout-session.jsonl"
+        path.parent.mkdir(exist_ok=True)
+        path.write_text("".join(json.dumps(r) + "\n" for r in records))
+        with mock.patch.object(W, "time", SimpleNamespace(time=lambda: clock[0],
+                               monotonic=lambda: clock[0], sleep=advance)):
+            if cancel:
+                def incomplete(*args):
+                    cancelled[0] = True
+                    return {"passed": False}
+                with mock.patch("wake_e2e_queue.codex_turn_delivery", side_effect=incomplete):
+                    with self.assertRaises(W.Stopped):
+                        recipient.wake_block_case(case)
+                self.assertEqual(rows, [])
+                return
+            recipient.wake_block_case(case)
+        self.assertEqual(rows[-1]["result"], "PASS", rows[-1])
+        self.assertTrue(rows[-1]["checks"]["delivered"])
+        self.assertEqual(keys, ["ctrl+u"] if case.startswith("draft") else ["enter", "esc"])
 
 
 

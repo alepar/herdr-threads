@@ -2988,6 +2988,8 @@ class Recipient:
         checks["send_warnings"] = sends
         t0, t_wake, activity = time.time(), None, None
         while opened and time.time() - t0 < WAKE_BLOCK_WAIT_S:
+            if self.run.stopping.is_set():
+                raise Stopped("cleanup interrupted UI observation")
             if proof is not None:
                 activity = proof.qualified_activity()
                 if activity is not None:
@@ -3006,12 +3008,14 @@ class Recipient:
             expected = {mid: f"{tag} #{n}" for n, mid in enumerate(mids) if mid}
             end = time.monotonic() + TURN_TIMEOUT_MS / 1000
             delivery = {"passed": False}
-            while time.monotonic() < end and len(expected) == 2:
+            while time.monotonic() < end and len(expected) == 2 and not self.run.stopping.is_set():
                 delivery = codex_turn_delivery(self.run.codex_home, activity["native_session"],
                                                activity["turn_id"], expected)
                 if delivery.get("complete") or delivery.get("error"):
                     break
                 self.run.stopping.wait(0.5)
+            if self.run.stopping.is_set():
+                raise Stopped("cleanup interrupted UI observation")
             checks["delivery_evidence"] = delivery
             checks["delivered"] = delivery["passed"]
         else:

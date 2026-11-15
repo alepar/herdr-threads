@@ -310,14 +310,14 @@ class TargetTurnDelivery(unittest.TestCase):
         self.path.parent.mkdir()
         self.bodies = {"mONE": "body one", "mTWO": "body two"}
 
-    def write(self, turn="turn", output=None, developer=True, complete=True):
+    def write(self, turn="turn", output=None, developer=True, complete=True, developer_text=None):
         text = "RECEIVED mONE: body one\nRECEIVED mTWO: body two" if output is None else output
         def row(kind, payload):
             return {"timestamp": "2026-11-15T00:00:00Z", "type": kind, "payload": payload}
         rows = [row("event_msg", {"type": "task_started", "turn_id": turn})]
         if developer:
             rows.append(row("response_item", {"type": "message", "role": "developer", "content": [
-                {"text": "mONE: body one\nmTWO: body two"}]}))
+                {"text": "[herdr-threads] message mONE in t1 from s1:\n  body one\n[herdr-threads] message mTWO in t1 from s1:\n  body two" if developer_text is None else developer_text}]}))
         rows.append(row("response_item", {"type": "message", "role": "assistant", "content": [{"text": text}]}))
         if complete:
             rows.append(row("event_msg", {"type": "task_complete", "turn_id": turn, "last_agent_message": text}))
@@ -334,6 +334,10 @@ class TargetTurnDelivery(unittest.TestCase):
         self.assertEqual(out["output_ids"], ["mONE", "mTWO"])
         self.assertNotIn("body one", json.dumps(out))
         self.assertNotIn(str(self.home), json.dumps(out))
+        compact = ("message mONE t1#1 from s1 bytes 0..8/8: topic\n  body one\n"
+                   "message mTWO t1#2 from s1 bytes 0..8/8: topic\n  body two")
+        self.write(developer_text="Hook context\npeer_data: " + json.dumps(compact))
+        self.assertTrue(self.read()["passed"])
 
     def test_wrong_session_or_turn_is_not_delivery(self):
         self.write(turn="other")
@@ -352,6 +356,32 @@ class TargetTurnDelivery(unittest.TestCase):
             with self.subTest(options=options):
                 self.write(**options)
                 self.assertFalse(self.read()["passed"])
+
+    def test_swapped_developer_associations_do_not_cross_message_frames(self):
+        for text in ("mONE: body two; mTWO: body one",
+                     "[herdr-threads] message mONE in t1 from s1:\n  body two\n"
+                     "[herdr-threads] message mTWO in t1 from s1:\n  body one"):
+            with self.subTest(text=text):
+                self.write(developer_text=text)
+                self.assertFalse(self.read()["passed"])
+
+    def test_received_body_cannot_cross_another_message_id_on_same_line(self):
+        self.write(output="RECEIVED mONE mTWO: body two; body one")
+        self.assertFalse(self.read()["passed"])
+
+    def test_source_derived_formatter_positive_preserves_multiline_bodies(self):
+        # These are production formatter goldens, not a recreated live capture.
+        import wake_e2e_queue as Q
+        root = Path(__file__).resolve().parents[1] / "tests" / "fixtures" / "delivery"
+        text = (root / "frame-multiline.txt").read_text()
+        items = json.loads((root / "frame-multiline.json").read_text())
+        self.assertTrue(items)
+        import re
+        expected = {item["id"]: "\n".join(re.split(r"\r\n|[\n\r\v\f\x85\u2028\u2029]", item["body"])).rstrip("\n")
+                    for item in items}
+        self.assertEqual(Q.message_bodies(text), expected)
+        wrapped = "Hook context\npeer_data: " + json.dumps(text) + "\nMore inbox context."
+        self.assertEqual(Q.message_bodies(wrapped), expected)
 
     def test_file_and_byte_bounds_fail_closed(self):
         self.write()

@@ -308,6 +308,47 @@ ROLLOUT_FILE_LIMIT = 64
 ROLLOUT_BYTE_LIMIT = 8 * 1024 * 1024
 
 
+def message_bodies(text: str, received: bool = False) -> dict[str, str]:
+    """Read message-bounded formatter spans, including JSON-quoted hook peer data."""
+    candidates = [text]
+    if not received:
+        for match in re.finditer(r"(?m)^(?:peer_data|untrusted_peer_data):[ \t]*", text):
+            try:
+                value, _ = json.JSONDecoder().raw_decode(text[match.end():])
+            except ValueError:
+                continue
+            if isinstance(value, str):
+                candidates.append(value)
+    header = re.compile(r"^(?:\[herdr-threads\] )?message ([A-Za-z0-9_-]+)(?:(?: in | [A-Za-z0-9_-]+#)[^:\n]*)?:")
+    simple = re.compile(r"^([A-Za-z0-9_-]+):")
+    output_prefix = re.compile(r"^[ \t]*(?:[-*•][ \t]+)?RECEIVED[ \t]+")
+    found = {}
+    for candidate in candidates:
+        lines = candidate.split("\n")
+        for index, line in enumerate(lines):
+            if received:
+                prefix = output_prefix.match(line)
+                if not prefix:
+                    continue
+                line = line[prefix.end():]
+            match = header.match(line) or (simple.match(line) if received else None)
+            if not match:
+                continue
+            parts = []
+            if received:
+                inline = line[match.end():]
+                parts.append(inline[1:] if inline.startswith(" ") else inline)
+            for continuation in lines[index + 1:]:
+                if continuation.startswith("  "):
+                    parts.append(continuation[2:])
+                elif not continuation:
+                    parts.append("")
+                else:
+                    break
+            found[match[1]] = "\n".join(parts).rstrip("\n")
+    return found
+
+
 def codex_turn_delivery(home: Path, session: str, turn: str, bodies: dict[str, str]) -> dict:
     """Bounded target-turn context and completed-output evidence, never a receipt.
 
@@ -322,19 +363,14 @@ def codex_turn_delivery(home: Path, session: str, turn: str, bodies: dict[str, s
             raise ValueError("invalid timestamp")
         datetime.fromisoformat(value.replace("Z", "+00:00"))
         return value
-    def received(text):
-        if not isinstance(text, str):
-            raise ValueError("invalid output")
-        return {mid for mid, body in bodies.items() for line in text.splitlines()
-                if "RECEIVED" in line and (match := patterns[mid].search(line))
-                and body in line[match.end():]}
+    def associated(text, output=False):
+        spans = message_bodies(text, received=output)
+        return {mid for mid, body in bodies.items() if spans.get(mid) == body.rstrip("\n")}
     try:
         if any(not isinstance(v, str) or not re.fullmatch(r"[A-Za-z0-9_-]{1,128}", v)
                for v in (session, turn, *bodies)):
             raise ValueError("invalid identifier")
         result.update(session=session, turn_id=turn)
-        patterns = {mid: re.compile(r"(?<![A-Za-z0-9_-])" + re.escape(mid) + r"(?![A-Za-z0-9_-])")
-                    for mid in bodies}
         if not bodies or len(bodies) > 32 or any(not isinstance(b, str) or len(b.encode()) > 8192 for b in bodies.values()):
             raise ValueError("invalid bodies")
         for mid in bodies:
@@ -376,15 +412,14 @@ def codex_turn_delivery(home: Path, session: str, turn: str, bodies: dict[str, s
                     continue
                 if row.get("type") == "response_item" and kind == "message":
                     text = "\n".join(p.get("text", "") for p in payload.get("content", ()) if isinstance(p, dict))
-                    found = {mid for mid, body in bodies.items() if patterns[mid].search(text) and body in text}
                     if payload.get("role") == "developer":
-                        inputs.update(found)
+                        inputs.update(associated(text))
                     elif payload.get("role") == "assistant" and "RECEIVED" in text:
-                        outputs.update(received(text))
+                        outputs.update(associated(text, output=True))
                 if row.get("type") == "event_msg" and kind == "task_complete" and payload.get("turn_id") == turn:
                     text = payload.get("last_agent_message") or ""
                     if "RECEIVED" in text:
-                        outputs.update(received(text))
+                        outputs.update(associated(text, output=True))
                     result["complete"] = True
                     result["completed_utc"] = timestamp(row.get("timestamp"))
                     active = False

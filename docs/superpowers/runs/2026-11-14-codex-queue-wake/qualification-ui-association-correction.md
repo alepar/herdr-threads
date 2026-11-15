@@ -1,0 +1,13 @@
+# UI message-association review correction
+
+Focused review of e53729721 found an Important oracle gap: developer input searched IDs and bodies across the entire context, and RECEIVED output could search past a second ID on the same line. This could falsely associate one message with another's body. The reviewed freeze was not accepted; no live UI rerun or production change occurred.
+
+Both independently reported examples were reproduced, including swapped bodies in production-style frames. A common bounded frame parser now reads each message header and only its own indented body; RECEIVED frames use the same message-bounded body comparison. Bodies are compared exactly after framing newline padding, rather than searched anywhere in the context. It cannot find a body by crossing a different frame or ID. JSON-quoted peer_data is decoded before parsing, and legitimate multiline developer bodies remain supported.
+
+Positive coverage uses the existing production formatter goldens under tests/fixtures/delivery/frame-multiline.{json,txt}, including multiple messages, blank lines and normalized line breaks. Compact hook rows and quoted peer data are source-derived positives too. These are explicitly formatter/source-derived fixtures, not recreated or newly captured live rollouts. Deleted private rollouts were not reconstructed. Historical retained run data proves ID/body presence and native-turn correlation; it does not provide a new span-level replay of those deleted records. Original UI FAIL rows remain unchanged and require focused reruns under the corrected reader.
+
+The new observation wait also now stops cooperatively during cleanup. A regression reproduced its previous failure to raise Stopped when cancellation arrived during incomplete rollout evidence; the corrected wait exits without recording success. No UI keys, viewport jumps, native pokes, enqueue retries or framework were added. Held UI, scope/turn, footer/draft, 90-second gate and conservative 15-second checks remain unchanged.
+
+Final verification: 286 no-agent self-tests passed in 102.131 seconds; focused driver Queue tests 21/21 and SQLite/rollout tests 26/26 passed. All-target/all-feature Clippy (40.63 seconds), default-feature guard, format, neutral-core/wire, Python 3.9 syntax and diff checks passed. Source/report hashes and regression details are in [validation](qualification-ui-association-validation.json). No routine production model-visible bytes were added.
+
+The corrected focused freeze must be reviewed before rerunning only modal and draft cases. Passing matrix rows are retained; the separately authorized corrected full suite still follows that disposition.

@@ -1,0 +1,54 @@
+{
+  "schema": 1,
+  "task": "ht-d2jq.6.4",
+  "review_finding": "mnSGN08ow3Pg",
+  "positive_fixture_disposition": "mnSG2hlhgHXH",
+  "rejected_base": "e537297210b1e641a4bebbf5a3bf94d8a4ef6bdb",
+  "scope": "driver-only exact message associations and cleanup cancellation; no production changes",
+  "regressions": {
+    "association_red_subcases": 3,
+    "cancellation_red": 1,
+    "driver_queue_green": 21,
+    "sqlite_rollout_green": 26
+  },
+  "positive_provenance": {
+    "kind": "source-derived production formatter goldens; not a live capture",
+    "files": [
+      "tests/fixtures/delivery/frame-multiline.json",
+      "tests/fixtures/delivery/frame-multiline.txt"
+    ],
+    "compact_header_source": "src/protocol/output_compact.rs",
+    "quoted_context_source": "src/cli/hook.rs"
+  },
+  "self_test": {
+    "passed": 286,
+    "failed": 0,
+    "seconds": 102.131,
+    "live_agents_started": false
+  },
+  "checks": {
+    "clippy": {
+      "exit": 0,
+      "seconds": 40.63
+    },
+    "default_features": 0,
+    "fmt": 0,
+    "harness_neutral": 0,
+    "wire_compat": 0,
+    "python39_syntax": 0,
+    "diff": 0
+  },
+  "source_sha256": {
+    "scripts/wake-e2e.py": "b38073ce53a6f2bfba40dc06b6c81ecc57d969af6516e602c60c4ef73fff0934",
+    "scripts/wake_e2e_selftest.py": "a5a722365204f5d8321579c29e7a2adf7d442f257b7b1b1ddd17006ec73591b9",
+    "scripts/wake_e2e_queue.py": "de8410de9a7b7e55512d72a2a08aae55ec49a994868961ad5ebb049c939a1a91",
+    "scripts/wake_e2e_queue_selftest.py": "04233b2447c36129f7c2bc0263bf3fa25ccb45d51e13b6b0f528ff4d79bf53b9"
+  },
+  "fixture_sha256": {
+    "tests/fixtures/delivery/frame-multiline.json": "30b330021a5834cda85a0516feca2c3366105a06d4ef14e40761612a822d951b",
+    "tests/fixtures/delivery/frame-multiline.txt": "1573d8f9826c7a0988f0625e8a9af2a3f287509369b41e92f9b53e938074baba"
+  },
+  "report_sha256": "190d4b73f30d0a7dfbc2b76c29ca29b9a21631f229311cda9431911465c58d4b",
+  "routine_production_model_visible_bytes_added": 0,
+  "live_reruns": "Held for corrected focused review; only modal and draft after acceptance."
+}
