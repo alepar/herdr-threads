@@ -1,0 +1,128 @@
+{
+  "source": "fb7bf028e750a12744397a39b37534d9880555f2",
+  "end_head": "d55f7e984c55dd06b805cc7728b9f2ca9985209a",
+  "end_status": "",
+  "docs_only_head_delta": [
+    "docs/superpowers/runs/2026-11-14-pi-harness/design.md",
+    "docs/superpowers/runs/2026-11-14-pi-harness/event-contract.md",
+    "docs/superpowers/runs/2026-11-14-pi-harness/qualification/README.md",
+    "docs/superpowers/runs/2026-11-14-pi-harness/qualification/core-changes.md",
+    "docs/superpowers/runs/2026-11-14-pi-harness/qualification/f1-final-compatibility-evidence.json",
+    "docs/superpowers/runs/2026-11-14-pi-harness/qualification/f1-final-compatibility.md",
+    "docs/superpowers/runs/2026-11-14-pi-harness/qualification/f1-native-attempts.md",
+    "docs/superpowers/runs/2026-11-14-pi-harness/qualification/f1-native-hol.md",
+    "docs/superpowers/runs/2026-11-14-pi-harness/qualification/task-3-final.md",
+    "docs/superpowers/runs/2026-11-14-pi-harness/roast-pr-1-dispositions.md",
+    "integrations/pi/README.md"
+  ],
+  "run_id": "0f5d1568-cb27-4900-a692-00fff43d620e",
+  "nextest_run_id": "6eaaf332-ffe0-41bf-add0-c07eccbf55a8",
+  "suite_exit": 0,
+  "summary": "Summary [ 993.332s] 9645 tests run: 9645 passed (1 slow), 66 skipped",
+  "tests_passed": 9645,
+  "tests_failed": 0,
+  "skipped": 66,
+  "slow": 1,
+  "compile_s": 40.9,
+  "nextest_runtime_s": 993.332,
+  "command_wall_s": 1034.38,
+  "budget_s": 300,
+  "budget_pass": false,
+  "budget_issue": "ht-n4xh",
+  "caps": 4,
+  "fmt": {
+    "exit": 0,
+    "wall_s": 10.57
+  },
+  "default": {
+    "exit": 0,
+    "wall_s": 25.48
+  },
+  "builder_leaks": {
+    "exit": 0,
+    "wall_s": 0.18
+  },
+  "host_leaks": {
+    "initial_timer_wrapper_exit": 127,
+    "initial_note": "host /usr/bin/time absent; checker not started",
+    "direct_checker_exit": 0,
+    "ledger_note": "builder checker consumed clean ledger before host scan"
+  },
+  "attempt_1_failures_rechecked": [
+    {
+      "old_failure": "herdr-threads app::health_v2_observer_tests::health_wording_uses_supplied_registry_and_unknown_optional_metadata",
+      "attempt_2": "PASS [   0.009s] ( 387/9645) herdr-threads app::health_v2_observer_tests::health_wording_uses_supplied_registry_and_unknown_optional_metadata"
+    },
+    {
+      "old_failure": "herdr-threads cli::launch::tests::stage_a_help_lists_registered_options_keys_in_registry_order",
+      "attempt_2": "PASS [   0.006s] (1488/9645) herdr-threads cli::launch::tests::stage_a_help_lists_registered_options_keys_in_registry_order"
+    },
+    {
+      "old_failure": "herdr-threads service::dispatch::inherited_name_tests::inherited_name_is_refused_other_names_bind_and_restart_frees_it",
+      "attempt_2": "PASS [   0.248s] (4881/9645) herdr-threads service::dispatch::inherited_name_tests::inherited_name_is_refused_other_names_bind_and_restart_frees_it"
+    },
+    {
+      "old_failure": "herdr-threads service::dispatch::inherited_name_tests::no_hint_or_no_server_pid_skips_the_check",
+      "attempt_2": "PASS [   0.244s] (4885/9645) herdr-threads service::dispatch::inherited_name_tests::no_hint_or_no_server_pid_skips_the_check"
+    },
+    {
+      "old_failure": "herdr-threads::combined golden_surfaces::health_json_observed_unobserved",
+      "attempt_2": "PASS [   0.837s] (8408/9645) herdr-threads::combined golden_surfaces::health_json_observed_unobserved"
+    },
+    {
+      "old_failure": "herdr-threads::combined setup_cli::bare_setup_covers_every_detected_harness_and_unsetup_removes_both",
+      "attempt_2": "PASS [   0.078s] (9070/9645) herdr-threads::combined setup_cli::bare_setup_covers_every_detected_harness_and_unsetup_removes_both"
+    },
+    {
+      "old_failure": "herdr-threads::combined setup_cli::bare_setup_exits_nonzero_only_for_a_failed_harness",
+      "attempt_2": "PASS [   0.053s] (9069/9645) herdr-threads::combined setup_cli::bare_setup_exits_nonzero_only_for_a_failed_harness"
+    },
+    {
+      "old_failure": "herdr-threads::combined setup_cli::bare_setup_skips_missing_and_installs_available_harnesses",
+      "attempt_2": "PASS [   0.048s] (9072/9645) herdr-threads::combined setup_cli::bare_setup_skips_missing_and_installs_available_harnesses"
+    },
+    {
+      "old_failure": "herdr-threads::integration harness_adapter_wiring::harness_adapter_end_to_end_wiring_uses_registry_values_across_boundaries",
+      "attempt_2": "PASS [   1.032s] (9406/9645) herdr-threads::integration harness_adapter_wiring::harness_adapter_end_to_end_wiring_uses_registry_values_across_boundaries"
+    },
+    {
+      "old_failure": "herdr-threads::integration hermes_enrollment_sweep::every_registered_adapter_declares_its_enrollment_policy",
+      "attempt_2": "PASS [   0.006s] (9423/9645) herdr-threads::integration hermes_enrollment_sweep::every_registered_adapter_declares_its_enrollment_policy"
+    }
+  ],
+  "completed_at": "2026-11-15T14:13:37.752945+00:00",
+  "log_sha256": {
+    "fmt.log": "e6b50705340e5b4797614fb1da44e99be695dc3d8c491a073378b56f4f814576",
+    "default.log": "36ea49f4c8afe03e41080197650c7c5b186378fd28b3678576587aef296d595d",
+    "suite.log": "58c5cab1d72b3271db95037d03863f7d894889819fe88a53f40893bae4e8dac8",
+    "builder-leaks.log": "15bc89328c33cd3cf02df3d8ab3d705800cb8318a0a161b57b4e238f5e0375de",
+    "host-leaks.log": "205f1d85eaf9c0d2e8a7fe430f93ed112733a88a51198f2b821012d21158ace3",
+    "host-leaks-direct.log": "c76a220d106e69e698432855a5646f0811630a5404fe5509b28b21d9f43315e4",
+    "restore-dev-candidate.log": "f18a1519093ab9f55f8bcc9d4af1b48f98b29f4f163bfc381e191f635e7aa2e8"
+  },
+  "candidate_profile_mapping": {
+    "qualified_dev": {
+      "path": "target/debug/deps/herdr_threads-75705d562a6fb0ec",
+      "sha256": "a8aef2df56e6954fe3c12b7d02841f521712ceb403d13f9b93fabdabe2224289",
+      "profile": 4923293383976553682
+    },
+    "nextest_test": {
+      "path": "target/debug/deps/herdr_threads-328360bbee03c5f7",
+      "sha256": "391499fded00e16de95ed1d4d76708d268c686b05cd5c286b48d4a0b7380b126",
+      "profile": 3057891792897344596
+    },
+    "both_features": [
+      "test-support"
+    ],
+    "both_rustflags": [],
+    "same_rustc_and_config": true,
+    "cause": "Cargo test profile uses opt-level=1, codegen-units=256, lto=off; dev uses opt-level=0, codegen-units=64. Nextest installed the test-profile normal executable at target/debug/herdr-threads.",
+    "restoration": {
+      "command": "cargo build --locked --all-features --bin herdr-threads",
+      "exit": 0,
+      "log": "heavy: slot 1 acquired 06:15:11\n    Finished `dev` profile [unoptimized + debuginfo] target(s) in 0.05s\nreal 0.07\nuser 0.02\nsys 0.01\n",
+      "post_sha256": "a8aef2df56e6954fe3c12b7d02841f521712ceb403d13f9b93fabdabe2224289",
+      "authorization": "Root authorized warm restore; completion preceded revocation of pending build."
+    }
+  }
+}
