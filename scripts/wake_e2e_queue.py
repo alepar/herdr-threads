@@ -160,8 +160,8 @@ def queue_snapshot(state: Path, seat: str, after: int = 0) -> dict:
         return _failure("invalid_evidence")
 
 
-def eligible_scope(snapshot: dict) -> dict | None:
-    """Unique connected hooked Codex scope with canonical matched Start/End evidence."""
+def eligible_scope(snapshot: dict, phase: str = "ended") -> dict | None:
+    """Unique current hooked Codex scope at the requested native phase (Ended by default)."""
     if not snapshot.get("ok") or snapshot.get("truncated") or not snapshot.get("census_complete"):
         return None
     connected = [b for b in snapshot["bindings"] if b["connected"] and b["top_level"]]
@@ -174,7 +174,7 @@ def eligible_scope(snapshot: dict) -> dict | None:
             or scope["kernel_boot"] != snapshot["kernel_boot"] or binding["target"] != seat["target"]
             or binding["target_generation"] != seat["target_generation"]):
         return None
-    native = [n for n in snapshot["native"] if n["scope"] == scope and n["phase"] == "ended"]
+    native = [n for n in snapshot["native"] if n["scope"] == scope and n["phase"] == phase]
     if len(native) != 1:
         return None
     return {"adapter": binding["adapter"], "scope": scope, "turn_id": native[0]["turn_id"], "ordinal": native[0]["ordinal"]}

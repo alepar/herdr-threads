@@ -88,6 +88,14 @@ class QueueEvidence(unittest.TestCase):
             self.db.execute("UPDATE native_turn_state SET phase=?", (phase,))
             self.db.commit()
             self.assertIsNone(eligible_scope(self.snapshot()))
+            if phase == "started":
+                self.assertEqual(eligible_scope(self.snapshot(), "started")["scope"], SCOPE)
+                stale = self.snapshot()
+                stale["native"][0]["scope"]["execution"] = "old-execution"
+                self.assertIsNone(eligible_scope(stale, "started"))
+                disconnected = self.snapshot()
+                disconnected["bindings"][0]["connected"] = False
+                self.assertIsNone(eligible_scope(disconnected, "started"))
         self.db.execute("UPDATE native_turn_state SET phase='ended',scope_json=?",
                         (json.dumps(dict(SCOPE, execution="sibling")).encode(),))
         self.db.commit()

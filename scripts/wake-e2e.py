@@ -1973,8 +1973,7 @@ class QueueCaseEvidence:
             result["reasons"].append(self.error or ("canonical evidence bound exceeded" if self.overflow
                                                    else "no publication checkpoint"))
         if self.case.startswith("busy-"):
-            result["known_busy_started"] = any(t.get("phase") == "started"
-                                               for t in self.before.get("native", ()))
+            result["known_busy_started"] = eligible_scope(self.before, "started") is not None
             if not result["known_busy_started"]:
                 result["passed"] = False
                 result["reasons"].append("busy publication lacks canonical Started observation")
@@ -1989,6 +1988,10 @@ class QueueCaseEvidence:
             i.get("phase") == "armed" and i.get("logical_status") == "fulfilled" for i in intents)
         result["logical_fulfillment_observed"] = any(i.get("logical_status") == "fulfilled" for i in intents)
         result["cleanup_list_attempted_observed"] = any(i.get("cleanup_list_attempted") for i in intents)
+        result["lifecycle_attempts"] = sorted(
+            attempt for attempt in proved
+            if any(i.get("attempt") == attempt and i.get("logical_status") == "fulfilled" for i in intents)
+            and any(i.get("attempt") == attempt and i.get("cleanup_list_attempted") for i in intents))
         result["samples"] = self.samples
         self.result = result
         return result
@@ -3623,7 +3626,7 @@ def summary(run, cases):
     queue_rows = [r.get("queue_evidence") for r in rows if r.get("queue_evidence")]
     positive_queue = [q for q in queue_rows if q.get("expectation") == "accepted"]
     queue_lifecycle_ok = not positive_queue or any(
-        q.get("passed") and q.get("logical_fulfillment_observed") and q.get("cleanup_list_attempted_observed")
+        q.get("passed") and q.get("lifecycle_attempts")
         for q in positive_queue)
     if positive_queue:
         lines.append(f"queue logical fulfillment + bounded cancellation observed: {queue_lifecycle_ok}")

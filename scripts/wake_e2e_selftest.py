@@ -3459,6 +3459,47 @@ class QueueLifecycleCorrelation(TempDir):
         self.assertFalse(result["cleanup_list_attempted_observed"])
 
 
+    def test_split_fulfillment_and_cleanup_across_proved_attempts_is_not_lifecycle(self):
+        recipient = self.recipient()
+        original_read = self.snapshot
+        same_attempt = False
+        def snapshot(after=0):
+            value = original_read(after)
+            value["intents"] = [
+                {"attempt": "a", "logical_status": "fulfilled", "cleanup_list_attempted": False},
+                {"attempt": "b", "logical_status": "fulfilled" if same_attempt else "active", "cleanup_list_attempted": True}]
+            return value
+        self.snapshot = snapshot
+        judged = {"passed": True, "reasons": [], "attempts": [{"attempt": "a"}, {"attempt": "b"}]}
+        with mock.patch("wake_e2e_queue.queue_proof", return_value=judged):
+            with W.QueueCaseEvidence(recipient, "send-p0/group") as proof:
+                proof.publication()
+                result = proof.finish({"expect_wake": True})
+        self.assertTrue(result["logical_fulfillment_observed"])
+        self.assertTrue(result["cleanup_list_attempted_observed"])
+        self.assertEqual(result.get("lifecycle_attempts"), [])
+        same_attempt = True
+        with mock.patch("wake_e2e_queue.queue_proof", return_value=judged):
+            with W.QueueCaseEvidence(recipient, "send-p0/group") as proof:
+                proof.publication()
+                result = proof.finish({"expect_wake": True})
+        self.assertEqual(result["lifecycle_attempts"], ["b"])
+
+    def test_busy_started_must_match_current_connected_scope(self):
+        recipient = self.recipient()
+        original_read = self.snapshot
+        def snapshot(after=0):
+            value = original_read(after)
+            value["native"] = [{"phase": "started", "scope": {"binding": "stale"}}]
+            return value
+        self.snapshot = snapshot
+        with W.QueueCaseEvidence(recipient, "busy-send-p0/group") as proof:
+            proof.publication()
+            result = proof.finish({"expect_wake": False})
+        self.assertFalse(result["passed"])
+        self.assertFalse(result["known_busy_started"])
+
+
 class QueueFailureEvidence(TempDir):
     snapshot = QueueSamplerLifetime.snapshot
     recipient = QueueSamplerLifetime.recipient

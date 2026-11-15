@@ -1,0 +1,59 @@
+{
+  "schema": 1,
+  "accepted_driver_base": "58a2e2fcbfbed84846e092f3712490715e045d5e",
+  "owner_disposition": "mnSGMvT1dz4t",
+  "scope": "assertion-only tightening; no production change",
+  "regressions": {
+    "red_failed": 2,
+    "driver_queue_green": 12,
+    "sqlite_green": 17,
+    "lifecycle_positive_and_negative_green": 3
+  },
+  "full_self_test": {
+    "passed": 268,
+    "failed": 0,
+    "seconds": 102.73,
+    "live_agents_started": false
+  },
+  "additional_focused_checks": "After the full run started, expanded same-attempt positive and current Started/stale/disconnected test assertions passed separately; no further driver implementation change.",
+  "source_sha256": {
+    "scripts/wake-e2e.py": "2ae24ca526fd2747af7a4458015dd1daf0ba10753f6dbb09d8d0a9101aeaf135",
+    "scripts/wake_e2e_selftest.py": "6a48974388d65320092307110506dc0e85b9473a8a12dc047930186b2761d03d",
+    "scripts/wake_e2e_queue.py": "aa96b92cf76339a79058069b73f62f9afea85a76009847ea6f1cd5d6396ba570",
+    "scripts/wake_e2e_queue_selftest.py": "b38afef4020e1f56bd7a23c0ed5fe1606bbcb2618ec71eab1cb107e2c0dc88a8"
+  },
+  "routine_production_model_visible_bytes_added": 0,
+  "candidate_build": {
+    "command": "scripts/build.sh",
+    "profile": "release",
+    "seconds": 159,
+    "exit": 0,
+    "classification": "First release build in the reused target; includes dependency compilation, not the warm single-edit measurement.",
+    "bin_sha256": "6c577aeac9c9837b74ba803c1cf1e5c44f443ec97186810a46e1ff32771e6afd"
+  },
+  "checks": {
+    "clippy_all_targets_all_features": {
+      "exit": 0,
+      "seconds": 17.11
+    },
+    "default_features": {
+      "exit": 0
+    },
+    "fmt": {
+      "exit": 0
+    },
+    "harness_neutral": {
+      "exit": 0
+    },
+    "wire_compat": {
+      "exit": 0
+    },
+    "python39_syntax": {
+      "files": 4,
+      "exit": 0
+    },
+    "diff": {
+      "exit": 0
+    }
+  }
+}
