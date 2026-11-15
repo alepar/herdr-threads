@@ -2165,20 +2165,10 @@ where
                     std::thread::Builder::new()
                         .name("queue-cleanup".into())
                         .spawn(move || {
-                            while !stop.is_cancelled() {
-                                let budget = CallBudget {
-                                    deadline: MonoInstant(clock.monotonic_now().0.saturating_add(2500)),
-                                    cancellation: stop.clone(),
-                                };
-                                if let Err(error) = recovery.tick(&budget)
-                                    && !stop.is_cancelled()
-                                {
-                                    log.write_line(&format!("queue cleanup: {}", error.detail));
-                                }
-                                if stop.wait_blocking(Duration::from_millis(5000)) {
-                                    break;
-                                }
-                            }
+                            let pacer = Pacer::new("queue-cleanup", clock, stop.clone());
+                            recovery.run(&pacer, &stop, |error| {
+                                log.write_line(&format!("queue cleanup: {}", error.detail));
+                            });
                         })
                 })?;
             }

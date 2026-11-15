@@ -1,0 +1,58 @@
+{
+  "run_id": "9b1a3146-f170-427c-9d24-9c9aec682eb1",
+  "command_wall_seconds": 1272.994,
+  "suite_exit": 100,
+  "leak_exit": 0,
+  "source_sha": "903038a38dcd61b6f6f8cb665653e5ac93a84333",
+  "production_source_sha": "17e24a04c7d38e297bc48eb5063fecfad67c4582",
+  "tests_run": 9729,
+  "passed": 9725,
+  "failed": 4,
+  "skipped": 64,
+  "compile_seconds": 45.63,
+  "nextest_execution_seconds": 1226.88,
+  "wrapper_wait_and_overhead_seconds": 0.484,
+  "resource_envelope": {
+    "nice": 19,
+    "build_jobs": 4,
+    "test_threads": 4
+  },
+  "five_minute_gate_satisfied": false,
+  "failures": [
+    "protocol::capabilities::tests::bare_daemon_advertises_legacy_capabilities_without_v2_recorder",
+    "protocol::capabilities::tests::capability_constants_are_stable",
+    "protocol::capabilities::tests::every_advertised_capability_has_a_handler",
+    "service::loop_inventory::every_timed_wait_is_on_a_pacer_or_allowlisted_with_a_reason"
+  ],
+  "slow": [
+    {
+      "test": "manifest::failpoints_are_compiled_out_of_release_builds",
+      "seconds": 245.292
+    }
+  ],
+  "raw_log_sha256": "0ac5ea1430beac718bba90a423fb0a8f78215916d8356cb587e0360cd6c54c54",
+  "same_cap_baselines": [
+    {
+      "source": "main-derived 09d3cf7f0 / 91ce0cdeb",
+      "tests_passed": 9590,
+      "skipped": 64,
+      "seconds": 951,
+      "evidence": "docs/validation/claude-wake-busy-2026-11-14.md",
+      "provider_message": "mnSGNZNsTjHT"
+    },
+    {
+      "source": "fix/ci-flakes-2 on main fe7b493b3",
+      "tests_passed": 9590,
+      "skipped": 64,
+      "seconds": 943,
+      "provider_message": "mnSGNZNsTjHT"
+    },
+    {
+      "source": "pi on main 91ce0cdeb",
+      "tests_run": 9616,
+      "seconds": 878,
+      "provider_message": "mnSGNZNsTjHT"
+    }
+  ],
+  "qualification_scope": "diagnostic initial attempt; binaries compiled from accepted production source; preparation edits began after compilation; not a final frozen-tree qualification"
+}

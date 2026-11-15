@@ -700,3 +700,161 @@ fn cleanup_commit_retry_preserves_first_physical_observation() {
         );
     }
 }
+
+struct CleanupWorker {
+    stop: herdr_threads::protocol::time::Cancellation,
+    thread: Option<std::thread::JoinHandle<()>>,
+}
+impl Drop for CleanupWorker {
+    fn drop(&mut self) {
+        self.stop.cancel();
+        if let Some(thread) = self.thread.take() {
+            thread.join().unwrap();
+        }
+    }
+}
+
+#[test]
+fn queue_cleanup_worker_uses_pacer_clock_and_cancels_during_wait() {
+    use herdr_threads::{protocol::time::Cancellation, service::pacer::Pacer};
+    use std::{sync::mpsc, time::Duration};
+    let (_store, clock, recovery, _row) = rig();
+    let stop = Cancellation::default();
+    let pacer = Arc::new(Pacer::new("queue-cleanup", clock.clone(), stop.clone()));
+    let (idle, received) = mpsc::channel();
+    pacer.set_idle_hook(Box::new(move |count| {
+        let _ = idle.send(count);
+    }));
+    let worker_pacer = pacer.clone();
+    let worker_stop = stop.clone();
+    let worker = CleanupWorker {
+        stop,
+        thread: Some(std::thread::spawn(move || {
+            recovery.run(&worker_pacer, &worker_stop, |_| {});
+        })),
+    };
+    assert_eq!(
+        received.recv_timeout(Duration::from_secs(2)).unwrap(),
+        1,
+        "the immediate first pass must enter the pacer"
+    );
+    clock.0.store(5999, Ordering::SeqCst);
+    pacer.clock_advanced();
+    assert!(
+        received.recv_timeout(Duration::from_millis(30)).is_err(),
+        "no early pass"
+    );
+    clock.0.store(6000, Ordering::SeqCst);
+    pacer.clock_advanced();
+    assert_eq!(received.recv_timeout(Duration::from_secs(2)).unwrap(), 2);
+    worker.stop.cancel();
+    drop(worker);
+    assert_eq!(
+        pacer.wakes(),
+        2,
+        "one safety tick and one cancellation, without spinning"
+    );
+}
+
+#[test]
+fn queue_cleanup_worker_cancels_during_writer_admission() {
+    use herdr_threads::{protocol::time::Cancellation, service::pacer::Pacer};
+    use std::time::{Duration, Instant};
+    let (store, clock, _recovery, row) = rig();
+    let writer = Arc::new(FairWriter::new(32));
+    let permit = writer.enter_foreground(&budget(), clock.as_ref()).unwrap();
+    let recovery = QueueRecovery::new(
+        store,
+        writer.clone(),
+        clock.clone(),
+        Arc::new(HostProcessTable),
+        std::path::PathBuf::from("."),
+        row.owner_boot,
+    );
+    let stop = Cancellation::default();
+    let worker_stop = stop.clone();
+    let worker_clock = clock.clone();
+    let worker = CleanupWorker {
+        stop,
+        thread: Some(std::thread::spawn(move || {
+            let pacer = Pacer::new("queue-cleanup", worker_clock, worker_stop.clone());
+            recovery.run(&pacer, &worker_stop, |_| {});
+        })),
+    };
+    let until = Instant::now() + Duration::from_secs(2);
+    while writer.waiting().1 == 0 && Instant::now() < until {
+        std::thread::yield_now();
+    }
+    assert_eq!(writer.waiting().1, 1, "cleanup reached the held writer");
+    worker.stop.cancel();
+    drop(worker);
+    assert_eq!(
+        writer.waiting(),
+        (0, 0),
+        "cancellation removes the admitted cleanup waiter"
+    );
+    drop(permit);
+}
+
+#[test]
+fn queue_cleanup_worker_exhausted_quantum_waits_for_next_safety_tick() {
+    use herdr_threads::{
+        protocol::{results::ErrorCode, time::Cancellation},
+        service::pacer::Pacer,
+    };
+    use std::{
+        sync::mpsc,
+        time::{Duration, Instant},
+    };
+    let (store, clock, _recovery, row) = rig();
+    let writer = Arc::new(FairWriter::new(32));
+    let permit = writer.enter_foreground(&budget(), clock.as_ref()).unwrap();
+    let recovery = QueueRecovery::new(
+        store,
+        writer.clone(),
+        clock.clone(),
+        Arc::new(HostProcessTable),
+        std::path::PathBuf::from("."),
+        row.owner_boot,
+    );
+    let stop = Cancellation::default();
+    let pacer = Arc::new(Pacer::new("queue-cleanup", clock.clone(), stop.clone()));
+    let (idle, received) = mpsc::channel();
+    pacer.set_idle_hook(Box::new(move |count| {
+        let _ = idle.send(count);
+    }));
+    let (errors, failure) = mpsc::channel();
+    let worker_pacer = pacer.clone();
+    let worker_stop = stop.clone();
+    let worker = CleanupWorker {
+        stop,
+        thread: Some(std::thread::spawn(move || {
+            recovery.run(&worker_pacer, &worker_stop, |error| {
+                let _ = errors.send(error.code.clone());
+            });
+        })),
+    };
+    let until = Instant::now() + Duration::from_secs(2);
+    while writer.waiting().1 == 0 && Instant::now() < until {
+        std::thread::yield_now();
+    }
+    assert_eq!(writer.waiting().1, 1);
+    clock.0.store(4000, Ordering::SeqCst);
+    drop(permit);
+    assert_eq!(
+        failure.recv_timeout(Duration::from_secs(2)).unwrap(),
+        ErrorCode::DeadlineExceeded
+    );
+    assert_eq!(received.recv_timeout(Duration::from_secs(2)).unwrap(), 1);
+    assert!(
+        received.recv_timeout(Duration::from_millis(30)).is_err(),
+        "exhaustion must not busy-spin"
+    );
+    clock.0.store(8999, Ordering::SeqCst);
+    pacer.clock_advanced();
+    assert!(received.recv_timeout(Duration::from_millis(30)).is_err());
+    clock.0.store(9000, Ordering::SeqCst);
+    pacer.clock_advanced();
+    assert_eq!(received.recv_timeout(Duration::from_secs(2)).unwrap(), 2);
+    drop(worker);
+}

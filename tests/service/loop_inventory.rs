@@ -77,6 +77,13 @@ const ALLOWLIST: &[(&str, &str, &str)] = &[
          Pacer's cancellation is built on",
     ),
     (
+        "src/harness/codex/wake/control.rs",
+        "std::thread::sleep(Duration::from_millis(1))",
+        "one queue-helper operation's I/O poll (at most 2 s, bounded by the \
+         caller's deadline/cancellation), plus at most 250 ms child-cleanup \
+         grace; three one-shot waits, not a recurring cleanup lane",
+    ),
+    (
         "src/harness/process.rs",
         "sleep(Duration::from_millis(5))",
         "bounded `--version` child poll inside one observation call; the lane \

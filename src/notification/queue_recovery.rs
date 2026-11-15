@@ -154,6 +154,30 @@ impl QueueRecovery {
             work: Arc::new(AtomicBool::new(true)),
         }
     }
+    /// Run the one joined node owner. The caller supplies its clock-matched pacer.
+    pub fn run(
+        &self,
+        pacer: &crate::service::pacer::Pacer,
+        stop: &crate::protocol::time::Cancellation,
+        mut on_error: impl FnMut(&ApiError),
+    ) {
+        while !stop.is_cancelled() {
+            let budget = CallBudget {
+                deadline: MonoInstant(self.clock.monotonic_now().0.saturating_add(2500)),
+                cancellation: stop.clone(),
+            };
+            if let Err(error) = self.tick(&budget)
+                && !stop.is_cancelled()
+            {
+                on_error(&error);
+            }
+            if pacer.wait_blocking(std::time::Duration::from_millis(5000))
+                == crate::service::pacer::Wake::Cancelled
+            {
+                break;
+            }
+        }
+    }
     pub fn has_work(&self) -> bool {
         self.work.load(Ordering::Acquire)
     }

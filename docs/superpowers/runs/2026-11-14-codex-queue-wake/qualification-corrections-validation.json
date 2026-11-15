@@ -1,0 +1,108 @@
+{
+  "schema": 1,
+  "task": "ht-d2jq.6.1",
+  "review_base": "903038a38dcd61b6f6f8cb665653e5ac93a84333",
+  "owner_dispositions": [
+    "mnSGbklqKbBb",
+    "mnSGLh39pB2Z"
+  ],
+  "production_scope": "existing node cleanup owner uses supplied clock-matched Pacer; immediate pass, five-second cadence, joined shutdown retained",
+  "red": {
+    "filter": "queue_cleanup_worker_",
+    "passed": 1,
+    "failed": 2,
+    "compile_seconds": 8.09,
+    "execution_seconds": 3.28,
+    "observed": "original wait does not enter Pacer; fake-clock safety-tick and exhausted-quantum assertions time out"
+  },
+  "tests": [
+    {
+      "target": "combined",
+      "filters": [
+        "queue_recovery::",
+        "wake_activation_recovery::"
+      ],
+      "passed": 35,
+      "failed": 0,
+      "compile_seconds": 26.84,
+      "execution_seconds": 2.44
+    },
+    {
+      "targets": [
+        "lib",
+        "service"
+      ],
+      "filters": [
+        "protocol::capabilities::tests::",
+        "service::loop_inventory::",
+        "service::pacer::",
+        "app::start_into_slot_tests::",
+        "owner_lease_outlives",
+        "composition shutdown and held-owner regressions"
+      ],
+      "passed": 52,
+      "failed": 0,
+      "compile_seconds": 132,
+      "execution_seconds": 2.855,
+      "nextest_run_id": "53a77943-7938-4b25-b3d3-03644c0b2ede"
+    }
+  ],
+  "unique_focused_tests": 87,
+  "checks": {
+    "clippy_all_targets_all_features": {
+      "exit": 0,
+      "compiler_seconds": 33.62
+    },
+    "default_features": {
+      "exit": 0
+    },
+    "format": {
+      "exit": 0
+    },
+    "harness_neutral": {
+      "exit": 0,
+      "new_exceptions": 0
+    },
+    "wire_compat": {
+      "exit": 0,
+      "baseline_changed": false
+    },
+    "diff": {
+      "exit": 0
+    }
+  },
+  "cleanup": {
+    "run_id": "f3518e09-21c7-4c12-a0c3-fca0994b7d03",
+    "processes_exit": 0,
+    "temp_files_exit": 0
+  },
+  "warm_incremental": {
+    "command": "cargo build --locked",
+    "single_edited_file": "src/notification/queue_recovery.rs",
+    "edit": "one appended comment, restored byte-for-byte",
+    "source_sha256_before": "b3634b49fc7a46732fdb9748e7c4aea3c61d526ca6f41d91d273feb6eda8065c",
+    "source_sha256_after": "b3634b49fc7a46732fdb9748e7c4aea3c61d526ca6f41d91d273feb6eda8065c",
+    "warmup_compile_seconds": 80,
+    "command_wall_seconds": 8.619,
+    "cargo_reported_seconds": 8.36,
+    "exit": 0,
+    "under_one_minute": true,
+    "resource_envelope": {
+      "nice": 19,
+      "build_jobs": 4
+    },
+    "same_target_reused": true
+  },
+  "full_suite_timing_gate_satisfied": false,
+  "live_agents_started": false,
+  "routine_model_visible_bytes_added": 0,
+  "source_sha256": {
+    "src/app.rs": "043197e306aa252f9bc46c6c987d776a5329110b50f65d6e869d69b7788deb40",
+    "src/notification/queue_recovery.rs": "b3634b49fc7a46732fdb9748e7c4aea3c61d526ca6f41d91d273feb6eda8065c",
+    "tests/notification/queue_recovery.rs": "36fa93e53897b0d77fead57c937d18ec7741026857e7c72c9eb5b28e6c7e8f36",
+    "tests/protocol/capabilities.rs": "300972daa71dc79b011d739c5469affff66f1db56faccafd0a71a9b556ee30fd",
+    "tests/service/loop_inventory.rs": "232363f02f2fb24a15fd60ad60462959fa7c4ad1228ee7ff6721acc867ba6cbb"
+  },
+  "report_sha256": "75cc99dcf4ddfa3abb2e572db053bda0d97e73be7022bd7738c8760776bebfd1",
+  "initial_suite_record_sha256": "968b63343662f7f626bb3dc19bc03aff775f48cd11373411b04b92aeb1174337"
+}

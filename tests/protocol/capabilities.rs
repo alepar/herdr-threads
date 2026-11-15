@@ -301,6 +301,7 @@ fn capability_constants_are_stable() {
     assert_eq!(HOST_TOPOLOGIES_V1, "topology.host_topologies_v1");
     assert_eq!(HOST_SITES_V1, "seat.host_sites_v1");
     assert_eq!(TURN_STATE_EDGE, "turn_state.edge_v1");
+    assert_eq!(NATIVE_TURN_OBSERVATION, "wake.native_turn_observation_v1");
     assert_eq!(TERMINAL_SITES_V1, "seat.terminal_sites_v1");
     assert_eq!(AUTOMATIC_TARGET_V1, "handoff.automatic_target_v1");
     assert_eq!(LAUNCH_GATE_V1, "launch.gate_v1");
@@ -360,6 +361,7 @@ fn capability_constants_are_stable() {
             "topology.host_topologies_v1",
             "seat.host_sites_v1",
             "turn_state.edge_v1",
+            "wake.native_turn_observation_v1",
             "seat.terminal_sites_v1",
             "handoff.automatic_target_v1",
             "launch.gate_v1",
@@ -560,6 +562,7 @@ fn every_advertised_capability_has_a_handler() {
                         .is_err()
                 );
             }
+            NATIVE_TURN_OBSERVATION => probe_native_turn_observation(),
             TERMINAL_SITES_V1 => probe_terminal_sites(),
             AUTOMATIC_TARGET_V1 => probe_automatic_target(),
             LAUNCH_GATE_V1 => {
@@ -1007,6 +1010,131 @@ fn every_advertised_capability_has_a_handler() {
     }
 }
 
+mod native_turn_fixture {
+    use crate as herdr_threads;
+    include!("../fixtures/wake_intent.rs");
+}
+
+/// The new metadata reaches the canonical handler and shared turn book; legacy reports
+/// still omit it on the wire and cannot opt into it through the older edge capability.
+fn probe_native_turn_observation() {
+    use crate::{
+        harness::adapter::TurnEdge,
+        ports::{NativeTurnPhase, StorePort},
+        service::{
+            dispatch::DomainService,
+            fair_writer::FairWriter,
+            turn_state::{TurnKey, TurnState},
+        },
+    };
+    let (store, _path, reservation, preparation) = native_turn_fixture::fixture();
+    let report = native_turn_fixture::native_report(
+        &store,
+        &reservation,
+        &preparation,
+        "capability-native-turn",
+        TurnEdge::Busy,
+    );
+    let command = Command::TurnState(report.clone());
+    assert!(command.validate().is_ok());
+    let json = serde_json::to_value(&command).unwrap();
+    assert_eq!(json["args"]["native_turn_id"], "capability-native-turn");
+    let decoded = serde_json::from_value::<Command>(json.clone()).unwrap();
+    assert_eq!(decoded, command);
+
+    let mut legacy_json = json;
+    legacy_json["args"]
+        .as_object_mut()
+        .unwrap()
+        .remove("native_turn_id");
+    let legacy: Command = serde_json::from_value(legacy_json).unwrap();
+    let Command::TurnState(legacy_report) = &legacy else {
+        panic!("turn-state report")
+    };
+    assert!(legacy_report.native_turn_id.is_none());
+    assert!(
+        serde_json::to_value(&legacy).unwrap()["args"]
+            .get("native_turn_id")
+            .is_none()
+    );
+    assert!(!Capabilities::none().supports(NATIVE_TURN_OBSERVATION));
+    assert!(
+        !Capabilities::from_list(vec![TURN_STATE_EDGE.to_owned()])
+            .supports(NATIVE_TURN_OBSERVATION)
+    );
+
+    let store = Arc::new(store);
+    let instance = crate::node::NodeUuid::parse_str(native_turn_fixture::INSTANCE).unwrap();
+    let boot = reservation.daemon_boot;
+    let domain = DomainService::new(
+        instance.to_string(),
+        store.clone(),
+        Arc::new(native_turn_fixture::IntentClock),
+    )
+    .with_cooperative_owner(501, Arc::new(FairWriter::new(32)));
+    let turns = domain.turn_state();
+    let handler = ControlService::new(
+        StopController::new(instance, boot, Cancellation::default()),
+        move |_: &CallBudget| HealthInputs::unknown(instance, boot),
+        domain,
+    );
+    let call = |command| {
+        handler
+            .handle(
+                command,
+                crate::test_support::peer_identity(501),
+                &native_turn_fixture::budget(),
+            )
+            .unwrap()
+    };
+    let CommandResult::Capabilities(caps) = call(Command::Capabilities) else {
+        panic!("capabilities")
+    };
+    assert!(
+        caps.capabilities
+            .iter()
+            .any(|cap| cap == NATIVE_TURN_OBSERVATION)
+    );
+    let key = TurnKey {
+        seat: reservation.seat,
+        generation: preparation.target.scope.generation,
+        harness: preparation.adapter.as_str().into(),
+        native_session: preparation.target.scope.native_session,
+    };
+    assert_eq!(call(decoded), CommandResult::TurnState { recorded: true });
+    assert_eq!(turns.state(&key), TurnState::Busy);
+    let start = StorePort::native_turn_state(
+        store.as_ref(),
+        &preparation.target.scope.binding,
+        &native_turn_fixture::budget(),
+    )
+    .unwrap()
+    .unwrap();
+    assert_eq!(start.id.as_str(), "capability-native-turn");
+    assert_eq!(start.phase, NativeTurnPhase::Started);
+    assert_eq!(start.ordinal, 1);
+    assert_eq!(
+        call(Command::TurnState(
+            crate::protocol::commands::TurnStateReport {
+                edge: TurnEdge::Idle,
+                ..report
+            }
+        )),
+        CommandResult::TurnState { recorded: true }
+    );
+    assert_eq!(turns.state(&key), TurnState::Idle);
+    let end = StorePort::native_turn_state(
+        store.as_ref(),
+        &preparation.target.scope.binding,
+        &native_turn_fixture::budget(),
+    )
+    .unwrap()
+    .unwrap();
+    assert_eq!(end.id.as_str(), "capability-native-turn");
+    assert_eq!(end.phase, NativeTurnPhase::Ended);
+    assert_eq!(end.ordinal, 2);
+}
+
 /// Exercise the advertised native-context source through the actual configured daemon:
 /// a requested receipt must settle canonically, retaining source provenance across replay.
 fn probe_hook_context_receipts() {
@@ -1383,6 +1511,7 @@ fn bare_daemon_advertises_legacy_capabilities_without_v2_recorder() {
             "topology.host_topologies_v1",
             "seat.host_sites_v1",
             "turn_state.edge_v1",
+            "wake.native_turn_observation_v1",
             "seat.terminal_sites_v1",
             "handoff.automatic_target_v1",
             "launch.gate_v1",
