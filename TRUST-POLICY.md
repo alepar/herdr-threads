@@ -3949,3 +3949,20 @@ Passive sends and failed enqueue add no health. A closed receiver retains a
 capable owner's recheck bit only while that exact owner remains Live, without an
 immediate retry kick; existing safety passes and reconnect's initial drain retain
 their recovery roles. Enqueue is not socket-flush or model-uptake evidence.
+
+
+### Queue wake observation race: accepted limit (2026-11-14)
+
+The user accepts an observed-idle programmatic wake racing with later activity.
+For a queue wake, canonical eligibility and current idle evidence are checked before
+enqueue; an explicitly busy receiver is not queued. If it becomes busy afterward,
+normal hooks may deliver the pending items before the already queued content-free
+wake starts a later turn. That residual extra turn is accepted. Cancellation of an
+owned obsolete queue entry is best effort and may fail or race with consumption.
+It is not proof that no turn will run. This does not authorize enqueue into an
+observed busy session, blind retries after uncertain acceptance, prompt suppression
+by text equality, queueing message bodies, or treating queue acceptance/removal as
+receipt evidence. Exact canonical target and ordinary body-delivery attribution
+remain unchanged. This policy permits a future qualified transport; it does not
+claim one is implemented. Design: `docs/superpowers/runs/2026-11-14-codex-queue-wake/design.md`,
+“Current amendment: observed-idle enqueue”.

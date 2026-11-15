@@ -4,13 +4,48 @@
 
 Wake a qualified idle Codex session through its persistent input queue while preserving herdr-threads delivery, attribution and user-interaction guarantees. Queue only `herdr-threads: wake up`; hooks continue to carry bodies and canonical delivery observations.
 
-Status: qualification reviewed; tested queue/hook-veto route rejected for automatic activation. Production implementation remains blocked on missing supported upstream guarantees. Design/quality owner: snSGPb0CT1uM. Implementor: snSGte2clRpf. Queue: ht-d2jq. Source baseline: main 1cf51f9a4; live spike: 8625c066e, `docs/superpowers/runs/2026-11-14-codex-queue-wake/evidence/report.md` on branch `spike/codex-queue-wake`. The spike is not merged into this document's baseline.
+Status: reopened by explicit user requirement change; observed-idle enqueue with best-effort cancellation is permitted. The current amendment below supersedes the historical rejection and conflicting requirements. Production remains unchanged while target/control and retry details are settled. Design/quality owner: snSGPb0CT1uM. Implementor: snSGte2clRpf. Queue: ht-d2jq. Source baseline: main 1cf51f9a4; live spike: 8625c066e, `docs/superpowers/runs/2026-11-14-codex-queue-wake/evidence/report.md` on branch `spike/codex-queue-wake`. The spike is not merged into this document's baseline.
 
 ## Requirement baseline
 
 Source: user in this design session: “Own comprehensive Codex queue wake design and quality; full instructions are already in thread dzU0QoN9Dew.” The handoff mnSGdbzbn5j9 records the originating user's request for a separate design/quality owner and implementor and agreement that queueing is user input, not regular message delivery. This design introduces engineering decisions, not additional claims of human approval.
 
 Requirements: preserve hooks and receipt semantics; never use queue input for message bodies; improve qualified idle waking without exact-version gates; keep cooperative same-user attribution; give the implementor bounded assignments and enforce design quality. Existing AGENTS.md delivery rules and TRUST-POLICY.md A2/A3/A4 remain normative. Any proposed weakening requires an explicit decision and matching policy change, not an implementation shortcut.
+
+## Current amendment: observed-idle enqueue
+
+Source: the user in the design-owner session, after reviewing the negative qualification:
+
+> I think we are unfortunately already loose with "requirement that busy sessions receive messages through hooks without an extra wake afterward".
+> I think this should be mostly covered by the case of us not appending to the queue when we explicitly see agent is alredy busy. So cancellations should be rare, and its fine if they dont come thorugh
+
+This is an explicit change to the acceptance contract. The following rules supersede conflicting text in the historical design and qualification decision below. The experimental observations remain valid; their consequence changes.
+
+### Accepted behavior
+
+Only enqueue after current canonical wake eligibility and receiver/UI observations admit an idle wake. An explicitly busy receiver is never queued. Unknown activity is not idle evidence. Recheck canonical owedness as late as practical before add. Preserve priority/threshold, exact target, interruption, blocked/modal UI and initial draft/focus restrictions. Queue only the existing content-free marker; hooks retain body delivery and all receipt authority.
+
+A receiver can become busy after the check. Its hooks may deliver the mail before the queued marker runs; a later extra turn is an accepted residual race. Request cancellation when the owned pending marker becomes obsolete, but cancellation is best effort. Failed, raced or unavailable cancellation does not invalidate the feature. This acceptance applies to the race, not to deliberately enqueueing into a known busy session or repeatedly retrying an uncertain add.
+
+Remove receiver hook veto from the proposed implementation. Do not add prompt suppression, text-equality ownership detection, queue-ID hook correlation or special hook failure handling. A visible blocked turn is unnecessary when an occasional ordinary wake turn is accepted. Exact queue IDs remain useful for pending cancellation and diagnostics, not model-delivery receipts.
+
+### Minimal control and retry direction
+
+Keep the neutral distinction between body delivery and wake transport. The Codex adapter owns queue protocol and effective executable/profile/storage observation; canonical reservation and priority/owedness stay in core. Keep the managed-daemon attribution refusal. Native fallback is selected before a possible queue effect for unqualified/dormant targets.
+
+Persist one logical enqueue attempt before sending. A known accepted add counts as a submitted wake, never body delivery. A lost add reply is not retried blindly: exact correlation may recover a pending entry, but absence proves neither failure nor delivery. Cancel only exact owned entries, never matching user text. Queue deletion is best-effort cleanup, not a proof that no turn will run and not permission to replay the same wake through native typing.
+
+Do not retain the historical proposal's blanket requirement for successful cancellation or proof of zero latent effects as an activation prerequisite. Conversely, user acceptance of cancellation failure does not by itself authorize repeated adds or transport retries for the same unresolved logical wake. The amended implementation plan must specify durable deduplication of our own attempts, the existing wake ladder/contact semantics, scope changes and newer-attention behavior without claiming upstream idempotency or exactly-once execution. That remaining policy is design work, not grounds to reimpose the rejected race-free prerequisite.
+
+### Remaining design work and tests
+
+Resolve supported exact receiver/storage capture and bounded helper behavior using existing source evidence. An unknown configuration uses native before enqueue; no effective-storage guessing. Settle conservative unknown-add retry and restart behavior. Prefer the smallest supported implementation; do not build hook veto or a generalized queue broker.
+
+Revised acceptance: no add when already observed busy; eligible idle p0 wakes and p1/T0 stays silent; racing busy delivery may leave one previously submitted marker; cancellation failure is recorded and tolerated; no automatic duplicate add for the same uncertain attempt; unchanged hook body/ACK behavior; no queueing of real message content; existing UI/identity/dormant guards preserved. Fault-injection tests distinguish definitive pre-effect failures from ambiguous acceptance. Live characterization of the accepted residual race is evidence, not a failing gate.
+
+The design owner will issue revised implementation tasks after target/control and retry details are concrete. The earlier negative qualification is complete under its original stricter contract and does not need to be rerun to prove the same race again.
+
+## Historical conditional design (superseded where the amendment differs)
 
 ## Evidence and decision
 
