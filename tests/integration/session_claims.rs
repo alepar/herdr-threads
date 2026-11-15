@@ -361,11 +361,11 @@ fn agent_call_without_session_id_is_refused_reads_included() {
     );
 }
 
-// Kills: an agent of a harness with no adapter (Pi, OpenCode) read as a person: its plain calls
+// Kills: a registered agent marker without a visible harness ancestor read as a person: its plain calls
 // attributed through the pane context, or its `human me init` accepted, so it would send and ACK
 // as `operator_human`. The marker alone, with no harness ancestor, refuses both.
 #[test]
-fn unsupported_harness_agent_is_refused_never_a_person() {
+fn agent_marker_without_an_admitted_session_is_refused_never_a_person() {
     let world = World::new(true);
     let marked = |marker: (&str, &str), args: &[&str]| {
         let mut command = crate::scrubbed_command(BIN);
@@ -388,10 +388,7 @@ fn unsupported_harness_agent_is_refused_never_a_person() {
             );
             let text = stderr(&out);
             assert!(
-                text.contains(&format!(
-                    "environment variable {} marks an agent harness herdr-threads does not support",
-                    marker.0
-                )),
+                text.contains("an agent harness environment marker is set"),
                 "{marker:?} {args:?}: {text}"
             );
             assert!(text.contains("session_claim_required"), "{text}");

@@ -6,6 +6,7 @@ codex: contract_declared, hooks missing
 codex: runtime metadata unavailable; rich optional capabilities unavailable
 agy: plugin missing, allow entry not-granted
 opencode: plugin not-installed, skill not-installed, permissions not-granted, heartbeat absent
+pi: extension not_installed, skill not_installed
 issue: codex is on PATH (<root>/bin dir/codex) but its hooks are not installed in <root>/codex home/hooks.json: run `herdr-threads setup codex` with this CODEX_HOME
 fix: herdr-threads doctor fix
 claude local_config_root : installed: true, enabled: unknown, admitted: true, observed: unknown
@@ -18,6 +19,7 @@ hermes local_unresolved : installed: unknown, enabled: unknown, admitted: unknow
   setup: invalid adapter input: Hermes launcher unavailable
 agy local_config_root : installed: false, enabled: true, admitted: unknown, observed: unknown
 opencode local_config_root : installed: false, enabled: unknown, admitted: unknown, observed: unknown
+pi local_config_root : installed: false, enabled: unknown, admitted: unknown, observed: unknown
 synthetic_fourth local_unresolved : installed: unknown, enabled: unknown, admitted: unknown, observed: unknown
   setup: invalid adapter input: synthetic fourth: explicit fixture root unavailable
 rich harness evidence unavailable: the daemon is not reachable

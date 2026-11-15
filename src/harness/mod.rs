@@ -59,6 +59,7 @@ pub mod opencode;
 mod optimistic_render;
 pub mod owned_files;
 pub mod permissions;
+pub mod pi;
 pub mod process;
 pub mod recipe;
 #[cfg(test)]

@@ -324,7 +324,7 @@ fn a_row_without_a_known_host_keeps_the_herdr_classification() {
     let (hosts, sessions, _isolation) = two_hosts("wsh-legacy", None);
     let mut rows = vec![
         row("a", "codex", None),
-        row("b", "pi", None),
+        row("b", "unknown-harness", None),
         row("c", "codex", Some(crate::ports::HostId::from_row(9_999))),
     ];
     rows[1].wake = Some(WakeBlock::Unreadable);

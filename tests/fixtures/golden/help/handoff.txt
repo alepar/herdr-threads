@@ -35,7 +35,7 @@ Options:
       --cwd <CWD>
           Working directory for --new-tab; guarded pane launches cannot change it
       --cooperative-harness <COOPERATIVE_HARNESS>
-          Agent harness making the cooperative call [possible values: claude, codex, hermes, agy, opencode, synthetic_fourth]
+          Agent harness making the cooperative call [possible values: claude, codex, hermes, agy, opencode, pi, synthetic_fourth]
       --profile-dir <PROFILE_DIR>
           Existing profile directory for --new-tab, distinct from native named profiles. Guarded pane launches cannot change the profile directory. For a handoff to another machine: an absolute directory on that machine, checked there
       --cooperative-role <COOPERATIVE_ROLE>
@@ -59,7 +59,7 @@ Options:
       --summary <SUMMARY>
           One-line purpose the launched agent's first prompt shows (at most 200 bytes; default: --goal when it fits). It appears in native argv; the body never does and arrives as the thread message. Required for a handoff to another machine
       --kind <KIND>
-          [possible values: claude, codex, hermes, agy, opencode, synthetic_fourth]
+          [possible values: claude, codex, hermes, agy, opencode, pi, synthetic_fourth]
       --harness-binary <HARNESS_BINARY>
           
       --model <MODEL>
@@ -78,8 +78,8 @@ Options:
 Omit --new-thread and --thread for the canonical automatic two-seat channel.
 Optionally override it with --new-thread or --thread ID_OR_NAME.
 Choose one target mode:
-  --pane PANE --kind claude|codex|hermes|agy|opencode|synthetic_fourth launches in an existing explicit pane;
-  --new-tab LABEL --kind claude|codex|hermes|agy|opencode|synthetic_fourth creates a tab and launches there;
+  --pane PANE --kind claude|codex|hermes|agy|opencode|pi|synthetic_fourth launches in an existing explicit pane;
+  --new-tab LABEL --kind claude|codex|hermes|agy|opencode|pi|synthetic_fourth creates a tab and launches there;
   --existing with exactly one --seat SEAT or --pane PANE delivers durable work
     to an existing canonical seat without launching or restarting its session.
 On another machine: --pane PANE@MACHINE, or --new-tab LABEL --space SPACE@MACHINE
@@ -124,7 +124,7 @@ canonical seat ID. Goal defaults to topic. --name names the native agent, not th
 One positional body after --, --file PATH or --stdin supplies durable work (1..65536 UTF-8 bytes), acquired once and frozen exactly, never native argv.
 The body always requires an addressed ACK. --deadline SECONDS sets its independent duration; omitted defaults resolve once at canonical send. Invitations require acceptance; --invite-deadline SECONDS sets its independent deadline. Registration/launch is never acceptance or ACK. The message timer starts at send even without registration or join. Missed requested deadlines notify the original sender.
 Native launch options use repeatable --agent-arg=OPTION; launch -- native arguments
-is unchanged. HERDR_THREADS_CLAUDE_OPTS / HERDR_THREADS_CODEX_OPTS / HERDR_THREADS_AGY_OPTS / HERDR_THREADS_OPENCODE_OPTS prepend optional
+is unchanged. HERDR_THREADS_CLAUDE_OPTS / HERDR_THREADS_CODEX_OPTS / HERDR_THREADS_AGY_OPTS / HERDR_THREADS_OPENCODE_OPTS / HERDR_THREADS_PI_OPTS prepend optional
 arguments using shell-style quotes and escapes without variable or command
 expansion. Unset or empty adds nothing. Launch handoff freezes the combined options
 before preflight; retry uses saved arguments even if the environment changes.
@@ -159,7 +159,7 @@ structural evidence and ordinary guards; labels are not ownership evidence.
 Not-created asserts inspected noncreation and quiescence. Cancellation asserts
 quiescence and administrative abandonment, not completion; reason is nonblank and
 at most 4096 UTF-8 bytes. A known in-flight invocation refuses conflicting recovery;
-snapshots or guessed PIDs do not prove quiescence. Recovery never launches downstream
+snapshots or guessed process IDs do not prove quiescence. Recovery never launches downstream
 work. Bootstrap cancellation refuses while an exact legacy child fence or live hint
 remains; that child may stay protected indefinitely after pane loss or retirement.
 Recovery replay presents its exact recorded decision, never authorizes a newer

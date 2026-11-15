@@ -6134,7 +6134,7 @@ pub(crate) mod tests {
             ),
             (
                 "unrecognized",
-                recheck_exchange(wake_agent("idle", Some("pi"), "term_1")),
+                recheck_exchange(wake_agent("idle", Some("unknown-harness"), "term_1")),
             ),
             (
                 "replaced terminal",
@@ -7088,7 +7088,7 @@ pub(crate) mod tests {
         let (ui, methods) = observe_ui("blocked", "claude", vec![]);
         assert_eq!(ui, HostUiState::ApprovalOrQuestion);
         assert_eq!(methods, ["pane.get"]);
-        let (ui, methods) = observe_ui("idle", "pi", vec![]);
+        let (ui, methods) = observe_ui("idle", "unknown-harness", vec![]);
         assert_eq!(ui, HostUiState::Unknown);
         assert_eq!(methods, ["pane.get"]);
         let (ui, methods) = observe_ui("unknown", "claude", vec![]);

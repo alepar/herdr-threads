@@ -1698,6 +1698,7 @@ pub fn builtins() -> &'static Registry {
             Registration::new(&crate::harness::hermes::HermesAdapter),
             Registration::new(&crate::harness::agy::AgyAdapter),
             Registration::new(&crate::harness::opencode::OpencodeAdapter),
+            Registration::new(&crate::harness::pi::PiAdapter),
         ];
         #[cfg(feature = "test-support")]
         let registrations = {
@@ -1742,11 +1743,12 @@ mod tests {
                 "hermes",
                 "agy",
                 "opencode",
+                "pi",
                 "synthetic_fourth"
             ]
         );
         #[cfg(not(feature = "test-support"))]
-        assert_eq!(rows, ["claude", "codex", "hermes", "agy", "opencode"]);
+        assert_eq!(rows, ["claude", "codex", "hermes", "agy", "opencode", "pi"]);
     }
     fn unsupported(adapter: &'static str, operation: &'static str) -> UnsupportedOperation {
         UnsupportedOperation { adapter, operation }
@@ -1774,7 +1776,7 @@ mod tests {
             );
         }
         assert_eq!(registry.has_idle_wake("human"), None);
-        assert_eq!(registry.has_idle_wake("pi"), None);
+        assert_eq!(registry.has_idle_wake("unknown-harness"), None);
     }
     /// `idle_wake_on` never regresses `has_idle_wake`: on a Herdr composer host, for every
     /// registration and either channel state, it is a wake path exactly when the oracle says so;
@@ -1834,6 +1836,7 @@ mod tests {
             ("hermes", [Composer, Composer, NoWake, NoWake]),
             ("agy", [Composer, Composer, NoWake, NoWake]),
             ("opencode", [NoWake, Channel, NoWake, Channel]),
+            ("pi", [NoWake, Channel, NoWake, Channel]),
         ];
         #[cfg(feature = "test-support")]
         rows.push(("synthetic_fourth", [NoWake; 4]));
@@ -1860,10 +1863,10 @@ mod tests {
             .map(|r| r.metadata().id)
             .filter(|id| registry.wakes_only_through_channel(id))
             .collect();
-        assert_eq!(channel_only, ["opencode"]);
+        assert_eq!(channel_only, ["opencode", "pi"]);
         assert!(!registry.wakes_only_through_channel("human"));
-        assert!(!registry.wakes_only_through_channel("pi"));
-        for id in ["human", "pi"] {
+        assert!(!registry.wakes_only_through_channel("unknown-harness"));
+        for id in ["human", "unknown-harness"] {
             for wake in [tui, WakeCapability::None] {
                 for c in [false, true] {
                     assert_eq!(cell(id, wake, c), Option::None, "{id} unregistered");
@@ -2997,11 +3000,11 @@ mod tests {
                 builtins().delivery_policy(r.metadata().id).is_some(),
                 matches!(
                     r.metadata().id,
-                    "claude" | "agy" | "opencode" | "synthetic_fourth"
+                    "claude" | "agy" | "opencode" | "pi" | "synthetic_fourth"
                 )
             );
         }
-        assert_eq!(builtins().push_channel_ids(), ["claude", "opencode"]);
+        assert_eq!(builtins().push_channel_ids(), ["claude", "opencode", "pi"]);
     }
     fn registry(adapters: &[&'static TestAdapter]) -> Result<Registry, RegistryError> {
         Registry::new(Box::leak(

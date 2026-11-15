@@ -43,6 +43,7 @@ fn adapter_smoke_four_configurations_real_entrypoints_and_main_conservation() {
             "hermes",
             "agy",
             "opencode",
+            "pi",
             "synthetic_fourth"
         ]
     );
@@ -117,9 +118,13 @@ fn fourth_author_consumers() {
             .iter()
             .map(|entry| entry.id.as_str())
             .collect::<Vec<_>>(),
-        ["claude", "codex", "hermes", "agy", "opencode", ID]
+        ["claude", "codex", "hermes", "agy", "opencode", "pi", ID]
     );
-    let entry = &discovery.adapters[5];
+    let entry = discovery
+        .adapters
+        .iter()
+        .find(|entry| entry.id == ID)
+        .unwrap();
     assert_eq!(entry.display_name, "Synthetic fourth (test-support only)");
     assert_eq!(entry.contracts.len(), 1);
     assert_eq!(entry.contracts[0].domain, "synthetic");
@@ -423,7 +428,7 @@ fn fourth_author_consumers() {
             .keys()
             .map(String::as_str)
             .collect::<Vec<_>>(),
-        ["agy", "claude", "codex", "hermes", "opencode", ID]
+        ["agy", "claude", "codex", "hermes", "opencode", "pi", ID]
     );
     let fourth_health = &health.harnesses[ID];
     assert!(fourth_health.runtime_evidence.is_empty());
@@ -1010,4 +1015,57 @@ fn hermes_presence_controls_never_invoke_or_admit_the_executable() {
         r.observe_daemon(&no_path, &budget()).status,
         HarnessStatus::NotInstalled(_)
     ));
+}
+
+#[test]
+fn pi_hook_refusal_binary_emits_unavailable_for_owner_decode_and_foreign_failures() {
+    use herdr_threads::test_support::spawn::SpawnOwned;
+    use std::io::Write;
+    use std::process::Stdio;
+    let iso = herdr_threads::test_support::isolation::TestIsolation::new("pi-hook-refusal");
+    for located in [false, true] {
+        for event in ["SessionStart", "TurnStart", "SessionEnd"] {
+            for malformed in [false, true] {
+                let mut cmd = iso.command(env!("CARGO_BIN_EXE_herdr-threads"));
+                cmd.args([
+                    "--state-dir",
+                    iso.path("state").to_str().unwrap(),
+                    "--host-endpoint",
+                    iso.path("host.sock").to_str().unwrap(),
+                    "hook-event",
+                    "pi",
+                    event,
+                ]);
+                if located {
+                    cmd.env("HERDR_ENV", "1").env("HERDR_PANE_ID", "w1:p1");
+                }
+                let payload = if malformed {
+                    "{}".to_owned()
+                } else {
+                    serde_json::json!({"event":event,"source":"startup","session_id":"pi-refused","role":"top_level","mode":"tui","pid":80,"cwd":"/project"}).to_string()
+                };
+                let mut child = cmd
+                    .stdin(Stdio::piped())
+                    .stdout(Stdio::piped())
+                    .stderr(Stdio::piped())
+                    .spawn_owned()
+                    .unwrap();
+                child
+                    .stdin
+                    .take()
+                    .unwrap()
+                    .write_all(payload.as_bytes())
+                    .unwrap();
+                let out = child.wait_with_output().unwrap();
+                assert!(out.status.success());
+                assert!(
+                    String::from_utf8(out.stdout)
+                        .unwrap()
+                        .contains("herdr-threads: check-in unavailable ("),
+                    "located={located} event={event} malformed={malformed}"
+                );
+            }
+        }
+    }
+    assert!(!iso.path("state/node/endpoint.json").exists());
 }

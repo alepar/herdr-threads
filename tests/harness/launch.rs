@@ -1590,7 +1590,8 @@ fn launch_proceeds_when_bound_pane_shows_no_agent() {
 /// A detected kind outside claude/codex is not a live bound agent.
 #[test]
 fn launch_proceeds_when_bound_pane_agent_kind_is_unrecognized() {
-    let (host, seats, hooks, clock, budget) = bound_fixture("cooperative_top_level", Some("pi"));
+    let (host, seats, hooks, clock, budget) =
+        bound_fixture("cooperative_top_level", Some("unknown-harness"));
     launch_managed(
         &host,
         &seats,

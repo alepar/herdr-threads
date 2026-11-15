@@ -1900,9 +1900,9 @@ fn probe_harness_states() {
         .collect();
     assert_eq!(&names[..4], ["claude", "codex", "hermes", "agy"]);
     #[cfg(feature = "test-support")]
-    assert_eq!(&names[4..], ["opencode", "synthetic_fourth"]);
+    assert_eq!(&names[4..], ["opencode", "pi", "synthetic_fourth"]);
     #[cfg(not(feature = "test-support"))]
-    assert_eq!(&names[4..], ["opencode"]);
+    assert_eq!(&names[4..], ["opencode", "pi"]);
     let claude = &report.harnesses[0];
     assert_eq!(claude.contract_id.as_deref(), Some("0123456789abcdef"));
     assert_eq!(claude.versions.len(), 1);
@@ -2451,9 +2451,9 @@ fn health_v2_capability_is_negotiated_only_with_cached_provider() {
         .collect::<Vec<_>>();
     assert_eq!(&names[..4], ["agy", "claude", "codex", "hermes"]);
     #[cfg(feature = "test-support")]
-    assert_eq!(&names[4..], ["opencode", "synthetic_fourth"]);
+    assert_eq!(&names[4..], ["opencode", "pi", "synthetic_fourth"]);
     #[cfg(not(feature = "test-support"))]
-    assert_eq!(&names[4..], ["opencode"]);
+    assert_eq!(&names[4..], ["opencode", "pi"]);
     let hermes = &report.harnesses["hermes"];
     assert_eq!(hermes.scope, HarnessHealthScope::daemon_default());
     assert_eq!(

@@ -14,7 +14,7 @@ use crate::{
     service::{delivery_pull::DeliveryPullState, dispatch::DomainService, fair_writer::FairWriter},
     store::{SqliteStore, StoreSettings, connection::StoreContext},
 };
-use rusqlite::{Connection, params};
+use rusqlite::{Connection, OptionalExtension, params};
 use std::sync::{
     Arc,
     atomic::{AtomicI64, Ordering},
@@ -711,4 +711,112 @@ fn retained_virtual_notice_lookup_uses_indexed_constant_vm_work() {
             .unwrap()
         );
     }
+}
+
+#[test]
+fn pi_channel_owned_checkins_preserve_unoffered_notices_mail_and_read_cursors() {
+    let (f, _, _, _, _) = published_notice();
+    let pi = Harness::Agent(crate::harness::registry::builtins().agent("pi").unwrap());
+    let mut pi_claim = fixture_claim(&f, "s", "p", pi, "pi-reader");
+    pi_claim.execution = ExecutionId::new("00000000-0000-4000-8000-000000000002");
+    let mut recipient = check_in(&f, pi_claim, "pi-start");
+    let sender = fixture_claim(&f, "x", "px", fourth(), "virtual-warning-inviter");
+    f.service
+        .handle(
+            Command::SendMessage(SendMessage {
+                priority: None,
+                delivery_mode: DeliveryMode::Ordinary,
+                user_intent: None,
+                thread: ThreadId::new("t"),
+                body: "pi unseen mail".into(),
+                direct_recipient: None,
+                invited_recipients: vec![],
+                deadline_millis: None,
+                operation: OperationId::new("pi-mail"),
+                claim: sender,
+                relays_user: false,
+            }),
+            peer(),
+            &budget(),
+        )
+        .unwrap();
+    f.service
+        .handle(
+            Command::SendMessage(SendMessage {
+                priority: None,
+                delivery_mode: DeliveryMode::Lazy,
+                user_intent: None,
+                thread: ThreadId::new("t"),
+                body: "pi unseen lazy mail".into(),
+                direct_recipient: None,
+                invited_recipients: vec![],
+                deadline_millis: None,
+                operation: OperationId::new("pi-lazy-mail"),
+                claim: fixture_claim(&f, "x", "px", fourth(), "virtual-warning-inviter"),
+                relays_user: false,
+            }),
+            peer(),
+            &budget(),
+        )
+        .unwrap();
+    let binding = binding_for_claim(&f, &recipient);
+    assert!(
+        !crate::store::attention::notice_offer_page_for(&f.db, "s", &binding, 32)
+            .unwrap()
+            .is_empty(),
+        "lifecycle did not consume omitted notices"
+    );
+    let before:String=f.db.query_row("SELECT json_array((SELECT json_group_array(json_array(message_id,seat_id,state,ack_required)) FROM receipt_state WHERE seat_id='s'),(SELECT json_group_array(json_array(thread_id,binding_id,seq)) FROM binding_cursors WHERE binding_id IN (SELECT binding_id FROM occupant_bindings WHERE seat_id='s')),(SELECT json_group_array(json_array(message_id,state)) FROM lazy_recipients WHERE seat_id='s'),(SELECT json_group_array(json_array(binding_id,message_id)) FROM binding_row_displays WHERE binding_id IN (SELECT binding_id FROM occupant_bindings WHERE seat_id='s')))",[],|r|r.get(0)).unwrap();
+    let warning_before: Option<i64> =
+        f.db.query_row(
+            "SELECT offered_through_seq FROM warning_offer WHERE binding_id=?1",
+            [binding.as_str()],
+            |r| r.get(0),
+        )
+        .optional()
+        .unwrap();
+    for (i, mode) in [
+        CheckInMode::Current,
+        CheckInMode::Lifecycle {
+            expected_binding_generation: recipient.binding_generation,
+        },
+        CheckInMode::Current,
+    ]
+    .into_iter()
+    .enumerate()
+    {
+        let CommandResult::CheckedIn(result) = f
+            .service
+            .handle(
+                Command::CheckIn(CheckIn {
+                    mode,
+                    claim: recipient.clone(),
+                    operation: OperationId::new(format!("pi-check-{i}")),
+                    lineage_parent: None,
+                    readonly: false,
+                    continuity_key: None,
+                }),
+                peer(),
+                &budget(),
+            )
+            .unwrap()
+        else {
+            panic!("check-in")
+        };
+        assert!(result.inbox.items.is_empty());
+        assert!(result.notices.items.is_empty());
+        assert!(result.warnings.items.is_empty());
+        recipient = result.context;
+    }
+    let after:String=f.db.query_row("SELECT json_array((SELECT json_group_array(json_array(message_id,seat_id,state,ack_required)) FROM receipt_state WHERE seat_id='s'),(SELECT json_group_array(json_array(thread_id,binding_id,seq)) FROM binding_cursors WHERE binding_id IN (SELECT binding_id FROM occupant_bindings WHERE seat_id='s')),(SELECT json_group_array(json_array(message_id,state)) FROM lazy_recipients WHERE seat_id='s'),(SELECT json_group_array(json_array(binding_id,message_id)) FROM binding_row_displays WHERE binding_id IN (SELECT binding_id FROM occupant_bindings WHERE seat_id='s')))",[],|r|r.get(0)).unwrap();
+    assert_eq!(before, after);
+    let warning_after: Option<i64> =
+        f.db.query_row(
+            "SELECT offered_through_seq FROM warning_offer WHERE binding_id=?1",
+            [binding.as_str()],
+            |r| r.get(0),
+        )
+        .optional()
+        .unwrap();
+    assert_eq!(warning_before, warning_after);
 }

@@ -3,7 +3,7 @@ Install the owned herdr-threads hooks for a harness at user level (with no harne
 Usage: herdr-threads setup [OPTIONS] [HARNESS]
 
 Arguments:
-  [HARNESS]  Harness whose hooks to manage. Omitted: every harness (setup: each one found on PATH; unsetup and setup-status: both) [possible values: claude, codex, hermes, agy, opencode, synthetic_fourth]
+  [HARNESS]  Harness whose hooks to manage. Omitted: every harness (setup: each one found on PATH; unsetup and setup-status: both) [possible values: claude, codex, hermes, agy, opencode, pi, synthetic_fourth]
 
 Options:
       --state-dir <STATE_DIR>
@@ -35,7 +35,7 @@ Options:
       --hooks-only
           setup (claude): install or keep the hooks but not the delivery mod; removes the mod's `CLAUDE_CODE_PLUGIN_DIRS` path and files if setup wrote them (for example under managed policy that forbids the key)
       --cooperative-harness <COOPERATIVE_HARNESS>
-          Agent harness making the cooperative call [possible values: claude, codex, hermes, agy, opencode, synthetic_fourth]
+          Agent harness making the cooperative call [possible values: claude, codex, hermes, agy, opencode, pi, synthetic_fourth]
       --with-pane-env
           setup: write the pane environment block of a harness that declares one (an owned, guarded block in your shell startup files), without asking. Default: keep a block setup owns, else ask on a terminal, else advise
       --cooperative-role <COOPERATIVE_ROLE>
@@ -110,6 +110,8 @@ Scope (user level, like Herdr's own agent hooks):
   agy: ~/.gemini (plugin config/plugins/herdr-threads; allow entry in antigravity-cli/settings.json)
 
   opencode: $OPENCODE_CONFIG_DIR, else ${XDG_CONFIG_HOME:-~/.config}/opencode (plugins/herdr-threads.js, skills/herdr-threads/SKILL.md)
+
+  pi: $PI_CODING_AGENT_DIR, else ~/.pi/agent (extensions/herdr-threads/index.js, skills/herdr-threads/SKILL.md)
 
 
 Foreground agents (inspection; a change only with the explicit consent noted): setup and

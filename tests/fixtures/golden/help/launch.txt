@@ -21,7 +21,7 @@ Options:
       --human
           Human-readable tables and transcripts (the default on a terminal)
       --kind <KIND>
-          Native agent to start [possible values: claude, codex, hermes, agy, opencode, synthetic_fourth]
+          Native agent to start [possible values: claude, codex, hermes, agy, opencode, pi, synthetic_fourth]
       --harness-binary <PATH>
           Absolute harness executable whose `--version` is gated (default: the harness's executable on PATH, which Herdr starts by name)
       --machine
@@ -35,7 +35,7 @@ Options:
       --new-tab <LABEL>
           A new tab labelled LABEL to launch in: in --space, else the caller's workspace on Herdr; a herdr-core needs --space
       --cooperative-harness <COOPERATIVE_HARNESS>
-          Agent harness making the cooperative call [possible values: claude, codex, hermes, agy, opencode, synthetic_fourth]
+          Agent harness making the cooperative call [possible values: claude, codex, hermes, agy, opencode, pi, synthetic_fourth]
       --new-terminal
           A new terminal on a herdr-core host, parented on the calling terminal (no app labels)
       --cooperative-role <COOPERATIVE_ROLE>
@@ -62,7 +62,7 @@ Preflight (nothing is started when any step refuses):
   - the pane's seat is resolved like `seat resolve --pane`; a recovery-held target
     needs `seat rebind ... --operator` or a fresh seat first;
   - the owned user-level hooks must be set up (`herdr-threads setup HARNESS`) in the
-    settings or hook file of the CLAUDE_CONFIG_DIR / CODEX_HOME / HOME / OPENCODE_CONFIG_DIR the agent
+    settings or hook file of the CLAUDE_CONFIG_DIR / CODEX_HOME / HOME / OPENCODE_CONFIG_DIR / PI_CODING_AGENT_DIR the agent
     will use (an absolute one the pane's shell exports, else launch's own, else HOME;
     the report's config_dir names it);
   - a last fresh read of the pane just before Herdr starts the agent.
@@ -73,7 +73,7 @@ fitted to Herdr's [a-z][a-z0-9_-]{0,31}. If another live agent holds it, launch
 retries once with -<short seat id> appended.
 
 Arguments after `--` are passed to the agent unchanged and in order. Optional
-HERDR_THREADS_CLAUDE_OPTS / HERDR_THREADS_CODEX_OPTS / HERDR_THREADS_AGY_OPTS / HERDR_THREADS_OPENCODE_OPTS are prepended to those arguments;
+HERDR_THREADS_CLAUDE_OPTS / HERDR_THREADS_CODEX_OPTS / HERDR_THREADS_AGY_OPTS / HERDR_THREADS_OPENCODE_OPTS / HERDR_THREADS_PI_OPTS are prepended to those arguments;
 unset or empty adds nothing. Use shell-style quotes and escapes; variables and
 commands are never expanded.
 The combined arguments use the same managed-launch guards. The owned configuration
@@ -118,6 +118,8 @@ A hint or observed launch is neither callback activation nor model consumption. 
 agy launch accepts --add-dir, --agent, --conversation, --effort, --mode, --model, --project, --log-file, -i/--prompt-interactive, -c/--continue and --new-project (Go flag grammar: --name value or --name=value). It refuses -p/--print/--prompt, --dangerously-skip-permissions, --sandbox, --remote-control, the print-only flags, single-dash long forms, unknown flags, positionals, subcommands, `--`, and -c together with --conversation. -c continues the most recent conversation; it is not an alias of --conversation. Extra arguments come from HERDR_THREADS_AGY_OPTS in the same grammar.
 
 opencode launch accepts -m/--model, --agent, -c/--continue, -s/--session, --fork (with -c or -s) and --prompt (--name value or --name=value). It refuses positionals and so every subcommand (run, serve, attach, acp, ...), --pure, --auto/--yolo/--dangerously-skip-permissions, --port/--hostname/--mdns, --mini, unknown flags and `--`. opencode creates its session at the first prompt, so a launch without --prompt starts with the prompt "herdr-threads: wake up". Extra arguments come from HERDR_THREADS_OPENCODE_OPTS in the same grammar.
+
+pi launch accepts --model, --provider (with --model), --thinking, -c/--continue, -r/--resume, --session, --fork, --session-dir, -e/--extension and --skill. Values are separate arguments. One startup input may follow `--`. Print, JSON, RPC, extension-disabling, secret-bearing and unknown options are refused. Extra arguments come from HERDR_THREADS_PI_OPTS.
 
 Exit status: 0 startup observed; 5 start may have happened but was not confirmed:
 inspect the pane (`herdr agent get` / `herdr agent read`) before launching again.

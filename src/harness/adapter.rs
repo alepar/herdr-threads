@@ -2047,7 +2047,7 @@ mod tests {
                     );
                     assert!(registration.canary_strategy().is_none());
                 }
-                "opencode" | "synthetic_fourth" => {
+                "opencode" | "pi" | "synthetic_fourth" => {
                     assert!(registration.composer_policy().is_none());
                     assert!(registration.canary_strategy().is_none());
                 }

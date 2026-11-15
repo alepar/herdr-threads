@@ -360,10 +360,7 @@ fn adapter_seam_registry_lists_markers_in_registry_order_and_splits_guards() {
             "PI_CODING_AGENT"
         ]
     );
-    assert_eq!(
-        names(registry.unsupported_markers().iter()),
-        ["PI_CODING_AGENT"]
-    );
+    assert!(names(registry.unsupported_markers().iter()).is_empty());
     // AI_AGENT is set by Claude Code too: never a marker of a harness without an adapter.
     assert!(!names(registry.env_markers()).contains(&"AI_AGENT"));
     // CODEX_THREAD_ID is output evidence only; widening A4 to it would change behaviour.

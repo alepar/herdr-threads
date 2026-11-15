@@ -46,6 +46,8 @@ hooks.opencode.skill: <root>/home/.config/opencode/skills/herdr-threads/SKILL.md
 hooks.opencode.permissions: not-granted (herdr-threads *, ht *)
 hooks.opencode.installed: unavailable (binary none)
 hooks.opencode.heartbeat: <root>/state/opencode/plugin-heartbeat.json absent pid=none loaded_at=none permissions=none
+hooks.pi.extension <root>/home/.pi/agent/extensions/herdr-threads/index.js: not_installed
+hooks.pi.skill <root>/home/.pi/agent/skills/herdr-threads/SKILL.md: not_installed
 limitation: codex is on PATH (<root>/bin dir/codex) but its hooks are not installed in <root>/codex home/hooks.json: run `herdr-threads setup codex` with this CODEX_HOME
 claude local_config_root : installed: true, enabled: unknown, admitted: true, observed: unknown
   Native enablement and runtime observation are separate from local installation
@@ -57,6 +59,7 @@ hermes local_unresolved : installed: unknown, enabled: unknown, admitted: unknow
   setup: invalid adapter input: Hermes launcher unavailable
 agy local_config_root : installed: false, enabled: true, admitted: unknown, observed: unknown
 opencode local_config_root : installed: false, enabled: unknown, admitted: unknown, observed: unknown
+pi local_config_root : installed: false, enabled: unknown, admitted: unknown, observed: unknown
 synthetic_fourth local_unresolved : installed: unknown, enabled: unknown, admitted: unknown, observed: unknown
   setup: invalid adapter input: synthetic fourth: explicit fixture root unavailable
 rich harness evidence unavailable: the daemon is not reachable

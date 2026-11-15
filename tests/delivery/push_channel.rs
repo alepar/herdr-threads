@@ -116,7 +116,7 @@ fn watch_harness_possible_values_are_the_push_channel_harnesses() {
         .iter()
         .map(|value| value.get_name().to_owned())
         .collect();
-    assert_eq!(values, ["claude", "opencode"]);
+    assert_eq!(values, ["claude", "opencode", "pi"]);
 }
 
 #[test]

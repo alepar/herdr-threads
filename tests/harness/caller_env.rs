@@ -338,7 +338,7 @@ fn refusal_codes_and_messages_are_stable() {
     assert!(
         EnvRefusal::NoHarness
             .message()
-            .contains("claude, codex, hermes, opencode or other registered agent harness")
+            .contains("claude, codex, hermes, opencode, pi or other registered agent harness")
     );
 }
 

@@ -526,3 +526,17 @@ test('canonical urgent replay re-arms a recovered unobserved frame only for the 
   assert.deepEqual(next.ackCalls()[0].argv, ['herdr-threads', 'watch', 'ack', '--session', 'native-session-1', '--via', 'context', 'urgent-recovered'])
   await next.emit('session_shutdown', { reason: 'quit' })
 })
+
+test('observer refusal sentinel never admits an owner or starts watch, and retries lifecycle', async () => {
+  let refused = true
+  const h = harness({ run: async argv => ({ code: 0, stdout: argv.at(-1) === 'SessionStart' && refused ? 'herdr-threads: check-in unavailable (hook refused).\n' : '' }) })
+  await h.start()
+  await h.emit('before_agent_start')
+  assert.equal(h.watches.length, 0)
+  assert.equal(h.calls.filter(call => call.argv.at(-1) === 'SessionStart').length, 2)
+  assert.equal(h.wakes.length, 0)
+  assert.equal(h.ackCalls().length, 0)
+  refused = false
+  await h.emit('before_agent_start')
+  assert.equal(h.watches.length, 1)
+})

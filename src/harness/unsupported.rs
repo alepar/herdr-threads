@@ -4,12 +4,4 @@
 //! TRUST-POLICY A4 person-pane refusal evidence. Nothing here attributes a call to the harness.
 use crate::harness::adapter::AgentEnvMarker;
 
-pub(crate) static AGENT_ENV_MARKERS: &[AgentEnvMarker] = &[
-    // Not `AI_AGENT`: Claude Code sets it too, so it names no harness without an adapter.
-    // Pi: `PI_CODING_AGENT=true`, set process-wide at startup (pi-mono
-    // packages/coding-agent/src/cli/setup.ts).
-    AgentEnvMarker {
-        name: "PI_CODING_AGENT",
-        person_guard: true,
-    },
-];
+pub(crate) static AGENT_ENV_MARKERS: &[AgentEnvMarker] = &[];

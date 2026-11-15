@@ -17,7 +17,7 @@ launch.pane: w4:p2
 launch.receipt: launch is not receipt: nothing was checked in, accepted or ACKed
 launch.seat: recipient
 launch.warnings: []
-manual_launch_after_confirming_no_start_argv: env HERDR_THREADS_CLAUDE_OPTS= HERDR_THREADS_CODEX_OPTS= HERDR_THREADS_AGY_OPTS= HERDR_THREADS_OPENCODE_OPTS= herdr-threads --state-dir <root>/state --host-endpoint <root>/host.sock launch --pane w4:p2 --kind codex --harness-binary <root>/codex -- --model env model --config note="literal $HOME" --config repeat=true --config caller="quoted value" Golden goal — from: sender
+manual_launch_after_confirming_no_start_argv: env HERDR_THREADS_CLAUDE_OPTS= HERDR_THREADS_CODEX_OPTS= HERDR_THREADS_AGY_OPTS= HERDR_THREADS_OPENCODE_OPTS= HERDR_THREADS_PI_OPTS= herdr-threads --state-dir <root>/state --host-endpoint <root>/host.sock launch --pane w4:p2 --kind codex --harness-binary <root>/codex -- --model env model --config note="literal $HOME" --config repeat=true --config caller="quoted value" Golden goal — from: sender
 manual_launch_is_historical_display: true
 manual_recovery_error: none
 message.data: <message>

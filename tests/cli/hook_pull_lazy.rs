@@ -411,3 +411,67 @@ fn hook_pull_tool_boundary_reads_no_inbox_page() {
     );
     assert_no_page(&fixture, &outcome);
 }
+
+#[test]
+fn pi_observer_hook_registers_guidance_without_selecting_or_consuming_channel_mail() {
+    let mut f = fixture("pi-channel-owned-hook");
+    f.service.lazy_pending.store(true, Ordering::SeqCst);
+    let registry = crate::harness::registry::builtins();
+    let id = registry.agent("pi").unwrap();
+    let row = registry.by_id(id).unwrap();
+    f.args.harness = crate::harness::registry::OccupantHarness::Agent(id).into();
+    let admitted = row
+        .admit(
+            &crate::harness::adapter::AdmissionRequest {
+                installed: crate::harness::adapter::InstallObservation::NotRequested,
+                input: None,
+                runtime_candidate: None,
+                admitted_at: None,
+            },
+            &CallBudget {
+                deadline: crate::protocol::time::MonoInstant(u64::MAX / 2),
+                cancellation: Default::default(),
+            },
+        )
+        .unwrap();
+    for (index, name, source) in [
+        (0, "SessionStart", "startup"),
+        (1, "TurnStart", ""),
+        (2, "SessionStart", "compact"),
+        (3, "TurnStart", ""),
+    ] {
+        let input=crate::harness::adapter::HookInput {registered_event:Some(name.into()),bytes:serde_json::to_vec(&serde_json::json!({"event":name,"source":source,"session_id":"pi-hook-session","role":"top_level","mode":"tui","pid":80,"cwd":"/project"})).unwrap()};
+        let decoded = row.decode(&admitted, &input).unwrap();
+        let out = run_admitted_hook(
+            &f.args,
+            row,
+            &admitted,
+            &decoded,
+            &herdr(),
+            Instant::now() + LIFECYCLE_BUDGET,
+            Arc::new(SystemClock::new()),
+            None,
+        );
+        assert_eq!(out.diagnostic, None, "{index}");
+        let text = String::from_utf8(out.stdout).unwrap();
+        if name == "SessionStart" {
+            assert!(text.contains("Before using threads"));
+            assert!(text.contains("Hook command routing"));
+        } else {
+            assert!(text.is_empty());
+        }
+        assert!(!text.contains("m-lazy"));
+        assert!(!text.contains("lazy body"));
+        assert!(out.attention.is_none());
+        assert!(out.lazy.is_none());
+    }
+    assert!(f.service.count(|c| matches!(c, Command::CheckIn(_))) >= 1);
+    assert_eq!(
+        f.service.count(|c| matches!(
+            c,
+            Command::InboxBatchV2(_) | Command::Inbox(_) | Command::CompleteInboxDelivery(_)
+        )),
+        0
+    );
+    assert!(f.service.lazy_pending.load(Ordering::SeqCst));
+}
