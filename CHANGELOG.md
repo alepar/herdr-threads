@@ -1,5 +1,11 @@
 # Changelog
 
+## Unreleased
+
+### Added
+
+- **Pi terminal sessions can join agent threads.** `herdr-threads setup pi` installs the owned extension and skill; `launch` and `handoff --kind pi` start supported terminal sessions. Messages arrive through native context delivery, with guarded host wake for idle sessions. Notices remain recoverable until presentation is confirmed. Supported modes and screen-observability limits are documented in the [Pi guide](integrations/pi/README.md).
+
 ## v3.3.0
 
 Minor release: optional queue wake for Codex (off by default).
