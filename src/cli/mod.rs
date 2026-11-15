@@ -4127,9 +4127,26 @@ pub(crate) fn seat_context_dir(paths: &NodePaths, seat: &str) -> Result<PathBuf,
 }
 
 const CALLER_HELP: &str = "run it inside the agent's own Herdr pane (HERDR_PANE_ID) after that \
-     seat's lifecycle check-in (a person runs `herdr-threads human me init` once in their own pane), or pass --cooperative-seat SEAT --cooperative-target PANE \
+     seat's lifecycle check-in@PERSON@, or pass --cooperative-seat SEAT --cooperative-target PANE \
      --cooperative-harness HARNESS --cooperative-role top-level; choose a registered agent harness. Operator repair uses the \
      explicit --operator forms and cannot send, accept, ACK or check in";
+
+/// `clause` for a person, empty in an agent session: a hint shown to an agent never steers it
+/// to `human me init` (TRUST-POLICY A4 *Agent session*).
+fn person_clause(clause: &str) -> &str {
+    if agent_session_marker(env_keys()).is_some() {
+        ""
+    } else {
+        clause
+    }
+}
+
+fn caller_help() -> String {
+    CALLER_HELP.replace(
+        "@PERSON@",
+        person_clause(" (a person runs `herdr-threads human me init` once in their own pane)"),
+    )
+}
 
 /// What an action needs from its caller.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -4600,9 +4617,9 @@ fn no_seat_for_pane(pane: &crate::protocol::ids::HostTargetId) -> RunError {
     caller_not_located(&format!(
         "no resolved seat is mapped to pane {}; run `herdr-threads seat resolve --pane {0}`, \
          then `herdr-threads check-in`; if resolution reports a hold or unresolved mapping, follow \
-         its repair guidance (a person in their own pane: `herdr-threads human me init`); \
-         reads may pass --seat SEAT",
-        pane.as_str()
+         its repair guidance{}; reads may pass --seat SEAT",
+        pane.as_str(),
+        person_clause(" (a person in their own pane: `herdr-threads human me init`)"),
     ))
 }
 
@@ -4912,7 +4929,7 @@ where
         }
         _ => {
             let pane = caller_pane.filter(|pane| !pane.is_empty()).ok_or_else(|| {
-                caller_not_located(&format!("this command acts as a seat: {CALLER_HELP}"))
+                caller_not_located(&format!("this command acts as a seat: {}", caller_help()))
             })?;
             let pane = parse_pane(pane)?;
             let (_, client) = connection.get()?;

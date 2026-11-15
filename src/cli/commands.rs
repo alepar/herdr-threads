@@ -1613,8 +1613,8 @@ enum MeSub {
     Init {
         /// Override the agent guard as the local account: record yourself over
         /// an agent's binding or where Herdr reports an agent. Never from inside
-        /// an agent session.
-        #[arg(long)]
+        /// an agent session (hidden there).
+        #[arg(long, hide = super::help::agent_session())]
         operator: bool,
     },
 }

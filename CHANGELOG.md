@@ -1,5 +1,11 @@
 # Changelog
 
+## Unreleased
+
+### Fixed
+
+- **Agents can no longer act as the person.** In an agent session, `human me init` is refused with or without `--operator`, and so is every person-pane command, even in a pane with a recorded operator mark. A `human retry` of a person's saved intent is refused too. The refusal names no override. An agent session is any registered agent marker or harness session variable in the environment, not only the person-guard markers: `HERMES_SESSION_ID`, `CLAUDE_CODE_SESSION_ID`, `CLAUDE_PID`, `CODEX_SESSION_ID`, `ANTIGRAVITY_CONVERSATION_ID`, opencode's session variables, and `CODEX_THREAD_ID`, which was not a person-guard marker before. If your shell inherited one of these from an agent, unset it or use a clean shell. `--operator` from a plain shell still overrides Herdr reporting an agent in the pane and a seat with a connected agent binding. Operator repairs are unchanged.
+
 ## v3.2.1
 
 Fixes only; no store schema or peer wire change.

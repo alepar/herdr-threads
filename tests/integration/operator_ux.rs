@@ -624,6 +624,26 @@ fn me_init_refuses_with_claudecode_or_codex_marker() {
     }
 }
 
+/// Kills: a caller-location hint that steers an agent session to `human me init` (A4).
+#[test]
+fn caller_hints_name_me_init_to_people_only() {
+    let (root, _scratch, socket) = scratch("hthint");
+    let _host = FakeHost::start(&socket, vec![pane("w1:p1", "term-a")]);
+    let plugin = Plugin {
+        state: root.join("state"),
+        host: socket.clone(),
+    };
+    plugin.ok(None, None, &["daemon", "ensure"]);
+    let create = &["human", "thread", "create", "--topic", "t"][..];
+    // No pane (caller_not_located) and a pane with no seat yet (no_seat_for_pane).
+    for pane in [None, Some("w1:p1")] {
+        let person = plugin.refused_with_env(pane, create, &[]);
+        assert!(person.contains("human me init"), "{pane:?}: {person}");
+        let agent = plugin.refused_with_env(pane, create, &[("HERMES_SESSION_ID", "h-1")]);
+        assert!(!agent.contains("me init"), "{pane:?}: {agent}");
+    }
+}
+
 #[test]
 fn me_init_refuses_where_stand_in_herdr_reports_claude_or_codex() {
     let (root, _scratch, socket) = scratch("htag");

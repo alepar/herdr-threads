@@ -308,10 +308,21 @@ pub fn handoff_help_in(registry: &Registry) -> String {
 }
 
 pub fn me_init_help() -> String {
-    me_init_help_in(builtins())
+    me_init_help_for(builtins(), agent_session())
+}
+
+/// Whether this process runs in an agent session (TRUST-POLICY A4 *Agent session*): its help
+/// then names no override.
+pub fn agent_session() -> bool {
+    super::agent_session_marker(super::env_keys()).is_some()
 }
 
 pub fn me_init_help_in(registry: &Registry) -> String {
+    me_init_help_for(registry, false)
+}
+
+/// The `me init` help; `agent_session` omits the local account's override.
+pub fn me_init_help_for(registry: &Registry, agent_session: bool) -> String {
     let markers: Vec<_> = registry.person_guard_markers().map(|m| m.name).collect();
     let session = if markers.is_empty() {
         "a registered agent harness's session variable set".to_owned()
@@ -321,16 +332,20 @@ pub fn me_init_help_in(registry: &Registry) -> String {
             markers.join(", ")
         )
     };
+    let operator = if agent_session {
+        ""
+    } else {
+        " A shell that inherited such a variable from an agent runs them with it unset. Where Herdr reports a registered agent harness in the pane, or over a seat with a connected agent \
+binding, `ht human me init --operator` overrides the refusal as the local account (later commands in this \
+pane then run as you)."
+    };
     format!(
         "Run it in your own shell pane, then use `ht human` for thread create, invite, send, \
 read, ack and accept there with no --cooperative-* flags. Your actions are recorded as \
 operator_human, never as an agent. Messages remain readable, but a human seat owes no ACK and \
 gets no overdue-ACK warning, even when a sender uses --require-ack. Re-run `ht human me init` after a daemon restart to \
 mark yourself available again. It and the person commands after it are refused inside an agent \
-session ({session}), with no override; a shell that inherited such a variable from an agent runs \
-them with it unset. Where Herdr reports a registered agent harness in the pane, or over a seat \
-with a connected agent binding, `ht human me init --operator` overrides the refusal as the local account (later \
-commands in this pane then run as you). A seat holds either you or agents: `me init` ends the seat's \
+session ({session}), with no override.{operator} A seat holds either you or agents: `me init` ends the seat's \
 disconnected agent bindings, and an agent that checks in there later ends yours. Put --state-dir, --host-endpoint and output flags \
 after human. --human changes output only. Recover retained person/operator intents with \
 `ht human retry REF`."

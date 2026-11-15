@@ -569,6 +569,21 @@ fn adapter_seam_test_adapter_reaches_markers_and_help_without_core_edits() {
     );
 }
 
+/// Kills: `me init` help that shows an agent session the override or the way around the guard.
+#[test]
+fn adapter_seam_me_init_help_names_no_override_in_an_agent_session() {
+    let person = crate::cli::help::me_init_help_for(builtins(), false);
+    assert!(person.contains("ht human me init --operator"), "{person}");
+    assert!(person.contains("with it unset"), "{person}");
+    let agent = crate::cli::help::me_init_help_for(builtins(), true);
+    assert!(!agent.contains("--operator"), "{agent}");
+    assert!(
+        !agent.contains("override the refusal") && !agent.contains("unset"),
+        "{agent}"
+    );
+    assert!(agent.contains("with no override"), "{agent}");
+}
+
 /// The built-in help carries each marker class exactly: guards are named, the output-only
 /// `CODEX_THREAD_ID` is not.
 #[test]

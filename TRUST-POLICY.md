@@ -1150,13 +1150,15 @@ model open work, and summary closure never changes receipt state or installs glo
   (`cooperative_*` or `managed_launch`) is connected, unless the request is `--operator`; a successful
   `ht human me init` ends the seat's disconnected agent bindings (`ended_at`), and with `--operator` also the
   connected ones (disconnect `replaced` first) (implemented, ht-54r.4). `ht human me init` additionally refuses
-  when agent evidence is present: one of the person-guard environment markers registered adapters declare (today `CLAUDECODE`,
-  `CODEX_SANDBOX`, `CODEX_SANDBOX_NETWORK_DISABLED`, `ANTIGRAVITY_AGENT`, `OPENCODE`) or the registry lists for agent harnesses with no
-  adapter (`PI_CODING_AGENT`), or Herdr reporting a registered adapter's recognized native host kind in the
-  pane. Registry metadata alone never establishes native recognition, continuity or caller authority.
-  Unregistered agent kinds are not evidence, and a failed Herdr read counts as no evidence. `--operator`
-  overrides the refusal through a local per-execution mark set only after the daemon accepts the request
-  (implemented, best effort, client-side).
+  when agent evidence is present: an agent-session variable in the caller's environment (*Agent session* below;
+  it includes every person-guard environment marker registered adapters declare, today `CLAUDECODE`,
+  `CODEX_SANDBOX`, `CODEX_SANDBOX_NETWORK_DISABLED`, `ANTIGRAVITY_AGENT`, `OPENCODE`, and those the registry lists
+  for agent harnesses with no adapter, `PI_CODING_AGENT`), or Herdr reporting a registered adapter's recognized
+  native host kind in the pane. Registry metadata alone never establishes native recognition, continuity or caller
+  authority. Unregistered agent kinds are not evidence, and a failed Herdr read counts as no evidence. `--operator`
+  overrides only Herdr's report (and, daemon-side, a connected agent binding), never an environment variable,
+  through a local per-execution mark set only after the daemon accepts the request (implemented, best effort,
+  client-side).
   *Agent session* (implemented, best effort, client-side): person attribution is never an agent's. `ht human me
   init`, with or without `--operator`, and every person-pane command that selects a Human context are refused
   when the caller's environment carries an agent-session marker (`Registry::agent_session_markers`: every
@@ -1169,9 +1171,10 @@ model open work, and summary closure never changes receipt state or installs glo
   (this one, the root `me init` actor-route refusal, and `legacy purge`'s agent-evidence refusal) never name
   `--operator`; the override is documented only in help text and docs for people. Hints that name an operator
   repair (`seat rebind`, `resolve --new-seat`, `retire`, `--replace`, in unresolved-seat refusals and health
-  diagnostics) are exempt: those repairs attribute no person. The same cooperative
-  evidence the caller derivation uses, not adversarial verification: an agent that unsets the variables is not
-  detected (accepted limit). A person whose shell inherited such a variable from an agent runs the command
+  diagnostics) are exempt: those repairs attribute no person. The evidence is
+  the variable names alone (cooperative, not adversarial verification): the caller derivation's process-ancestry
+  walk does not run on the `human` path, so an agent harness's tool child that carries none of the variables is
+  not detected, nor is an agent that unsets them (accepted limit). A person whose shell inherited such a variable from an agent runs the command
   with it unset (the *Refusals* accepted limit). Operator repairs (`seat rebind`, `resolve
   --new-seat`, `retire`, `--replace`) and administrative recovery record `operator:local-user:<uid>`, never a
   person, and are unchanged.
