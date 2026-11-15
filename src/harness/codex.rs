@@ -1509,6 +1509,12 @@ impl HarnessAdapter for CodexAdapter {
     fn receipt_admission_summary(&self) -> Option<String> {
         Some("declared".into())
     }
+    fn wake_replay_scope(
+        &self,
+        session: &crate::protocol::ids::NativeSessionId,
+    ) -> Option<super::wake::WakeReplayScope> {
+        wake::replay_scope_for_session(session)
+    }
     fn wake_control(&self) -> Option<&dyn super::wake::WakeControl> {
         #[cfg(target_os = "linux")]
         {

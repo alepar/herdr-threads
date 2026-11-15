@@ -2,8 +2,9 @@
 use super::*;
 use crate::harness::{
     registry::AgentHarnessId,
-    wake::{WakeControlTarget, WakeReplayScope},
+    wake::{WakeControlTarget, WakeHelperPurpose, WakeHelperWitness, WakeReplayScope},
 };
+use serde::{Deserialize, Serialize};
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct WakeIntentPreparation {
@@ -20,6 +21,35 @@ pub enum WakeIntentPhase {
     Unknown,
     /// Definitive no-add outcome of this invocation; queue absence is insufficient.
     NoEffect,
+}
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum WakeIntentLogical {
+    Active,
+    Fulfilled {
+        turn_id: crate::protocol::ids::NativeTurnId,
+        ordinal: u64,
+    },
+    ScopeEnded,
+}
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct WakeNativeBaseline {
+    pub id: crate::protocol::ids::NativeTurnId,
+    pub ordinal: u64,
+}
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct WakeHelperOperation {
+    pub id: uuid::Uuid,
+    pub purpose: WakeHelperPurpose,
+    #[serde(default)]
+    pub subject: Option<String>,
+    pub owner_boot: uuid::Uuid,
+    pub kernel_boot: String,
+    pub witness: Option<WakeHelperWitness>,
+}
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub struct WakeIntentBlockers {
+    pub programmatic: bool,
+    pub native: bool,
 }
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct WakeIntentSnapshot {
@@ -41,6 +71,14 @@ pub struct WakeIntentSnapshot {
     pub diagnostic: String,
     pub owned_ids: Vec<String>,
     pub ids_complete: bool,
+    pub logical: WakeIntentLogical,
+    pub arm_baseline: Option<WakeNativeBaseline>,
+    pub helper: Option<WakeHelperOperation>,
+    pub cleanup_list_attempted: bool,
+    pub cleanup_pending_ids: Vec<String>,
+    /// Native-only resource exception for an uninitialized revoked helper; never says
+    /// the original Accepted/Unknown submission was cancelled or had no effect.
+    pub native_no_add_exception: bool,
 }
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum PrepareWakeIntent {
@@ -66,7 +104,7 @@ pub enum WakeIntentOutcome {
     NoEffect,
 }
 #[derive(Debug, Clone, PartialEq, Eq)]
-/// Cleanup is independent of submission phase; uncertainty never releases suppression.
+/// Cleanup is independent of submission phase; uncertainty never proves quiescence.
 pub struct WakeIntentResult {
     pub outcome: WakeIntentOutcome,
     pub cleanup_confirmed: bool,
@@ -87,4 +125,16 @@ pub struct WakeIntentPage {
     pub items: Vec<WakeIntentSummary>,
     /// Last returned physical ordinal when another unresolved row was observed.
     pub next_after: Option<u64>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct WakeQueueBinding {
+    pub adapter: AgentHarnessId,
+    pub scope: crate::harness::wake::WakeScope,
+    pub replay_scope: WakeReplayScope,
+}
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct WakeQueueSelection {
+    pub binding: Option<WakeQueueBinding>,
+    pub blockers: WakeIntentBlockers,
 }

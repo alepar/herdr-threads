@@ -3071,9 +3071,15 @@ impl WakeCandidate {
         self.pending_lazy() > self.last_reserved_frontier.lazy
     }
 }
+/// Actual wake transport, separate from body delivery and receipt evidence.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum WakeTransport {
+    Composer,
+    Queue,
+}
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum WakeOutcome {
-    /// The prompt was delivered and verified submitted.
+    /// A wake request was submitted (composer verification or known queue acceptance).
     Submitted,
     /// The prompt may or may not have been delivered. Also the outcome of a
     /// prompt delivered to the pane but still observed in its composer: it keeps the advanced ladder step, is
@@ -4371,6 +4377,81 @@ pub trait StorePort: ModStoreReads + Send + Sync {
     ) -> Result<Option<NativeTurnState>, ApiError> {
         Ok(None)
     }
+    fn queue_wake_selection(
+        &self,
+        _reservation: &WakeReservation,
+        _budget: &CallBudget,
+    ) -> Result<WakeQueueSelection, ApiError> {
+        Err(ApiError::new(
+            ErrorCode::InvalidRequest,
+            "queue wake selection unavailable",
+        ))
+    }
+    fn begin_wake_helper(
+        &self,
+        _attempt: &WakeAttemptId,
+        _revision: u64,
+        _operation: &WakeHelperOperation,
+        _budget: &CallBudget,
+    ) -> Result<bool, ApiError> {
+        Ok(false)
+    }
+    fn record_wake_helper_started(
+        &self,
+        _attempt: &WakeAttemptId,
+        _operation: uuid::Uuid,
+        _witness: &crate::harness::wake::WakeHelperWitness,
+        _budget: &CallBudget,
+    ) -> Result<bool, ApiError> {
+        Ok(false)
+    }
+    fn record_wake_helper_completion(
+        &self,
+        _attempt: &WakeAttemptId,
+        _operation: uuid::Uuid,
+        _confirmed: bool,
+        _budget: &CallBudget,
+    ) -> Result<bool, ApiError> {
+        Ok(false)
+    }
+    fn reconcile_wake_helper(
+        &self,
+        _attempt: &WakeAttemptId,
+        _operation: uuid::Uuid,
+        _presence: &crate::harness::wake::WakeHelperPresence,
+        _budget: &CallBudget,
+    ) -> Result<bool, ApiError> {
+        Ok(false)
+    }
+    fn retire_wake_intent_if_scope_ended(
+        &self,
+        _attempt: &WakeAttemptId,
+        _budget: &CallBudget,
+    ) -> Result<bool, ApiError> {
+        Ok(false)
+    }
+    fn wake_intent_blockers(
+        &self,
+        _seat: &SeatId,
+        _adapter: crate::harness::registry::AgentHarnessId,
+        _cohort: &crate::harness::wake::WakeReplayScope,
+        _budget: &CallBudget,
+    ) -> Result<WakeIntentBlockers, ApiError> {
+        Err(ApiError::new(
+            ErrorCode::InvalidRequest,
+            "wake intent fences unavailable",
+        ))
+    }
+    fn record_wake_cleanup_progress(
+        &self,
+        _attempt: &WakeAttemptId,
+        _operation: uuid::Uuid,
+        _listed: bool,
+        _deleted_id: Option<&str>,
+        _budget: &CallBudget,
+    ) -> Result<bool, ApiError> {
+        Ok(false)
+    }
     fn prepare_wake_intent(
         &self,
         _reservation: &WakeReservation,
@@ -4949,6 +5030,17 @@ pub trait HostPort: Send + Sync {
     ) -> Option<SafeWakeTarget> {
         self.safe_wake_target(seat, observation)
     }
+    /// Reuse the host's final idle/UI/composer guard without writing any input.
+    fn check_idle_wake(
+        &self,
+        _target: &SafeWakeTarget,
+        _context: &HostCallContext,
+    ) -> Result<(), ApiError> {
+        Err(ApiError::new(
+            ErrorCode::TargetUnsafe,
+            "host idle wake guard unavailable",
+        ))
+    }
     fn submit_prompt(
         &self,
         target: &SafeWakeTarget,
@@ -5390,6 +5482,9 @@ pub trait NotificationPort: Send + Sync {
         reservation: WakeReservation,
         context: &HostCallContext,
     ) -> Result<WakeOutcome, ApiError>;
+    fn take_transport(&self, _attempt: &WakeAttemptId) -> WakeTransport {
+        WakeTransport::Composer
+    }
     /// A soft-deadline poke (spec §10) through the same reservation checks as
     /// a wake. The default cannot poke: `PokeOnly` is unavailable and
     /// `WithWake` is an ordinary wake.

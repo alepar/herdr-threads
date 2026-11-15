@@ -1,8 +1,20 @@
-//! Queue control is separate from hook delivery and remains unselected by the scheduler.
+//! Queue control is separate from hook delivery; the core selects the wake transport.
+pub(super) fn replay_scope_for_session(
+    session: &crate::protocol::ids::NativeSessionId,
+) -> Option<crate::harness::wake::WakeReplayScope> {
+    let id = uuid::Uuid::parse_str(session.as_str()).ok()?;
+    if id.to_string() != session.as_str() {
+        return None;
+    }
+    crate::harness::wake::WakeReplayScope::parse(format!("session:{id}")).ok()
+}
+
 #[cfg(target_os = "linux")]
 mod capture;
 #[cfg(target_os = "linux")]
 mod control;
+#[cfg(target_os = "linux")]
+mod helper;
 
 #[cfg(target_os = "linux")]
 mod implementation {
@@ -104,16 +116,26 @@ mod implementation {
         Ok(d)
     }
     impl WakeControl for Control {
+        fn probe_helper(
+            &self,
+            witness: &crate::harness::wake::WakeHelperWitness,
+            context: &WakeControlContext<'_>,
+        ) -> Result<crate::harness::wake::WakeHelperPresence, ApiError> {
+            super::helper::probe(witness, context)
+        }
+
         fn replay_scope(
             &self,
             target: &WakeControlTarget,
         ) -> Result<crate::harness::wake::WakeReplayScope, ApiError> {
-            let session = uuid::Uuid::parse_str(target.scope.native_session.as_str())
-                .map_err(|_| control::error("invalid native wake session"))?;
-            if session.to_string() != target.scope.native_session.as_str() {
-                return Err(control::error("noncanonical native wake session"));
-            }
-            crate::harness::wake::WakeReplayScope::parse(format!("session:{session}"))
+            self.replay_scope_for_session(&target.scope.native_session)
+        }
+        fn replay_scope_for_session(
+            &self,
+            native_session: &crate::protocol::ids::NativeSessionId,
+        ) -> Result<crate::harness::wake::WakeReplayScope, ApiError> {
+            super::replay_scope_for_session(native_session)
+                .ok_or_else(|| control::error("invalid native wake session"))
         }
 
         fn observe(

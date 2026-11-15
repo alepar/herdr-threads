@@ -257,6 +257,14 @@ pub trait HarnessAdapter: Send + Sync + 'static {
     fn wake_control(&self) -> Option<&dyn super::wake::WakeControl> {
         None
     }
+    /// Pure suppression cohort, available independently of physical control support.
+    /// None declares that this native session has no programmatic-wake cohort.
+    fn wake_replay_scope(
+        &self,
+        session: &crate::protocol::ids::NativeSessionId,
+    ) -> Option<super::wake::WakeReplayScope> {
+        self.wake_control()?.replay_scope_for_session(session).ok()
+    }
     /// Native wake text selected from canonical evidence for the reached binding.
     /// Missing evidence keeps the policy's conservative default. This selects text only,
     /// never delivery eligibility or receipt authority.
@@ -506,6 +514,7 @@ pub enum DeliveryMechanism {
 /// What wakes an idle seat of this harness.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum IdleWake {
+    /// Host-initiated wake, through its composer or an adapter programmatic transport.
     Native,
     Channel,
 }

@@ -235,3 +235,12 @@ mod codex_wake_observation;
 
 #[path = "store/wake_intents.rs"]
 mod wake_intents;
+
+#[path = "store/wake_frontier_activation.rs"]
+mod wake_frontier_activation;
+
+#[path = "store/wake_activation_recovery.rs"]
+mod wake_activation_recovery;
+
+#[path = "store/wake_queue_selection.rs"]
+mod wake_queue_selection;

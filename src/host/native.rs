@@ -1582,6 +1582,15 @@ impl HostPort for NativeCli {
         self.cooperative_target(seat, observation)
     }
 
+    fn check_idle_wake(
+        &self,
+        target: &SafeWakeTarget,
+        context: &HostCallContext,
+    ) -> Result<(), ApiError> {
+        self.idle_wake_gate(target, context)?;
+        self.wake_submit_limit(context).map(|_| ())
+    }
+
     /// Fresh witnessed `agent.get` recheck immediately before a witnessed
     /// `agent.prompt`: the same pane and terminal in the same server
     /// incarnation and connection epoch, a recognized harness agent
@@ -2109,16 +2118,13 @@ impl NativeCli {
         blocks.insert(seat.clone(), (block, now));
     }
 
-    /// `still_owed` (when given) is asked once the agent was rechecked idle or done and its
-    /// composer read empty, immediately before `agent prompt`; `Ok(None)`: it declined and
-    /// nothing was sent. Without it the result is always `Some`.
-    fn submit_prompt_mode(
+    /// The final native wake recheck, shared by prompt and queue admission. It observes
+    /// identity, idle status, composer and focus without sending or clearing input.
+    fn idle_wake_gate(
         &self,
         target: &SafeWakeTarget,
-        text: &str,
         context: &HostCallContext,
-        still_owed: Option<&dyn Fn() -> Result<bool, ApiError>>,
-    ) -> Result<Option<ports::PromptOutcome>, ApiError> {
+    ) -> Result<(), ApiError> {
         // Taking the sample first makes every failed identity/status/read reset
         // the window. Only a successful focused-empty sample below retains it.
         let previous = self
@@ -2228,6 +2234,42 @@ impl NativeCli {
         if budget.cancellation.is_cancelled() {
             return Err(error(ErrorCode::Cancelled, "wake prompt cancelled"));
         }
+        Ok(())
+    }
+
+    fn wake_submit_limit(&self, context: &HostCallContext) -> Result<Duration, ApiError> {
+        let left = context
+            .budget
+            .deadline
+            .0
+            .saturating_sub(self.clock.monotonic_now().0);
+        if left < MIN_PROMPT_MILLIS {
+            return Err(error(
+                ErrorCode::DeadlineExceeded,
+                "insufficient wake prompt budget",
+            ));
+        }
+        Ok(Duration::from_millis(left.min(PROMPT_SUBMIT_MILLIS)))
+    }
+
+    /// `still_owed` (when given) is asked once the agent was rechecked idle or done and its
+    /// composer read empty, immediately before `agent prompt`; `Ok(None)`: it declined and
+    /// nothing was sent. Without it the result is always `Some`.
+    fn submit_prompt_mode(
+        &self,
+        target: &SafeWakeTarget,
+        text: &str,
+        context: &HostCallContext,
+        still_owed: Option<&dyn Fn() -> Result<bool, ApiError>>,
+    ) -> Result<Option<ports::PromptOutcome>, ApiError> {
+        self.idle_wake_gate(target, context)?;
+        let budget = &context.budget;
+        let refuse = |detail: &str| {
+            error(
+                ErrorCode::TargetUnsafe,
+                format!("wake prompt refused before submission: {detail}"),
+            )
+        };
         // The agent is idle now, so a turn that served this attention has ended and its
         // completion is committed: ask whether the wake is still owed only after the recheck.
         if let Some(still_owed) = still_owed
@@ -2235,16 +2277,8 @@ impl NativeCli {
         {
             return Ok(None);
         }
-        // Sampled after the owed check: a slow store read must end in this pre-send
-        // refusal, not in a prompt that times out with nothing typed (OutcomeUnknown).
-        let left = remaining(self);
-        if left < MIN_PROMPT_MILLIS {
-            return Err(error(
-                ErrorCode::DeadlineExceeded,
-                "insufficient wake prompt budget",
-            ));
-        }
-        let limit = Duration::from_millis(left.min(PROMPT_SUBMIT_MILLIS));
+        // A slow owed check must end in a pre-send refusal, never an ambiguous submission.
+        let limit = self.wake_submit_limit(context)?;
         let (raw, witness) = match self.run_witnessed(
             &["agent", "prompt", target.target.as_str(), text],
             budget,
@@ -4877,6 +4911,178 @@ pub(crate) mod tests {
         worker.join().unwrap();
         fs::remove_file(socket).unwrap();
         (result, methods)
+    }
+
+    /// A queue admission must use the native gate without sending or clearing input.
+    #[cfg(any(target_os = "macos", target_os = "linux"))]
+    #[test]
+    fn check_idle_wake_reads_only_for_idle_and_done() {
+        for status in ["idle", "done"] {
+            let (result, methods) = cooperative_wake_submit(
+                registry::builtins(),
+                vec![
+                    recheck_exchange(wake_agent(status, Some("claude"), "term_1")),
+                    detection_exchange(claude_screen(&[""])),
+                    pane_exchange(),
+                ],
+                None,
+                |_, _| {},
+                |cli, target, context, _| {
+                    let result = cli.check_idle_wake(target, context);
+                    // Keep the host alive through an explicit read: any input request
+                    // between the guard and this read fails the transport fixture.
+                    cli.observe_current_target(&target.target, context).unwrap();
+                    result
+                },
+            );
+            result.unwrap();
+            assert_eq!(
+                *methods.lock().unwrap(),
+                ["pane.get", "agent.get", "agent.read", "pane.get"]
+            );
+        }
+    }
+
+    #[cfg(any(target_os = "macos", target_os = "linux"))]
+    #[test]
+    fn check_idle_wake_refuses_busy_unknown_and_changed_identity() {
+        for agent in [
+            wake_agent("working", Some("claude"), "term_1"),
+            wake_agent("blocked", Some("claude"), "term_1"),
+            wake_agent("unknown", Some("claude"), "term_1"),
+            wake_agent("idle", Some("claude"), "other_terminal"),
+            wake_agent("idle", Some("codex"), "term_1"),
+        ] {
+            let (result, methods) = cooperative_wake_submit(
+                registry::builtins(),
+                vec![recheck_exchange(agent)],
+                None,
+                |_, _| {},
+                |cli, target, context, _| cli.check_idle_wake(target, context),
+            );
+            assert_eq!(result.unwrap_err().code, ErrorCode::TargetUnsafe);
+            assert_eq!(*methods.lock().unwrap(), ["pane.get", "agent.get"]);
+        }
+    }
+
+    #[cfg(any(target_os = "macos", target_os = "linux"))]
+    #[test]
+    fn check_idle_wake_refuses_drafts_and_unreadable_screens() {
+        for screen in [claude_screen(&["draft"]), "unknown layout".into()] {
+            let exchanges = vec![
+                recheck_exchange(wake_agent("idle", Some("claude"), "term_1")),
+                detection_exchange(screen),
+                styled_exchange(None),
+            ];
+            let (result, methods) = cooperative_wake_submit(
+                registry::builtins(),
+                exchanges,
+                None,
+                |_, _| {},
+                |cli, target, context, _| cli.check_idle_wake(target, context),
+            );
+            assert_eq!(result.unwrap_err().code, ErrorCode::TargetUnsafe);
+            assert!(
+                methods.lock().unwrap().iter().all(|method| matches!(
+                    method.as_str(),
+                    "pane.get" | "agent.get" | "agent.read"
+                ))
+            );
+        }
+    }
+
+    #[cfg(any(target_os = "macos", target_os = "linux"))]
+    #[test]
+    fn check_idle_wake_refuses_stale_context_cancelled_and_short_budget() {
+        for case in 0..3 {
+            let (result, methods) = cooperative_wake_submit(
+                registry::builtins(),
+                vec![],
+                None,
+                |target, context| match case {
+                    0 => context.expected_epoch = Some(target.epoch + 1),
+                    1 => context.budget.cancellation.cancel(),
+                    _ => context.budget.deadline = MonoInstant(0),
+                },
+                |cli, target, context, _| cli.check_idle_wake(target, context),
+            );
+            assert_eq!(
+                result.unwrap_err().code,
+                match case {
+                    0 => ErrorCode::TargetUnsafe,
+                    1 => ErrorCode::Cancelled,
+                    _ => ErrorCode::DeadlineExceeded,
+                }
+            );
+            assert_eq!(*methods.lock().unwrap(), ["pane.get"]);
+        }
+    }
+
+    #[cfg(any(target_os = "macos", target_os = "linux"))]
+    #[test]
+    fn check_idle_wake_keeps_focused_empty_dwell_without_input() {
+        let clock = Arc::new(NudgeClock(AtomicU64::new(0)));
+        let mut agent = wake_agent("idle", Some("claude"), "term_1");
+        agent["focused"] = json!(true);
+        let mut exchanges = vec![pane_exchange()];
+        for _ in 0..3 {
+            exchanges.push(recheck_exchange(agent.clone()));
+            exchanges.push(detection_exchange(claude_screen(&[""])));
+        }
+        let (socket, mut cli, worker) = serve_sequence(exchanges);
+        cli.clock = clock.clone();
+        let observation = cli
+            .observe_current_target(&HostTargetId::new("w4:p1"), &pane_agent_context())
+            .unwrap();
+        let mut target = cli
+            .safe_wake_target(&SeatId::new("seat_1"), &observation)
+            .unwrap();
+        target.bound_harness = Some("claude".into());
+        for at in [0, 59_999, 60_000] {
+            clock.0.store(at, Ordering::SeqCst);
+            let mut context = wake_context(&observation);
+            context.budget.deadline = MonoInstant(at + 10_000);
+            let result = cli.check_idle_wake(&target, &context);
+            if at < 60_000 {
+                assert_eq!(result.unwrap_err().code, ErrorCode::TargetUnsafe);
+            } else {
+                result.unwrap();
+            }
+        }
+        worker.join().unwrap();
+        fs::remove_file(socket).unwrap();
+    }
+
+    #[cfg(any(target_os = "macos", target_os = "linux"))]
+    #[test]
+    fn check_idle_wake_refuses_budget_spent_on_composer_read() {
+        let clock = Arc::new(NudgeClock(AtomicU64::new(0)));
+        let elapsed = clock.clone();
+        let read_empty = detection_exchange(claude_screen(&[""]));
+        let (socket, mut cli, worker) = serve_sequence(vec![
+            pane_exchange(),
+            recheck_exchange(wake_agent("idle", Some("claude"), "term_1")),
+            Box::new(move |stream, request| {
+                elapsed.0.store(9_900, Ordering::SeqCst);
+                read_empty(stream, request);
+            }),
+        ]);
+        cli.clock = clock;
+        let observation = cli
+            .observe_current_target(&HostTargetId::new("w4:p1"), &pane_agent_context())
+            .unwrap();
+        let mut target = cli
+            .safe_wake_target(&SeatId::new("seat_1"), &observation)
+            .unwrap();
+        target.bound_harness = Some("claude".into());
+        assert_eq!(
+            cli.check_idle_wake(&target, &wake_context(&observation))
+                .unwrap_err()
+                .code,
+            ErrorCode::DeadlineExceeded
+        );
+        worker.join().unwrap();
+        fs::remove_file(socket).unwrap();
     }
 
     /// Catches an ordinary native wake bypassing the composer and submitting a draft.

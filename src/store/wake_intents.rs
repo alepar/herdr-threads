@@ -21,8 +21,9 @@ use std::collections::BTreeSet;
 
 const MAX_INTENTS: i64 = 4096;
 const MAX_IDS: usize = 128;
-const UNRESOLVED: &str = "(phase!='no_effect' OR cleanup_quarantined=1)";
-const COLUMNS: &str = "ordinal,attempt,adapter,replay_scope,origin_seat,origin_host,origin_host_boot,origin_host_epoch,origin_target,origin_target_generation,target_json,descriptor,correlation,invitation_seq,invitation_offset,receipt_seq,receipt_offset,warning_seq,warning_offset,lazy_ordinal,phase,revision,owner_boot,arm_nonce,cleanup_quarantined,diagnostic,ids_complete";
+const UNRESOLVED: &str =
+    "((logical_status='active' AND phase!='no_effect') OR cleanup_quarantined=1)";
+const COLUMNS: &str = "ordinal,attempt,adapter,replay_scope,origin_seat,origin_host,origin_host_boot,origin_host_epoch,origin_target,origin_target_generation,target_json,descriptor,correlation,invitation_seq,invitation_offset,receipt_seq,receipt_offset,warning_seq,warning_offset,lazy_ordinal,phase,revision,owner_boot,arm_nonce,cleanup_quarantined,diagnostic,ids_complete,logical_status,fulfillment_turn,fulfillment_ordinal,arm_native_id,arm_native_ordinal,helper_json,cleanup_list_attempted,native_no_add_exception";
 fn invalid(detail: &str) -> ApiError {
     api_error(ErrorCode::InvalidRequest, detail)
 }
@@ -99,6 +100,30 @@ fn decode(r: &Row<'_>) -> Result<WakeIntentSnapshot, ApiError> {
         cleanup_quarantined: get(r, 24)?,
         diagnostic: get(r, 25)?,
         ids_complete: get(r, 26)?,
+        logical: match get::<String>(r, 27)?.as_str() {
+            "active" => crate::ports::WakeIntentLogical::Active,
+            "scope_ended" => crate::ports::WakeIntentLogical::ScopeEnded,
+            "fulfilled" => crate::ports::WakeIntentLogical::Fulfilled {
+                turn_id: crate::protocol::ids::NativeTurnId::parse(get::<String>(r, 28)?)
+                    .map_err(|_| corrupt())?,
+                ordinal: unsigned(get(r, 29)?)?,
+            },
+            _ => return Err(corrupt()),
+        },
+        arm_baseline: match (get::<Option<String>>(r, 30)?, get::<Option<i64>>(r, 31)?) {
+            (None, None) => None,
+            (Some(id), Some(ordinal)) => Some(crate::ports::WakeNativeBaseline {
+                id: crate::protocol::ids::NativeTurnId::parse(id).map_err(|_| corrupt())?,
+                ordinal: unsigned(ordinal)?,
+            }),
+            _ => return Err(corrupt()),
+        },
+        helper: get::<Option<Vec<u8>>>(r, 32)?
+            .map(|bytes| serde_json::from_slice(&bytes).map_err(|_| corrupt()))
+            .transpose()?,
+        cleanup_list_attempted: get(r, 33)?,
+        cleanup_pending_ids: Vec::new(),
+        native_no_add_exception: get(r, 34)?,
         owned_ids: vec![],
     })
 }
@@ -120,6 +145,12 @@ fn load(
     };
     let mut result = decode(row)?;
     let mut ids=db.prepare("SELECT queue_id FROM wake_intent_ids WHERE intent_ordinal=?1 ORDER BY queue_id LIMIT 129").map_err(store_error)?;
+    let mut pending=db.prepare("SELECT queue_id FROM wake_intent_ids WHERE intent_ordinal=?1 AND cleanup_attempted=0 ORDER BY queue_id LIMIT 129").map_err(store_error)?;
+    result.cleanup_pending_ids = pending
+        .query_map([signed(result.ordinal)?], |r| r.get(0))
+        .map_err(store_error)?
+        .collect::<Result<Vec<String>, _>>()
+        .map_err(store_error)?;
     result.owned_ids = ids
         .query_map([signed(result.ordinal)?], |r| r.get(0))
         .map_err(store_error)?
@@ -206,9 +237,9 @@ pub(super) fn prepare(
         Ok(None)
     },|tx,at,known| {
         if let Some(known)=known {return Ok(known)}
-        // Only definitive clean no-effect rows can leave history. Never prune a
-        // still-referenced attempt that an existing reservation could address.
-        tx.execute("DELETE FROM wake_intents WHERE ordinal IN (SELECT i.ordinal FROM wake_intents i WHERE i.instance_id=?1 AND i.phase='no_effect' AND i.cleanup_quarantined=0 AND NOT EXISTS(SELECT 1 FROM wake_work w JOIN seats s ON s.id=w.seat_id WHERE s.instance_id=i.instance_id AND (w.reservation_id=i.attempt OR w.last_reservation_id=i.attempt)) ORDER BY i.ordinal LIMIT 32)",[&store.instance]).map_err(store_error)?;
+        // Clean no-effect or finitely cleaned retired rows can leave history. Never
+        // prune Armed or a still-referenced attempt a reservation could address.
+        tx.execute("DELETE FROM wake_intents WHERE ordinal IN (SELECT i.ordinal FROM wake_intents i WHERE i.instance_id=?1 AND (i.phase='no_effect' OR (i.logical_status!='active' AND i.cleanup_list_attempted=1 AND NOT EXISTS(SELECT 1 FROM wake_intent_ids q WHERE q.intent_ordinal=i.ordinal AND q.cleanup_attempted=0))) AND i.phase!='armed' AND i.cleanup_quarantined=0 AND NOT EXISTS(SELECT 1 FROM wake_work w JOIN seats s ON s.id=w.seat_id WHERE s.instance_id=i.instance_id AND (w.reservation_id=i.attempt OR w.last_reservation_id=i.attempt)) ORDER BY i.ordinal LIMIT 32)",[&store.instance]).map_err(store_error)?;
         let count:i64=tx.query_row("SELECT count(*) FROM wake_intents WHERE instance_id=?1",[&store.instance],|r|r.get(0)).map_err(store_error)?;
         let blocked:bool=tx.query_row(&format!("SELECT EXISTS(SELECT 1 FROM wake_intents WHERE instance_id=?1 AND adapter=?2 AND replay_scope=?3 AND {UNRESOLVED})"),params![store.instance,p.adapter.as_str(),p.replay_scope.as_str()],|r|r.get(0)).map_err(store_error)?;
         if count>=MAX_INTENTS || blocked {return Ok(PrepareWakeIntent::Refused)}
@@ -232,12 +263,17 @@ pub(super) fn arm(
     }
     let mut writer = store.writer(budget)?;
     store.context.execute_budgeted_decision(&mut writer,budget,|tx| {
-        let Some(row)=load(tx,&store.instance,&r.attempt)? else {return Ok(false)};
-        Ok(row.phase==WakeIntentPhase::Prepared && !row.cleanup_quarantined && row.revision==revision && matching(&row,r,&row.preparation) && canonical(store,tx,r,&row.preparation)?)
-    },|tx,at,valid| {
-        if !valid {return Ok(None)}
+        let Some(row)=load(tx,&store.instance,&r.attempt)? else {return Ok(None)};
+        if row.phase!=WakeIntentPhase::Prepared || !row.cleanup_quarantined || row.logical!=crate::ports::WakeIntentLogical::Active || row.revision!=revision || !matching(&row,r,&row.preparation) || !canonical(store,tx,r,&row.preparation)? {return Ok(None)}
+        let Some(helper)=row.helper.as_ref().filter(|h|h.owner_boot==r.daemon_boot && h.purpose==crate::harness::wake::WakeHelperPurpose::Add && h.witness.is_some()) else {return Ok(None)};
+        if helper.kernel_boot!=row.preparation.target.scope.kernel_boot {return Ok(None)}
+        let Some(native)=super::native_turn::load(tx,&store.instance,&row.preparation.target.scope.binding)? else {return Ok(None)};
+        if native.scope!=row.preparation.target.scope || native.phase!=crate::ports::NativeTurnPhase::Ended {return Ok(None)}
+        Ok(Some(native))
+    },|tx,at,native| {
+        let Some(native)=native else{return Ok(None)};
         let next=revision.checked_add(1).ok_or_else(corrupt)?;
-        let changed=tx.execute("UPDATE wake_intents SET phase='armed',revision=?3,arm_nonce=?4,updated_at=?5 WHERE instance_id=?1 AND attempt=?2 AND phase='prepared' AND revision=?6 AND cleanup_quarantined=0",params![store.instance,r.attempt.as_str(),signed(next)?,nonce.to_string(),at.utc.0,signed(revision)?]).map_err(store_error)?;
+        let changed=tx.execute("UPDATE wake_intents SET phase='armed',revision=?3,arm_nonce=?4,updated_at=?5,arm_native_id=?7,arm_native_ordinal=?8 WHERE instance_id=?1 AND attempt=?2 AND phase='prepared' AND revision=?6",params![store.instance,r.attempt.as_str(),signed(next)?,nonce.to_string(),at.utc.0,signed(revision)?,native.id.as_str(),signed(native.ordinal)?]).map_err(store_error)?;
         Ok((changed==1).then(||WakeArmTicket {attempt:r.attempt.clone(),revision:next,owner_boot:r.daemon_boot,nonce}))
     })
 }
@@ -263,11 +299,13 @@ pub(super) fn record_result(
     let mut writer = store.writer(budget)?;
     store.context.execute_budgeted_decision(&mut writer,budget,|tx| {
         let row=load(tx,&store.instance,&ticket.attempt)?;
-        Ok(row.filter(|r|r.phase==WakeIntentPhase::Armed && r.revision==ticket.revision && r.owner_boot==ticket.owner_boot && r.arm_nonce==Some(ticket.nonce) && store.settings.daemon_boot==Some(ticket.owner_boot)))
+        Ok(row.filter(|r|r.phase==WakeIntentPhase::Armed && r.owner_boot==ticket.owner_boot && r.arm_nonce==Some(ticket.nonce) && store.settings.daemon_boot==Some(ticket.owner_boot)))
     },|tx,at,row| {
         let Some(row)=row else {return Ok(false)};
         if let Some(id)=id { insert_ids(tx,&row,std::slice::from_ref(id))?; }
-        tx.execute("UPDATE wake_intents SET phase=?3,revision=revision+1,cleanup_quarantined=?4,diagnostic=?5,updated_at=?6 WHERE instance_id=?1 AND attempt=?2",params![store.instance,ticket.attempt.as_str(),phase,!result.cleanup_confirmed,result.diagnostic,at.utc.0]).map_err(store_error)?;
+        // Armed forbids helper replacement; a stale negative cannot undo positive
+        // quiescence already committed for this submission helper.
+        tx.execute("UPDATE wake_intents SET phase=?3,revision=revision+1,cleanup_quarantined=cleanup_quarantined AND ?4,diagnostic=?5,updated_at=?6 WHERE instance_id=?1 AND attempt=?2",params![store.instance,ticket.attempt.as_str(),phase,!result.cleanup_confirmed,result.diagnostic,at.utc.0]).map_err(store_error)?;
         Ok(true)
     })
 }
@@ -303,7 +341,7 @@ pub(super) fn record_ids(
         return Err(invalid("owned queue id bound exceeded"));
     }
     let mut writer = store.writer(budget)?;
-    store.context.execute_budgeted_decision(&mut writer,budget,|tx|Ok(load(tx,&store.instance,attempt)?.filter(|r|r.revision==revision && matches!(r.phase,WakeIntentPhase::Armed|WakeIntentPhase::Accepted|WakeIntentPhase::Unknown))),|tx,at,row| {
+    store.context.execute_budgeted_decision(&mut writer,budget,|tx|Ok(load(tx,&store.instance,attempt)?.filter(|r|r.revision==revision && (matches!(r.phase,WakeIntentPhase::Armed|WakeIntentPhase::Accepted|WakeIntentPhase::Unknown) || (r.logical!=crate::ports::WakeIntentLogical::Active && r.phase!=WakeIntentPhase::Armed && r.helper.as_ref().is_some_and(|h|h.purpose==crate::harness::wake::WakeHelperPurpose::List))))),|tx,at,row| {
         let Some(row)=row else {return Ok(false)};
         insert_ids(tx,&row,ids)?;
         tx.execute("UPDATE wake_intents SET revision=revision+1,ids_complete=?3,updated_at=?4 WHERE instance_id=?1 AND attempt=?2",params![store.instance,attempt.as_str(),complete,at.utc.0]).map_err(store_error)?;
@@ -322,11 +360,31 @@ pub(super) fn refuse_prepared(
         return Err(invalid("wake intent diagnostic too large"));
     }
     let mut writer = store.writer(budget)?;
-    store.context.execute_budgeted_decision(&mut writer,budget,|tx|Ok(load(tx,&store.instance,attempt)?.is_some_and(|r|r.phase==WakeIntentPhase::Prepared && !r.cleanup_quarantined && r.revision==revision && store.settings.daemon_boot==Some(r.owner_boot))),|tx,at,valid| {
-        if !valid {return Ok(false)}
-        tx.execute("UPDATE wake_intents SET phase='no_effect',revision=revision+1,cleanup_quarantined=?3,diagnostic=?4,updated_at=?5 WHERE instance_id=?1 AND attempt=?2",params![store.instance,attempt.as_str(),!cleanup_confirmed,diagnostic,at.utc.0]).map_err(store_error)?;
-        Ok(true)
-    })
+    store.context.execute_budgeted_decision(
+        &mut writer,
+        budget,
+        |tx| {
+            Ok(load(tx, &store.instance, attempt)?.filter(|row| {
+                row.phase == WakeIntentPhase::Prepared
+                    && row.revision == revision
+                    && store.settings.daemon_boot == Some(row.owner_boot)
+            }))
+        },
+        |tx, at, row| {
+            let Some(row) = row else {
+                return Ok(false);
+            };
+            // Exact-helper positive evidence survives delayed refusal metadata.
+            // Helperless legacy uncertainty has no such per-operation evidence.
+            let quarantine = !cleanup_confirmed
+                && (row.helper.is_none() || row.cleanup_quarantined);
+            tx.execute(
+                "UPDATE wake_intents SET phase='no_effect',revision=revision+1,cleanup_quarantined=?3,diagnostic=?4,updated_at=?5 WHERE instance_id=?1 AND attempt=?2",
+                params![store.instance, attempt.as_str(), quarantine, diagnostic, at.utc.0],
+            ).map_err(store_error)?;
+            Ok(true)
+        },
+    )
 }
 pub(super) fn recover(
     store: &SqliteStore,
@@ -336,10 +394,23 @@ pub(super) fn recover(
     budget: &CallBudget,
 ) -> Result<bool, ApiError> {
     let mut writer = store.writer(budget)?;
-    store.context.execute_budgeted_decision(&mut writer,budget,|tx|Ok(load(tx,&store.instance,attempt)?.filter(|r|!r.cleanup_quarantined && r.revision==revision && r.owner_boot==prior_boot && store.settings.daemon_boot.is_some_and(|b|b!=prior_boot) && matches!(r.phase,WakeIntentPhase::Prepared|WakeIntentPhase::Armed))),|tx,at,row| {
-        let Some(row)=row else {return Ok(false)};
-        let next=if row.phase==WakeIntentPhase::Armed {"unknown"} else {"prepared"};
-        tx.execute("UPDATE wake_intents SET phase=?3,revision=revision+1,cleanup_quarantined=1,diagnostic='prior helper cleanup unconfirmed',updated_at=?4 WHERE instance_id=?1 AND attempt=?2",params![store.instance,attempt.as_str(),next,at.utc.0]).map_err(store_error)?;
+    store.context.execute_budgeted_decision(&mut writer,budget,|tx| {
+        if !store.settings.daemon_boot.is_some_and(|b|b!=prior_boot){return Ok(None)}
+        Ok(load(tx,&store.instance,attempt)?.filter(|r|r.revision==revision && (
+            (r.owner_boot==prior_boot && matches!(r.phase,WakeIntentPhase::Prepared|WakeIntentPhase::Armed)) ||
+            (r.logical!=crate::ports::WakeIntentLogical::Active && r.cleanup_quarantined && !r.native_no_add_exception && r.helper.as_ref().is_some_and(|h|h.owner_boot==prior_boot && h.witness.is_none() && matches!(h.purpose,crate::harness::wake::WakeHelperPurpose::List|crate::harness::wake::WakeHelperPurpose::Delete)))
+        )))
+    },|tx,at,row| {
+        let Some(row)=row else{return Ok(false)};
+        if matches!(row.phase,WakeIntentPhase::Prepared|WakeIntentPhase::Armed) && row.owner_boot==prior_boot {
+            let unarmed=row.phase==WakeIntentPhase::Prepared && row.arm_nonce.is_none();
+            let uncertain=!unarmed || row.helper.is_some();
+            tx.execute("UPDATE wake_intents SET phase=?3,revision=revision+1,cleanup_quarantined=?6,native_no_add_exception=?4,diagnostic='prior helper recovery',updated_at=?5 WHERE instance_id=?1 AND attempt=?2",params![store.instance,attempt.as_str(),if unarmed {"no_effect"} else {"unknown"},unarmed && uncertain,at.utc.0,uncertain]).map_err(store_error)?;
+        } else {
+            // The cleanup invocation never initialized. Its resource uncertainty is not
+            // a new enqueue; keep original effect history and retirement unchanged.
+            tx.execute("UPDATE wake_intents SET native_no_add_exception=1,revision=revision+1,diagnostic='uninitialized prior cleanup helper',updated_at=?3 WHERE instance_id=?1 AND attempt=?2",params![store.instance,attempt.as_str(),at.utc.0]).map_err(store_error)?;
+        }
         Ok(true)
     })
 }
@@ -368,8 +439,9 @@ pub(super) fn page(
     } else {
         ""
     };
+    let selection = if seat.is_some() { UNRESOLVED } else { "1" };
     let sql = format!(
-        "SELECT ordinal,attempt,origin_seat,phase,revision,cleanup_quarantined FROM wake_intents WHERE instance_id=?1 AND ordinal>?2 AND {UNRESOLVED}{filter} ORDER BY ordinal LIMIT ?3"
+        "SELECT ordinal,attempt,origin_seat,phase,revision,cleanup_quarantined FROM wake_intents WHERE instance_id=?1 AND ordinal>?2 AND {selection}{filter} ORDER BY ordinal LIMIT ?3"
     );
     let mut stmt = db.prepare(&sql).map_err(store_error)?;
     let mut rows = if let Some(seat) = seat {
@@ -406,3 +478,9 @@ pub(super) fn page(
     };
     Ok(WakeIntentPage { items, next_after })
 }
+
+mod activation;
+pub(super) use activation::*;
+
+mod selection;
+pub(super) use selection::queue_wake_selection;

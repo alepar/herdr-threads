@@ -37,6 +37,7 @@ fn current_scope_qualifies_but_boot_pid_and_inode_changes_refuse() {
         cancellation: Default::default(),
     };
     let context = WakeControlContext {
+        helper_observer: None,
         clock: &clock,
         budget: &budget,
         processes: &processes,

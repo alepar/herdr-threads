@@ -28,12 +28,44 @@ pub struct WakeControlTarget {
     /// Adapter-owned file identities only; bounded before decoding. No argv/env dump.
     pub descriptor: Vec<u8>,
 }
+/// The bounded control invocation represented by a durable helper slot.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum WakeHelperPurpose {
+    Add,
+    List,
+    Delete,
+}
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct WakeHelperWitness {
+    pub process: LivenessFingerprint,
+    pub kernel_boot: String,
+    pub pgid: u32,
+}
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum WakeHelperQuiescence {
+    BootChanged,
+    LeaderEndedAndGroupAbsent,
+}
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum WakeHelperPresence {
+    Live,
+    Quiescent(WakeHelperQuiescence),
+    Unknown,
+}
+/// Core commits the exact witness before the adapter initializes its child.
+pub trait WakeHelperObserver: Send + Sync {
+    fn started(&self, witness: &WakeHelperWitness) -> Result<(), ApiError>;
+    fn completed(&self, cleanup_confirmed: bool) -> Result<(), ApiError>;
+}
 pub struct WakeControlContext<'a> {
     pub clock: &'a dyn Clock,
     pub budget: &'a CallBudget,
     pub processes: &'a dyn ProcessInfo,
     /// Owned adapter state directory, never the receiver's configuration home.
     pub state_dir: &'a Path,
+    pub helper_observer: Option<&'a dyn WakeHelperObserver>,
 }
 /// Failure evidence is separate from uncertainty about helper cleanup.
 #[derive(Debug)]
@@ -87,6 +119,25 @@ impl WakeReplayScope {
     }
 }
 pub trait WakeControl: Send + Sync {
+    /// Pure cohort derivation before physical capture, granting no wake authority.
+    fn replay_scope_for_session(
+        &self,
+        _session: &NativeSessionId,
+    ) -> Result<WakeReplayScope, ApiError> {
+        Err(ApiError::new(
+            crate::protocol::results::ErrorCode::InvalidRequest,
+            "wake replay scope unavailable",
+        ))
+    }
+
+    /// Observe saved ownership without signaling or inferring absence from unreadability.
+    fn probe_helper(
+        &self,
+        _witness: &WakeHelperWitness,
+        _context: &WakeControlContext<'_>,
+    ) -> Result<WakeHelperPresence, ApiError> {
+        Ok(WakeHelperPresence::Unknown)
+    }
     /// Pure stable suppression key; performs no I/O and grants no wake authority.
     fn replay_scope(&self, _target: &WakeControlTarget) -> Result<WakeReplayScope, ApiError> {
         Err(ApiError::new(

@@ -15,7 +15,7 @@ use rusqlite::{Connection, OptionalExtension, params};
 fn corrupt() -> ApiError {
     api_error(ErrorCode::StoreCorrupt, "invalid native turn state")
 }
-fn load(
+pub(super) fn load(
     db: &Connection,
     instance: &str,
     binding: &BindingId,
@@ -138,6 +138,9 @@ pub(super) fn record(
         let phase=if request.edge==TurnEdge::Busy {"started"} else if matched {"ended"} else {"end_first"};
         let scope=serde_json::to_vec(&scope).map_err(|_|corrupt())?;
         tx.execute("INSERT INTO native_turn_state(binding_id,instance_id,scope_json,turn_id,phase,observation_ordinal) VALUES(?1,?2,?3,?4,?5,?6) ON CONFLICT(binding_id) DO UPDATE SET scope_json=excluded.scope_json,turn_id=excluded.turn_id,phase=excluded.phase,observation_ordinal=excluded.observation_ordinal",params![canonical.binding.as_str(),store.instance,scope,id.as_str(),phase,next]).map_err(store_error)?;
+        if request.edge==TurnEdge::Busy {
+            tx.execute("UPDATE wake_intents SET logical_status='fulfilled',fulfillment_turn=?3,fulfillment_ordinal=?4,revision=revision+1 WHERE instance_id=?1 AND target_json=?2 AND logical_status='active' AND phase IN ('armed','accepted','unknown') AND arm_native_id!=?3 AND arm_native_ordinal<?4",params![store.instance,scope,id.as_str(),next]).map_err(store_error)?;
+        }
         Ok(update(Some(request.edge),true))
     })
 }

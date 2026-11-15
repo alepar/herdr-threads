@@ -438,6 +438,21 @@ impl NamedHost {
         Ok((hint.clone(), facts.width))
     }
 
+    fn check_wake_submit_budget(&self, context: &HostCallContext) -> Result<(), ApiError> {
+        let left = context
+            .budget
+            .deadline
+            .0
+            .saturating_sub(self.clock.monotonic_now().0);
+        if left < MIN_PROMPT_MILLIS {
+            return Err(ApiError::new(
+                ErrorCode::DeadlineExceeded,
+                "insufficient wake prompt budget",
+            ));
+        }
+        Ok(())
+    }
+
     /// The wake: gate, ask `still_owed`, type the text literally, press Enter.
     fn type_wake(
         &self,
@@ -453,17 +468,7 @@ impl NamedHost {
         {
             return Ok(None);
         }
-        let left = context
-            .budget
-            .deadline
-            .0
-            .saturating_sub(self.clock.monotonic_now().0);
-        if left < MIN_PROMPT_MILLIS {
-            return Err(ApiError::new(
-                ErrorCode::DeadlineExceeded,
-                "insufficient wake prompt budget",
-            ));
-        }
+        self.check_wake_submit_budget(context)?;
         if !tmux::type_text(&hint, text) {
             // Possibly typed: the composer read-back decides what to clear.
             return Ok(Some(PromptOutcome::OutcomeUnknown));
@@ -747,6 +752,16 @@ impl HostPort for NamedHost {
             bound_harness: None,
         })
     }
+    fn check_idle_wake(
+        &self,
+        target: &SafeWakeTarget,
+        context: &HostCallContext,
+    ) -> Result<(), ApiError> {
+        self.wake_gate(target, context, "wake prompt")?;
+        self.note_wake_block(&target.seat, None);
+        self.check_wake_submit_budget(context)
+    }
+
     fn submit_prompt(
         &self,
         target: &SafeWakeTarget,

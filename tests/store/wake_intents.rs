@@ -1,12 +1,13 @@
 use herdr_threads::{
     ports::StorePort,
-    protocol::{
-        pagination::PageRequest,
-        time::{CallBudget, Clock, UtcMillis},
-    },
-    store::{SqliteStore, StoreSettings, connection::StoreContext},
+    protocol::pagination::PageRequest,
+    store::{SqliteStore, connection::StoreContext},
 };
 use std::sync::Arc;
+
+#[path = "../fixtures/wake_intent.rs"]
+mod fixture_support;
+pub(crate) use fixture_support::{INSTANCE, IntentClock, budget, fixture, native_report, open};
 
 #[test]
 fn wake_intent_schema_is_independent_of_live_origin_rows() {
@@ -33,113 +34,7 @@ fn wake_intent_schema_is_independent_of_live_origin_rows() {
     );
 }
 
-const INSTANCE: &str = "34750f98bd59fcfc946da45aaabe933b";
-const SESSION: &str = "00000000-0000-0000-0000-000000000001";
-struct IntentClock;
-impl Clock for IntentClock {
-    fn utc_now(&self) -> UtcMillis {
-        UtcMillis(100)
-    }
-    fn monotonic_now(&self) -> herdr_threads::protocol::time::MonoInstant {
-        herdr_threads::protocol::time::MonoInstant(1000)
-    }
-}
-fn budget() -> CallBudget {
-    CallBudget {
-        deadline: herdr_threads::protocol::time::MonoInstant(10000),
-        cancellation: Default::default(),
-    }
-}
-fn open(path: std::path::PathBuf, boot: uuid::Uuid) -> SqliteStore {
-    let context = StoreContext::new(path, Arc::new(IntentClock)).with_test_host();
-    context.require_commit_durability();
-    SqliteStore::new(
-        context,
-        INSTANCE,
-        StoreSettings {
-            daemon_boot: Some(boot),
-            ..Default::default()
-        },
-    )
-    .unwrap()
-}
-fn fixture() -> (
-    SqliteStore,
-    std::path::PathBuf,
-    herdr_threads::ports::WakeReservation,
-    herdr_threads::ports::WakeIntentPreparation,
-) {
-    use herdr_threads::{
-        harness::{
-            registry::builtins,
-            wake::{WakeControlTarget, WakeReplayScope, WakeScope},
-        },
-        protocol::{
-            authority::LivenessFingerprint,
-            ids::{BindingId, ExecutionId, NativeSessionId},
-        },
-    };
-    let path = herdr_threads::test_support::scratch::temp_path(format!(
-        "ht-wake-intents-{}.db",
-        uuid::Uuid::new_v4()
-    ));
-    let store = open(path.clone(), uuid::Uuid::new_v4());
-    let db = store.context().open_writer().unwrap();
-    assert_eq!(
-        db.query_row("PRAGMA synchronous", [], |r| r.get::<_, i64>(0))
-            .unwrap(),
-        2
-    );
-    db.execute_batch("UPDATE herdr_hosts SET host_boot='host',host_epoch=1; UPDATE local_node SET decision_seq=1;
-        INSERT INTO seats(id,instance_id,state,role,target_id,generation,target_generation,created_at,home_node,is_local,host_id) VALUES ('s','34750f98bd59fcfc946da45aaabe933b','resolved','native','pane',1,1,0,(SELECT id FROM local_node),1,(SELECT min(host_id) FROM herdr_hosts));
-        INSERT INTO observed_targets(host_id,target_id,host_boot,epoch,generation,observed_at,provenance,terminal_id,incarnation,incarnation_source_kind,connection_epoch) VALUES ((SELECT min(host_id) FROM herdr_hosts),'pane','host',1,1,0,'fresh','term-pane','inc','native_current_target',1);
-        INSERT INTO threads(id,instance_id,topic,goal,created_at,updated_at,journaled) VALUES ('t','34750f98bd59fcfc946da45aaabe933b','topic','goal',0,0,0);
-        INSERT INTO memberships(thread_id,seat_id,state) VALUES ('t','s','invited');
-        INSERT INTO invitations(id,thread_id,seat_id,episode,state,created_at,created_decision_seq,deadline_at,frozen_duration_ms,origin_node) VALUES ('inv','t','s',1,'pending',0,1,100,100,(SELECT id FROM local_node));
-    ").unwrap();
-    let kernel: String = db
-        .query_row("SELECT boot FROM node_kernel_boot WHERE id=1", [], |r| {
-            r.get(0)
-        })
-        .unwrap();
-    db.execute("INSERT INTO occupant_bindings(seat_id,generation,target_generation,target_id,host_boot,host_epoch,harness,native_session,execution_id,observation_provenance,observed_at,registered_at,terminal_id,incarnation,binding_id,liveness_pid,liveness_start,liveness_boot) VALUES ('s',1,1,'pane','host',0,'codex',?1,'execution','cooperative_top_level',0,0,'term-pane','inc','binding',10,1,?2)", rusqlite::params![SESSION,kernel]).unwrap();
-    drop(db);
-    let candidate = StorePort::wake_candidates(
-        &store,
-        herdr_threads::test_support::test_host_id(),
-        PageRequest::default(),
-        &budget(),
-    )
-    .unwrap()
-    .items
-    .remove(0);
-    let reservation = StorePort::reserve_wake(
-        &store,
-        herdr_threads::test_support::test_host_id(),
-        &candidate,
-        &budget(),
-    )
-    .unwrap()
-    .unwrap();
-    let preparation = herdr_threads::ports::WakeIntentPreparation {
-        adapter: builtins().agent("codex").unwrap(),
-        replay_scope: WakeReplayScope::parse(format!("session:{SESSION}")).unwrap(),
-        target: WakeControlTarget {
-            scope: WakeScope {
-                binding: BindingId::new("binding"),
-                native_session: NativeSessionId::new(SESSION),
-                execution: ExecutionId::new("execution"),
-                generation: 1,
-                process: LivenessFingerprint { pid: 10, start: 1 },
-                kernel_boot: kernel,
-            },
-            descriptor: b"frozen-descriptor".to_vec(),
-        },
-        correlation: "frozen-correlation".into(),
-    };
-    (store, path, reservation, preparation)
-}
-fn prepare(
+pub(crate) fn prepare_raw(
     store: &SqliteStore,
     r: &herdr_threads::ports::WakeReservation,
     p: &herdr_threads::ports::WakeIntentPreparation,
@@ -149,6 +44,41 @@ fn prepare(
         other => panic!("expected prepared intent, got {other:?}"),
     }
 }
+pub(crate) fn prepare(
+    store: &SqliteStore,
+    r: &herdr_threads::ports::WakeReservation,
+    p: &herdr_threads::ports::WakeIntentPreparation,
+) -> herdr_threads::ports::WakeIntentSnapshot {
+    use herdr_threads::harness::{adapter::TurnEdge, wake::WakeHelperWitness};
+    prepare_raw(store, r, p);
+    for edge in [TurnEdge::Busy, TurnEdge::Idle] {
+        StorePort::record_native_turn(
+            store,
+            &native_report(store, r, p, "qualified-baseline", edge),
+            &budget(),
+        )
+        .unwrap();
+    }
+    let op = activation_helper(store, r, p);
+    assert!(
+        StorePort::record_wake_helper_started(
+            store,
+            &r.attempt,
+            op.id,
+            &WakeHelperWitness {
+                process: p.target.scope.process,
+                kernel_boot: p.target.scope.kernel_boot.clone(),
+                pgid: p.target.scope.process.pid
+            },
+            &budget()
+        )
+        .unwrap()
+    );
+    StorePort::wake_intent(store, &r.attempt, &budget())
+        .unwrap()
+        .unwrap()
+}
+
 #[test]
 fn committed_arm_is_never_authorized_twice_even_after_reopen() {
     let (store, path, r, p) = fixture();
@@ -330,7 +260,7 @@ fn only_one_connection_wins_arm() {
     assert_eq!(won, 1);
 }
 
-fn reserve_again(store: &SqliteStore) -> herdr_threads::ports::WakeReservation {
+pub(crate) fn reserve_again(store: &SqliteStore) -> herdr_threads::ports::WakeReservation {
     store
         .context()
         .open_writer()
@@ -422,7 +352,7 @@ fn recovered_prepared_means_no_add_authority_but_unknown_helper_cleanup() {
     let row = StorePort::wake_intent(&store, &r.attempt, &budget())
         .unwrap()
         .unwrap();
-    assert_eq!(row.phase, WakeIntentPhase::Prepared);
+    assert_eq!(row.phase, WakeIntentPhase::NoEffect);
     assert!(row.cleanup_quarantined);
     assert!(
         !StorePort::recover_wake_intent(&store, &r.attempt, row.revision, r.daemon_boot, &budget())
@@ -648,7 +578,10 @@ fn accepted_id_and_cleanup_result_roll_back_together_on_sql_failure() {
         .unwrap();
     assert_eq!(row.phase, herdr_threads::ports::WakeIntentPhase::Armed);
     assert!(row.owned_ids.is_empty());
-    assert!(!row.cleanup_quarantined);
+    assert!(
+        row.cleanup_quarantined,
+        "active helper quarantine survives result rollback"
+    );
     assert_eq!(row.revision, ticket.revision);
 }
 #[test]
@@ -841,37 +774,6 @@ fn missing_canonical_scope_refuses_first_preparation_without_a_row() {
     }
 }
 
-fn native_report(
-    store: &SqliteStore,
-    r: &herdr_threads::ports::WakeReservation,
-    p: &herdr_threads::ports::WakeIntentPreparation,
-    id: &str,
-    edge: herdr_threads::harness::adapter::TurnEdge,
-) -> herdr_threads::protocol::commands::TurnStateReport {
-    use herdr_threads::protocol::{
-        authority::{CallerClaim, CallerRole, Harness},
-        ids::{HostLocator, NativeTurnId},
-    };
-    let host:String=store.context().open_writer().unwrap().query_row("SELECT endpoint FROM herdr_hosts WHERE host_id=(SELECT host_id FROM seats WHERE id='s')",[],|r|r.get(0)).unwrap();
-    herdr_threads::protocol::commands::TurnStateReport {
-        claim: CallerClaim {
-            instance: INSTANCE.into(),
-            host: HostLocator::parse(host).unwrap(),
-            seat: r.seat.clone(),
-            binding_generation: p.target.scope.generation,
-            role: CallerRole::TopLevel,
-            harness: Harness::Codex,
-            native_session: p.target.scope.native_session.clone(),
-            execution: p.target.scope.execution.clone(),
-            target: r.target.clone(),
-            agent_id: None,
-            liveness: Some(p.target.scope.process),
-        },
-        edge,
-        tmux_hint: None,
-        native_turn_id: Some(NativeTurnId::new(id)),
-    }
-}
 #[test]
 fn native_turn_current_retries_end_first_and_mismatched_end_are_idempotent() {
     use herdr_threads::{harness::adapter::TurnEdge, ports::NativeTurnPhase};
@@ -1534,4 +1436,142 @@ fn native_turn_stop_continuation_recovers_missed_start_and_legacy_end_still_work
         .handle(Command::TurnState(legacy), peer(), &budget())
         .unwrap();
     assert_eq!(service.turn_state().state(&key), TurnState::Idle);
+}
+
+fn activation_helper(
+    store: &SqliteStore,
+    r: &herdr_threads::ports::WakeReservation,
+    p: &herdr_threads::ports::WakeIntentPreparation,
+) -> herdr_threads::ports::WakeHelperOperation {
+    use herdr_threads::harness::wake::WakeHelperPurpose;
+    let row = StorePort::wake_intent(store, &r.attempt, &budget())
+        .unwrap()
+        .unwrap();
+    let op = herdr_threads::ports::WakeHelperOperation {
+        id: uuid::Uuid::new_v4(),
+        purpose: WakeHelperPurpose::Add,
+        subject: None,
+        owner_boot: r.daemon_boot,
+        kernel_boot: p.target.scope.kernel_boot.clone(),
+        witness: None,
+    };
+    assert!(
+        StorePort::begin_wake_helper(store, &r.attempt, row.revision, &op, &budget()).unwrap(),
+        "commit SpawnPending before any helper"
+    );
+    op
+}
+#[test]
+fn activation_arm_requires_witness_and_late_accepted_result_survives_fulfillment() {
+    use herdr_threads::{
+        harness::{adapter::TurnEdge, wake::WakeHelperWitness},
+        ports::{WakeIntentLogical, WakeIntentOutcome, WakeIntentResult},
+    };
+    let (store, _path, r, p) = fixture();
+    let row = prepare_raw(&store, &r, &p);
+    let op = activation_helper(&store, &r, &p);
+    assert!(
+        StorePort::arm_wake_intent(&store, &r, row.revision, uuid::Uuid::new_v4(), &budget())
+            .unwrap()
+            .is_none()
+    );
+    let witness = WakeHelperWitness {
+        process: p.target.scope.process,
+        kernel_boot: p.target.scope.kernel_boot.clone(),
+        pgid: p.target.scope.process.pid,
+    };
+    assert!(
+        StorePort::record_wake_helper_started(&store, &r.attempt, op.id, &witness, &budget())
+            .unwrap()
+    );
+    for edge in [TurnEdge::Busy, TurnEdge::Idle] {
+        StorePort::record_native_turn(
+            &store,
+            &native_report(&store, &r, &p, "baseline", edge),
+            &budget(),
+        )
+        .unwrap();
+    }
+    let row = StorePort::wake_intent(&store, &r.attempt, &budget())
+        .unwrap()
+        .unwrap();
+    let ticket =
+        StorePort::arm_wake_intent(&store, &r, row.revision, uuid::Uuid::new_v4(), &budget())
+            .unwrap()
+            .unwrap();
+    assert_eq!(
+        StorePort::wake_intent(&store, &r.attempt, &budget())
+            .unwrap()
+            .unwrap()
+            .arm_baseline
+            .unwrap()
+            .id
+            .as_str(),
+        "baseline"
+    );
+    StorePort::record_native_turn(
+        &store,
+        &native_report(&store, &r, &p, "new-turn", TurnEdge::Busy),
+        &budget(),
+    )
+    .unwrap();
+    assert!(matches!(
+        StorePort::wake_intent(&store, &r.attempt, &budget())
+            .unwrap()
+            .unwrap()
+            .logical,
+        WakeIntentLogical::Fulfilled { .. }
+    ));
+    assert!(
+        StorePort::record_wake_helper_completion(&store, &r.attempt, op.id, true, &budget())
+            .unwrap()
+    );
+    assert!(
+        StorePort::record_wake_intent_result(
+            &store,
+            &ticket,
+            &WakeIntentResult {
+                outcome: WakeIntentOutcome::Accepted {
+                    id: "accepted-after-start".into()
+                },
+                cleanup_confirmed: true,
+                diagnostic: String::new()
+            },
+            &budget()
+        )
+        .unwrap()
+    );
+    let row = StorePort::wake_intent(&store, &r.attempt, &budget())
+        .unwrap()
+        .unwrap();
+    assert_eq!(row.owned_ids, vec!["accepted-after-start"]);
+    assert!(matches!(row.logical, WakeIntentLogical::Fulfilled { .. }));
+}
+#[test]
+fn activation_recovered_spawn_pending_is_no_effect_with_native_exception_only() {
+    use herdr_threads::ports::{WakeIntentLogical, WakeIntentPhase};
+    let (store, path, r, p) = fixture();
+    prepare_raw(&store, &r, &p);
+    activation_helper(&store, &r, &p);
+    drop(store);
+    let store = open(path, uuid::Uuid::new_v4());
+    let row = StorePort::wake_intent(&store, &r.attempt, &budget())
+        .unwrap()
+        .unwrap();
+    assert!(
+        StorePort::recover_wake_intent(&store, &r.attempt, row.revision, r.daemon_boot, &budget())
+            .unwrap()
+    );
+    let row = StorePort::wake_intent(&store, &r.attempt, &budget())
+        .unwrap()
+        .unwrap();
+    assert_eq!(row.phase, WakeIntentPhase::NoEffect);
+    assert_eq!(row.logical, WakeIntentLogical::Active);
+    assert!(row.cleanup_quarantined);
+    assert!(row.native_no_add_exception);
+    let blockers =
+        StorePort::wake_intent_blockers(&store, &r.seat, p.adapter, &p.replay_scope, &budget())
+            .unwrap();
+    assert!(blockers.programmatic);
+    assert!(!blockers.native);
 }

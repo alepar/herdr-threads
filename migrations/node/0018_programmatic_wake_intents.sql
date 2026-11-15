@@ -60,3 +60,19 @@ CREATE TRIGGER native_turn_binding_end AFTER UPDATE OF ended_at ON occupant_bind
  WHEN NEW.ended_at IS NOT NULL BEGIN
  DELETE FROM native_turn_state WHERE binding_id=NEW.binding_id;
 END;
+
+ALTER TABLE wake_intents ADD COLUMN logical_status TEXT NOT NULL DEFAULT 'active' CHECK(logical_status IN ('active','fulfilled','scope_ended'));
+ALTER TABLE wake_intents ADD COLUMN fulfillment_turn TEXT;
+ALTER TABLE wake_intents ADD COLUMN fulfillment_ordinal INTEGER;
+ALTER TABLE wake_intents ADD COLUMN arm_native_id TEXT;
+ALTER TABLE wake_intents ADD COLUMN arm_native_ordinal INTEGER;
+ALTER TABLE wake_intents ADD COLUMN helper_json BLOB CHECK(helper_json IS NULL OR length(helper_json)<=2048);
+ALTER TABLE wake_intents ADD COLUMN cleanup_list_attempted INTEGER NOT NULL DEFAULT 0 CHECK(cleanup_list_attempted IN (0,1));
+ALTER TABLE wake_intents ADD COLUMN native_no_add_exception INTEGER NOT NULL DEFAULT 0 CHECK(native_no_add_exception IN (0,1));
+ALTER TABLE wake_intent_ids ADD COLUMN cleanup_attempted INTEGER NOT NULL DEFAULT 0 CHECK(cleanup_attempted IN (0,1));
+DROP INDEX wake_intents_unresolved_cohort;
+DROP INDEX wake_intents_origin_seat;
+CREATE UNIQUE INDEX wake_intents_unresolved_cohort ON wake_intents(instance_id,adapter,replay_scope)
+ WHERE (logical_status='active' AND phase!='no_effect') OR cleanup_quarantined=1;
+CREATE INDEX wake_intents_origin_seat ON wake_intents(instance_id,origin_seat,ordinal)
+ WHERE (logical_status='active' AND phase!='no_effect') OR cleanup_quarantined=1;

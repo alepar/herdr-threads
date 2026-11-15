@@ -1882,3 +1882,90 @@ fn a_budget_under_the_floor_refuses_before_any_read() {
     assert_eq!(rig.host.wake_block(&rig.seat), None);
     assert_eq!(rig.typed_after_marker(), "Z\n");
 }
+
+// Queue admission must retain every native gate and never send or clear any keys.
+#[test]
+fn check_idle_wake_named_reads_only_and_aggregates_binding_states() {
+    let Some(rig) = keylog_rig("check_idle_wake_named", "claude", IDLE, "manual mode on") else {
+        return;
+    };
+    rig.bindings(&[Some(TurnEdge::Idle)]);
+    let (safe, context) = rig.target_and_context();
+    rig.host.check_idle_wake(&safe, &context).unwrap();
+    for states in [
+        vec![Some(TurnEdge::Idle), Some(TurnEdge::Busy)],
+        vec![Some(TurnEdge::Idle), None],
+    ] {
+        rig.bindings(&states);
+        assert_eq!(
+            rig.host.check_idle_wake(&safe, &context).unwrap_err().code,
+            ErrorCode::TargetUnsafe
+        );
+    }
+    assert_eq!(rig.keys_after_marker(), ["5a"]);
+}
+
+#[test]
+fn check_idle_wake_named_refuses_draft_modal_and_unknown_screen() {
+    for (case, screen) in [
+        (
+            "check_idle_wake_draft",
+            IDLE.replacen("\n❯\n", "\n❯ draft\n", 1),
+        ),
+        ("check_idle_wake_modal", CLAUDE_APPROVAL.to_owned()),
+        ("check_idle_wake_unknown", "unknown layout".to_owned()),
+    ] {
+        let Some(rig) = keylog_rig(case, "claude", &screen, "") else {
+            return;
+        };
+        rig.bindings(&[Some(TurnEdge::Idle)]);
+        let (safe, context) = rig.target_and_context();
+        assert_eq!(
+            rig.host.check_idle_wake(&safe, &context).unwrap_err().code,
+            ErrorCode::TargetUnsafe
+        );
+        assert_eq!(rig.keys_after_marker(), ["5a"], "{case}");
+    }
+}
+
+#[test]
+fn check_idle_wake_named_keeps_focus_dwell_and_budget_guards() {
+    let Some(rig) = keylog_rig("check_idle_wake_focus", "claude", IDLE, "manual mode on") else {
+        return;
+    };
+    let _client = focus(&rig);
+    rig.bindings(&[Some(TurnEdge::Idle)]);
+    let (safe, context) = rig.target_and_context();
+    for at in [0, 59_999] {
+        rig.clock.set(at);
+        assert_eq!(
+            rig.host.check_idle_wake(&safe, &context).unwrap_err().code,
+            ErrorCode::TargetUnsafe
+        );
+    }
+    rig.clock.set(60_000);
+    rig.host.check_idle_wake(&safe, &context).unwrap();
+    let mut stale = context.clone();
+    stale.expected_epoch = Some(safe.epoch + 1);
+    assert_eq!(
+        rig.host.check_idle_wake(&safe, &stale).unwrap_err().code,
+        ErrorCode::TargetUnsafe
+    );
+    let cancelled = context.clone();
+    cancelled.budget.cancellation.cancel();
+    assert_eq!(
+        rig.host
+            .check_idle_wake(&safe, &cancelled)
+            .unwrap_err()
+            .code,
+        ErrorCode::Cancelled
+    );
+    let mut expired = context;
+    expired.budget.cancellation = Cancellation::default();
+    expired.budget.deadline = MonoInstant(0);
+    assert_eq!(
+        rig.host.check_idle_wake(&safe, &expired).unwrap_err().code,
+        ErrorCode::DeadlineExceeded
+    );
+    assert_eq!(rig.keys_after_marker(), ["5a"]);
+}

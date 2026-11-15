@@ -47,6 +47,7 @@ impl Fixture {
             budget: &self.budget,
             processes: &HostProcessTable,
             state_dir: &self.root,
+            helper_observer: None,
         }
     }
     fn trace(&self) -> Vec<serde_json::Value> {
@@ -515,4 +516,255 @@ fn pre_effect_and_unknown_protocol_failures_report_confirmed_cleanup() {
         };
         assert!(failure.cleanup_error.is_none(), "{mode}: {failure:?}");
     }
+}
+
+struct Observer {
+    reject_start: bool,
+    reject_completion: bool,
+    witnesses: std::sync::Mutex<Vec<crate::harness::wake::WakeHelperWitness>>,
+    completions: std::sync::Mutex<Vec<bool>>,
+}
+impl crate::harness::wake::WakeHelperObserver for Observer {
+    fn started(&self, witness: &crate::harness::wake::WakeHelperWitness) -> Result<(), ApiError> {
+        self.witnesses.lock().unwrap().push(witness.clone());
+        if self.reject_start {
+            Err(error("witness reply unavailable"))
+        } else {
+            Ok(())
+        }
+    }
+    fn completed(&self, confirmed: bool) -> Result<(), ApiError> {
+        self.completions.lock().unwrap().push(confirmed);
+        if self.reject_completion {
+            Err(error("completion reply unavailable"))
+        } else {
+            Ok(())
+        }
+    }
+}
+impl Observer {
+    fn new(reject_start: bool, reject_completion: bool) -> Self {
+        Self {
+            reject_start,
+            reject_completion,
+            witnesses: Default::default(),
+            completions: Default::default(),
+        }
+    }
+}
+#[test]
+fn rejected_or_lost_witness_reply_stops_before_initialize() {
+    let f = Fixture::new("ok");
+    let observer = Observer::new(true, false);
+    let mut context = f.context();
+    context.helper_observer = Some(&observer);
+    let outcome = enqueue(
+        &f.descriptor,
+        "session",
+        "correlation",
+        &mut || Ok(()),
+        &mut || panic!("uncommitted helper cannot arm"),
+        &context,
+    );
+    assert!(matches!(outcome, WakeAddOutcome::RefusedBeforeEffect(_)));
+    assert!(
+        f.trace().is_empty(),
+        "even initialize requires committed witness"
+    );
+    let witnesses = observer.witnesses.lock().unwrap();
+    assert_eq!(witnesses.len(), 1);
+    assert_eq!(witnesses[0].pgid, witnesses[0].process.pid);
+    assert!(!witnesses[0].kernel_boot.is_empty());
+    assert_eq!(*observer.completions.lock().unwrap(), [true]);
+}
+#[test]
+fn completion_failure_keeps_known_acceptance_and_cleanup_evidence() {
+    let f = Fixture::new("ok");
+    let observer = Observer::new(false, true);
+    let mut context = f.context();
+    context.helper_observer = Some(&observer);
+    let outcome = enqueue(
+        &f.descriptor,
+        "session",
+        "correlation",
+        &mut || Ok(()),
+        &mut || Ok(true),
+        &context,
+    );
+    assert!(
+        matches!(outcome, WakeAddOutcome::Accepted { id, cleanup_error: Some(_) } if id == "queue-owned-1")
+    );
+    assert_eq!(*observer.completions.lock().unwrap(), [true]);
+}
+#[test]
+fn all_started_control_paths_record_completion_once() {
+    for mode in ["ok", "init_error", "lost_reply"] {
+        let f = Fixture::new(mode);
+        let observer = Observer::new(false, false);
+        let mut context = f.context();
+        context.helper_observer = Some(&observer);
+        let _ = enqueue(
+            &f.descriptor,
+            "session",
+            "correlation",
+            &mut || Ok(()),
+            &mut || Ok(true),
+            &context,
+        );
+        assert_eq!(observer.witnesses.lock().unwrap().len(), 1);
+        assert_eq!(*observer.completions.lock().unwrap(), [true]);
+        let _ = list_entries(&f.descriptor, "session", "correlation", &context);
+        let _ = delete_entry(&f.descriptor, "session", "id", &context);
+        assert_eq!(observer.witnesses.lock().unwrap().len(), 3);
+        assert_eq!(*observer.completions.lock().unwrap(), [true, true, true]);
+    }
+}
+
+#[test]
+fn helper_probe_requires_positive_group_absence_after_pid_reuse() {
+    use super::super::helper::{LeaderPresence, classify};
+    use crate::harness::wake::{WakeHelperPresence as P, WakeHelperQuiescence as Q};
+    for (leader, group, expected) in [
+        (LeaderPresence::Same, Some(true), P::Live),
+        (LeaderPresence::Same, None, P::Unknown),
+        (LeaderPresence::Same, Some(false), P::Unknown),
+        (LeaderPresence::Ended, Some(true), P::Unknown),
+        (
+            LeaderPresence::Ended,
+            Some(false),
+            P::Quiescent(Q::LeaderEndedAndGroupAbsent),
+        ),
+        (LeaderPresence::Ended, None, P::Unknown),
+        (LeaderPresence::Unknown, Some(false), P::Unknown),
+    ] {
+        assert_eq!(classify(leader, group), expected);
+    }
+}
+#[test]
+fn helper_probe_boot_change_is_quiescent_but_unreadable_leader_is_unknown() {
+    use crate::harness::wake::{
+        WakeControl, WakeHelperPresence as P, WakeHelperQuiescence as Q, WakeHelperWitness,
+    };
+    use crate::protocol::authority::LivenessFingerprint;
+    let f = Fixture::new("ok");
+    let witness = WakeHelperWitness {
+        process: LivenessFingerprint {
+            pid: std::process::id(),
+            start: u64::MAX,
+        },
+        kernel_boot: "old-kernel".into(),
+        pgid: std::process::id(),
+    };
+    assert_eq!(
+        super::super::CONTROL
+            .probe_helper(&witness, &f.context())
+            .unwrap(),
+        P::Quiescent(Q::BootChanged)
+    );
+    let dir = f.root.join("unreadable-proc");
+    fs::create_dir_all(&dir).unwrap();
+    fs::write(dir.join("stat"), "malformed").unwrap();
+    assert_eq!(
+        super::super::helper::leader_at(&dir, 1),
+        super::super::helper::LeaderPresence::Unknown
+    );
+    fs::remove_dir_all(&dir).unwrap();
+    assert_eq!(
+        super::super::helper::leader_at(&dir, 1),
+        super::super::helper::LeaderPresence::Ended
+    );
+}
+
+#[test]
+fn completion_bookkeeping_failure_preserves_primary_control_class() {
+    for mode in ["init_error", "lost_reply"] {
+        let f = Fixture::new(mode);
+        let observer = Observer::new(false, true);
+        let mut context = f.context();
+        context.helper_observer = Some(&observer);
+        let outcome = enqueue(
+            &f.descriptor,
+            "session",
+            "correlation",
+            &mut || Ok(()),
+            &mut || Ok(true),
+            &context,
+        );
+        let failure = match outcome {
+            WakeAddOutcome::RefusedBeforeEffect(failure) if mode == "init_error" => failure,
+            WakeAddOutcome::Unknown(failure) if mode == "lost_reply" => failure,
+            other => panic!("primary effect classification lost: {other:?}"),
+        };
+        assert!(failure.cleanup_error.is_some());
+        assert_ne!(failure.error.detail, "completion reply unavailable");
+        assert_eq!(*observer.completions.lock().unwrap(), [true]);
+    }
+}
+#[test]
+fn helper_probe_distinguishes_live_reused_pid_and_absent_group() {
+    use crate::harness::wake::{
+        WakeControl, WakeHelperPresence as P, WakeHelperQuiescence as Q, WakeHelperWitness,
+    };
+    use crate::ports::ProcessInfo;
+    use crate::protocol::authority::LivenessFingerprint;
+    let f = Fixture::new("ok");
+    let mut witness = WakeHelperWitness {
+        process: LivenessFingerprint::current_process(),
+        kernel_boot: HostProcessTable.kernel_boot().unwrap(),
+        pgid: unsafe { libc::getpgrp() } as u32,
+    };
+    assert_eq!(
+        super::super::CONTROL
+            .probe_helper(&witness, &f.context())
+            .unwrap(),
+        P::Live
+    );
+    witness.process.start += 1;
+    assert_eq!(
+        super::super::CONTROL
+            .probe_helper(&witness, &f.context())
+            .unwrap(),
+        P::Unknown
+    );
+    witness.process.pid = i32::MAX as u32;
+    witness.pgid = i32::MAX as u32;
+    assert_eq!(
+        super::super::CONTROL
+            .probe_helper(&witness, &f.context())
+            .unwrap(),
+        P::Quiescent(Q::LeaderEndedAndGroupAbsent)
+    );
+    let dir = f.root.join("unknown-owner");
+    fs::create_dir_all(&dir).unwrap();
+    fs::copy(
+        format!("/proc/{}/stat", std::process::id()),
+        dir.join("stat"),
+    )
+    .unwrap();
+    fs::write(dir.join("status"), "Uid: unreadable").unwrap();
+    assert_eq!(
+        super::super::helper::leader_at(&dir, 1),
+        super::super::helper::LeaderPresence::Unknown
+    );
+}
+
+#[test]
+fn replay_cohort_is_derived_without_capture_and_rejects_invalid_session() {
+    use crate::{harness::wake::WakeControl, protocol::ids::NativeSessionId};
+    let session = NativeSessionId::new("00000000-0000-0000-0000-000000000001");
+    let key = super::super::CONTROL
+        .replay_scope_for_session(&session)
+        .unwrap();
+    assert_eq!(key.as_str(), "session:00000000-0000-0000-0000-000000000001");
+    assert_eq!(
+        super::super::CONTROL
+            .replay_scope_for_session(&session)
+            .unwrap(),
+        key
+    );
+    assert!(
+        super::super::CONTROL
+            .replay_scope_for_session(&NativeSessionId::new("invalid"))
+            .is_err()
+    );
 }

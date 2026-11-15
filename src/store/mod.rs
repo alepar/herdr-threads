@@ -3572,6 +3572,77 @@ impl StorePort for SqliteStore {
     ) -> Result<Option<crate::ports::NativeTurnState>, ApiError> {
         native_turn::state(self, binding, budget)
     }
+    fn queue_wake_selection(
+        &self,
+        reservation: &crate::ports::WakeReservation,
+        budget: &CallBudget,
+    ) -> Result<crate::ports::WakeQueueSelection, ApiError> {
+        wake_intents::queue_wake_selection(self, reservation, budget)
+    }
+    fn begin_wake_helper(
+        &self,
+        attempt: &crate::protocol::ids::WakeAttemptId,
+        revision: u64,
+        operation: &crate::ports::WakeHelperOperation,
+        budget: &CallBudget,
+    ) -> Result<bool, ApiError> {
+        wake_intents::begin_wake_helper(self, attempt, revision, operation, budget)
+    }
+    fn record_wake_helper_started(
+        &self,
+        attempt: &crate::protocol::ids::WakeAttemptId,
+        operation: uuid::Uuid,
+        witness: &crate::harness::wake::WakeHelperWitness,
+        budget: &CallBudget,
+    ) -> Result<bool, ApiError> {
+        wake_intents::record_wake_helper_started(self, attempt, operation, witness, budget)
+    }
+    fn record_wake_helper_completion(
+        &self,
+        attempt: &crate::protocol::ids::WakeAttemptId,
+        operation: uuid::Uuid,
+        confirmed: bool,
+        budget: &CallBudget,
+    ) -> Result<bool, ApiError> {
+        wake_intents::record_wake_helper_completion(self, attempt, operation, confirmed, budget)
+    }
+    fn reconcile_wake_helper(
+        &self,
+        attempt: &crate::protocol::ids::WakeAttemptId,
+        operation: uuid::Uuid,
+        presence: &crate::harness::wake::WakeHelperPresence,
+        budget: &CallBudget,
+    ) -> Result<bool, ApiError> {
+        wake_intents::reconcile_wake_helper(self, attempt, operation, presence, budget)
+    }
+    fn retire_wake_intent_if_scope_ended(
+        &self,
+        attempt: &crate::protocol::ids::WakeAttemptId,
+        budget: &CallBudget,
+    ) -> Result<bool, ApiError> {
+        wake_intents::retire_wake_intent_if_scope_ended(self, attempt, budget)
+    }
+    fn wake_intent_blockers(
+        &self,
+        seat: &SeatId,
+        adapter: crate::harness::registry::AgentHarnessId,
+        cohort: &crate::harness::wake::WakeReplayScope,
+        budget: &CallBudget,
+    ) -> Result<crate::ports::WakeIntentBlockers, ApiError> {
+        wake_intents::wake_intent_blockers(self, seat, adapter, cohort, budget)
+    }
+    fn record_wake_cleanup_progress(
+        &self,
+        attempt: &crate::protocol::ids::WakeAttemptId,
+        operation: uuid::Uuid,
+        listed: bool,
+        deleted_id: Option<&str>,
+        budget: &CallBudget,
+    ) -> Result<bool, ApiError> {
+        wake_intents::record_wake_cleanup_progress(
+            self, attempt, operation, listed, deleted_id, budget,
+        )
+    }
     fn prepare_wake_intent(
         &self,
         r: &WakeReservation,

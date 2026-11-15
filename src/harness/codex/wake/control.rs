@@ -138,6 +138,10 @@ impl<'a> Peer<'a> {
             stderr_eof: false,
         };
         let readiness = (|| {
+            if let Some(observer) = context.helper_observer {
+                let witness = super::helper::witness(peer.child.id())?;
+                observer.started(&witness)?;
+            }
             nonblocking(&peer.input)?;
             nonblocking(&peer.output)?;
             nonblocking(&peer.stderr)?;
@@ -157,6 +161,14 @@ impl<'a> Peer<'a> {
             return None;
         }
         self.cleanup_done = true;
+        let cleanup = self.finish_process();
+        let completion = self
+            .context
+            .helper_observer
+            .and_then(|observer| observer.completed(cleanup.is_none()).err());
+        cleanup.or(completion)
+    }
+    fn finish_process(&mut self) -> Option<ApiError> {
         let until = (Instant::now() + Duration::from_millis(250))
             .min(self.deadline + Duration::from_millis(250));
         // This group is exclusively ours. Never block in wait(): quiescence must be observed.
