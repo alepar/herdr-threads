@@ -4238,6 +4238,17 @@ non-control descriptors in one transaction. A prefix mismatch retires nothing an
 controls. Client counts, keys and IDs are never frontier authority. A default pull cannot automatically
 consume an unretired tagged Notice; execution reset preserves the unadvanced canonical frontier.
 
+An emitted Open Attention control for a manual, channel-owned consumer may also freeze a legacy
+warning-offer cutoff in its private context_key as `lw1:<decision-sequence>` (at most 23 ASCII bytes).
+Only confirmation of that exact requested, unretired, applicable control under the current binding
+and token advances warning_offer to the captured cutoff, after all page validation and in the same
+transaction. It never reads a newer cutoff at confirmation. This records the legacy attention offer,
+not a warning-body receipt, obligation settlement or notice-frontier advance. Lifecycle output,
+omitted or foreign controls, AttentionCleared and duplicate confirmation cannot supply that evidence.
+A default pull cannot flush-confirm an unretired tagged Attention control. Modern notice eligibility
+remains independently governed by its projection ordinal; inherited scalar legacy-offer semantics do
+not become an exact per-warning presentation claim.
+
 The bounded local envelope carries raw existing Watch items, opaque same-token item keys and an opaque
 confirmation receipt. Limits are 32 items / 64 KiB model content, 72 KiB framed transport, 8 KiB metadata and
 4 KiB confirmation stdin. Confirmation declares every currently emitted Notice, Invitation and Attention

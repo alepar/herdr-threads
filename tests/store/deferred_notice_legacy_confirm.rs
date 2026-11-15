@@ -243,6 +243,132 @@ fn dn1_canonical_integer_boundaries_and_kind_separation() {
     );
 }
 
+#[test]
+fn lw1_canonical_bounds_kind_separation_and_historical_decode() {
+    use crate::protocol::delivery::PresentationItemV2;
+    let make = |key: Option<&str>| FrozenPresentation {
+        item: PresentationItemV2::Attention {
+            epoch: "1".into(),
+            attention_version: u64::MAX,
+            text: String::new(),
+        },
+        context_key: key.map(str::to_owned),
+    };
+    assert_eq!(legacy_warning_offer(&make(None)).unwrap(), None);
+    assert_eq!(legacy_warning_offer(&make(Some("lw1:0"))).unwrap(), Some(0));
+    let maximum = make(Some("lw1:9223372036854775807"));
+    assert_eq!(maximum.context_key.as_ref().unwrap().len(), 23);
+    assert_eq!(legacy_warning_offer(&maximum).unwrap(), Some(i64::MAX));
+    for invalid in [
+        "",
+        "lw1:",
+        "lw1:-1",
+        "lw1:+1",
+        "lw1:01",
+        "lw1: 1",
+        "lw1:1:2",
+        "lw1:9223372036854775808",
+        "lw2:1",
+        "dn1:0:0:1",
+    ] {
+        assert!(
+            legacy_warning_offer(&make(Some(invalid))).is_err(),
+            "{invalid}"
+        );
+    }
+    for item in [
+        PresentationItemV2::AttentionCleared {
+            epoch: "1".into(),
+            attention_version: 0,
+        },
+        PresentationItemV2::Notice {
+            warning: MessageId::new("n"),
+            thread: ThreadId::new("t"),
+            body: String::new(),
+        },
+    ] {
+        assert!(
+            legacy_warning_offer(&FrozenPresentation {
+                item,
+                context_key: Some("lw1:1".into())
+            })
+            .is_err()
+        );
+    }
+    #[derive(serde::Deserialize)]
+    #[serde(deny_unknown_fields)]
+    struct OldFrozen {
+        item: PresentationItemV2,
+        context_key: Option<String>,
+    }
+    let encoded = encode(&vec![maximum; 32]).unwrap();
+    assert!(
+        encoded.len() < 262144,
+        "actual private-state ceiling is unchanged"
+    );
+    let decoded: Vec<OldFrozen> = serde_json::from_str(&encoded).unwrap();
+    assert_eq!(decoded.len(), 32);
+    assert!(
+        decoded
+            .iter()
+            .all(|v| matches!(v.item, PresentationItemV2::Attention { .. })
+                && v.context_key.as_deref() == Some("lw1:9223372036854775807"))
+    );
+}
+
+#[test]
+fn lw1_invalid_retired_capture_is_rejected_before_confirmation_effects() {
+    use crate::protocol::delivery::{DeliveryPullReplyV2, PresentationItemV2};
+    let (f, claim, _, _, _) = super::notice_replay_tests::published_notice();
+    let binding = super::notice_replay_tests::binding_for_claim(&f, &claim);
+    let DeliveryPullReplyV2::Page(page) = f
+        .store
+        .presentation_pull(watch_input(&f, &claim, &binding, true), &budget())
+        .unwrap()
+        .reply
+    else {
+        panic!("page")
+    };
+    let mut state = load(&f.db, &claim, &binding, PresentationConsumer::Watch).unwrap();
+    let mut descriptors: Vec<FrozenPresentation> = decode(&state.outbox_descriptors).unwrap();
+    descriptors[0] = FrozenPresentation {
+        item: PresentationItemV2::Attention {
+            epoch: "1".into(),
+            attention_version: 0,
+            text: String::new(),
+        },
+        context_key: Some("lw1:01".into()),
+    };
+    state.outbox_descriptors = encode(&descriptors).unwrap();
+    state.outbox_retired_mask |= 1;
+    save(&f.db, &claim, &binding, PresentationConsumer::Watch, &state).unwrap();
+    let before: Option<i64> =
+        f.db.query_row(
+            "SELECT offered_through_seq FROM warning_offer WHERE binding_id=?1",
+            [binding.as_str()],
+            |r| r.get(0),
+        )
+        .optional()
+        .unwrap();
+    let request = DeliveryPresentationConfirmV2 {
+        claim,
+        consumer: PresentationConsumer::Watch,
+        token: page.presentation_token.unwrap(),
+        presentation_lease: Some("0123456789abcdef0123456789abcdef".into()),
+        emitted_controls: vec![],
+    };
+    assert!(f.store.presentation_confirm(&request, &budget()).is_err());
+    let after: Option<i64> =
+        f.db.query_row(
+            "SELECT offered_through_seq FROM warning_offer WHERE binding_id=?1",
+            [binding.as_str()],
+            |r| r.get(0),
+        )
+        .optional()
+        .unwrap();
+    assert_eq!(after, before);
+}
+
 pub(super) fn watch_input(
     f: &super::notice_replay_tests::Fixture,
     claim: &CallerClaim,

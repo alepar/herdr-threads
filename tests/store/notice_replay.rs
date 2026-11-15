@@ -1020,3 +1020,514 @@ fn late_notice_successor_preserves_newer_canonical_warning_wake_frontier() {
         "successor still owes the exact same warning wake"
     );
 }
+
+// Retained pre-warning_conditions data, not a warning produced by today's
+// transition writers. Real Pi policy, store presentation and wake selection
+// decide this fixture; there is no native runtime or fabricated receipt ACK.
+mod legacy_pi_attention_offer {
+    use super::*;
+    use crate::protocol::delivery::{
+        DeliveryPageV2, DeliveryPresentationConfirmV2, DeliveryPresentationConfirmationV2,
+        DeliveryPullReplyV2, PresentationConsumer, PresentationControlStampV2, PresentationItemV2,
+    };
+
+    fn retained_warning(f: &mut Fixture, label: &str, affected: &str) -> MessageId {
+        let tx = f.db.transaction().unwrap();
+        let invitation = InvitationId::new(format!("legacy-{label}"));
+        tx.execute("INSERT INTO invitations(id,thread_id,seat_id,episode,state,created_decision_seq,created_at,frozen_duration_ms,deadline_at,origin_node) VALUES (?1,'t',?2,1,'pending',1,0,50,50,(SELECT id FROM local_node))", params![invitation.as_str(), affected]).unwrap();
+        let (warning, inserted) = crate::store::schema::append_event_once(
+            &tx,
+            crate::store::schema::EventInput {
+                thread: &ThreadId::new("t"),
+                key: &format!("legacy-warning-{label}"),
+                kind: "warn",
+                payload_json: r#"{"event":"overdue"}"#,
+                decision_at: f.clock.utc_now(),
+                source_message: None,
+                source_invitation: Some(&invitation),
+            },
+        )
+        .unwrap();
+        assert!(inserted);
+        let seq: i64 = tx
+            .query_row(
+                "SELECT decision_seq FROM messages WHERE id=?1",
+                [warning.as_str()],
+                |r| r.get(0),
+            )
+            .unwrap();
+        let high: i64 = tx
+            .query_row(
+                "SELECT COALESCE(MAX(ordinal),0) FROM membership_intervals",
+                [],
+                |r| r.get(0),
+            )
+            .unwrap();
+        tx.execute("INSERT INTO warning_jobs(warning_id,event_seq,thread_id,interval_high_water,affected_seat_id,condition_kind,condition_id,status,phase) VALUES (?1,?2,'t',?3,?4,'invitation',?5,'complete','complete')", params![warning.as_str(), seq, high, affected, invitation.as_str()]).unwrap();
+        tx.execute(
+            "INSERT INTO warning_recipients(warning_id,seat_id,generation) VALUES (?1,'s',?2)",
+            params![warning.as_str(), seq],
+        )
+        .unwrap();
+        tx.commit().unwrap();
+        assert_eq!(
+            crate::store::attention::informational_notice_pending(&f.db, "s", warning.as_str())
+                .unwrap(),
+            None,
+            "historical scalar-offer class, not a modern Notice"
+        );
+        warning
+    }
+
+    fn fixture_warning() -> (Fixture, CallerClaim, MessageId) {
+        let mut f = fixture();
+        let pi = Harness::Agent(crate::harness::registry::builtins().agent("pi").unwrap());
+        let owner = check_in(
+            &f,
+            fixture_claim(&f, "s", "p", pi, "legacy-pi-reader"),
+            "legacy-pi-start",
+        );
+        let warning = retained_warning(&mut f, "first", "c");
+        (f, owner, warning)
+    }
+
+    fn candidate(f: &Fixture) -> crate::ports::WakeCandidate {
+        f.store
+            .wake_candidates(
+                crate::test_support::test_host_id(),
+                Default::default(),
+                &budget(),
+            )
+            .unwrap()
+            .items
+            .into_iter()
+            .find(|v| v.seat.as_str() == "s")
+            .expect("Pi wake candidate")
+    }
+    fn offer(f: &Fixture, owner: &CallerClaim) -> Option<i64> {
+        let binding = binding_for_claim(f, owner);
+        f.db.query_row(
+            "SELECT offered_through_seq FROM warning_offer WHERE binding_id=?1",
+            [binding.as_str()],
+            |r| r.get(0),
+        )
+        .optional()
+        .unwrap()
+    }
+    fn page(f: &Fixture, owner: &CallerClaim) -> DeliveryPageV2 {
+        page_mode(f, owner, true)
+    }
+    fn page_mode(f: &Fixture, owner: &CallerClaim, deferred: bool) -> DeliveryPageV2 {
+        let binding = binding_for_claim(f, owner);
+        for _ in 0..32 {
+            let mut input =
+                super::super::legacy_confirm_tests::watch_input(f, owner, &binding, deferred);
+            input.new_message_slots = 0;
+            match f.store.presentation_pull(input, &budget()).unwrap().reply {
+                DeliveryPullReplyV2::Page(page)
+                    if page
+                        .items
+                        .iter()
+                        .any(|v| matches!(v, PresentationItemV2::Attention { .. })) =>
+                {
+                    return page;
+                }
+                DeliveryPullReplyV2::Page(_) | DeliveryPullReplyV2::Unchanged { .. } => {}
+                other => panic!("legacy attention: {other:?}"),
+            }
+        }
+        panic!("bounded legacy relevance did not produce Attention")
+    }
+    fn request(owner: &CallerClaim, page: &DeliveryPageV2) -> DeliveryPresentationConfirmV2 {
+        DeliveryPresentationConfirmV2 {
+            claim: owner.clone(),
+            consumer: PresentationConsumer::Watch,
+            presentation_lease: Some("0123456789abcdef0123456789abcdef".into()),
+            token: page.presentation_token.clone().unwrap(),
+            emitted_controls: page.emitted_controls.clone(),
+        }
+    }
+    fn confirm(
+        f: &Fixture,
+        owner: &CallerClaim,
+        page: &DeliveryPageV2,
+    ) -> DeliveryPresentationConfirmationV2 {
+        f.store
+            .presentation_confirm(&request(owner, page), &budget())
+            .unwrap()
+            .status
+    }
+
+    #[test]
+    fn exact_pi_attention_offer_stops_legacy_warning_wake_without_settling_obligation() {
+        let (f, owner, warning) = fixture_warning();
+        let before = candidate(&f);
+        assert!(
+            !before.has_pending_invitation
+                && !before.has_pending_receipt
+                && before.pending_lazy().is_none(),
+            "only the retained legacy warning can supply this wake"
+        );
+        assert!(before.actionable_warning_seq.is_some() && before.has_actionable_work());
+        let owner = check_in(&f, owner, "legacy-pi-observer");
+        assert_eq!(
+            offer(&f, &owner),
+            None,
+            "observer guidance is not a warning offer"
+        );
+        let first = page(&f, &owner);
+        assert!(
+            !first
+                .items
+                .iter()
+                .any(|v| matches!(v, PresentationItemV2::Notice { .. })),
+            "legacy warning is represented by generic Attention, not a Notice body"
+        );
+        assert_eq!(offer(&f, &owner), None, "allocation is not presentation");
+        assert!(candidate(&f).has_actionable_work());
+        let replay = page(&f, &owner);
+        assert_eq!(first.presentation_token, replay.presentation_token);
+        assert!(
+            candidate(&f).has_actionable_work(),
+            "lost output cannot quiet a wake"
+        );
+        assert_eq!(
+            confirm(&f, &owner, &first),
+            DeliveryPresentationConfirmationV2::Confirmed
+        );
+        assert!(offer(&f, &owner).is_some());
+        let after = f
+            .store
+            .wake_candidates(
+                crate::test_support::test_host_id(),
+                Default::default(),
+                &budget(),
+            )
+            .unwrap();
+        assert!(
+            after.items.iter().all(|v| v.seat != owner.seat),
+            "honest generic Attention offer suppresses repeated legacy wake"
+        );
+        assert_eq!(
+            f.db.query_row(
+                "SELECT state FROM invitations WHERE id='legacy-first'",
+                [],
+                |r| r.get::<_, String>(0)
+            )
+            .unwrap(),
+            "pending"
+        );
+        let effective = crate::store::effective::effective_warning_by_id(&f.db, warning.as_str())
+            .unwrap()
+            .unwrap();
+        assert!(
+            crate::store::effective::warning_condition_actionable(&f.db, &effective).unwrap(),
+            "offer is neither condition closure nor receipt settlement"
+        );
+    }
+
+    #[test]
+    fn old_attention_offer_does_not_sweep_newer_legacy_warning_or_duplicate_confirmation() {
+        let (mut f, owner, _) = fixture_warning();
+        let first = page(&f, &owner);
+        let newer = retained_warning(&mut f, "newer", "x");
+        let seq: i64 =
+            f.db.query_row(
+                "SELECT decision_seq FROM messages WHERE id=?1",
+                [newer.as_str()],
+                |r| r.get(0),
+            )
+            .unwrap();
+        assert_eq!(
+            confirm(&f, &owner, &first),
+            DeliveryPresentationConfirmationV2::Confirmed
+        );
+        assert!(
+            offer(&f, &owner).unwrap() < seq,
+            "confirm must use allocation's frozen cutoff"
+        );
+        let current = candidate(&f);
+        assert_eq!(current.actionable_warning_seq, Some(seq as u64));
+        assert!(!current.warning_offered_for_current_occupant() && current.has_actionable_work());
+        let captured = offer(&f, &owner);
+        assert_eq!(
+            confirm(&f, &owner, &first),
+            DeliveryPresentationConfirmationV2::AlreadyConfirmed
+        );
+        assert_eq!(offer(&f, &owner), captured);
+        assert!(candidate(&f).has_actionable_work());
+    }
+
+    #[test]
+    fn captured_legacy_offer_does_not_cover_late_modern_notice_attribution() {
+        use crate::protocol::authority::ObligationRef;
+        let (mut f, owner, _) = fixture_warning();
+        let author = check_in(
+            &f,
+            fixture_claim(&f, "x", "px", fourth(), "modern-author"),
+            "modern-author-start",
+        );
+        let CommandResult::MessageSent(message) = f
+            .service
+            .handle(
+                Command::SendMessage(SendMessage {
+                    priority: None,
+                    delivery_mode: DeliveryMode::Ordinary,
+                    user_intent: None,
+                    thread: ThreadId::new("t"),
+                    body: "real modern overdue cause".into(),
+                    direct_recipient: None,
+                    invited_recipients: vec![owner.seat.clone()],
+                    deadline_millis: Some(1000),
+                    operation: OperationId::new("modern-late-cause"),
+                    claim: author,
+                    relays_user: false,
+                }),
+                peer(),
+                &budget(),
+            )
+            .unwrap()
+        else {
+            panic!("modern cause")
+        };
+        f.clock.0.fetch_add(2000, Ordering::SeqCst);
+        let modern = {
+            let tx = f.db.transaction().unwrap();
+            let result = crate::store::schema::record_overdue_if_pending(
+                &tx,
+                &ObligationRef::Receipt {
+                    message: message.clone(),
+                    seat: owner.seat.clone(),
+                },
+                &crate::ports::TimeBasis::Decision,
+                f.clock.utc_now(),
+            )
+            .unwrap();
+            assert!(result.inserted);
+            tx.commit().unwrap();
+            result.warning.unwrap()
+        };
+        assert_eq!(
+            crate::store::attention::informational_notice_pending(&f.db, "s", modern.as_str())
+                .unwrap(),
+            Some(true)
+        );
+        assert_eq!(f.db.query_row("SELECT count(*) FROM digest_programmatic_warnings WHERE seat_id='s' AND warning_id=?1", [modern.as_str()], |r| r.get::<_, i64>(0)).unwrap(), 0, "current producer has published but not attributed this Notice");
+        let first = page(&f, &owner);
+        let seq: i64 =
+            f.db.query_row(
+                "SELECT decision_seq FROM messages WHERE id=?1",
+                [modern.as_str()],
+                |r| r.get(0),
+            )
+            .unwrap();
+        assert_eq!(
+            confirm(&f, &owner, &first),
+            DeliveryPresentationConfirmationV2::Confirmed
+        );
+        assert!(
+            offer(&f, &owner).unwrap() >= seq,
+            "modern publication predates the captured legacy cutoff"
+        );
+        finish_presentation_attention_job(&f, &format!("work:{}", modern.as_str()));
+        assert_eq!(
+            crate::store::attention::informational_notice_pending(&f.db, "s", modern.as_str())
+                .unwrap(),
+            Some(true)
+        );
+        let wake = candidate(&f);
+        assert!(
+            !wake.warning_offered_for_current_occupant(),
+            "late modern Notice is independent of the legacy scalar offer"
+        );
+        assert!(wake.actionable_warning_seq.is_some_and(|v| v >= seq as u64));
+        assert!(wake.has_actionable_work());
+        assert_eq!(
+            f.db.query_row(
+                "SELECT state FROM receipt_state WHERE message_id=?1 AND seat_id='s'",
+                [message.as_str()],
+                |r| r.get::<_, String>(0)
+            )
+            .unwrap(),
+            "pending"
+        );
+    }
+
+    #[test]
+    fn manual_legacy_attention_cannot_be_replayed_by_automatic_watch() {
+        let (f, owner, _) = fixture_warning();
+        let first = page(&f, &owner);
+        let binding = binding_for_claim(&f, &owner);
+        let default = super::super::legacy_confirm_tests::watch_input(&f, &owner, &binding, false);
+        assert!(matches!(
+            f.store.presentation_pull(default, &budget()).unwrap().reply,
+            DeliveryPullReplyV2::Refused {
+                reason: crate::protocol::delivery::DeliveryRefusalReason::Busy
+            }
+        ));
+        assert_eq!(offer(&f, &owner), None);
+        assert_eq!(
+            page(&f, &owner).presentation_token,
+            first.presentation_token
+        );
+        assert_eq!(
+            confirm(&f, &owner, &first),
+            DeliveryPresentationConfirmationV2::Confirmed
+        );
+        let default = super::super::legacy_confirm_tests::watch_input(&f, &owner, &binding, false);
+        assert!(!matches!(
+            f.store.presentation_pull(default, &budget()).unwrap().reply,
+            DeliveryPullReplyV2::Refused { .. }
+        ));
+    }
+
+    #[test]
+    fn omitted_foreign_and_stale_controls_cannot_create_a_legacy_offer() {
+        let (f, owner, _) = fixture_warning();
+        let first = page(&f, &owner);
+        let mut absent = request(&owner, &first);
+        absent.emitted_controls.clear();
+        f.store.presentation_confirm(&absent, &budget()).unwrap();
+        assert_eq!(offer(&f, &owner), None);
+        let mut foreign = request(&owner, &first);
+        foreign.emitted_controls = vec![PresentationControlStampV2::Attention {
+            epoch: "999".into(),
+            version: 0,
+        }];
+        assert!(f.store.presentation_confirm(&foreign, &budget()).is_err());
+        let mut token = request(&owner, &first);
+        token.token = "f".repeat(32);
+        assert_eq!(
+            f.store
+                .presentation_confirm(&token, &budget())
+                .unwrap()
+                .status,
+            DeliveryPresentationConfirmationV2::NotCurrentPage
+        );
+        let mut stale = request(&owner, &first);
+        stale.claim.execution = ExecutionId::new("00000000-0000-4000-8000-000000000099");
+        assert_eq!(
+            f.store
+                .presentation_confirm(&stale, &budget())
+                .unwrap()
+                .status,
+            DeliveryPresentationConfirmationV2::StaleBinding
+        );
+        assert_eq!(offer(&f, &owner), None);
+        assert!(candidate(&f).has_actionable_work());
+    }
+
+    #[test]
+    fn default_watch_and_other_harnesses_keep_historical_attention_offer_behavior() {
+        let (f, owner, _) = fixture_warning();
+        let default = page_mode(&f, &owner, false);
+        assert_eq!(
+            confirm(&f, &owner, &default),
+            DeliveryPresentationConfirmationV2::Confirmed
+        );
+        assert_eq!(
+            offer(&f, &owner),
+            None,
+            "default watch has no new captured offer"
+        );
+        assert!(candidate(&f).has_actionable_work());
+
+        let mut f = fixture();
+        let owner = check_in(
+            &f,
+            fixture_claim(&f, "s", "p", fourth(), "default-reader"),
+            "default-reader-start",
+        );
+        retained_warning(&mut f, "other-harness", "c");
+        let before = offer(&f, &owner);
+        let manual = page(&f, &owner);
+        assert_eq!(
+            confirm(&f, &owner, &manual),
+            DeliveryPresentationConfirmationV2::Confirmed
+        );
+        assert_eq!(
+            offer(&f, &owner),
+            before,
+            "non-channel-owned policy is unchanged"
+        );
+        assert!(candidate(&f).has_actionable_work());
+    }
+
+    #[test]
+    fn cleared_only_confirmation_cannot_offer_an_unobserved_legacy_attention() {
+        let (f, owner, _) = fixture_warning();
+        let _unobserved = page(&f, &owner);
+        f.db.execute(
+            "UPDATE invitations SET state='already_joined' WHERE id='legacy-first'",
+            [],
+        )
+        .unwrap();
+        let binding = binding_for_claim(&f, &owner);
+        for _ in 0..32 {
+            let input = super::super::legacy_confirm_tests::watch_input(&f, &owner, &binding, true);
+            if let DeliveryPullReplyV2::Page(clear) =
+                f.store.presentation_pull(input, &budget()).unwrap().reply
+                && clear
+                    .items
+                    .iter()
+                    .any(|v| matches!(v, PresentationItemV2::AttentionCleared { .. }))
+            {
+                assert!(
+                    !clear
+                        .items
+                        .iter()
+                        .any(|v| matches!(v, PresentationItemV2::Attention { .. }))
+                );
+                assert_eq!(
+                    confirm(&f, &owner, &clear),
+                    DeliveryPresentationConfirmationV2::Confirmed
+                );
+                assert_eq!(
+                    offer(&f, &owner),
+                    None,
+                    "clearing an episode does not claim its Attention was observed"
+                );
+                return;
+            }
+        }
+        panic!("bounded closed legacy episode did not produce Cleared");
+    }
+
+    #[test]
+    fn notice_confirmation_without_attention_cannot_create_a_legacy_warning_offer() {
+        let (f, _, _, _, _) = published_notice();
+        let pi = Harness::Agent(crate::harness::registry::builtins().agent("pi").unwrap());
+        let mut claim = fixture_claim(&f, "s", "p", pi, "pi-notice-only");
+        claim.execution = ExecutionId::new("00000000-0000-4000-8000-000000000002");
+        let owner = check_in(&f, claim, "pi-notice-only-start");
+        let binding = binding_for_claim(&f, &owner);
+        for _ in 0..32 {
+            let input = super::super::legacy_confirm_tests::watch_input(&f, &owner, &binding, true);
+            if let DeliveryPullReplyV2::Page(notices) =
+                f.store.presentation_pull(input, &budget()).unwrap().reply
+                && notices
+                    .items
+                    .iter()
+                    .any(|v| matches!(v, PresentationItemV2::Notice { .. }))
+            {
+                let mut bodies_only = request(&owner, &notices);
+                bodies_only.emitted_controls.clear();
+                assert_eq!(
+                    f.store
+                        .presentation_confirm(&bodies_only, &budget())
+                        .unwrap()
+                        .status,
+                    DeliveryPresentationConfirmationV2::Confirmed
+                );
+                assert_eq!(offer(&f, &owner), None);
+                assert!(
+                    crate::store::attention::binding_notice_frontier(&f.db, binding.as_str())
+                        .unwrap()
+                        > 0
+                );
+                return;
+            }
+        }
+        panic!("bounded canonical Notice page missing");
+    }
+}

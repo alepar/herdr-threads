@@ -623,44 +623,58 @@ mod binding_presentation {
     // A notice's complete body makes an inbox hint redundant in this and later pages.
     #[test]
     fn notice_only_presentation_has_no_redundant_attention() {
-        let f = Fixture::new();
-        f.notification();
-        let first = f.pull("a");
-        assert!(
-            first
-                .items
-                .iter()
-                .any(|v| matches!(v, PresentationItemV2::Notice { .. }))
-        );
-        assert!(
-            !first
-                .items
-                .iter()
-                .any(|v| matches!(v, PresentationItemV2::Attention { .. })),
-            "{first:?}"
-        );
-        f.confirm("a", &first);
-        for _ in 0..4 {
-            match f
-                .store
-                .presentation_pull(f.input("a"), &budget())
-                .unwrap()
-                .reply
-            {
-                DeliveryPullReplyV2::Page(page) => {
-                    assert!(
-                        !page
-                            .items
-                            .iter()
-                            .any(|v| matches!(v, PresentationItemV2::Attention { .. })),
-                        "{page:?}"
-                    );
-                    if page.presentation_token.is_some() {
-                        f.confirm("a", &page);
-                    }
+        for deferred in [false, true] {
+            let f = Fixture::new();
+            f.notification();
+            let input = || {
+                if deferred {
+                    deferred_input(&f, "a")
+                } else {
+                    f.input("a")
                 }
-                DeliveryPullReplyV2::Unchanged { .. } => break,
-                other => panic!("unexpected reply: {other:?}"),
+            };
+            let DeliveryPullReplyV2::Page(first) =
+                f.store.presentation_pull(input(), &budget()).unwrap().reply
+            else {
+                panic!("notice page")
+            };
+            assert!(
+                first
+                    .items
+                    .iter()
+                    .any(|v| matches!(v, PresentationItemV2::Notice { .. }))
+            );
+            assert!(
+                !first
+                    .items
+                    .iter()
+                    .any(|v| matches!(v, PresentationItemV2::Attention { .. })),
+                "deferred={deferred}: {first:?}"
+            );
+            assert_eq!(notice_frontier(&f, "a"), if deferred { 0 } else { 1 });
+            assert_eq!(
+                f.confirm("a", &first),
+                DeliveryPresentationConfirmationV2::Confirmed
+            );
+            assert_eq!(notice_frontier(&f, "a"), 1);
+            for _ in 0..4 {
+                match f.store.presentation_pull(input(), &budget()).unwrap().reply {
+                    DeliveryPullReplyV2::Page(page) => {
+                        assert!(
+                            !page.items.iter().any(|v| matches!(
+                                v,
+                                PresentationItemV2::Attention { .. }
+                                    | PresentationItemV2::AttentionCleared { .. }
+                            )),
+                            "deferred={deferred}: {page:?}"
+                        );
+                        if page.presentation_token.is_some() {
+                            f.confirm("a", &page);
+                        }
+                    }
+                    DeliveryPullReplyV2::Unchanged { .. } => break,
+                    other => panic!("unexpected reply: {other:?}"),
+                }
             }
         }
     }

@@ -415,6 +415,7 @@ fn load_raw(
     let descriptors: Vec<FrozenPresentation> = decode(&state.outbox_descriptors)?;
     for descriptor in &descriptors {
         deferred_notice(descriptor)?;
+        legacy_warning_offer(descriptor)?;
     }
     Ok(state)
 }
@@ -999,6 +1000,11 @@ pub(super) fn confirm(
                 retired |= bit;
                 changed = true;
                 if controls.applicable(&stamp) {
+                    if let Some(cutoff) = legacy_warning_offer(descriptor)? {
+                        // This confirms a captured generic Attention offer, not the
+                        // warning's body, obligation or modern Notice frontier.
+                        db.execute("INSERT INTO warning_offer(binding_id,seat_id,offered_through_seq) VALUES (?1,?2,?3) ON CONFLICT(binding_id) DO UPDATE SET offered_through_seq=MAX(warning_offer.offered_through_seq,excluded.offered_through_seq)", params![binding.as_str(),request.claim.seat.as_str(),cutoff]).map_err(store_error)?;
+                    }
                     controls.confirm(&stamp);
                     confirmed |= bit;
                 }
@@ -1619,11 +1625,48 @@ fn new_token(db: &Connection) -> Result<String, ApiError> {
 #[serde(deny_unknown_fields)]
 struct FrozenPresentation {
     item: crate::protocol::delivery::PresentationItemV2,
-    // Notice-only deferred settlement capture: dn1:<sequence>:<event_seq>:<ordinal>.
+    // Deferred Notice settlement: dn1:<sequence>:<event_seq>:<ordinal>.
+    // Manual channel-owned Attention offer: lw1:<captured local decision sequence>.
     // The existing optional string keeps historical decoders compatible: they ignore Notice
-    // context keys, and an old confirmation leaves its unadvanced frontier safely reofferable.
+    // control context keys, and an old confirmation leaves their offers unadvanced.
     // Invitation context keys keep their independent, existing meaning.
     context_key: Option<String>,
+}
+
+fn legacy_warning_offer(descriptor: &FrozenPresentation) -> Result<Option<i64>, ApiError> {
+    use crate::protocol::delivery::PresentationItemV2;
+    let Some(key) = &descriptor.context_key else {
+        return Ok(None);
+    };
+    let invalid = || corrupt("invalid legacy warning offer capture");
+    if !matches!(descriptor.item, PresentationItemV2::Attention { .. }) {
+        return if key.starts_with("lw1:")
+            || matches!(descriptor.item, PresentationItemV2::AttentionCleared { .. })
+        {
+            Err(invalid())
+        } else {
+            Ok(None)
+        };
+    }
+    if key.len() > 23 {
+        return Err(invalid());
+    }
+    let decimal = key.strip_prefix("lw1:").ok_or_else(invalid)?;
+    let cutoff = decimal.parse::<i64>().map_err(|_| invalid())?;
+    if cutoff < 0 || cutoff.to_string() != decimal {
+        return Err(invalid());
+    }
+    Ok(Some(cutoff))
+}
+
+fn legacy_warning_offer_key(db: &Connection) -> Result<String, ApiError> {
+    let cutoff: i64 = db
+        .query_row("SELECT decision_seq FROM local_node", [], |r| r.get(0))
+        .map_err(store_error)?;
+    if cutoff < 0 {
+        return Err(corrupt("negative legacy warning offer sequence"));
+    }
+    Ok(format!("lw1:{cutoff}"))
 }
 
 fn deferred_notice(
@@ -2308,7 +2351,10 @@ pub(super) fn pull(
             state.outbox_confirmed_mask,
         )?;
         for (slot, descriptor) in descriptors.iter().enumerate() {
-            if deferred_notice(descriptor)?.is_some() && retired & (1u32 << slot) == 0 {
+            if (deferred_notice(descriptor)?.is_some()
+                || legacy_warning_offer(descriptor)?.is_some())
+                && retired & (1u32 << slot) == 0
+            {
                 return Ok(PresentationOutput {
                     reply: DeliveryPullReplyV2::Refused {
                         reason: crate::protocol::delivery::DeliveryRefusalReason::Busy,
@@ -2866,6 +2912,7 @@ pub(super) fn pull(
         carry.items = messages.clone();
         state.ordinary_pending = ordinary_carry_json(&carry)?;
     }
+    let mut captured_notice_frontier = None;
     if !carried_notices.is_empty() {
         work.notice_validations = carried_notices.len();
         let prefix = super::attention::carried_notice_prefix(
@@ -2876,6 +2923,8 @@ pub(super) fn pull(
         )?;
         if !input.pull.defer_notice_settlement {
             super::attention::settle_offered_notices(db, claim.seat.as_str(), &binding, &prefix)?;
+        } else {
+            captured_notice_frontier = prefix.last().map(|notice| notice.ordinal);
         }
     }
     // Carrying notices can invalidate the witness that opened this episode.
@@ -2888,6 +2937,9 @@ pub(super) fn pull(
             Some(crate::protocol::delivery::PresentationControlStampV2::Attention { .. })
         ) {
         let frontier = super::attention::binding_notice_frontier(db, binding.as_str())?;
+        // Captured manual notices are not yet settled. For this cached-witness
+        // check only, their validated prefix already explains the page's work.
+        let frontier = frontier.max(captured_notice_frontier.unwrap_or(frontier));
         let current =
             super::presentation_relevance::revalidate(db, claim, consumer, frontier, budget)?;
         work.relevance_fallback += usize::from(current.work.fallback);
@@ -2915,10 +2967,20 @@ pub(super) fn pull(
         let mut trial = outputs.clone();
         trial.push(output.clone());
         if outputs.len() < 32 && sizer.measure(&input.render_profile, &trial).is_ok() {
+            let context_key = if input.pull.defer_notice_settlement
+                && consumer == PresentationConsumer::Watch
+                && matches!(stamp, Stamp::Attention { .. })
+                && crate::harness::registry::builtins()
+                    .channel_owned_delivery(claim.harness.as_str())
+            {
+                Some(legacy_warning_offer_key(db)?)
+            } else {
+                None
+            };
             outputs.push(output.clone());
             descriptors.push(FrozenPresentation {
                 item: output,
-                context_key: None,
+                context_key,
             });
             controls.allocated(&stamp);
         } else if fresh_output {
