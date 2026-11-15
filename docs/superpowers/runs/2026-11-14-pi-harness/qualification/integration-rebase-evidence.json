@@ -1,0 +1,437 @@
+{
+  "anchors": {
+    "old_base": "91ce0cdeb8e87dcc16c79f4a556fabffb7946967",
+    "reviewed": "1dbdce20b59cfcc7f6c36c7a5085a0119b9dd874",
+    "old_tip": "dc4c8173b182458fa15b45a71f0d8b2ba6ada7d0",
+    "new_base": "e60ec5eb5e9746f82b399127838dc9515c7cc712",
+    "rebased_tip": "bce7e6cc63ee42099a80e4d7845a9ef064fd7c94",
+    "integration_tip": "bad263b15dbbca518ea0509d16f90f9d01c1c602"
+  },
+  "equivalent_commit_count": 73,
+  "mapping": [
+    {
+      "old": "2cc49aada3277ae55125f5d8f853126413f6af5a",
+      "new": "e5af0b63b58b2594f7535b6731dc8dc418bc8cce",
+      "subject": "Share digest-owned file operations without changing installed state"
+    },
+    {
+      "old": "b690b322e9b5c1efc4696a770b33d581a4b6641a",
+      "new": "8ab8cdb70447ae1fdeba32aebc836002429250aa",
+      "subject": "fix(named): reserve observation order before capture"
+    },
+    {
+      "old": "f97d7e0ca9afcafc3502ce4db488eb989d6d2636",
+      "new": "150d52fc95a6048cbc5fa61d62cdcde79734bde8",
+      "subject": "Synchronize named allocation with canonical currentness before admission"
+    },
+    {
+      "old": "493c8bc86cd3dbd8eee4fb318105788b5b02246a",
+      "new": "379e2d81704fcc0f3206512d898e0ccd8312f147",
+      "subject": "Record causal named-startup currentness qualification"
+    },
+    {
+      "old": "eabb28b943d0ae0c416c55a7f25e467e953e442a",
+      "new": "8e104e13b371b2f2cfc9b7ecba5e5ab95912d5b0",
+      "subject": "Use real named observation in inherited-name fixtures"
+    },
+    {
+      "old": "94ecd326880d3f2894a34ed8eebe593cdebf6abf",
+      "new": "44426b368b4662c2db899d13ce5140e2e28dcded",
+      "subject": "Record inherited-name fixture compatibility evidence"
+    },
+    {
+      "old": "78ac1e4a35b5004f6d4d1be640855b2097b30b55",
+      "new": "53deae97c80e567b656b1e93e352f8c127422d1f",
+      "subject": "Bind inherited-name enumeration to the reserved real host"
+    },
+    {
+      "old": "d55502a161efc068791b656519a61bfc8a52db79",
+      "new": "9210458dc3d8f315add5c048a303bed140cd5a62",
+      "subject": "fix(delivery): defer notice settlement for explicit manual presentation"
+    },
+    {
+      "old": "fc4884a167035f7511fb00932d190391cef1e93d",
+      "new": "c17c094e5e61eedd566a47ed28e098083f849c3a",
+      "subject": "docs: record deferred notice seam validation"
+    },
+    {
+      "old": "0149b77436a49f9c08664baf1db003ce4b0a0b57",
+      "new": "685d55c9339eb5610fb1e56f548bd25f12c685ec",
+      "subject": "test(watch): freeze production manual packet fixtures"
+    },
+    {
+      "old": "d11cd09a0bc107ecf7cc4b4797e7ceab4971b1f6",
+      "new": "619c7f067cf3241b8ee5fbba38820d87bc0f524d",
+      "subject": "docs: research and design pi harness integration"
+    },
+    {
+      "old": "c17c8eb2e8463700dc1b69ed00fd818d8d52d7a2",
+      "new": "b59bf65d65673b810b90b64b7c4607061985bc97",
+      "subject": "docs: record pi integration base and model continuity check"
+    },
+    {
+      "old": "5021b851a4cd0c89e24db67bb43d2c7b532cb510",
+      "new": "9dccc2efe3f600de77d340614dabd7f66c3f45d5",
+      "subject": "docs: freeze pi extension adapter contract for implementation"
+    },
+    {
+      "old": "d6bdd1de282fd35de56c7d831ee562f1292378ec",
+      "new": "4720a048e425afa86f7d6dcbf8a100790470ae9a",
+      "subject": "Add native pi extension boundary delivery"
+    },
+    {
+      "old": "2fcb433c0cc405da100c447fdd36b932df080398",
+      "new": "b2025346776c450f433f450c620175435fedbee3",
+      "subject": "docs: record pi runtime retry and ordering constraints"
+    },
+    {
+      "old": "746250fa3e8eba6db1774495ab8cc3102a697aad",
+      "new": "dd7abed9a402039f1ed24c733cfd749ef442f32f",
+      "subject": "Fence pi attention reoffers and join detached watch cleanup"
+    },
+    {
+      "old": "895b5504e9bfe6c174efe024336da7b908ddc4ca",
+      "new": "4d0529e47b8c19096270d4bc873177fec8600511",
+      "subject": "docs: define bounded pi wake novelty fallback"
+    },
+    {
+      "old": "32457273718b9355093e372730ce232b95a285fb",
+      "new": "f4d220c4f8d92782ce9a94a3374c42ff0e4c3c94",
+      "subject": "Rearm recovered pi wake witnesses for the successor owner"
+    },
+    {
+      "old": "8ebac75761dddd4ebc01b694596e640c13113025",
+      "new": "94534fb14813cf3ccd664f5aebda8b5b69bbae88",
+      "subject": "docs: record accepted pi extension evidence and integration seams"
+    },
+    {
+      "old": "0fcd434575a73a52e8006f02664526f682ae17ec",
+      "new": "933e339204bc591478b61f5d6b353448c7aafece",
+      "subject": "docs(pi): require fail-closed hook owner evidence"
+    },
+    {
+      "old": "8ff3b968f64c3b3968a2f1962c46ccee6c1150f4",
+      "new": "a291e7c2fe1b7eaebc776db0b9b346dfe915667d",
+      "subject": "docs(pi): distinguish hook refusal from empty success"
+    },
+    {
+      "old": "d62bd39178d8ab7657fc980251b67f5778c70e51",
+      "new": "0ce9cd614c881b964979a736ffc7c896e65c9836",
+      "subject": "Add optional process claim consistency validation"
+    },
+    {
+      "old": "6c0ad1bb288021e396c16e04c6525d2a9af30e29",
+      "new": "c624f36a025ed3b6853a019b4f8ce85dfc302b1c",
+      "subject": "Refuse failed local evidence before hook orchestration"
+    },
+    {
+      "old": "8460319853f47f1e0dae1cb8a72155853d62b581",
+      "new": "45d590dfb8f6f22924c20675a5f1c02b78659300",
+      "subject": "Allow channel-owned lifecycle output without mail offers"
+    },
+    {
+      "old": "6a05c5ff8f18fc5c13f9ba4091491b3e5adb1a79",
+      "new": "1bb1d999144afb17bf234274719fd5049cc49f52",
+      "subject": "Register the pi TUI adapter and owned extension setup"
+    },
+    {
+      "old": "0f04b0b75ab8e0c3495ddace569e2ccba3505006",
+      "new": "a9143470dbdd15baf2ace71c032f359aa4f8559f",
+      "subject": "docs(pi): record Rust adapter verification and core seams"
+    },
+    {
+      "old": "b947319afe2db9b46417c571b3c8745c50af938b",
+      "new": "ad70137678967e9193328a22dd275a088252b048",
+      "subject": "Repair the pi trust amendment section boundary"
+    },
+    {
+      "old": "505e34a3ca7d0d1bbb5033be7fa12453437a4a47",
+      "new": "785f3ab7344f82ae3fde9f8a3f38af0f4e31d5b6",
+      "subject": "Use shared owned-file operations for pi setup"
+    },
+    {
+      "old": "d00b9c537537e02e24ddd0e8ee8c038f99f5b14c",
+      "new": "fd190ab009bf9dd16d21e42e4d9c4ef04f8805e0",
+      "subject": "docs(pi): record setup extraction compatibility evidence"
+    },
+    {
+      "old": "6c129463f19c1ee99af752f766d49db4d5a42381",
+      "new": "7c3d44fec2ec124d85098ce5e3247fd66db77544",
+      "subject": "docs(pi): select guarded native wake after real TUI probes"
+    },
+    {
+      "old": "c5b74c38234589776c02c307b106ca2a95fc11c6",
+      "new": "4cfcdc090947bb1a5f0f71502f3bfddf38f7ca76",
+      "subject": "docs(pi): preserve accepted Rust adapter review evidence"
+    },
+    {
+      "old": "b6f384187623366a76bd4c77b19e0fb6e00fd519",
+      "new": "5f25ffa928850960d5dbd6f612b0e9973fa313e1",
+      "subject": "docs(pi): define owner-fenced native turn-state reports"
+    },
+    {
+      "old": "ba4308b0822e8271c170cbcfcd59f10ef4ffc069",
+      "new": "306fc72e76ba8061dbc98b1ea4739f439e90eb4b",
+      "subject": "docs(pi): record accepted native screen observability limits"
+    },
+    {
+      "old": "77e409d2f87f96f72cb00f261c069ea260d2c775",
+      "new": "bbedc2ed763728f9e6709d8b823036c57a80ce3c",
+      "subject": "feat(pi): guard native wake and qualify terminal delivery"
+    },
+    {
+      "old": "0715f50ab1342de2e646749549c0fb74f6079ef6",
+      "new": "efd3837c6982c1542def1e8b774391f3195063c1",
+      "subject": "fix(pi): make native driver negatives and cleanup conclusive"
+    },
+    {
+      "old": "de6b1ccc7069babc9404f2dd14f3f077f22ebdbb",
+      "new": "1cf190e9e0b7f23b0ba6234df4ee9603e798f2d0",
+      "subject": "test(pi): align native wake policy expectations"
+    },
+    {
+      "old": "e49f4f1f33f11958547ffe89d36740bc1616c7cb",
+      "new": "2f4f7e0e1f6fcbb74b385334edcf14089629b059",
+      "subject": "fix(pi): sample fresh native state for blocked probes"
+    },
+    {
+      "old": "de242b775c36dfe6ab4e3b996ff5753e96ea3c79",
+      "new": "87dac609ab347cf96ff87b64e838bcba1bdf892d",
+      "subject": "test(pi): prove eligible holds and cancelled settle delivery"
+    },
+    {
+      "old": "632cfa0bdebcccea045c6a7324fcead4d9500f60",
+      "new": "f52aacefd6b8cf94f1fe7a5d56d687dba4071f0f",
+      "subject": "fix(pi): recognize default unknown context usage after compaction"
+    },
+    {
+      "old": "8495cd9429409c0953ea59b3524150fe341e4202",
+      "new": "1617c4d5cd2db21eb0b649f1f81de7c515e01c32",
+      "subject": "style(pi): format unknown usage regression assertions"
+    },
+    {
+      "old": "748406a6322db4f30de237a5573601142aeeb7c6",
+      "new": "f6dc5b8efe2c7c21ca013c4da8fff84d204ab761",
+      "subject": "test(pi): update native registry expectations and record bounded gates"
+    },
+    {
+      "old": "884709b5c75a6a297fcd5635c53cd35f66a10fa7",
+      "new": "d91fce3b86f72dbfd5948f8bcf398881cb3ea1ab",
+      "subject": "test(pi): require exact native transformed-target evidence"
+    },
+    {
+      "old": "ab892e951f5b3dab7acc3078976c282ae332a531",
+      "new": "adf1ee14f6c0763b6cf29be5fec66d558a5d47ae",
+      "subject": "Fix pi watcher test cleanup and missing-mode diagnostics"
+    },
+    {
+      "old": "ab52773392d2a24d1300530b6e4ca4734bed68a3",
+      "new": "84f8de2a9f86963eec006a76a9a6bd09fa3f7119",
+      "subject": "docs: retain Pi PR review and scoped dispositions"
+    },
+    {
+      "old": "96503211208977be3046596c62c59fd94e0d18d2",
+      "new": "2bc54733d8b3e59d4e475c497860b4f1c7e6915d",
+      "subject": "docs(pi): amend notice delivery and confirmation contract"
+    },
+    {
+      "old": "eb45ce253aca32f882cd02af02c16ecf1b40399a",
+      "new": "842f8de1debfa2641ccd07c75e1d067092ebe43d",
+      "subject": "docs: record accepted deferred-notice source review"
+    },
+    {
+      "old": "7807673c2fdaf7688350ec102482cb2d450f0012",
+      "new": "760c154d071a307f17abcb2a557791a4bc263708",
+      "subject": "Fix pi notice delivery with explicit whole-page presentation"
+    },
+    {
+      "old": "a31d3f5a5adbada8510e9c51f76b33485f3a4a10",
+      "new": "5b8bd58e352151d03aaf7ea9be15f36c4624f90b",
+      "subject": "Discard incompatible pi recovery hints before canonical replay"
+    },
+    {
+      "old": "3e7434a1f2ab6c2ed8ca7965b462a302ac28d4a4",
+      "new": "4c71904a50b612afca74be2d4f9912a4e45b6eef",
+      "subject": "docs(pi): record reviewed notice delivery repair"
+    },
+    {
+      "old": "cec4ef30ebba3984edc866d52b9ff401926c6441",
+      "new": "a4f8c9f95a64bb098c4259a2e506731104022bfd",
+      "subject": "test(pi): qualify canonical notice recovery in native TUI"
+    },
+    {
+      "old": "cd0bcac30c40ff360f61178b3a0ac5a32c0309d0",
+      "new": "4b8ab51ab4361306af5926da87518fe9acfd1300",
+      "subject": "test(pi): stage notice wake before clearing the owned draft"
+    },
+    {
+      "old": "a19fd881e7e8dc6c1b52c9cb2ccda0abbc3a8601",
+      "new": "480489ed3234eca17f5be963e3e9fd08f2524105",
+      "subject": "docs(pi): publish reordered core accounting and driver review"
+    },
+    {
+      "old": "9b784fb729c047ff4f925ce70186735bdb3cf83b",
+      "new": "fdeb0bffe4e442a05c60ca4a4fe9481adfaf45af",
+      "subject": "test(pi): correct isolated sink launch grammar"
+    },
+    {
+      "old": "a424ed20432d325a3f3ed8516733aa066cb4b501",
+      "new": "3591b17dcae9d310d741d05839ccf24ea30e552d",
+      "subject": "test(pi): align isolated sink PATH with its native shim"
+    },
+    {
+      "old": "c045bdd742d1856f0d0e36cbd4d39197af6d351e",
+      "new": "c316bb0a9e14153a8311d9caf707071a46a744b8",
+      "subject": "test(pi): capture native screen after notice cause command"
+    },
+    {
+      "old": "f19c7fca453996fbc8f3258d5ee08767279520d6",
+      "new": "b9186b76755dd34d241417744ad0f593f701958c",
+      "subject": "docs(pi): record unrendered extension editor text limit"
+    },
+    {
+      "old": "49524a38f3603c4ff1fc72d8c3c3ad6f8a6dff69",
+      "new": "ef08d064a62bc74b3be7d5e3b6b724d4505a65c0",
+      "subject": "test(pi): establish rendered notice guards through terminal input"
+    },
+    {
+      "old": "ea6729312498a73668c4ea0cc34d9eb03ccc3fbf",
+      "new": "3a86884e4c528153045ba905c072dc49d160da30",
+      "subject": "test(pi): retain bounded canonical evidence on notice timeout"
+    },
+    {
+      "old": "c0b6ce3798c457b5baf4808227147b59f02c5f0f",
+      "new": "4fee4e4981eef28f315852b81bffb04f189d6d7c",
+      "subject": "Test pi notice uptake after confirmation finishes beyond settlement"
+    },
+    {
+      "old": "4b70b65092b3a039a1adb0bad4bd4f007e0ec5ab",
+      "new": "753930a9df463df081f6c7ce6855715d9d7f831c",
+      "subject": "test(delivery): prove parked notice successor wake liveness"
+    },
+    {
+      "old": "d117c3441eadd6e0b5daf9ed42864c58883dea2b",
+      "new": "b26468d333abff5243e014451e5be40be5b155f1",
+      "subject": "docs(pi): record native notice proofs and retained-page diagnosis"
+    },
+    {
+      "old": "b308786f058f6fe48c67e3fbc5f668d2ef423c77",
+      "new": "91e6d2639e2e1f48d1ab40223150952f85feee66",
+      "subject": "docs(pi): distinguish late-page uptake and automatic wake proofs"
+    },
+    {
+      "old": "658634ec4c24b1f74aecaf311c496fb0bad0403f",
+      "new": "cdc9be33d36d4172edab2de7d340ae941bc2f77b",
+      "subject": "test(pi): qualify automatic progression beyond a protected notice page"
+    },
+    {
+      "old": "bc1aabfda8d918a82f42d8df467d19605e452542",
+      "new": "03b48b715c51cedd50bc3513d35ac2d774f62857",
+      "subject": "test(pi): retain canonical diagnostics through notice setup failures"
+    },
+    {
+      "old": "cc15b5fa22bc2b7b4adefbcd06b3d59103c5e49f",
+      "new": "4178c57d1913c6d7d2186ab4f06c94fff2321f01",
+      "subject": "test(pi): stage protected notice through a nonwaking watch trigger"
+    },
+    {
+      "old": "0042fcf3847acc1fa3f215d5184f86f983f27997",
+      "new": "53142ba454f3648128f5567fb7140bf43fb30f53",
+      "subject": "test(pi): observe nonacknowledgment HOL trigger through its lazy audience"
+    },
+    {
+      "old": "fb7bf028e750a12744397a39b37534d9880555f2",
+      "new": "c23041e40a7d6e42e52746c8cbc38ac37851867d",
+      "subject": "docs(pi): record native protected-page successor wake proof"
+    },
+    {
+      "old": "8a180d233be9fbbf8b69eb0a456ecf5f10fa4ddb",
+      "new": "d5076413cdfb32f42537d7734ce73ed16e230683",
+      "subject": "docs(pi): publish final native compatibility and historical safety scope"
+    },
+    {
+      "old": "d55f7e984c55dd06b805cc7728b9f2ca9985209a",
+      "new": "ba90664fb6c3711419cea8d06e76f3dec3454919",
+      "subject": "docs(pi): reconcile F1 evidence and qualification limits"
+    },
+    {
+      "old": "36860ca3018e794d3cbcf3ee69918311333610a0",
+      "new": "a9617b153a4e9bcaf6f398c062524fbfa7a64e48",
+      "subject": "docs(pi): record corrected unfiltered suite and candidate profiles"
+    },
+    {
+      "old": "0ae96e3dd32a64d5e074b33f1452b5b4151e19ba",
+      "new": "ec283ca5ef3a9fb05c8bbc2e8e14136d5b930552",
+      "subject": "docs(pi): record final gate results and remaining review"
+    },
+    {
+      "old": "1dbdce20b59cfcc7f6c36c7a5085a0119b9dd874",
+      "new": "63719bfa6ec047e4d8630b1f9b3ce275031e01ad",
+      "subject": "docs(pi): publish scoped live provider qualification"
+    },
+    {
+      "old": "dc4c8173b182458fa15b45a71f0d8b2ba6ada7d0",
+      "new": "bce7e6cc63ee42099a80e4d7845a9ef064fd7c94",
+      "subject": "docs(pi): archive converged second branch review"
+    }
+  ],
+  "outside_pi_src_count": 33,
+  "outside_pi_src_paths": [
+    "src/app.rs",
+    "src/cli/commands.rs",
+    "src/cli/help.rs",
+    "src/cli/hook.rs",
+    "src/cli/mod.rs",
+    "src/cli/watch.rs",
+    "src/cli/watch/manual.rs",
+    "src/harness/adapter.rs",
+    "src/harness/agy/delivery.rs",
+    "src/harness/agy/mod.rs",
+    "src/harness/bridge.rs",
+    "src/harness/caller_env.rs",
+    "src/harness/claude.rs",
+    "src/harness/codex.rs",
+    "src/harness/hermes.rs",
+    "src/harness/mod.rs",
+    "src/harness/opencode/mod.rs",
+    "src/harness/opencode/setup.rs",
+    "src/harness/owned_files.rs",
+    "src/harness/registry.rs",
+    "src/harness/unsupported.rs",
+    "src/host/named.rs",
+    "src/host/native.rs",
+    "src/identity/repair.rs",
+    "src/ports.rs",
+    "src/protocol/capabilities.rs",
+    "src/protocol/delivery.rs",
+    "src/service/dispatch.rs",
+    "src/store/attention.rs",
+    "src/store/invitation_content.rs",
+    "src/store/mod.rs",
+    "src/store/seats/cooperative.rs",
+    "src/store/seats/resolution.rs"
+  ],
+  "upstream_changed_paths": [
+    "CHANGELOG.md",
+    "Cargo.lock",
+    "Cargo.toml",
+    "herdr-plugin.toml",
+    "integrations/codex/README.md",
+    "integrations/skill/SKILL.md",
+    "src/harness/codex.rs",
+    "tests/cli/skill.rs",
+    "tests/fixtures/golden/hook-healthy/codex.SessionStart.stdout",
+    "tests/fixtures/golden/hook/codex.SessionStart.stdout",
+    "tests/fixtures/peer_wire/3.2.1/MANIFEST.md",
+    "tests/fixtures/peer_wire/3.2.1/envelopes.jsonl",
+    "tests/fixtures/peer_wire/3.2.1/session.jsonl",
+    "tests/hook_entrypoint.rs"
+  ],
+  "reviewed_to_integration_source_delta": [
+    "src/harness/codex.rs"
+  ],
+  "post_rebase_delta": [
+    "CHANGELOG.md"
+  ],
+  "verification": "Read-only Git source/diff accounting; no runtime or test execution."
+}

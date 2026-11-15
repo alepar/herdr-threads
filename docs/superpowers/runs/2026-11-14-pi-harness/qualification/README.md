@@ -1,6 +1,6 @@
 # Pi qualification evidence
 
-Current source-accounting anchor: `cd0bcac30c40ff360f61178b3a0ac5a32c0309d0` on held main `91ce0cdeb`. The source inventory is unchanged at the latest qualification boundary. F1 is closed with scoped source, canonical/SDK and native evidence below. Current gate results and remaining disposition are summarized below. PR review 2 remains pending; no whole-branch merge readiness is claimed.
+Current integration source-accounting anchor: `bad263b15dbbca518ea0509d16f90f9d01c1c602` on main `e60ec5eb5`. [Integration accounting](integration-rebase.md) verifies all 73 rebased patches and the unchanged 33-path outside-Pi inventory. [PR review 2](../roast-pr-2/report.md) concluded clean with zero findings and convergence on pre-rebase source `1dbdce20b` versus `91ce0cdeb`; it does not cover the new base. F1 is closed with scoped source, canonical/SDK and native evidence below. The following runtime results retain their historical candidate anchors; integration checks are recorded separately.
 
 [Corrected full-suite attempt 2](full-suite-attempt-2.md) passed functionally: **9,645 passed, zero failed, 66 skipped**, 993.332 seconds, with clean same-run process/temp checks. The absolute 300-second budget was missed and `ht-n4xh` remains open. Main accepted the miss as nonblocking for merge/release in this epic under the standing host-wide four-thread cap used for training; no suite tuning or cap increase is authorized here. This disposition does not turn the budget into a pass or establish causation through a paired benchmark.
 
