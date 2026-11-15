@@ -1,0 +1,9 @@
+# Scoped release qualification routing
+
+`scripts/release-qualify --queue-proof` now forwards the explicit flag to authenticated `wake-e2e-herdr` qualification on Linux. Unflagged wake argv is unchanged. Explicit queue proof on a non-Linux platform is refused by argument preflight before evidence/scratch creation, builds, credential copying or agents. No version probe is added. RELEASE.md and the direct AGENTS.md recipe select proof for supported Linux Codex; native/queue-unsupported platforms retain their original command.
+
+The flag selects the existing reviewed proof contract: eligible positive Codex rows require actual Accepted submission and use 15 seconds. Native/Claude windows, silent/busy behavior and UI/resume gates stay unchanged. It does not silently downgrade requested proof or replace hook message delivery.
+
+[Validation](qualification-release-routing.json) records four offline tests: Linux authenticated-wake forwarding only, unchanged unflagged argv on Linux/macOS, CLI selection, and non-Linux refusal with no runner/scratch/qualification calls. Missing routing and the missing platform-specific refusal were reproduced before implementation. All qualification subprocesses in these tests are mocked; no release or authenticated wake run occurred. Clippy, default-feature guard, format, neutral/wire checks, Python 3.9 parsing and required release docs tests pass.
+
+No routine model-visible text is added. The explicit invalid-platform CLI error body is 72 bytes, plus existing argparse usage/prefix framing. There are no production Rust changes, so the [corrected full-suite result](qualification-corrected-full.md) retains its exact earlier source attribution. Performance disposition, final routing review and coordinated main integration remain open.

@@ -1,0 +1,38 @@
+{
+  "authorization": "Astra180 explicit Linux-only flag; main owner21 path coordination",
+  "source_parent": "9e9a2db8602a9adecd0a060e45a24119a4ccdd02",
+  "files_sha256": {
+    "scripts/release-qualify": "8466a5ad074201fcec7416e8b723e91437137bb9ea0389c850d17c1827897259",
+    "tests/release/release_qualify_test.py": "522a4b9fe9f4338c86200d4417bc0cf57351d2de93e4e8ac171af94905c16ff9",
+    "RELEASE.md": "6b28b9a490b0452172b9b656f2d258b12a7abd98696c95c6cf33bad012ea503a",
+    "AGENTS.md": "a5e90af8df15805c31120c947c8cc39f539b939204118265eb8451cdd2a24ba0"
+  },
+  "tests": {
+    "regression": "Missing flag routing and non-Linux preflight reproduced before implementation",
+    "offline_tests": 4,
+    "result": "PASS",
+    "seconds": 0.01,
+    "subprocesses": "mocked; no authenticated models or release qualification run"
+  },
+  "checks": {
+    "clippy_all_targets_all_features": "PASS, compiler0.04s",
+    "default_features": "PASS",
+    "fmt": "PASS",
+    "harness_neutral": "PASS",
+    "wire_compat": "PASS",
+    "release_docs": "DOCS_TEST_PASS",
+    "python39_parse": "PASS",
+    "diff": "PASS"
+  },
+  "model_visible_text": {
+    "routine_added_bytes": 0,
+    "non_linux_cli_error": "--queue-proof requires Linux; use native qualification without this flag",
+    "non_linux_cli_error_body_bytes": 72,
+    "scope": "Explicit invalid release flag only; argparse adds existing usage/prefix framing"
+  },
+  "limitations": [
+    "No production Rust changes after full-suite source",
+    "No additional live models, release run or full-suite repeat",
+    "Five-minute timing disposition and integration review remain pending"
+  ]
+}

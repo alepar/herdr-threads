@@ -13,6 +13,7 @@ import os
 import shutil
 from pathlib import Path
 import subprocess
+import sys
 import tempfile
 import threading
 import time
@@ -27,7 +28,7 @@ def newest_release(table: Path) -> str:
     return max(versions, key=lambda v: tuple(map(int, v.split('.'))))
 
 
-def qualify(evidence: Path, self_test: bool) -> int:
+def qualify(evidence: Path, self_test: bool, queue_proof: bool = False) -> int:
     evidence.mkdir(parents=True, exist_ok=True)
     results = []
     scratch_roots = []
@@ -110,7 +111,7 @@ def qualify(evidence: Path, self_test: bool) -> int:
                 blocked('wake')
             elif not self_test and ready:
                 step('wake', ['scripts/wake-e2e-herdr', newest_release(ROOT / 'tests/herdr-releases.tsv'),
-                              '--evidence-dir', str(evidence / 'wake')], branch)
+                              '--evidence-dir', str(evidence / 'wake')] + (['--queue-proof'] if queue_proof else []), branch)
         finally:
             leak('wake', branch)
 
@@ -161,9 +162,13 @@ def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument('--self-test', action='store_true', help='replace authenticated wake only; all other commands run')
     parser.add_argument('--evidence-dir', type=Path)
+    parser.add_argument('--queue-proof', action='store_true',
+                        help='require Codex queue transport proof for supported Linux qualification')
     args = parser.parse_args()
+    if args.queue_proof and sys.platform != 'linux':
+        parser.error('--queue-proof requires Linux; use native qualification without this flag')
     evidence = (args.evidence_dir or Path(tempfile.mkdtemp(prefix='release-qualify-', dir='/tmp'))).resolve()
-    return qualify(evidence, args.self_test)
+    return qualify(evidence, args.self_test, queue_proof=args.queue_proof)
 
 
 if __name__ == '__main__':

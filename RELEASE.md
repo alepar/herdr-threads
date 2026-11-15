@@ -33,6 +33,14 @@ Start ordinary push/PR CI on the candidate SHA alongside local qualification; on
 scripts/release-qualify --evidence-dir /tmp/release-X.Y.Z
 ```
 
+For supported Linux Codex queue-wake qualification, explicitly select queue proof:
+
+```sh
+scripts/release-qualify --queue-proof --evidence-dir /tmp/release-X.Y.Z
+```
+
+This forwards `--queue-proof` only to authenticated wake qualification. Eligible Codex positives must prove Accepted queue submission and use the accepted 15-second window; native/Claude windows and existing UI/resume gates remain unchanged. Non-Linux and queue-unsupported qualification use the native command above. Explicit queue proof is refused before any work on non-Linux; it never silently downgrades requested proof. Unflagged qualification retains its existing gate.
+
 The driver checks formatting, harness neutrality, peer wire compatibility (`scripts/check-wire-compat`), both clippy feature variants and default features; prebuilds tests and release-proof fixtures; runs the full suite alone with its five-minute budget and unconditional run-scoped leak check; and builds the candidate. Afterward the upstream inventory check and Herdr matrix run alongside the wake driver's self-test and authenticated wake against the newest listed Herdr. The isolated package lifecycle gate and exact CI Python installer commands plus shell installer harness run afterward, avoiding competition with timing-sensitive tests. Every branch has a short private scratch root, state directory and run ID; logs, matrix/wake evidence and `summary.json` are retained. A failed candidate build blocks live wake and binary installers while independent checks continue. Any failed or blocked step makes the driver fail; inspect every failure and retain its evidence.
 
 `--self-test` replaces only the authenticated wake run. All other commands, including the real full suite, upstream inventory check, matrix, package lifecycle and installers, still run; this mode does not qualify live wake delivery. Scratch roots are removed after leak checks; the environment records retain their paths and run IDs for diagnosis.
