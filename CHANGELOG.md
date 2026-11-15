@@ -1,5 +1,14 @@
 # Changelog
 
+## v3.2.1
+
+Fixes only; no store schema or peer wire change.
+
+### Fixed
+
+- **Codex sandbox guidance covers only herdr-threads.** The skill and the Codex hook guidance told Codex to keep every other command sandboxed and never enable networking, which overrode project instructions for host-visible work. They now say herdr-threads needs host access and that other commands follow the agent's usual policy. An existing Codex session sees the new hook text at its next session start, resume or compaction.
+- **The Claude mod no longer queues a wake behind a prompt the engine already holds.** Between your Enter and the turn start, and between a turn end and a queued prompt, the mod queued a `wake up` that ran as an extra empty turn. It now holds only the wake (messages still go into the session at once), waits 0.5 s after a turn end, and releases the hold after 120 s of an empty prompt box with no turn.
+
 ## v3.2.0
 
 Minor release: a new harness. No store schema or peer wire change.
