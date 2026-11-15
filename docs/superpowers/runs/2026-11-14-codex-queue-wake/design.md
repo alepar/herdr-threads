@@ -127,6 +127,68 @@ Run required repository checks and scoped leak checks, then independent integrat
 review and live qualification before merge. Record timing regressions honestly.
 Routine model-visible text remains unchanged (0 new bytes); marker stays 22 bytes.
 
+## Integrated qualification assignment (2026-11-15)
+
+Activation implementation is accepted at 17e24a04c7d38e297bc48eb5063fecfad67c4582,
+following integrated runtime/storage review and the restart monotonicity correction.
+This accepts implementation, not live transport qualification or merge readiness.
+Task ht-d2jq.6 owns qualification in the existing warm feature worktree.
+
+Use the existing isolated wake-e2e driver and its cleanup/credential discipline.
+Inspect its current capabilities before extending it; do not create a second
+agent launcher. Candidate build and driver self-tests precede real agents. Real
+agents use owned panes/workspace, isolated daemon/state and scratch harness
+configuration. Never modify real configuration or restart the shared server.
+Record candidate SHA, harness executable facts, case results and bounded sanitized
+evidence. No version admission gate and no copying secrets into evidence.
+
+A passing wake alone is insufficient: each eligible idle queue case must prove
+actual programmatic transport with durable intent/Accepted or qualified Unknown
+state, native scope and bounded helper evidence, and no native typing for that
+attempt. Establish a matched Start/End bootstrap before testing queue eligibility.
+Use read-only canonical evidence; queue state is never a body/receipt oracle.
+
+Run the existing Codex priority/threshold matrix for ordinary threads and pairs,
+including p1 silence at T=0, p0 and requested receipts/invitations waking, higher
+thresholds and mixed ordering. Confirm hook delivery and existing ACK semantics;
+retain the existing no-extra-inbox observation as a model-dependent check. Exercise
+a definitely busy tool-running recipient: no programmatic add/native nudge while
+observed busy, body arrives through its hooks. Distinguish an actual post-check
+race from a known-busy violation; a race-caused extra marker turn is accepted.
+
+Exercise draft and modal refusal without modifying the draft/model selection;
+subsequent eligible idle activity should wake. Cover ordinary unsupported native
+fallback, side/multiple-session native behavior and dormant resume using existing
+host authority; do not demand queue transport for excluded cases. Include a later
+qualified turn fulfilling an attempt and bounded best-effort cancellation, retaining
+residual markers as the documented limit, never treating delete/list as receipt.
+A focused case may deliberately create an in-flight race only within owned test
+resources; do not require successful cancellation or zero extra turns.
+
+Crash-boundary and synthetic helper failures remain deterministic tests; do not
+kill real user sessions or engineer unreliable live crashes merely to repeat those
+proofs. Live evidence must at least establish real executable/storage capture,
+helper operation, final guarded queue submission, hook delivery, and clean owned
+resource shutdown. If a live case silently falls back, diagnose qualification
+failure rather than label queue transport passed. Keep absent credentials or
+unsupported runtime observations explicit and report the blocked case.
+
+Before final integration, run the full all-target/all-feature nextest suite with a
+fresh HT_LEAK_RUN_ID and scoped process/temp leak checks. Record wall time against
+the five-minute budget; do not waive regressions. Verify the one-file incremental
+build budget on the reused target and distinguish a cold/private test-target build
+from that measurement. Keep evidence for earlier over-budget observations.
+
+Implement only driver/evidence changes needed for this matrix, with appropriate
+self-tests and required repository checks. Any production fix reopens the affected
+review and repeats relevant qualification. Send a concrete case/transport/evidence
+mapping before spending real-model quota; this is a review checkpoint, not a new
+human permission gate. The design owner reviews results and any remaining limits,
+then coordinates one rebased whole-feature integration with the main owner.
+Migration numbering is assigned there; no push, standalone inactive merge, release,
+or shared-server restart is authorized by this assignment. Retain the warm target
+until integration, then remove owned build artifacts/worktree as the final step.
+
 ## Requirement baseline
 
 Source: user in this design session: “Own comprehensive Codex queue wake design and quality; full instructions are already in thread dzU0QoN9Dew.” The handoff mnSGdbzbn5j9 records the originating user's request for a separate design/quality owner and implementor and agreement that queueing is user input, not regular message delivery. This design introduces engineering decisions, not additional claims of human approval.
