@@ -1945,6 +1945,30 @@ fn derive_selection_refuses_human_context_when_herdr_reports_agent() {
     assert!(select(&[], Err(failed), false).is_ok());
 }
 
+/// Kills: a `human retry` replay of a person's frozen intent that skips the agent-session guard.
+#[test]
+fn replayed_human_selection_refuses_agent_session() {
+    use crate::harness::context::{Harness as H, Role};
+    let replay = |harness| crate::cli::commands::CooperativeSelection {
+        seat: SeatId::new("seat-1"),
+        target: HostTargetId::new("w:p1"),
+        harness,
+        role: Role::TopLevel,
+    };
+    for var in ["HERMES_SESSION_ID", "CLAUDECODE", "CODEX_THREAD_ID"] {
+        let detail = refusal_detail(
+            crate::cli::replay_person_guard(&replay(H::Human), [(var, "s")]).unwrap_err(),
+        );
+        assert!(
+            detail.contains(var) && !detail.contains("--operator"),
+            "{detail}"
+        );
+    }
+    assert!(crate::cli::replay_person_guard(&replay(H::Human), [("PATH", "/bin")]).is_ok());
+    // An agent's own replay is its harness session's, not the person's.
+    assert!(crate::cli::replay_person_guard(&replay(H::Claude), [("CLAUDECODE", "1")]).is_ok());
+}
+
 #[test]
 fn agent_context_selection_ignores_agent_markers() {
     let mut context = human_context("w:p1");

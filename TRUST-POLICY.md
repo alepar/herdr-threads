@@ -1163,9 +1163,13 @@ model open work, and summary closure never changes receipt state or installs glo
   registered environment marker, guard or output form, and every caller shape's session variables, today also
   `CODEX_THREAD_ID`, `CODEX_SESSION_ID`, `CLAUDE_CODE_SESSION_ID`, `CLAUDE_PID`, `HERMES_SESSION_ID`,
   `ANTIGRAVITY_CONVERSATION_ID` and opencode's session variables; matched by presence). A recorded `--operator`
-  mark does not lift it. The refusal names no override: it says the command is for a person in their own shell
-  pane. Refusals that may reach an agent session (this one, and `legacy purge`'s agent-evidence refusal) never
-  name `--operator`; the override is documented only in help text and docs for people. The same cooperative
+  mark does not lift it, nor does a `human retry` that replays a person's retained intent (the frozen Human
+  claim is refused the same way). The refusal names no override: it says the command is for a person in their
+  own shell pane. Refusals that may reach an agent session for a person-attribution or agent-evidence override
+  (this one, the root `me init` actor-route refusal, and `legacy purge`'s agent-evidence refusal) never name
+  `--operator`; the override is documented only in help text and docs for people. Hints that name an operator
+  repair (`seat rebind`, `resolve --new-seat`, `retire`, `--replace`, in unresolved-seat refusals and health
+  diagnostics) are exempt: those repairs attribute no person. The same cooperative
   evidence the caller derivation uses, not adversarial verification: an agent that unsets the variables is not
   detected (accepted limit). A person whose shell inherited such a variable from an agent runs the command
   with it unset (the *Refusals* accepted limit). Operator repairs (`seat rebind`, `resolve

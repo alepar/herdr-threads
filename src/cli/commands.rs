@@ -2856,6 +2856,16 @@ where
                 | CliAction::Wire(WireCommand::ServiceDisconnect(_))
         );
     if actor == InvocationActor::Agent && requires_human {
+        // Person attribution is never an agent's (TRUST-POLICY A4): from an agent session the
+        // refusal suggests no `human me init` command line.
+        if matches!(parsed.action, CliAction::MeInit { .. })
+            && let Some(marker) = super::agent_session_marker(super::env_keys())
+        {
+            return Err(ParseFailure::Invalid(invalid(format!(
+                "`me init` is for a person in their own shell pane, never an agent session \
+                 ({marker} is set)"
+            ))));
+        }
         return Err(ParseFailure::Invalid(invalid(guidance(&original, None))));
     }
     if actor == InvocationActor::Human

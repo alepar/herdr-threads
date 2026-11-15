@@ -571,6 +571,8 @@ fn me_init_refuses_with_claudecode_or_codex_marker() {
         for argv in [
             &["human", "me", "init"][..],
             &["human", "me", "init", "--operator"][..],
+            // The root form's actor-route refusal suggests no `human me init` either.
+            &["me", "init", "--operator"][..],
         ] {
             let refused = plugin.refused_with_env(Some("w1:p1"), argv, &[marker]);
             assert!(refused.contains(marker.0), "{refused}");
@@ -609,6 +611,7 @@ fn me_init_refuses_with_claudecode_or_codex_marker() {
         )
         .unwrap();
     assert_eq!(provenance, "operator_human");
+    assert_eq!(plugin.operator_mark_files(), 1);
     // The recorded operator mark never lets an agent session act as the person.
     for marker in sessions {
         let refused = plugin.refused_with_env(
@@ -789,7 +792,8 @@ fn context_files(state: &Path) -> Vec<PathBuf> {
 #[test]
 fn me_init_operator_then_person_pane_commands_work() {
     let (root, _scratch, socket) = scratch("htop");
-    let _host = FakeHost::start(&socket, vec![pane("w1:p1", "term-a")]);
+    // Herdr reports an agent in the pane: the later person-pane commands depend on the mark.
+    let _host = FakeHost::start(&socket, vec![agent_pane("w1:p1", "term-a", "claude", None)]);
     let plugin = Plugin {
         state: root.join("state"),
         host: socket.clone(),
@@ -804,7 +808,8 @@ fn me_init_operator_then_person_pane_commands_work() {
         Some((seat.as_str(), "w1:p1")),
         &["check-in", "--lifecycle-event", "agent-start"],
     );
-    let refused = plugin.refused_by_daemon(Some("w1:p1"), &["human", "me", "init"]);
+    // A plain shell is told the override (no agent-session marker).
+    let refused = plugin.refused(Some("w1:p1"), &["human", "me", "init"]);
     assert!(refused.contains(HUMAN_OVERRIDE_ARGV), "{refused}");
     let (code, value, stderr) = plugin.run_with_env(
         Some("w1:p1"),
@@ -814,7 +819,8 @@ fn me_init_operator_then_person_pane_commands_work() {
     );
     assert_eq!(code, 0, "{stderr}{value}");
     assert_eq!(value["result"]["data"]["context"]["harness"], "human");
-    // The person's later commands in the same pane work.
+    assert_eq!(plugin.operator_mark_files(), 1);
+    // The person's later commands in the same pane work, past Herdr's agent report.
     let (code, value, stderr) = plugin.run_with_env(Some("w1:p1"), None, &["human", "inbox"], &[]);
     assert_eq!(code, 0, "{stderr}{value}");
     let (code, value, stderr) = plugin.run_with_env(
@@ -824,6 +830,9 @@ fn me_init_operator_then_person_pane_commands_work() {
         &[],
     );
     assert_eq!(code, 0, "{stderr}{value}");
+    // The mark covers person-pane commands only; a plain `me init` still refuses.
+    let refused = plugin.refused(Some("w1:p1"), &["human", "me", "init"]);
+    assert!(refused.contains("claude"), "{refused}");
     // The mark never covers an agent session (a JSON inbox is a read-only seat default, not
     // the person acting, so a mutation stands for the person-pane commands).
     let env = [("CODEX_SANDBOX", "seatbelt")];

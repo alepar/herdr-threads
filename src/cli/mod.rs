@@ -500,10 +500,7 @@ pub(crate) fn person_guard<K: AsRef<str>, V>(
         .map(|(k, _)| k.as_ref().to_owned())
         .collect();
     if let Some(marker) = agent_session_marker(keys.iter().map(|k| (k, ()))) {
-        return Err(invalid_request(&format!(
-            "pane {pane}: `human` person commands are for a person in their own shell pane, \
-             never an agent session ({marker} is set); an agent sends as itself"
-        )));
+        return Err(agent_session_refusal(pane, marker));
     }
     if !operator_override
         && let Some(evidence) = agent_evidence(keys.iter().map(|k| (k, ())), read_agent)
@@ -511,6 +508,23 @@ pub(crate) fn person_guard<K: AsRef<str>, V>(
         return Err(agent_evidence_refusal(pane, &evidence));
     }
     Ok(())
+}
+
+/// The process environment's variable names. Only names are matched, so a non-UTF-8 entry is
+/// read lossily rather than panicking as `std::env::vars` would.
+pub(crate) fn env_keys() -> Vec<(String, ())> {
+    std::env::vars_os()
+        .map(|(key, _)| (key.to_string_lossy().into_owned(), ()))
+        .collect()
+}
+
+/// The refusal of person attribution in an agent session (TRUST-POLICY A4 *Agent session*):
+/// it names no override.
+pub(crate) fn agent_session_refusal(pane: &str, marker: &str) -> RunError {
+    invalid_request(&format!(
+        "pane {pane}: `human` person commands are for a person in their own shell pane, \
+         never an agent session ({marker} is set); an agent sends as itself"
+    ))
 }
 
 /// Refusal shared by `me init` and person-pane commands (TRUST-POLICY A4): agent evidence
@@ -2984,6 +2998,20 @@ fn ordinary_retry_claim(
     )?)
 }
 
+/// A replayed person intent acts as the person: refused from an agent session (TRUST-POLICY A4
+/// *Agent session*), like a live person-pane command.
+fn replay_person_guard<K: AsRef<str>, V>(
+    historical: &CooperativeSelection,
+    env: impl IntoIterator<Item = (K, V)>,
+) -> Result<(), RunError> {
+    match agent_session_marker(env) {
+        Some(marker) if historical.harness == crate::harness::context::Harness::Human => {
+            Err(agent_session_refusal(historical.target.as_str(), marker))
+        }
+        _ => Ok(()),
+    }
+}
+
 /// The frozen caller a same-location retry replays as. Any other location, role or instance
 /// keeps the live selection, whose own original-caller checks then refuse the retry.
 fn replay_selection(
@@ -3196,6 +3224,7 @@ pub(crate) fn run_selected<C: LocalClient + ?Sized, W: Write>(
         .and_then(|claim| replay_selection(selection, claim, instance));
     let origin = caller::active();
     let selection = if let Some(historical) = &historical {
+        replay_person_guard(historical, env_keys())?;
         historical
     } else {
         if !matches!(&parsed.action, CliAction::Retry(_)) {
@@ -4960,7 +4989,7 @@ where
         seat,
         &context,
         operator_override,
-        std::env::vars(),
+        env_keys(),
         |pane| pane_agent(runtime, clock, parsed.caller_site.as_ref(), pane),
     )
 }

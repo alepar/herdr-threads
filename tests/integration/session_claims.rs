@@ -400,8 +400,9 @@ fn unsupported_harness_agent_is_refused_never_a_person() {
         assert!(!out.status.success(), "{marker:?}: {out:?}");
         let text = stderr(&out);
         assert!(
-            text.contains(&format!("environment variable {} is set", marker.0))
-                && text.contains("never act as an agent"),
+            text.contains(&format!("({} is set)", marker.0))
+                && text.contains("never an agent session")
+                && !text.contains("--operator"),
             "{marker:?}: {text}"
         );
     }

@@ -276,7 +276,7 @@ Consent:
 Ordinary root commands act as agents. Human and operator commands begin `ht human`;
 put `--state-dir`, `--host-endpoint` and output flags after `human`. `--human` changes
 output only. Declare a person with `ht human me init` in their shell pane, or
-`ht human me init --operator` for the existing explicit local-account override.
+`ht human me init --operator` for the explicit local-account override (never from inside an agent session).
 Person communication uses `ht human send`, `ht human invite`, `ht human accept` and
 `ht human ack`. Recover a retained Human/operator intent with `ht human retry REF`.
 Subagents read using `--machine` or `--json` and never mutate (a subagent write is refused with `subagent_read_only`). Every agent command needs its harness session id in the environment (`CLAUDE_CODE_SESSION_ID`, `CODEX_SESSION_ID` with `CODEX_THREAD_ID`, `HERMES_SESSION_ID`) and refuses with `session_claim_required` when it is missing; Codex under `codex app-server --managed-daemon` is refused (`managed_daemon_refused`), so keep Codex in its pane.

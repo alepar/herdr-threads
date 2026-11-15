@@ -207,7 +207,7 @@ pub(crate) fn run_me_init<W: Write>(
     // (TRUST-POLICY A4, best effort; the daemon refuses a person's check-in
     // over an agent binding). `--operator` is the local account's explicit
     // override of the evidence, never of an agent session.
-    super::person_guard(pane.as_str(), std::env::vars(), operator, || {
+    super::person_guard(pane.as_str(), super::env_keys(), operator, || {
         pane_agent(context, clock, parsed.caller_site.as_ref(), &pane)
     })?;
     let (instance, _, client) = connect(paths, clock)?;
