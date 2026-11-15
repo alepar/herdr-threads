@@ -202,7 +202,7 @@
       "method": "remoteControl/status/changed",
       "params": {
         "status": "disabled",
-        "serverName": "blacky",
+        "serverName": "<host>",
         "installationId": "27110452-8644-4997-aae2-7433e21306b5",
         "environmentId": null
       },

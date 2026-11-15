@@ -8,12 +8,12 @@
     "151c10e98",
     "20caa72ba"
   ],
-  "integration_changes": "Relocated evidence under this run; updated report reproduction paths and crosslinks; added navigation links. All other evidence files byte-identical. Design changes only evidence paths and navigation links.",
+  "integration_changes": "Relocated evidence under this run; updated report reproduction paths and crosslinks; added navigation links. Three RPC captures redact serverName only; old/new hashes recorded. Other non-report evidence files byte-identical. Design changes only evidence paths and navigation links.",
   "production_changes": false,
   "checks": {
     "relative_links": 21,
     "json_python_parse": "passed",
-    "public_sensitive_pattern_scan": "no matches",
+    "public_sensitive_pattern_scan": "No private path/profile/credential patterns; JSON string values traversed and every serverName is <host>.",
     "docs_test": "DOCS_TEST_PASS",
     "fmt": "passed",
     "harness_neutral": "passed",
@@ -94,20 +94,12 @@
       "sha256": "a7398585c1402bd947c6c259cc91e3e8eda9b0eeb3908d6a377377c3a4bcb288"
     },
     {
-      "path": "evidence/run-4-rpc/rpc-calls.json",
-      "sha256": "f26eada2c6d9926f33280119853eb57d97cafecce9cfa21a9011a7ad74a20389"
-    },
-    {
       "path": "evidence/run-4-rpc/terminal.txt",
       "sha256": "3a3fcd97bc038be9ab762b7971eda09d7a848ab1133bdb0c720b3297a5c57ec4"
     },
     {
       "path": "evidence/run-5-reconciled/results.json",
       "sha256": "ec399323703bbe70e8ab2f096bb23b268d6a40aea3ffb490590ac669e526e40b"
-    },
-    {
-      "path": "evidence/run-5-reconciled/rpc-calls.json",
-      "sha256": "800d47a7ab4ba40142f3f563d90ad0f4add92ae2397bfa6987d24bddc9d03848"
     },
     {
       "path": "evidence/run-5-reconciled/terminal.txt",
@@ -126,10 +118,6 @@
       "sha256": "661743cb4d0996c6365b673c7df5b3d7aa4e61661be88551f88c6d16a27e2bff"
     },
     {
-      "path": "evidence/run-7-admission/rpc-calls.json",
-      "sha256": "e24d0d1ad465e77aec61431517631e2974c620e854fcba055f06841a2c86b3f9"
-    },
-    {
       "path": "evidence/run-7-admission/terminal.txt",
       "sha256": "e7b0dc509f74364c83cb5cb44c81c87219985806589cc962dca2864cf36b6b78"
     },
@@ -146,5 +134,28 @@
       "sha256": "657fce78a0a199b6e0b2dd996007221d64f7cd7cef891d6501a16f98b10355ba"
     }
   ],
-  "cleanup": "No new live experiments, processes or build directory. Earlier cleanup records preserved. Worktree removal awaits main integration confirmation."
+  "cleanup": "No new live experiments, processes or build directory. Earlier cleanup records preserved. Worktree removal awaits main integration confirmation.",
+  "redacted_evidence": [
+    {
+      "path": "evidence/run-4-rpc/rpc-calls.json",
+      "field": "serverName",
+      "change": "Machine hostname replaced with <host>; this field only differs from the reviewed source evidence.",
+      "original_sha256": "f26eada2c6d9926f33280119853eb57d97cafecce9cfa21a9011a7ad74a20389",
+      "redacted_sha256": "afa18cb5f78ba6954b1ebe1f4136e0d35b4c6c80eb34acc4823970619fd60610"
+    },
+    {
+      "path": "evidence/run-5-reconciled/rpc-calls.json",
+      "field": "serverName",
+      "change": "Machine hostname replaced with <host>; this field only differs from the reviewed source evidence.",
+      "original_sha256": "800d47a7ab4ba40142f3f563d90ad0f4add92ae2397bfa6987d24bddc9d03848",
+      "redacted_sha256": "893a0bf018a9d7e1ffc3f36a7c38f2d9782d8792ddedebf42d637a96c209b897"
+    },
+    {
+      "path": "evidence/run-7-admission/rpc-calls.json",
+      "field": "serverName",
+      "change": "Machine hostname replaced with <host>; this field only differs from the reviewed source evidence.",
+      "original_sha256": "e24d0d1ad465e77aec61431517631e2974c620e854fcba055f06841a2c86b3f9",
+      "redacted_sha256": "f75bc3bee200e1e831da203a087e06fa274816f717af0bc33fcbcf3aabde2159"
+    }
+  ]
 }
