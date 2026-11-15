@@ -6,6 +6,114 @@ Wake a qualified idle Codex session through its persistent input queue while pre
 
 Status: reopened by explicit user requirement change; observed-idle enqueue with best-effort cancellation is permitted. The current amendment below supersedes the historical rejection and conflicting requirements. Production remains unchanged while target/control and retry details are settled. Design/quality owner: snSGPb0CT1uM. Implementor: snSGte2clRpf. Queue: ht-d2jq. Source baseline: main 1cf51f9a4; live spike: 8625c066e, `docs/superpowers/runs/2026-11-14-codex-queue-wake/evidence/report.md` on branch `spike/codex-queue-wake`. The spike is not merged into this document's baseline.
 
+## Activation contract: recovery and retirement (2026-11-14)
+
+This amendment settles the remaining activation policy from thread dzU0QoN9Dew
+messages #101–#105. It supersedes blanket cleanup/fallback and unresolved-row
+retention requirements where explicitly stated below. The whole feature stays on
+its branch until integrated qualification and review; this is implementation
+authorization, not a release or merge approval.
+
+### Helper ownership and crash recovery
+
+Before any control invocation, commit one helper-operation slot per intent with
+an operation UUID, Add/List/Delete purpose, daemon owner boot, kernel boot and
+SpawnPending state. After spawn, commit the exact child PID/start/kernel boot/PGID
+witness before initialization. A failed or lost witness callback reply stops the
+invocation with bounded cleanup; it never proceeds to initialization or add.
+Final arm requires the committed exact operation and witness. Completion records
+typed cleanup evidence against that operation, not error-message parsing.
+
+Recovery never signals stored PIDs or process groups. Use bounded adapter-owned
+Linux probes distinguishing absent, live and unreadable; process-birth mismatch
+proves the old leader ended, not that its old group ended. Positive quiescence is
+kernel-boot change or old leader ended plus group absent. Permission errors and
+ambiguous reads remain Unknown. This is a cooperative helper/group observation,
+not immunity from arbitrary detached descendants. Do not add pidfd killing,
+parent-death signals or a general process supervisor to the initial slice.
+
+Recovered old-owner Prepared with no arm nonce becomes NoEffect: no add was
+authorized. Preserve unconfirmed helper cleanup honestly, including the
+spawn-before-witness crash gap. It blocks another programmatic helper for that
+cohort, but permits a newly reserved, fully guarded native wake. This narrow
+exception prevents uninitialized-resource uncertainty from deadlocking all wake
+transports. Canonical ownership must invalidate old callbacks before recovery;
+time passage is insufficient. Helper callbacks must be owned/joined background
+work covered by the existing daemon OwnerLock lease through shutdown, with
+cancellation checked again inside final arm. Replacement ownership cannot be
+acquired while an old callback can execute. A captured daemon_boot comparison
+alone is not election proof. Test lease retention through callback shutdown.
+Armed recovery becomes Unknown, never Prepared,
+and always has a committed helper witness. Accepted retains its known ID.
+
+### Logical purpose and submission results
+
+Keep logical Active/Fulfilled/ScopeEnded orthogonal to physical phase, owned IDs
+and helper quarantine. Arm atomically snapshots current native ID/ordinal and
+requires matched-ended qualification plus current idle/UI/owedness guards. Only
+a different qualified Start beyond that baseline in the exact frozen scope may
+fulfill an armed attempt. Generic contact, sibling activity, newer attention,
+list absence and delete outcomes cannot fulfill it.
+
+Use immutable arm nonce, exact attempt, arm owner/current daemon boot and Armed
+phase for the one winning result CAS. Do not predicate it on a mutable general
+row revision: a Start may fulfill while add is in flight. Preserve the later
+Accepted ID and cleanup atomically; repeated result reporting has no new effect.
+Recovery returns no arm ticket. Test concurrent fulfillment, cleanup bookkeeping
+and lost replies without losing the known submission result.
+
+Canonical binding end/replacement or seat/mapping finality may retire the frozen
+logical scope. Mere disconnected liveness, daemon/host loss, unreadable process
+or missing socket does not. Do not manufacture a binding end or dormant authority
+to retire an intent. If a disconnected scope has no canonical finality, retain
+its Active possible-effect fence until qualified activity or finality arrives.
+Existing dormant/native admission still requires its own current reservation and
+host/store authority; ordinary SessionEnd does not create that authority.
+
+### Suppression, cancellation and bounded retention
+
+Active possible effects and relevant helper quarantine suppress both transports,
+except the explicit unarmed NoEffect native exception above. After logical
+retirement and positive helper quiescence, release cohort/origin-seat wake
+suppression even if a marker remains. Each later wake needs a new canonical
+reservation and all normal gates; never replay the retired attempt. An eligible
+native resume can consume a residual marker and produce an extra turn. This is
+the accepted best-effort cancellation limit, not cancellation or receipt proof.
+
+For retired intents, schedule one bounded list pass (at most four pages/128 IDs)
+and one delete attempt per exact owned ID. Persist discovered IDs before deleting.
+List absence/incompleteness and delete true/false never resolve an Active intent.
+Cleanup uncertainty pauses further helper starts until positive recovery. After
+logical retirement, helper quiescence and the bounded cleanup pass being attempted,
+a tombstone may be pruned only when no active/last wake_work reference remains.
+Keep active/helper-uncertain rows, cap at 4096, and never evict unresolved rows by
+LRU. Revalidate old reservations before prepare so pruning cannot resurrect them.
+
+One node-wide recovery owner processes at most 32 summaries each five-second
+quantum with at most one control operation and a bounded cursor. It runs cleanup
+independently of host availability or wake freeze, grants no wake authority, and
+must service existing rows at capacity. Store methods own evidence-derived CAS;
+no caller-controlled resolved boolean. Capture failure cannot bypass indexed
+cohort/origin-seat fences; derive the replay key from native session before capture.
+
+### Implementation and acceptance
+
+Integrate the ledger and observation seams, neutral host idle-guard extraction,
+shared turn-state book, explicit actual transport, and node-wide recovery. Initial
+queue eligibility remains Linux, one exact connected hooked top-level foreground
+session with qualified native state; exclude dormant/multisession, poke and parked
+inbox paths. Queue Accepted is submission, not native composer verification or
+seat-contact AwaitingReceipt. Unsupported cases choose native before effects,
+subject to durable fences. No body, receipt or attribution changes.
+
+Tests must cover every crash boundary above; stale/lost callbacks; Start before
+add-result commit; exact scope finality versus disconnected/host-down/dormant;
+PID reuse/unreadable/boot change; absence/delete outcomes; cadence/cap/pruning;
+and the actual prepare INSERT with all seven frontier components populated.
+Run required repository checks and scoped leak checks, then independent integrated
+review and live qualification before merge. Record timing regressions honestly.
+Routine model-visible text remains unchanged (0 new bytes); marker stays 22 bytes.
+
 ## Requirement baseline
 
 Source: user in this design session: “Own comprehensive Codex queue wake design and quality; full instructions are already in thread dzU0QoN9Dew.” The handoff mnSGdbzbn5j9 records the originating user's request for a separate design/quality owner and implementor and agreement that queueing is user input, not regular message delivery. This design introduces engineering decisions, not additional claims of human approval.

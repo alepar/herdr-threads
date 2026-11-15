@@ -4008,3 +4008,31 @@ proof or unbounded seen-ID history is claimed. This cooperative wake observation
 changes no receipt provenance and cannot authorize another add for the same durable
 attempt. The storage/report prerequisite is inactive until scheduler integration
 implements and qualifies the separate logical and physical state transitions.
+
+
+### Queue helper recovery and logical retirement (2026-11-14)
+
+Logical wake fulfillment/scope retirement is distinct from physical queue effects
+and helper cleanup. Canonical scope end/replacement can retire a frozen intent;
+disconnection, host loss and unreadable processes alone cannot. Retirement never
+ends or moves a binding and never creates dormant wake authority.
+
+After logical retirement and positively observed helper quiescence, a new guarded
+wake may proceed despite an uncancelled marker. An eligible dormant resume may
+therefore consume a residual marker and cause an extra turn. This is the accepted
+best-effort cancellation limit; queue absence/deletion is not delivery or receipt
+proof and never authorizes replay of the same attempt.
+
+An old-owner Prepared intent with no arm nonce proves no authorized add. Recovery
+may allow freshly guarded native fallback while preserving unconfirmed helper
+cleanup and forbidding another programmatic helper for that cohort. A crash
+between spawn and witness persistence is resource uncertainty, not a possible
+queue submission. Ownership must be canonically revoked before this disposition.
+
+Helper recovery observes exact process birth/kernel boot and group absence; it
+never signals stored raw PIDs/groups. Unreadable is Unknown. Boot change or old
+leader ended plus group absent supplies bounded cooperative quiescence evidence,
+not proof against arbitrary detached descendants. Active possible-effect and
+helper-uncertain rows remain retained; logically retired, quiescent rows may be
+pruned after bounded best-effort cancellation and removal of wake-work references.
+See the design's Activation contract for the complete bounds and CAS rules.
