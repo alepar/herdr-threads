@@ -1,0 +1,174 @@
+{
+  "scope": "One Root-executed authorized live provider run: idle ACK/context delivery, zero redundant inbox calls, eligible passive p1 silence/next turn and provider/model/session continuity. Publisher read sanitized artifacts only; no new runtime or credential access.",
+  "source_head": "d55f7e984c55dd06b805cc7728b9f2ca9985209a",
+  "production_build_source": "a19fd881e7e8dc6c1b52c9cb2ccda0abbc3a8601",
+  "candidate_sha256": "a8aef2df56e6954fe3c12b7d02841f521712ceb403d13f9b93fabdabe2224289",
+  "driver_sha256": "50a3f9fb56665889ec8c4e6af9966083d9163476167902cc733606a08fbd44ed",
+  "fixture_sha256": "08174d104a0e5fdbdee5f91cfe2acb169ef49f16b980d0130fa6a846dcf7ee33",
+  "actual_execution_path": "target/debug/deps/herdr_threads-75705d562a6fb0ec",
+  "postrun_binary_hashes_independently_checked": {
+    "target/debug/herdr-threads": "a8aef2df56e6954fe3c12b7d02841f521712ceb403d13f9b93fabdabe2224289",
+    "target/debug/deps/herdr_threads-75705d562a6fb0ec": "a8aef2df56e6954fe3c12b7d02841f521712ceb403d13f9b93fabdabe2224289"
+  },
+  "before_after_binary_hash_match_reported_by_root": true,
+  "official_runtime_entry_sha256": "e79626f2dd6f94aa45d30f3fa63cd84319a6eefcd150b353cfaf274366926774",
+  "installed_extensions": {
+    "primary": {
+      "path": "$SCRATCH/agent/extensions/herdr-threads/index.js",
+      "sha256": "b8e64dd228fc2a8b225626b62bf71d316576bac7a1b2351167a405db626d859f"
+    }
+  },
+  "run_id": "e6500a20-fb8e-4e23-9327-674e4929736b",
+  "results": [
+    {
+      "case": "live",
+      "outcome": "pass",
+      "elapsed_s": 39.501
+    }
+  ],
+  "provider": "openrouter",
+  "model": "deepseek/deepseek-v4-pro",
+  "native_session": "01a1df90-3301-773d-af8d-18bf61dcd5ff",
+  "provider_http_responses": [
+    {
+      "at": 1794752136544,
+      "status": 200
+    },
+    {
+      "at": 1794752139525,
+      "status": 200
+    },
+    {
+      "at": 1794752141890,
+      "status": 200
+    },
+    {
+      "at": 1794752173704,
+      "status": 200
+    }
+  ],
+  "outer_starts": [
+    {
+      "at": 1794752135400,
+      "prompt": "Qualification baseline. Reply only READY. Do not call tools.",
+      "sid": "01a1df90-3301-773d-af8d-18bf61dcd5ff"
+    },
+    {
+      "at": 1794752138388,
+      "prompt": "herdr-threads: wake up",
+      "sid": "01a1df90-3301-773d-af8d-18bf61dcd5ff"
+    },
+    {
+      "at": 1794752172485,
+      "prompt": "Reply READY without tools.",
+      "sid": "01a1df90-3301-773d-af8d-18bf61dcd5ff"
+    }
+  ],
+  "receipt_target": {
+    "message": "mAZm2GyaQoOR",
+    "body": "RECEIPT-EXACT-FRAME",
+    "send_completed_at": 1794752137.3301668
+  },
+  "exact_native_receipt_frame": {
+    "at": 1794752138394,
+    "sid": "01a1df90-3301-773d-af8d-18bf61dcd5ff",
+    "customType": "herdr-threads:9097d236-9d36-4d7d-b0fb-15c782c044c4:ffa82876-73b8-4506-b95d-b3f6a02e1324",
+    "content": "[herdr-threads] new messages:\n\n[herdr-threads] message mAZm2GyaQoOR in daCytzfFAd3 \"1:1 sAZm99QYi5lb sAZmGj266xA2\" from sAZmGj266xA2 [p0] [human]:\n  RECEIPT-EXACT-FRAME"
+  },
+  "canonical_receipt": {
+    "seat": "sAZm99QYi5lb",
+    "status": "acknowledged",
+    "physical_status": "acknowledged",
+    "effective_status": "acknowledged",
+    "retirement_cutover": null,
+    "cleanup_state": null,
+    "ack_provenance": {
+      "actor": "sAZm99QYi5lb",
+      "generation": 1,
+      "native_observation": "{\"action_provenance\":\"cooperative_mod_delivery\",\"binding_generation\":1,\"decided_at\":1794752138414,\"execution\":\"6bcb885b-6b62-5d6e-ba09-a8b220318028\",\"harness\":\"pi\",\"host_boot\":\"<private-host-boot>\",\"observed_at\":1794752138414,\"provenance\":\"cooperative_top_level\",\"session\":\"01a1df90-3301-773d-af8d-18bf61dcd5ff\",\"target_generation\":1,\"via\":\"context\"}",
+      "decided_at": 1794752138414
+    }
+  },
+  "parsed_receipt_observation": {
+    "action_provenance": "cooperative_mod_delivery",
+    "binding_generation": 1,
+    "decided_at": 1794752138414,
+    "execution": "6bcb885b-6b62-5d6e-ba09-a8b220318028",
+    "harness": "pi",
+    "host_boot": "<private-host-boot>",
+    "observed_at": 1794752138414,
+    "provenance": "cooperative_top_level",
+    "session": "01a1df90-3301-773d-af8d-18bf61dcd5ff",
+    "target_generation": 1,
+    "via": "context"
+  },
+  "wake_tool_calls": [
+    {
+      "type": "tool_execution_start",
+      "toolCallId": "call_9c2ad1f78a2e4750a1b2da3a",
+      "toolName": "read",
+      "args": {
+        "path": "$SCRATCH/agent/skills/herdr-threads/SKILL.md",
+        "offset": 0,
+        "limit": null
+      }
+    }
+  ],
+  "wake_inbox_calls": 0,
+  "passive_p1": {
+    "message": "mAZmdUdzksex",
+    "body": "LIVE PASSIVE P1. Reply only RECEIVED when delivered.",
+    "eligibility": {
+      "sid": "01a1df90-3301-773d-af8d-18bf61dcd5ff",
+      "last_native_start": 1794752138.388,
+      "eligible_at": 1794752170.388,
+      "observed_at": 1794752170.3934703
+    },
+    "send_completed_at": 1794752170.4400933,
+    "manual_next_turn_at": 1794752172485,
+    "silent_observation_s": 2.044907,
+    "no_native_start_before_manual_turn": true,
+    "next_turn_context": {
+      "at": 1794752172490,
+      "sid": "01a1df90-3301-773d-af8d-18bf61dcd5ff",
+      "customType": "herdr-threads:9097d236-9d36-4d7d-b0fb-15c782c044c4:26776bad-fc6b-4747-b979-2618ddd23076",
+      "content": "[herdr-threads] new messages:\n\n[herdr-threads] message mAZmdUdzksex in daCytzfFAd3 \"1:1 sAZm99QYi5lb sAZmGj266xA2\" from sAZmGj266xA2 [human]:\n  LIVE PASSIVE P1. Reply only RECEIVED when delivered."
+    }
+  },
+  "provider_model_continuity": [
+    [
+      "openrouter",
+      "deepseek/deepseek-v4-pro"
+    ]
+  ],
+  "session_continuity_independently_checked": true,
+  "settled_event_count": 3,
+  "cleanup": {
+    "ok": true,
+    "helper_rc": 0,
+    "helper_reaped": true,
+    "root_removed": true,
+    "leak_rc": 0,
+    "errors": {}
+  },
+  "outside_same_id_scan_reported_by_root": {
+    "run_id": "e6500a20-fb8e-4e23-9327-674e4929736b",
+    "exit": 0
+  },
+  "credential_evidence_boundary": {
+    "driver_exact_secret_retained_evidence_scan_completed": true,
+    "basis": "Root attestation and successful driver completion after its cleanup exact-secret scan",
+    "publisher_read_credential_file": false,
+    "publisher_repeated_raw_secret_scan": false,
+    "temporary_provider_env_removed_reported_by_root": true,
+    "authorized_source_file_read_only_reported_by_root": true
+  },
+  "sanitized_artifact_sha256": {
+    "manifest.json": "ebf8a358d6198d73bd5c105963cc7d16e5bb792afe951b18bbd2e9baada3e7c0",
+    "results.json": "6066058887197873c79ab92e798b39ad5835f92614e1140135695ffeefc3e990",
+    "native.jsonl": "ef81df96057fe91bf7c83589862e20ed2c6efebcc2517d50cc73a37cb2cd1d80",
+    "commands.json": "a0071017dbd8f057ada0a8d9814d30f01d6906de2e06f8b9bb58287bf2180279",
+    "captures.json": "dfe1c2af204dab30efe4f419d41c2bd627740b0aed658c1002b34141ad4518c6"
+  },
+  "limits": "This live run does not replace the separate scripted busy, notice, draft/selector and invitation matrix. Live invitation acceptance remains unqualified. Prior approval rejection remains prelaunch/unattempted, not a live provider failure."
+}
