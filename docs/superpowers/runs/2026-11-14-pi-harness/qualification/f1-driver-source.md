@@ -85,6 +85,36 @@ Final driver SHA256:
 `b1056236d0850010509a7d04fbea18ef5babaa62c031329ba8334a04d156d1f3`.
 The fixture hash is unchanged. Runtime qualification remains unexecuted here.
 
+The first dispatched new-seam native attempt used clean source `a19fd881e` and
+candidate SHA256
+`a8aef2df56e6954fe3c12b7d02841f521712ceb403d13f9b93fabdabe2224289`.
+Shared format, all-target/all-feature clippy, default-feature, neutral and wire
+guards passed; the one warm build took 43.21 seconds. The native run stopped
+during `notice_reload` setup because the second-sink launch supplied an unsupported
+`--profile-dir` flag. The entire run took 9.25 seconds and exited 1. No notice
+cause was sent; `notice_page` and `notice_wake` did not run. This is a driver
+setup failure, not evidence about notice delivery. Cleanup reported helper
+reaped, root removed and process/temp scan exit 0. The separate read-only hash
+observer was stopped and reaped (143) after cleanup; no installed-file digest is
+claimed for this fast failed attempt.
+
+The bounded driver correction removes that flag. The sink's separate profile
+and HOME remain selected by its setup environment, pane environment and exec
+shim. A regression invokes the actual candidate's public `launch --help` parser
+with the captured launch arguments, without starting a host or agent: RED was
+the same unknown-flag exit 2; GREEN passed all 26 driver tests in 2.384 seconds.
+Both installations now have their path/digest captured read-only immediately
+after public setup, so later failures cannot outrun an external observer. A
+fixture test checks this read leaves the artifact unchanged. The final exact-run
+process/temp scan exited 0. No production source or binary changed.
+
+Correction patch SHA256:
+`1b513b57840b6af7252b5810b9525440875b789f4e624816d16f82bea9f9d387`.
+Corrected driver SHA256:
+`85cf1abb9bd41c731026c7c9236be09b64a7503b1dec6738299b6387d88ccd3e`.
+The provider fixture hash is unchanged. These source checks do not turn the
+failed native attempt into a pass or qualify the unexecuted cases.
+
 Earlier fourteen-case and pre-F1 native results remain historical evidence with
 their original source/binary identities. These selftests do not replace final
 native delta, corrected unfiltered attempt2, scoped live qualification, or the

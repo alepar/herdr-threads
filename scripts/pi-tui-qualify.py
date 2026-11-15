@@ -324,12 +324,14 @@ class Run:
                         + "exec " + ("node " if self.pi.suffix == ".js" else "") + shlex.quote(str(self.pi)) + ' "$@"\n')
         shim.chmod(0o700)
         self.ht("setup", "pi", "--harness-binary", str(shim), setup=True, extra_env=extra)
+        self.facts.setdefault("installed_extensions", {})["sink"] = {
+            "path": str(extension), "sha256": hashlib.sha256(extension.read_bytes()).hexdigest()}
         flags = sum((["--env", k + "=" + v] for k, v in env.items()), [])
         tab = self.herdr("tab", "create", "--workspace", self.workspace, "--cwd", str(self.root / "project"),
                          "--label", "pi-notice-sink", "--no-focus", *flags)
         self.sink = {"probe": probe, "profile": profile, "pane": tab["result"]["root_pane"]["pane_id"]}
         launch = self.ht("launch", "--kind", "pi", "--pane", self.sink["pane"], "--harness-binary", str(shim),
-                         "--profile-dir", str(profile), "--", *options, extra_env=extra)
+                         "--", *options, extra_env=extra)
         assert launch["launch"]["outcome"] == "started", "notice sink public launch did not start"
         self.sink["seat"] = launch["launch"]["seat"]
         row = self.wait("notice sink native startup", lambda: next((r for r in self.probe_rows(probe) if r["event"] == "session_start"), None))
@@ -691,6 +693,8 @@ read -r _ || true
         self.recipient = tab["result"]["root_pane"]["pane_id"]
         self.ht("daemon", "ensure")
         self.ht("setup", "pi", "--harness-binary", str(shim), setup=True)
+        self.facts.setdefault("installed_extensions", {})["primary"] = {
+            "path": str(production_extension), "sha256": hashlib.sha256(production_extension.read_bytes()).hexdigest()}
         self.facts["setup_status"] = self.ht("setup-status", "pi")
         self.ht("me", "init", pane=self.sender, human=True)
         self.facts["launch"] = self.ht("launch", "--kind", "pi", "--pane", self.recipient, "--harness-binary", str(shim), "--",
@@ -1250,6 +1254,48 @@ read -r _ || true
 
 
 class DriverTests(unittest.TestCase):
+    def test_sink_launch_uses_actual_public_grammar_and_isolated_profile(self):
+        class ParserChecked(Exception):
+            pass
+        with tempfile.TemporaryDirectory(prefix="ht-pi-sink-grammar-") as root:
+            run = Run.__new__(Run); run.root = Path(root); run.sink = None; run.provider = "ht-fixture"; run.args = argparse.Namespace(live=False)
+            run.modules = MODULES; run.bin = REPO / "target/debug/herdr-threads"
+            run.pi = MODULES / "@earendil-works/pi-coding-agent/dist/bundle/cli.js"
+            run.workspace = "owned-workspace"; run.facts = {}
+            run.env = {"PATH": os.environ["PATH"], "HT_PI_QUALIFY_MODULES": str(MODULES),
+                       "HT_PI_QUALIFY_CLI": '["owned-cli","--json"]', "PI_OFFLINE": "1"}
+            (run.root / "agent").mkdir(); (run.root / "agent/settings.json").write_text('{}')
+            setup_env = []
+            def ht(*args, **kwargs):
+                if args[0] == "setup":
+                    setup_env.append(kwargs["extra_env"])
+                    installed = run.root / "notice-sink/agent/extensions/herdr-threads/index.js"
+                    installed.parent.mkdir(parents=True); installed.write_text('synthetic installed artifact for selftest only')
+                    return {}
+                self.assertEqual(args[0], "launch")
+                # --help invokes the real public parser without allocating a
+                # host, launch plan, seat or process. Unknown flags still fail.
+                result = subprocess.run([str(run.bin), *args[:args.index("--")], "--help"],
+                    env={"PATH": os.environ["PATH"], "HOME": root, "HT_TEST_OWNER": str(os.getpid()),
+                         "HT_LEAK_RUN_ID": os.environ.get("HT_LEAK_RUN_ID", str(uuid.uuid4()))},
+                    cwd=REPO, capture_output=True, text=True, timeout=5)
+                self.assertEqual(result.returncode, 0, result.stderr)
+                raise ParserChecked()
+            run.ht = ht
+            run.herdr = lambda *_args: {"result": {"root_pane": {"pane_id": "owned-sink"}}}
+            with self.assertRaises(ParserChecked): run.start_notice_sink()
+            profile = run.root / "notice-sink/agent"
+            self.assertEqual(setup_env[0]["PI_CODING_AGENT_DIR"], str(profile))
+            self.assertEqual(setup_env[0]["HOME"], str(run.root / "notice-sink/home"))
+            shim = (run.root / "notice-sink/bin/pi").read_text()
+            self.assertIn("export PI_CODING_AGENT_DIR=" + shlex.quote(str(profile)), shim)
+            self.assertIn("export HOME=" + shlex.quote(str(run.root / "notice-sink/home")), shim)
+            installed = profile / "extensions/herdr-threads/index.js"
+            original = 'synthetic installed artifact for selftest only'
+            self.assertEqual(installed.read_text(), original, "identity capture changed the installation")
+            self.assertEqual(run.facts["installed_extensions"]["sink"], {
+                "path": str(installed), "sha256": hashlib.sha256(original.encode()).hexdigest()})
+
     def test_notice_wake_captures_pending_before_clearing_exact_owned_draft(self):
         run = Run.__new__(Run); run.main_sid = "main"; run.facts = {}
         events = [{"event": "session_start", "state": {"sid": "main"}}, {"event": "agent_settled", "state": {"sid": "main"}}]
