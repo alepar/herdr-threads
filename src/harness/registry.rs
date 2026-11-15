@@ -1863,7 +1863,7 @@ mod tests {
             .map(|r| r.metadata().id)
             .filter(|id| registry.wakes_only_through_channel(id))
             .collect();
-        assert_eq!(channel_only, ["opencode", "pi"]);
+        assert_eq!(channel_only, ["opencode"]);
         assert!(!registry.wakes_only_through_channel("human"));
         assert!(!registry.wakes_only_through_channel("unknown-harness"));
         for id in ["human", "unknown-harness"] {

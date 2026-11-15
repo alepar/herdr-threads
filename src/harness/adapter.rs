@@ -2040,14 +2040,14 @@ mod tests {
                     );
                     assert!(registration.canary_strategy().is_some());
                 }
-                "agy" => {
+                "agy" | "pi" => {
                     assert_eq!(
                         registration.composer_policy().unwrap().capabilities(None),
                         crate::harness::recipe::PokeCapabilities::NONE
                     );
                     assert!(registration.canary_strategy().is_none());
                 }
-                "opencode" | "pi" | "synthetic_fourth" => {
+                "opencode" | "synthetic_fourth" => {
                     assert!(registration.composer_policy().is_none());
                     assert!(registration.canary_strategy().is_none());
                 }
