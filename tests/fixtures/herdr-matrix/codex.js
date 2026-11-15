@@ -12,7 +12,7 @@ though the content is Python). It behaves like the parts of Codex that Herdr and
   (`source: startup`) at start, UserPromptSubmit for each submitted line, PreToolUse before a tool,
   Stop at the end of every turn, Interrupt on Ctrl-C, SessionEnd at exit. That covers Herdr's own
   Codex integration too, whichever events a release's integration hooks. Each hook's `hookSpecificOutput.additionalContext` is the context the model
-  would get.
+  would get, and so is a blocking hook's `reason` (`decision: block`, Codex's Stop continuation).
 
 `resume <id>` keeps that session id and its SessionStart carries `source: resume`. A submitted line is a turn, except `/side`, which only switches the empty composer's placeholder to Codex's `/side`
 one (`Ask a follow-up question`; the stand-in models no forked session). `run: CMD` runs CMD as a Bash tool call (PreToolUse first, then CMD as
@@ -87,7 +87,11 @@ def run_hooks(event, **payload):
             out, rc, err = "", "timeout", ""
         context = ""
         try:
-            context = json.loads(out).get("hookSpecificOutput", {}).get("additionalContext", "") if out.strip() else ""
+            parsed = json.loads(out) if out.strip() else {}
+            context = parsed.get("hookSpecificOutput", {}).get("additionalContext", "")
+            if not context and parsed.get("decision") == "block":
+                # Codex hands a blocking Stop hook's reason to the model as the continuation.
+                context = parsed.get("reason", "")
         except ValueError:
             context = out
         log("hook", event=event, rc=rc, context=context, stdout=out[-2000:], stderr=err[-2000:])
