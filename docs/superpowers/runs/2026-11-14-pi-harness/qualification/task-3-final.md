@@ -1,6 +1,8 @@
-# Task 3 qualification record
+# Historical Task 3 qualification record
 
-Qualification is bounded. The scripted native cases below have passing evidence,
+This record preserves the pre-F1 attempts and their exact evidence anchors. Subsequent [F1 native attempts](f1-native-attempts.md), [native HOL progression](f1-native-hol.md), [notice liveness](notice-liveness.md), and [final compatibility](f1-final-compatibility.md) have separate evidence. At this reconciliation, corrected full-suite attempt 2 is underway; live qualification and PR review 2 have not started. The earlier approval rejection below is historical; the user subsequently authorized the scoped live test.
+
+Qualification at this historical boundary was bounded. The scripted native cases below have passing evidence,
 and the required static/SDK/driver checks passed before the final test-only
 expectation corrections. The one observed unfiltered suite failed ten tests and
 exceeded the five-minute budget. Live qualification was rejected before launch
@@ -103,7 +105,7 @@ CPUs; this does not establish host/training starvation. No budget or cap was
 raised. Slowest completed cases are retained in the selected evidence, including
 the existing release failpoint test at 180.481 s.
 
-## Remaining limits
+## Limits at this historical boundary
 
 External custom overlays may preserve an apparently empty default composer and
 intercept wake input. Spaces-only drafts with the cursor returned to column zero
@@ -112,14 +114,15 @@ limits remain explicit in TRUST-POLICY and the Pi guide; they are not passing
 preservation claims. Unknown layouts otherwise fail closed, built-in selectors
 remain guarded and the existing focused-empty-minute requirement is preserved.
 
+A later native attempt established a third accepted limit: another extension can set editor memory without rendering it, allowing wake input to append to hidden text. The integration never sets editor text; ordinary terminal typing remains guarded. See the current [Pi guide](../../../../../integrations/pi/README.md#delivery-and-wake) and [F1 attempt record](f1-native-attempts.md).
+
 Named/tmux evidence uses actual turn edges and canonical startup readiness; it is
 separate from Herdr host evidence. This driver did not exercise hc runtime, and
 hc has no native composer wake by contract. Scripted invitation acceptance is
 covered; live-model invitation acceptance is not.
 
-The live command was rejected before process launch because automatic approval
+At this historical boundary, the live command was rejected before process launch because automatic approval
 review could not verify authorization for this specific Pi/OpenRouter credential
 use. No alternate execution or indirect credential use occurred. Live exact
-receipt, provider/model continuity and real-model redundant-inbox behavior remain
-unqualified. Task3 and the epic remain open pending these gate dispositions and
-whole-branch review.
+receipt, provider/model continuity and real-model redundant-inbox behavior were
+unqualified. Those observations do not establish subsequent gate results; use the qualification index for current status.

@@ -126,9 +126,16 @@ node --test integrations/pi/extension/tests/extension.test.mjs
 node --test integrations/pi/extension/tests/sdk.test.mjs
 python3 scripts/pi-tui-qualify.py --self-test
 python3 scripts/pi-tui-qualify.py --bin target/debug/herdr-threads
+# Notice scenarios are opt-in; run each in its own fresh invocation:
+python3 scripts/pi-tui-qualify.py --bin target/debug/herdr-threads --cases notice_reload
+python3 scripts/pi-tui-qualify.py --bin target/debug/herdr-threads --cases notice_page
+python3 scripts/pi-tui-qualify.py --bin target/debug/herdr-threads --cases notice_wake
+python3 scripts/pi-tui-qualify.py --bin target/debug/herdr-threads --cases notice_hol
 # Same isolated driver through the common e2e entry point:
 python3 scripts/wake-e2e.py --harness pi --bin target/debug/herdr-threads
 ```
+
+The default native command selects the original 14 compatibility cases. Each notice case requires a standalone selection; mixing a notice case with any other case is refused before launch. The HOL case includes its own genuine cause and nonwaking p1 staging message.
 
 The SDK test uses retained research dependencies or `HT_PI_SDK_MODULES`. The native
 driver uses the official runtime at `--pi`/`--modules`, public isolated setup and

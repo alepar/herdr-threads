@@ -1,6 +1,6 @@
 # Pi harness adapter
 
-Status: implementation approved; native-wake amendment follows real-TUI qualification findings and coordinator ruling. Epic: `ht-jr1g`. Earlier design-review evidence covers the historical channel-wake proposal, not this amendment.
+Status: implementation approved; native-wake amendment follows real-TUI qualification findings and coordinator ruling. Epic: `ht-jr1g`. Earlier design-review evidence covers the historical channel-wake proposal, not this amendment. F1 is implemented and closed; [native attempts](qualification/f1-native-attempts.md), [HOL progression](qualification/f1-native-hol.md), [liveness](qualification/notice-liveness.md) and [final compatibility](qualification/f1-final-compatibility.md) record later evidence. Corrected full-suite attempt 2 is underway; live qualification and PR review 2 have not started.
 
 ## Goal and requirements
 
@@ -44,7 +44,7 @@ Only one integration owner exists per process. A duplicate global/project instal
 
 ### Deferred notice amendment (PR1-F1)
 
-This amendment supersedes the original assumption below that every discarded watch body remains canonically replayable. It is approved for implementation, tracked by `ht-jr1g.5`; [independent design review](roast-pr-1/notice-design-review.md) is not implementation acceptance. The default automatic watch still confirms on stdout flush. Pi must instead opt into the neutral manual-presentation mode, refusing an older daemon before registration rather than falling back.
+This amendment supersedes the original assumption below that every discarded watch body remains canonically replayable. It is implemented and `ht-jr1g.5` is closed; [independent design review](roast-pr-1/notice-design-review.md) remains design evidence, with implementation/native evidence linked above. The default automatic watch still confirms on stdout flush. Pi must instead opt into the neutral manual-presentation mode, refusing an older daemon before registration rather than falling back.
 
 Canonical allocation freezes the exact notice prefix without advancing its offer frontier. Confirmation validates the current owner and captured prefix, then advances the frontier atomically with presentation retirement. The private versioned Notice metadata uses the existing optional string field; no client notice IDs or high-water marks supply authority. Reload, overflow and execution reset before confirmation leave notices eligible for canonical recovery and wake under existing lifecycle rules. There is no extension-side durable journal.
 
@@ -105,7 +105,7 @@ Amend the same implementation commit's normative policy:
 
 - Name pi's session/PID/mode claims under existing cooperative environment provenance and its supported lifecycle paths.
 - Define the context-plus-current-branch receipt predicate under `cooperative_mod_delivery`, including no ACK for returned drafts or queue acceptance and no proof of disk/provider/model consumption.
-- State native host wake with channel body delivery, no-channel inbox fallback, no-composer-host no_wake behavior, built-in selector guards and the accepted external custom-overlay and screen-equivalent spaces-only draft limitations.
+- State native host wake with channel body delivery, no-channel inbox fallback, no-composer-host no_wake behavior, built-in selector guards and the accepted external custom-overlay, screen-equivalent spaces-only draft and third-party unrendered-editor-text limitations.
 - State excluded nonterminal/unknown-child modes, custom shell attribution limitations, stale callback fencing and downstream context-transform loss.
 
 No seat merge, heuristic seat move, new receipt provenance constant, adversarial caller verification or peer wire change is proposed.
@@ -120,4 +120,4 @@ Run the repository's clippy, neutral-core, wire-compat, formatting and default-f
 
 ## Remaining qualification
 
-The probes establish boundary commit/context order and native-wake feasibility. Final qualification must establish bounded replay, lifecycle, actual scheduler behavior, native draft/built-in modal safety and provider/model continuity. The accepted external-overlay limit is explicit; historical clean design review does not certify this revised implementation. The final integrated suite, independent whole-branch review and cleanup remain required before handoff.
+The probes establish boundary commit/context order and native-wake feasibility. Final qualification must establish bounded replay, lifecycle, actual scheduler behavior, native draft/built-in modal safety and provider/model continuity. The accepted external-overlay, screen-equivalent spaces-only draft and third-party unrendered-editor limits are explicit; historical clean design review does not certify this revised implementation. The scoped native and compatibility records linked above now provide their own bounded results. The final integrated suite, independent whole-branch review and cleanup remain required before handoff.
