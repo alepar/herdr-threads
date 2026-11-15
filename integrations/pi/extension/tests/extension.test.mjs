@@ -3,19 +3,23 @@ import assert from 'node:assert/strict'
 import { register, nodeIO, frame } from '../herdr-threads.js'
 import fs from 'node:fs'
 import path from 'node:path'
+import { createHash } from 'node:crypto'
 
 // Controlled transport and clock only: callbacks, native draft results and receipt decisions
 // execute the real registration/state machine. Native persistence is explicitly simulated.
+let harnessId = 0
 function harness(options = {}) {
+  const instance = ++harnessId
   const callbacks = new Map(), calls = [], watches = [], timers = [], wakes = [], diagnostics = []
   let branch = options.branch ?? [], sid = 'native-session-1', idle = true, draft = '', counter = 0
   const env = { ...options.env }, registry = options.registry ?? {}
   const io = {
     env, pid: 420, cwd: '/isolated/project', registry,
-    nonce: () => `nonce-${++counter}`,
+    nonce: () => `nonce-${instance}-${++counter}`,
     run: async (argv, request) => {
       calls.push({ argv, ...request })
       if (options.run) return options.run(argv, request)
+      if (argv.includes('presentation-confirm')) return { code: 0, stdout: '{"status":"confirmed","emitted_page_confirmed":true}\n' }
       if (argv.includes('ack')) return { code: 0, stdout: argv.slice(argv.indexOf('context') + 1).map(id => JSON.stringify({ id, result: 'settled' })).join('\n') }
       return { code: 0, stdout: argv.at(-1) === 'SessionStart' ? 'fixed guidance' : '' }
     },
@@ -36,7 +40,7 @@ function harness(options = {}) {
   register(pi, io)
   const emit = async (name, event = {}) => callbacks.get(name)?.({ type: name, ...event }, ctx)
   const start = async (reason = 'startup') => { await emit('session_start', { reason }); watches.at(-1)?.line({ schema: 1, id: 'status:0', kind: 'status', state: 'connected' }) }
-  const line = (item) => watches.at(-1)?.line({ schema: 1, ...item })
+  const line = (item, rawBytes) => watches.at(-1)?.line({ schema: 1, ...item }, rawBytes)
   const message = (id, priority = 1, extras = {}) => line({ id, kind: 'message', body: `body ${id}`, body_len: 8, thread: 'thread', sender: 'sender', truncated: false, ack_required: true, wakes: false, priority, ...extras })
   const store = (result) => { const entries = result?.message ? [{ type: 'custom_message', ...result.message }] : result?.entries ?? []; branch.push(...entries.map((entry, i) => ({ id: `row-${branch.length + i}`, ...entry }))) }
   const context = () => emit('context', { messages: branch.filter(x => x.type === 'custom_message').map(x => ({ role: 'custom', customType: x.customType, content: x.content })) })
@@ -47,6 +51,59 @@ function harness(options = {}) {
     setBranch: b => { branch = b }, branch: () => branch, setSid: s => { sid = s }, setIdle: v => { idle = v }, setDraft: s => { draft = s } }
 }
 
+const notice = (id, body = `notice ${id}`) => ({ schema: 1, kind: 'notice', id: `notice:${id}`, warning: id, thread: 'thread', body })
+const slot = n => n.toString(16).padStart(64, '0')
+const packet = (items, keys = items.map((_, i) => slot(i + 1)), receipt = 'opaque receipt with 18446744073709551615') => ({ schema: 1, kind: 'presentation_page', items, keys, receipt })
+const confirmations = h => h.calls.filter(c => c.argv.includes('presentation-confirm'))
+
+test('manual presentation protects a notice behind a full higher-priority ordinary cache', async () => {
+  const h = harness(); await h.start()
+  assert.ok(h.watches[0].argv.includes('--manual-presentation'))
+  for (let i = 0; i < 300; i++) h.message(`predecessor-${i}`, 0)
+  h.line(packet([notice('protected')]))
+  let observed = 0, ordinary = 0
+  for (let i = 0; i < 12; i++) {
+    const r = await h.emit('before_agent_start'); if (!r?.message) break
+    if (r.message.content.includes('notice protected')) { observed++; assert.equal(ordinary, 224) }
+    ordinary += (r.message.content.match(/\[herdr-threads\] message /g) ?? []).length
+    h.store(r); await h.context(); await h.flush()
+    if (!observed) assert.equal(h.watches.length, 1, 'ordinary ACK cannot replace a parked page')
+  }
+  assert.equal(observed, 1); assert.equal(confirmations(h).length, 1)
+  assert.equal(confirmations(h)[0].stdin, 'opaque receipt with 18446744073709551615')
+  assert.equal(h.watches.length, 2)
+  await h.emit('session_shutdown', { reason: 'quit' })
+})
+
+test('manual whole-page confirmation waits for exact observed context of every emitted slot', async () => {
+  const h = harness(); await h.start()
+  h.line(packet([notice('a', 'a\n'.repeat(10000)), notice('b', 'b\n'.repeat(10000))]))
+  const first = await h.emit('before_agent_start'); h.store(first)
+  assert.equal(confirmations(h).length, 0)
+  await h.context(); await h.flush(); assert.equal(confirmations(h).length, 0)
+  const second = await h.emit('turn_end', { outcome: 'completed', entries: [], continue: false, context: {} })
+  h.store(second); assert.equal(confirmations(h).length, 0)
+  await h.context(); await h.flush(); assert.equal(confirmations(h).length, 1)
+  assert.equal(h.ackCalls().length, 0)
+  await h.emit('session_shutdown', { reason: 'quit' })
+})
+
+test('reload requires canonical replay and fresh context but reuses an exact slot acceptance hint', async () => {
+  const first = harness(); await first.start(); first.line(packet([notice('reload')]))
+  const r = await first.emit('before_agent_start'); first.store(r)
+  assert.match(r?.message?.content ?? '', /notice reload/)
+  await first.emit('session_shutdown', { reason: 'reload' })
+  const next = harness({ registry: first.registry, branch: first.branch() }); await next.start('reload')
+  await next.context(); await next.flush(); assert.equal(confirmations(next).length, 0)
+  next.line(packet([notice('reload')], [slot(1)], 'fresh lease opaque'))
+  assert.equal(confirmations(next).length, 0)
+  const startup = await next.emit('before_agent_start')
+  assert.doesNotMatch(startup?.message?.content ?? '', /notice reload/)
+  next.store(startup); await next.context(); await next.flush()
+  assert.equal(confirmations(next).length, 1); assert.equal(confirmations(next)[0].stdin, 'fresh lease opaque')
+  await next.emit('session_shutdown', { reason: 'quit' })
+})
+
 test('admission uses native identity and refuses inherited child/nonterminal claims', async () => {
   for (const options of [{ env: { HERDR_THREADS_PI_PID: '419' } }, { env: { HERDR_THREADS_PI_ROLE: 'child' } }, { env: { HERDR_THREADS_PI_ROLE: 'mystery' } }, { mode: 'rpc' }, { mode: undefined, env: { HERDR_THREADS_PI_PID: 'bad' } }]) {
     const h = harness(options); await h.start(); assert.equal(h.watches.length, 0); assert.equal(h.calls.length, 0)
@@ -54,7 +111,7 @@ test('admission uses native identity and refuses inherited child/nonterminal cla
   const h = harness(); await h.start()
   assert.equal(h.watches.length, 1)
   assert.deepEqual(JSON.parse(h.calls[0].stdin), { event: 'SessionStart', source: 'startup', session_id: 'native-session-1', role: 'top_level', mode: 'tui', pid: 420, cwd: '/isolated/project' })
-  assert.deepEqual(h.watches[0].argv, ['herdr-threads', 'watch', '--harness', 'pi', '--session', 'native-session-1'])
+  assert.deepEqual(h.watches[0].argv, ['herdr-threads', 'watch', '--harness', 'pi', '--session', 'native-session-1', '--manual-presentation'])
   assert.equal(h.env.HERDR_THREADS_PI_SESSION, 'native-session-1')
 })
 
@@ -295,16 +352,21 @@ test('large-body pressure remains bounded and later urgent arrivals are delivere
   assert.ok(total > 1024 * 1024)
 })
 
-test('attention clears are epoch scoped and invitations/truncation never ACK as mail', async () => {
-  const h = harness(); await h.start(); h.setDraft('hold')
-  h.line({ kind: 'attention', id: 'attention:1', text: 'attention one', attention_version: 1, presentation_epoch: '11' })
-  h.line({ kind: 'attention', id: 'attention:2', text: 'attention two', attention_version: 2, presentation_epoch: '12' })
-  h.line({ kind: 'attention_cleared', id: 'clear:1', attention_version: 1, presentation_epoch: '11' })
-  h.line({ kind: 'invitation', id: 'invite', thread: 't', body: 'accept manually', truncated: false, wakes: false, topic_revision: '1' })
+test('clear application and invitation presentation never ACK truncated mail or accept an invitation', async () => {
+  const h = harness(); await h.start()
+  h.line(packet([
+    { schema: 1, kind: 'attention_cleared', id: 'clear:1', presentation_epoch: '11' },
+    { schema: 1, kind: 'attention', id: 'attention:2', text: 'attention two', presentation_epoch: '12' },
+    { schema: 1, kind: 'invitation', id: 'invite', thread: 't', body: 'accept manually', topic_revision: '1' },
+  ]))
   h.message('cut', 1, { truncated: true, body: 'prefix\n…truncated; next: herdr-threads inbox' })
-  const r = await h.emit('before_agent_start'); assert.doesNotMatch(r.message.content, /attention one/); assert.match(r.message.content, /attention two/)
+  assert.equal(confirmations(h).length, 0, 'clear cannot cover other bodies')
+  const r = await h.emit('before_agent_start'); assert.match(r.message.content, /attention two/)
   assert.match(r.message.content, /next: herdr-threads inbox/)
-  h.store(r); await h.context(); await h.flush(); assert.equal(h.ackCalls().length, 0)
+  h.store(r); await h.context(); await h.flush()
+  assert.equal(h.ackCalls().length, 0); assert.equal(confirmations(h).length, 1)
+  assert.equal(h.calls.some(c => c.argv.includes('accept')), false)
+  await h.emit('session_shutdown', { reason: 'quit' })
 })
 
 test('foreign-session callbacks cannot consume or shut down the successor owner', async () => {
@@ -343,6 +405,26 @@ test('cross-page ordering uses deadlines then stable first observation across re
   const r = await h.emit('before_agent_start'); const text = r.message.content
   const names = ['deadline-first', 'deadline-later', 'deadline-none', 'stable-a', 'stable-b']
   for (let i = 1; i < names.length; i++) assert.ok(text.indexOf(`body ${names[i-1]}`) < text.indexOf(`body ${names[i]}`))
+})
+
+test('reload requeue keeps a retained slot before newly observed rows with the same priority and deadline', async () => {
+  const first = harness(); await first.start()
+  for (let i = 0; i < 10; i++) first.message(`earlier-${i}`, 9)
+  const initial = await first.emit('before_agent_start'); first.store(initial); await first.context(); await first.flush()
+  first.line(packet([notice('retained-tie')]))
+  const accepted = await first.emit('before_agent_start'); first.store(accepted)
+  await first.emit('session_shutdown', { reason: 'reload' })
+  const h = harness({ registry: first.registry, branch: first.branch() }); await h.start('reload')
+  h.line(packet([notice('retained-tie')]))
+  h.message('new-tie', 0)
+  // Native history still contains the accepted hint, but the model projection
+  // omits it. Requeue must preserve its first-observed ordinal across owners.
+  await h.emit('context', { messages: [] })
+  const r = await h.emit('before_agent_start')
+  assert.ok(r.message.content.indexOf('notice retained-tie') < r.message.content.indexOf('body new-tie'))
+  h.store(r); await h.context(); await h.flush()
+  assert.equal(confirmations(h).length, 1)
+  await h.emit('session_shutdown', { reason: 'quit' })
 })
 
 test('per-item framing matches the shared delivery goldens', () => {
@@ -615,4 +697,261 @@ test('observer refusal sentinel never admits an owner or starts watch, and retri
   refused = false
   await h.emit('before_agent_start')
   assert.equal(h.watches.length, 1)
+})
+
+
+test('manual clear-only applies owner-local state without a model run or ordinary ACK', async () => {
+  const h = harness(); await h.start()
+  const clear = { schema: 1, kind: 'attention_cleared', id: 'clear:max', presentation_epoch: '18446744073709551615' }
+  h.line(packet([clear], [slot(8)], 'exact clear receipt 18446744073709551615'))
+  await h.flush()
+  assert.equal(confirmations(h).length, 1)
+  assert.equal(confirmations(h)[0].stdin, 'exact clear receipt 18446744073709551615')
+  assert.equal(h.wakes.length, 0); assert.equal(h.ackCalls().length, 0); assert.equal(h.watches.length, 2)
+  h.watches[0].line(packet([clear])); await h.flush()
+  assert.equal(confirmations(h).length, 1, 'detached owner/watch cannot apply a late clear')
+  await h.emit('session_shutdown', { reason: 'quit' })
+})
+
+test('manual malformed and unknown pages remain unconfirmed with bounded retry and no fallback', async () => {
+  for (const bad of [
+    packet([notice('bad')], [null]), packet([notice('bad')], ['not-a-key']),
+    packet([notice('bad'), notice('duplicate')], [slot(1), slot(1)]),
+    packet([{ schema: 1, kind: 'future_control', id: 'future' }]),
+    packet([notice('bad')], [slot(1)], 'x'.repeat(4097)),
+    { schema: 1, kind: 'notice', id: 'unframed', body: 'legacy flush-confirm is forbidden' },
+  ]) {
+    const h = harness(); await h.start(); h.line(bad); await h.flush()
+    assert.equal(confirmations(h).length, 0)
+    assert.doesNotMatch((await h.emit('before_agent_start'))?.message?.content ?? '', /notice bad|legacy flush/)
+    await h.tick(1000); assert.equal(h.watches.length, 2)
+    assert.ok(h.watches[1].argv.includes('--manual-presentation'))
+    await h.emit('session_shutdown', { reason: 'quit' })
+  }
+  const h = harness(); await h.start()
+  // An unknown hidden page has no emitted packet: the CLI owns finite scan work.
+  await h.tick(30000); assert.equal(h.watches.length, 1); assert.equal(confirmations(h).length, 0)
+  await h.emit('session_shutdown', { reason: 'quit' })
+})
+
+test('new opaque key cannot inherit an accepted old-token body or pre-replay context', async () => {
+  const first = harness(); await first.start(); first.line(packet([notice('same')], [slot(1)]))
+  const old = await first.emit('before_agent_start'); first.store(old)
+  await first.emit('session_shutdown', { reason: 'reload' })
+  const h = harness({ registry: first.registry, branch: first.branch() }); await h.start('reload')
+  await h.context(); h.line(packet([notice('same')], [slot(2)])); await h.flush()
+  assert.equal(confirmations(h).length, 0)
+  const fresh = await h.emit('before_agent_start'); assert.match(fresh.message.content, /notice same/)
+  assert.notEqual(fresh.message.customType, old.message.customType)
+  h.store(fresh); await h.context(); await h.flush(); assert.equal(confirmations(h).length, 1)
+  await h.emit('session_shutdown', { reason: 'quit' })
+})
+
+test('protected proposal projection absence requeues only at a later qualified run', async () => {
+  const h = harness(); await h.start(); h.line(packet([notice('projection')]))
+  const first = await h.emit('before_agent_start'); h.store(first)
+  await h.emit('session_compact')
+  // getBranch still contains history, but the supported projection excludes it.
+  const boundary = { outcome: 'completed', entries: [], continue: false, context: { contextMessages: [] } }
+  const sameRun = await h.emit('turn_end', boundary)
+  assert.doesNotMatch(JSON.stringify(sameRun ?? {}), /notice projection/)
+  assert.equal(confirmations(h).length, 0)
+  const next = await h.emit('before_agent_start'); assert.match(next.message.content, /notice projection/)
+  h.store(next); await h.context(); await h.flush(); assert.equal(confirmations(h).length, 1)
+  await h.emit('session_shutdown', { reason: 'quit' })
+})
+
+test('revision clears partial coverage and actual-context absence cannot reuse historical branch proof', async () => {
+  const h = harness(); await h.start()
+  h.line(packet([notice('first', 'a\n'.repeat(10000)), notice('second', 'b\n'.repeat(10000))]))
+  const a = await h.emit('before_agent_start'); h.store(a); await h.context(); await h.flush()
+  assert.equal(confirmations(h).length, 0)
+  await h.emit('session_tree')
+  const b = await h.emit('turn_end', { outcome: 'completed', entries: [], continue: false, context: {} }); h.store(b)
+  await h.emit('context', { messages: [{ role: 'custom', customType: b.entries.at(-1).customType, content: b.entries.at(-1).content }] })
+  await h.flush(); assert.equal(confirmations(h).length, 0)
+  const later = await h.emit('before_agent_start'); assert.match(later.message.content, /a\n  a/)
+  h.store(later); await h.context(); await h.flush(); assert.equal(confirmations(h).length, 1)
+  await h.emit('session_shutdown', { reason: 'quit' })
+})
+
+test('watch exit and malformed-page retry join an outstanding confirmation before successor startup', async () => {
+  for (const cause of ['exit', 'bad-page']) {
+    let resolveConfirm
+    const held = new Promise(resolve => { resolveConfirm = resolve })
+    const h = harness({ run: async argv => argv.includes('presentation-confirm') ? held : { code: 0, stdout: '' } })
+    await h.start(); h.line(packet([notice('held')]))
+    const r = await h.emit('before_agent_start'); h.store(r); await h.context(); await h.flush()
+    assert.equal(confirmations(h).length, 1)
+    if (cause === 'exit') h.watches[0].exit(1)
+    else h.line(packet([notice('conflict')], [slot(9)]))
+    await h.tick(1000); assert.equal(h.watches.length, 1)
+    resolveConfirm({ code: 0, stdout: '{"status":"confirmed","emitted_page_confirmed":true}' })
+    await h.flush(); await h.flush(); assert.equal(h.watches.length, 2)
+    await h.emit('session_shutdown', { reason: 'quit' })
+  }
+})
+
+test('refusal re-admission on a genuine turn cannot bypass a held confirmation join', async () => {
+  for (const refusal of ['exit3', 'status-and-exit3', 'status-only']) {
+    let resolveConfirm
+    const held = new Promise(resolve => { resolveConfirm = resolve })
+    const h = harness({ run: async argv => argv.includes('presentation-confirm') ? held : { code: 0, stdout: '' } })
+    await h.start(); h.line(packet([notice('readmission')]))
+    const r = await h.emit('before_agent_start'); h.store(r); await h.context(); await h.flush()
+    assert.equal(confirmations(h).length, 1)
+    if (refusal !== 'exit3') h.line({ schema: 1, kind: 'status', state: 'refused', reason: 'no_binding' })
+    if (refusal !== 'status-only') h.watches[0].exit(3)
+    try {
+      await h.emit('before_agent_start', { messageType: 'user', prompt: 'genuine input after refusal' })
+      await h.flush()
+      assert.equal(h.calls.filter(c => c.argv.at(-1) === 'SessionStart').length, 2)
+      assert.equal(h.watches.length, 1, refusal)
+    } finally {
+      resolveConfirm({ code: 0, stdout: '{"status":"confirmed","emitted_page_confirmed":true}' })
+      await h.flush(); await h.flush()
+      await h.emit('session_shutdown', { reason: 'quit' })
+    }
+    assert.equal(h.watches.length, 2, 'one successor starts after the old confirmation is joined')
+  }
+})
+
+test('ambiguous confirmation reconciles once and shutdown joins both held confirmation and watch stop', async () => {
+  const h = harness({ run: async argv => argv.includes('presentation-confirm') ? { code: 0, stdout: 'lost/truncated reply' } : { code: 0, stdout: '' } })
+  await h.start(); h.line(packet([notice('ambiguous')]))
+  const r = await h.emit('before_agent_start'); h.store(r); await h.context(); await h.flush()
+  assert.equal(confirmations(h).length, 1); assert.equal(h.watches.length, 1)
+  await h.tick(1000); assert.equal(h.watches.length, 2)
+  h.line({ schema: 1, kind: 'status', state: 'connected' })
+  h.line(packet([notice('ambiguous')], [slot(1)], 'canonical new lease'))
+  await h.flush(); assert.equal(confirmations(h).length, 1, 'old context is not fresh replay proof')
+  await h.context(); await h.flush(); assert.equal(confirmations(h).length, 2)
+  await h.emit('session_shutdown', { reason: 'quit' })
+
+  let resolveConfirm, releaseStop, closed = false
+  const held = new Promise(resolve => { resolveConfirm = resolve }), stopped = new Promise(resolve => { releaseStop = resolve })
+  const owned = harness({ run: async argv => argv.includes('presentation-confirm') ? held : { code: 0, stdout: '' }, stop: () => stopped })
+  await owned.start(); owned.line(packet([notice('closing')]))
+  const draft = await owned.emit('before_agent_start'); owned.store(draft); await owned.context(); await owned.flush()
+  const closing = owned.emit('session_shutdown', { reason: 'reload' }).then(() => { closed = true })
+  await owned.flush(); assert.equal(closed, false)
+  resolveConfirm({ code: 0, stdout: '{"status":"confirmed","emitted_page_confirmed":true}' }); await owned.flush()
+  assert.equal(closed, false)
+  releaseStop(); await closing; assert.equal(owned.watches.length, 1)
+})
+
+
+test('mixed proposal strings keep their arena charge after ordinary ACK removes their ordinary records', async () => {
+  const h = harness(); await h.start()
+  h.line(packet(Array.from({ length: 32 }, (_, i) => notice(`pin-${i}`))))
+  let retainedProposalText = 0, acknowledged = 0
+  for (let boundary = 0; boundary < 40 && !confirmations(h).length; boundary++) {
+    // Exercise byte invariants even if an IO transport supplies additional cached
+    // ordinary lines while the presentation page is parked.
+    for (let i = 0; i < 31; i++) h.message(`mixed-${boundary}-${i}`, 0, { body: 'x'.repeat(1900), deadline_at: 1 })
+    const r = await h.emit('before_agent_start'); if (!r?.message) break
+    retainedProposalText += Buffer.byteLength(r.message.content)
+    assert.ok(retainedProposalText <= (1536 + 144) * 1024, `retained mixed proposal text: ${retainedProposalText}`)
+    h.store(r); await h.context(); await h.flush()
+    acknowledged = h.ackCalls().reduce((n, call) => n + call.argv.slice(call.argv.indexOf('context') + 1).length, 0)
+  }
+  assert.ok(acknowledged > 224, 'ordinary records were released while immutable mixed strings remained pinned')
+  assert.ok(confirmations(h).length <= 1)
+  assert.equal(h.watches.length, confirmations(h).length + 1, 'pressure never restarts a parked page')
+  await h.emit('session_shutdown', { reason: 'quit' })
+})
+
+
+test('canonical manual pages drain more than 256 notices and 2 MiB without a local notice journal', async () => {
+  let cursor = 0, confirmed = 0
+  const total = 300, perPage = 6
+  const h = harness({
+    run: async (argv, request) => {
+      if (!argv.includes('presentation-confirm')) return { code: 0, stdout: '' }
+      assert.equal(request.stdin, `canonical receipt ${confirmed}`)
+      confirmed++; return { code: 0, stdout: '{"status":"confirmed","emitted_page_confirmed":true}' }
+    },
+    spawn: (_argv, _request, handlers) => queueMicrotask(() => {
+      handlers.line({ schema: 1, kind: 'status', state: 'connected' })
+      if (cursor === total) return
+      const start = cursor
+      const items = Array.from({ length: perPage }, () => notice(`backlog-${cursor++}`, 'z'.repeat(8192)))
+      handlers.line(packet(items, items.map((_, i) => slot(start + i + 1)), `canonical receipt ${confirmed}`))
+    }),
+  })
+  await h.start()
+  let observed = 0, textBytes = 0
+  for (let i = 0; i < 100 && observed < total; i++) {
+    const r = await h.emit('before_agent_start'); assert.ok(r?.message)
+    observed += (r.message.content.match(/\[herdr-threads\] notice /g) ?? []).length
+    textBytes += Buffer.byteLength(r.message.content)
+    h.store(r); await h.context(); await h.flush(); await h.flush()
+  }
+  assert.equal(observed, total); assert.ok(textBytes > 2 * 1024 * 1024)
+  assert.equal(confirmed, total / perPage); assert.equal(h.watches.length, confirmed + 1)
+  assert.equal(h.ackCalls().length, 0); assert.equal(h.wakes.length, 0)
+  await h.emit('session_shutdown', { reason: 'quit' })
+})
+
+
+const rustPackets = [
+  ['manual-maximum.jsonl', 70886, 'b38c97768e05e3e1e90bb11c031e7a848b8b4c923775e9fbd590ade175daa60e'],
+  ['manual-notice-clear.jsonl', 769, '718b5f490cac71a45e9bf3c2067cdd75c6ffc5b5993ac6d5c6736476339b0c6a'],
+]
+
+test('current production Rust packets preserve opaque u64 receipts and fit bounded native proposals', async () => {
+  for (const [filename, length, hash] of rustPackets) {
+    const raw = fs.readFileSync(new URL(`./fixtures/${filename}`, import.meta.url))
+    assert.equal(raw.length, length); assert.equal(createHash('sha256').update(raw).digest('hex'), hash)
+    const page = JSON.parse(raw.toString('utf8'))
+    assert.ok(page.receipt.includes('18446744073709551615'))
+    assert.ok(Buffer.byteLength(page.receipt) <= 4096)
+    assert.ok(page.items.filter(i => i.kind !== 'attention_cleared').reduce((n, i) => n + Buffer.byteLength(frame(i)), 0) <= 128 * 1024)
+    if (filename.includes('maximum')) assert.equal(Buffer.byteLength(page.receipt), 2802)
+    const h = harness(); await h.start(); h.line(page, raw.length)
+    assert.equal(confirmations(h).length, 0, 'applied clear cannot stand in for the emitted body slots')
+    let seen = 0
+    for (let i = 0; i < 10 && !confirmations(h).length; i++) {
+      const r = await h.emit('before_agent_start'); assert.ok(r?.message)
+      assert.ok(Buffer.byteLength(r.message.content) <= 65536)
+      seen += (r.message.content.match(/\[herdr-threads\] (attention|notice) /g) ?? []).length
+      h.store(r); await h.context(); await h.flush()
+    }
+    assert.equal(seen, page.items.filter(i => i.kind !== 'attention_cleared').length)
+    assert.equal(confirmations(h).length, 1); assert.equal(confirmations(h)[0].stdin, page.receipt)
+    assert.equal(h.ackCalls().length, 0)
+    await h.emit('session_shutdown', { reason: 'quit' })
+  }
+})
+
+test('native byte parser handles fragmented and coalesced Rust packets and rejects overlong frames', async () => {
+  const root = fs.mkdtempSync(path.join(import.meta.dirname, '.scratch-manual-io-'))
+  const io = nodeIO(), env = { HOME: root, PATH: process.env.PATH, HT_LEAK_RUN_ID: process.env.HT_LEAK_RUN_ID ?? 'pi-manual-io' }
+  const fixture = new URL('./fixtures/manual-maximum.jsonl', import.meta.url).pathname
+  let child, timer
+  try {
+    const rows = []
+    let resolveRows, rejectRows
+    const complete = new Promise((resolve, reject) => { resolveRows = resolve; rejectRows = reject })
+    timer = setTimeout(() => rejectRows(new Error('fragmented packet deadline')), 3000)
+    // Tiny fragments split escaped strings; the final write coalesces a UTF-8
+    // a status row with another complete large packet in one stdout sequence.
+    const script = 'const fs=require("node:fs");const b=fs.readFileSync(process.argv[1]);let i=0;function send(){if(i<b.length){process.stdout.write(b.subarray(i,i+=113));setImmediate(send)}else{process.stdout.write(JSON.stringify({schema:1,kind:"status",id:"status:🧭",state:"connected"})+"\\n");process.stdout.write(b);setInterval(()=>{},1000)}}send()'
+    child = io.spawn([process.execPath, '-e', script, fixture], { env, maxBytes: 73728 }, {
+      line: (row, bytes) => { rows.push({ row, bytes }); if (rows.length === 3) resolveRows() },
+      exit: code => { if (rows.length < 3) rejectRows(new Error(`early fixture exit ${code}`)) },
+    })
+    await complete
+    assert.equal(rows[0].bytes, 70886); assert.equal(rows[2].bytes, 70886)
+    assert.equal(rows[1].row.id, 'status:🧭')
+    assert.equal(rows[0].row.receipt, rows[2].row.receipt)
+    await child.stop(); child = null; clearTimeout(timer)
+    const overlong = await io.run([process.execPath, '-e', 'process.stdout.write("x".repeat(4097));setInterval(()=>{},1000)'], { env, stdin: '', timeoutMs: 1000, maxBytes: 4096 })
+    assert.equal(overlong.code, 1)
+    let badLines = 0, resolveExit
+    const exited = new Promise(resolve => { resolveExit = resolve })
+    timer = setTimeout(() => resolveExit('timeout'), 3000)
+    child = io.spawn([process.execPath, '-e', 'process.stdout.write("x".repeat(73728));setInterval(()=>{},1000)'], { env, maxBytes: 73728 }, { line: () => { badLines++ }, exit: () => resolveExit('exited') })
+    assert.equal(await exited, 'exited'); assert.equal(badLines, 0)
+  } finally { clearTimeout(timer); await child?.stop(); fs.rmSync(root, { recursive: true, force: true }) }
 })

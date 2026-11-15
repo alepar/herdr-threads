@@ -32,13 +32,18 @@ cooperative claims, not adversarial identity proof.
 
 The native extension registers the session and starts an owned watch channel.
 Lifecycle output supplies bounded guidance, with no mail receipt. The channel
-buffers at most 256 pending/proposed records and 2 MiB of rendered UTF-8 text,
-including staged guidance; metadata and JavaScript overhead are additional.
+retains at most 224 ordinary records plus one protected page of up to 32
+nonordinary records. Retained UTF-8 payloads and metadata, including parser and
+receipt buffers, share a 2 MiB budget with a 512 KiB presentation reserve.
+JavaScript object/allocator overhead and native session history are additional.
 Each model boundary selects at most 32 items / 64 KiB, sorted across all retained
 batches by priority, deadline and stable first observation. Watch has no creation
 timestamp, so exact age across replay is not reconstructed. Displaced/omitted
 bodies remain pending; capacity release replaces the watch for canonical replay,
 with bounded reconnect/ACK backoff. Saturation itself does not loop reconnects.
+Manual presentation keeps notices canonical until the whole emitted page has
+qualified native evidence. Protected slots keep the same global ordering; ordinary
+ACK release cannot evict them or restart their parked watch.
 
 Bodies enter `before_agent_start` or completed `turn_end`/`agent_before_settle`
 results. Other extensions' entries/continuation are preserved. Each retained item
@@ -88,8 +93,21 @@ and never ACKs; invitations are accepted separately. Later context transforms or
 provider transport failures remain cooperative observation limits, not proof of
 disk flush or model consumption.
 
+Notice, invitation and attention slots require their complete native proposal in
+that same observed model-bound context callback. A clear control instead requires
+its exact owner-local state application. Only the complete emitted page permits
+`watch presentation-confirm`; its opaque receipt and slot keys are passed without
+interpreting numeric control stamps. Ordinary mail ACK and invitation acceptance
+remain separate. Unknown hidden controls create no local confirmation. A lost
+confirmation response triggers canonical reconciliation, with no claim about
+whether the operation committed.
+
 Reload, tree navigation and compaction fence stale context/retries; accepted unseen
-frames are reconciled without duplication. Fixed guidance re-enters after lifecycle
+frames are deduplicated using bounded hints after fresh canonical replay. Reload
+discards page receipts and coverage; a branch revision clears coverage and allows
+fresh proof for the same owner/page. A supported context projection can show that
+historical branch content is absent, permitting reproposal at a later qualified
+boundary under the same once-per-run attempt limit. Fixed guidance re-enters after lifecycle
 changes. Startup idle initialization and actual `agent_settled` emit serialized,
 owner-fenced Observer-only Idle reports for named/tmux wake. Shutdown aborts owned
 commands, stops/reaps watch and detached replacement children, and reports liveness

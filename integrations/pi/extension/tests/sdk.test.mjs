@@ -30,18 +30,25 @@ test('real SDK persists native drafts and continues only completed runs', async 
     // No bind/session_start: loader qualification must not execute a real ht CLI.
   })
 
-  for (const mode of ['turn', 'settle', 'error', 'aborted', 'cancel-at-settle', 'transformed', 'transformed-p0', 'native-wake', 'reload', 'reload-urgent-unobserved']) await t.test(mode, async () => {
+  for (const mode of ['turn', 'settle', 'error', 'aborted', 'cancel-at-settle', 'transformed', 'transformed-p0', 'native-wake', 'reload', 'reload-urgent-unobserved', 'manual-partial', 'manual-transformed', 'manual-reload']) await t.test(mode, async () => {
     let session, watch, calls = 0, starts = 0, injected = false, nonce = 0, stopped = 0, reloaded = false
-    const commands = [], providerContexts = [], errors = []
+    const commands = [], providerContexts = [], errors = [], receipts = []
     const privateRoot = path.join(root, mode); fs.mkdirSync(privateRoot, { recursive: true })
     const send = (waking = false) => {
       injected = true
+      if (mode.startsWith('manual-')) {
+        const items = mode === 'manual-reload' ? [{ schema: 1, kind: 'notice', id: 'notice:first', warning: 'first', thread: 'thread', body: 'exact first notice' }]
+          : ['first', 'second'].map(id => ({ schema: 1, kind: 'notice', id: `notice:${id}`, warning: id, thread: 'thread', body: `exact ${id} notice\n` + 'x\n'.repeat(10000) }))
+        watch.line({ schema: 1, kind: 'presentation_page', items, keys: items.map((_, i) => (i + 1).toString(16).padStart(64, '0')), receipt: 'opaque SDK receipt 18446744073709551615' })
+        return
+      }
       for (const [id, priority] of [['third', 3], ['first', 0], ['second', 1]]) watch.line({ schema: 1, kind: 'message', id, priority, body: `exact ${id}`, body_len: 11, thread: 'thread', sender: 'sender', ack_required: true, wakes: waking && priority === 0, truncated: false })
     }
     const io = {
       env: {}, registry: {}, pid: process.pid, cwd: privateRoot, nonce: () => `${mode}-${++nonce}`,
-      run: async argv => {
+      run: async (argv, request) => {
         commands.push(argv)
+        if (argv.includes('presentation-confirm')) { receipts.push(request.stdin); return { code: 0, stdout: '{"status":"confirmed","emitted_page_confirmed":true}' } }
         if (argv.includes('ack')) return { code: 0, stdout: argv.slice(argv.indexOf('context') + 1).map(id => JSON.stringify({ id, result: 'settled' })).join('\n') }
         return { code: 0, stdout: argv.at(-1) === 'SessionStart' ? 'isolated SDK guidance' : '' }
       },
@@ -58,22 +65,22 @@ test('real SDK persists native drafts and continues only completed runs', async 
         register(pi, io)
         pi.on('before_agent_start', () => { starts++ })
         pi.on('turn_end', e => {
-          if (['settle', 'cancel-at-settle', 'reload-urgent-unobserved'].includes(mode)) { if (!injected) send(mode === 'reload-urgent-unobserved') }
-          if (mode.startsWith('transformed')) return { entries: e.entries.map(entry => entry.type === 'custom_message' && String(entry.content).includes('exact first') ? { ...entry, content: 'later extension replaced frame' } : entry) }
+          if (['settle', 'cancel-at-settle', 'reload-urgent-unobserved', 'manual-reload'].includes(mode)) { if (!injected) send(mode === 'reload-urgent-unobserved') }
+          if (mode.includes('transformed')) return { entries: e.entries.map(entry => entry.type === 'custom_message' && String(entry.content).includes('exact first') ? { ...entry, content: 'later extension replaced frame' } : entry) }
         })
         if (mode === 'cancel-at-settle') pi.on('agent_before_settle', async (_e, ctx) => { ctx.abort() })
-        if (mode === 'reload-urgent-unobserved') pi.on('agent_before_settle', async (_e, ctx) => { if (!reloaded) ctx.abort() })
+        if (['reload-urgent-unobserved', 'manual-reload'].includes(mode)) pi.on('agent_before_settle', async (_e, ctx) => { if (!reloaded) ctx.abort() })
       }] })
     await loader.reload()
     ;({ session } = await createAgentSession({ cwd: privateRoot, agentDir: process.env.PI_CODING_AGENT_DIR, settingsManager: SettingsManager.inMemory({}), resourceLoader: loader, sessionManager: SessionManager.create(privateRoot, path.join(privateRoot, 'sessions')), tools: [],
-      model: { id: 'selected-model', name: 'Selected', api: 'openai-completions', provider: 'selected-provider', baseUrl: 'http://invalid.local', reasoning: false, input: ['text'], cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 }, contextWindow: 10000, maxTokens: 1000 } }))
+      model: { id: 'selected-model', name: 'Selected', api: 'openai-completions', provider: 'selected-provider', baseUrl: 'http://invalid.local', reasoning: false, input: ['text'], cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 }, contextWindow: mode.startsWith('manual-') ? 1000000 : 10000, maxTokens: 1000 } }))
     try {
       session.modelRuntime.hasConfiguredAuth = () => true
       await session.bindExtensions({ mode: 'tui', onError: error => errors.push(error.error) })
       session.agent.streamFunction = (model, context) => {
         calls++; providerContexts.push(JSON.stringify(context.messages))
         assert.equal(model.id, 'selected-model'); assert.equal(model.provider, 'selected-provider')
-        if (!injected && !['settle', 'cancel-at-settle', 'reload-urgent-unobserved'].includes(mode)) send(mode === 'transformed-p0')
+        if (!injected && !['settle', 'cancel-at-settle', 'reload-urgent-unobserved', 'manual-reload'].includes(mode)) send(mode === 'transformed-p0')
         const stream = createAssistantMessageEventStream()
         queueMicrotask(() => {
           const reason = mode === 'error' ? 'error' : mode === 'aborted' ? 'aborted' : 'stop'
@@ -87,7 +94,7 @@ test('real SDK persists native drafts and continues only completed runs', async 
         await session.prompt('herdr-threads: wake up')
       } else await session.prompt('isolated boundary test')
       const successful = ['turn', 'settle', 'native-wake', 'reload'].includes(mode)
-      assert.equal(calls, ['turn', 'settle', 'transformed', 'transformed-p0', 'reload'].includes(mode) ? 2 : 1)
+      assert.equal(calls, ['manual-partial', 'manual-transformed'].includes(mode) ? 3 : ['turn', 'settle', 'transformed', 'transformed-p0', 'reload'].includes(mode) ? 2 : 1)
       assert.equal(starts, 1, 'native continuation stays within original outer run')
       const acks = commands.filter(argv => argv.includes('ack'))
       assert.equal(acks.length, successful ? 1 : 0)
@@ -98,6 +105,25 @@ test('real SDK persists native drafts and continues only completed runs', async 
         assert.ok(received.indexOf('exact second') < received.indexOf('exact third'))
       }
       assert.deepEqual(errors, [])
+      if (mode.startsWith('manual-')) {
+        assert.equal(commands.filter(argv => argv.includes('ack')).length, 0)
+        assert.equal(receipts.length, mode === 'manual-partial' ? 1 : 0)
+        if (mode === 'manual-partial') {
+          assert.deepEqual(receipts, ['opaque SDK receipt 18446744073709551615'])
+          assert.ok(providerContexts.at(-1).includes('exact first notice'))
+          assert.ok(providerContexts.at(-1).includes('exact second notice'))
+        }
+        if (mode === 'manual-reload') {
+          const stored = () => session.sessionManager.getBranch().filter(entry => entry.type === 'custom_message' && String(entry.content).includes('exact first notice'))
+          assert.equal(stored().length, 1, 'native cancellation left accepted but unseen notice')
+          reloaded = true; await session.reload(); send()
+          assert.equal(receipts.length, 0, 'fresh replay alone is not context evidence')
+          await session.prompt('after canonical replay')
+          assert.equal(stored().length, 1, 'native reload reused exact opaque-key acceptance hint')
+          assert.deepEqual(receipts, ['opaque SDK receipt 18446744073709551615'])
+          assert.equal(calls, 2)
+        }
+      }
       if (mode === 'reload') {
         await session.reload()
         assert.equal(stopped, 1, 'native reload closes its predecessor watch')
@@ -123,6 +149,6 @@ test('real SDK persists native drafts and continues only completed runs', async 
       await session.extensionRunner.emit({ type: 'session_shutdown', reason: 'quit' })
       await session.dispose()
     }
-    assert.equal(stopped, mode.startsWith('reload') ? 2 : 1, 'native shutdown reaps its watch')
+    assert.equal(stopped, mode === 'manual-reload' ? 3 : mode === 'manual-partial' || mode.startsWith('reload') ? 2 : 1, 'native shutdown reaps its watch')
   })
 })
