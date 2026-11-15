@@ -63,6 +63,28 @@ The frozen two-source-file patch SHA256 is
 Driver SHA256: `bfe1e242e6cd60564200c3827bcefd23ea9868cf165781758af71a7cf8c8cea9`.
 Fixture SHA256: `1bbb2f67a76a015beebeb055fb915389fb6aa50178c46d1e7c17e95d7d2380fa`.
 
+The notice-only wake case then received a bounded observation-race correction.
+It captures the real pending page under the owned draft after prior actual
+settlement/cooldown, obtains a fresh exact draft/idle witness, and clears that
+draft with public Ctrl+C. It records the input time and actual subsequent host
+wake callback. A post-clear snapshot may already be during or after the wake;
+it is not labeled pre-wake or required to catch an ephemeral empty-idle window.
+The existing focused-empty guard remains authoritative, without a focus flip or
+controller model turn. The wake wait is bounded at 90 seconds to accommodate
+the existing focused-empty minute and retry ladder.
+
+The causal controller test was RED on the unguarded case. Its GREEN version
+makes wake and settlement happen synchronously inside the clear operation.
+Final selftests: 25 passed in 2.013 seconds; the same run-ID process/temp scan
+again exited 0 with no owned leaks. The independently reviewed final two-script
+patch SHA256 is
+`28c9b0d13cf81e8293ccd30b1d505b1a3e1cbf6b4180dc28f841d7a1cf962319`;
+the correction-only patch is
+`78b38990dd634ddafa710319480317d4d47a35bc93ca9d1eedd59d6fe1ede421`.
+Final driver SHA256:
+`b1056236d0850010509a7d04fbea18ef5babaa62c031329ba8334a04d156d1f3`.
+The fixture hash is unchanged. Runtime qualification remains unexecuted here.
+
 Earlier fourteen-case and pre-F1 native results remain historical evidence with
 their original source/binary identities. These selftests do not replace final
 native delta, corrected unfiltered attempt2, scoped live qualification, or the

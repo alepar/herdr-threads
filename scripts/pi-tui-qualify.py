@@ -519,18 +519,30 @@ class Run:
     def case_notice_wake(self):
         self.start_notice_sink()
         self.wake_lane()
-        self.observe_state("", sid=self.main_sid)
-        self.capture("notice-only-empty-before")
+        self.hold_notice_editor()
         since, starts = len(self.rows()), self.count("before_agent_start")
         assert any(r["event"] == "agent_settled" and r["state"]["sid"] == self.main_sid for r in self.rows()), "notice-only wake lacks prior actual settlement"
-        cause = self.new_notice_cause("notice-only-wake", hold=False)
+        cause = self.new_notice_cause("notice-only-wake", hold=True)
         page = self.pending_notice(cause)
+        self.quiet(starts, 0)
+        held = self.observe_state(NOTICE_DRAFT, sid=self.main_sid)
+        assert held["state"]["idle"] is True, "notice-only clear requires actual native idle state"
+        before_clear = self.capture("notice-only-pending-before-clear")
+        clear = {"input": "ctrl+c", "at": time.time(), "native_state": held, "capture": before_clear}
+        self.keys("ctrl+c")
+        # The host may already have submitted and completed its legitimate wake
+        # before the controller samples again. This is a post-clear observation,
+        # never an ephemeral empty-idle precondition or a pre-wake capture.
+        after_clear = self.observe_state(sid=self.main_sid)
+        self.capture("notice-only-after-clear")
         wake = self.wait("notice-only actual Native wake", lambda: next((r for r in self.rows()[since:]
-                         if r["event"] == "before_agent_start" and r["state"]["sid"] == self.main_sid and r["data"].get("prompt") == WAKE), None), 45)
+                         if r["event"] == "before_agent_start" and r["state"]["sid"] == self.main_sid and r["data"].get("prompt") == WAKE), None), 90)
+        assert wake["at"] >= clear["at"] * 1000, "notice wake preceded the owned clear"
         proof = self.assert_notice_settled(cause, since)
         self.wait("notice-only native wake settled", lambda: any(r["event"] == "agent_settled" and r["state"]["sid"] == self.main_sid for r in self.rows()[since:]))
         assert self.count("before_agent_start") == starts + 1, "notice-only scenario created extra runs"
-        self.facts["notice_wake"] = {"cause": cause, "page": page, "actual_wake": wake, **proof}
+        self.facts["notice_wake"] = {"cause": cause, "page": page, "owned_clear": clear,
+                                     "post_clear_observation": after_clear, "actual_wake": wake, **proof}
         self.finish_notice_cause(cause)
 
     def quiet(self, starts, seconds=1):
@@ -1238,6 +1250,47 @@ read -r _ || true
 
 
 class DriverTests(unittest.TestCase):
+    def test_notice_wake_captures_pending_before_clearing_exact_owned_draft(self):
+        run = Run.__new__(Run); run.main_sid = "main"; run.facts = {}
+        events = [{"event": "session_start", "state": {"sid": "main"}}, {"event": "agent_settled", "state": {"sid": "main"}}]
+        order = []
+        run.rows = lambda: events
+        run.count = lambda event: sum(r["event"] == event for r in events)
+        run.start_notice_sink = lambda: None
+        run.wake_lane = lambda: order.append("eligible")
+        run.hold_notice_editor = lambda: order.append("owned-draft")
+        def observe(editor=None, **_kwargs):
+            if editor == "": self.assertIn("clear", order, "empty composer observed before staging pending proof")
+            elif editor == NOTICE_DRAFT: self.assertNotIn("clear", order)
+            return {"state": {"editor": editor, "idle": True}}
+        run.observe_state = observe
+        run.capture = lambda *_args: {}
+        def cause(_label, hold):
+            self.assertTrue(hold, "pending notice snapshot must be held against fast Native confirmation")
+            self.assertIn("owned-draft", order)
+            order.append("cause")
+            return {"message": "cause"}
+        run.new_notice_cause = cause
+        def pending(cause):
+            self.assertNotIn("clear", order)
+            cause.update(warning="warning", body="canonical marker", ordinal=1)
+            order.append("pending")
+            return {"pending": True}
+        run.pending_notice = pending
+        def keys(key):
+            self.assertEqual(key, "ctrl+c")
+            self.assertIn("pending", order, "draft cleared before canonical body/key were captured")
+            order.append("clear")
+            events.extend([{"event": "before_agent_start", "at": time.time() * 1000, "state": {"sid": "main"}, "data": {"prompt": WAKE}},
+                           {"event": "agent_settled", "state": {"sid": "main"}}])
+        run.keys = keys
+        run.quiet = lambda starts, _seconds: self.assertEqual(run.count("before_agent_start"), starts)
+        run.wait = lambda _label, predicate, *_args: predicate()
+        run.assert_notice_settled = lambda *_args: {"native_context": "actual-witness-placeholder-in-controller-unit-test"}
+        run.finish_notice_cause = lambda _cause: order.append("cleanup")
+        run.case_notice_wake()
+        self.assertEqual(order, ["eligible", "owned-draft", "cause", "pending", "clear", "cleanup"])
+
     def test_real_fixture_notice_commands_and_atomic_editor_guard(self):
         # Fixture mechanics only: mocked exec is not canonical notice evidence.
         with tempfile.TemporaryDirectory(prefix="ht-pi-notice-fixture-") as root:
