@@ -1,0 +1,190 @@
+{
+  "scope": "Source excerpts supporting ht-d2jq.1 negative qualification; no local upstream checkout pre-existed.",
+  "sources": [
+    {
+      "url": "https://github.com/openai/codex/blob/rust-v0.167.0/codex-rs/ext/queue/src/service.rs",
+      "revision": "rust-v0.167.0",
+      "source_sha256": "110253b6c2b74de1ad8610b347ac331479d4f09873a1c8f9793a6921438d6ae1",
+      "retrieval": "gh api official tagged contents, inspected locally",
+      "passages": [
+        {
+          "start_line": 236,
+          "end_line": 266,
+          "text": "                                }\n                            }\n                        }\n                        tokio::time::sleep(Duration::from_secs(/*secs*/ 10)).await;\n                    }\n                });\n                dispatches.insert(thread_id, dispatch);\n            }\n        }\n    }\n\n    fn dispatch_lock(&self, thread_id: ThreadId) -> Arc<Mutex<()>> {\n        let mut locks = self\n            .dispatch_locks\n            .lock()\n            .unwrap_or_else(std::sync::PoisonError::into_inner);\n        locks.retain(|_, lock| lock.strong_count() != 0);\n        if let Some(lock) = locks.get(&thread_id).and_then(Weak::upgrade) {\n            return lock;\n        }\n        let lock = Arc::new(Mutex::new(()));\n        locks.insert(thread_id, Arc::downgrade(&lock));\n        lock\n    }\n\n    async fn dispatch_guard(&self, thread_id: ThreadId) -> OwnedMutexGuard<()> {\n        self.dispatch_lock(thread_id).lock_owned().await\n    }\n\n    pub async fn enqueue(\n        &self,"
+        },
+        {
+          "start_line": 318,
+          "end_line": 335,
+          "text": "                    _ => None,\n                });\n        }\n        let input = prepare_queued_user_input(input).await?;\n        let payload = serde_json::to_string(&input)?;\n        let item = self\n            .queue\n            .update(thread_id, queued_item_id, payload)\n            .await?\n            .map(queued_item_from_record)\n            .transpose()?;\n        if item.is_some() {\n            self.emit_changed(thread_id);\n        }\n        Ok(item)\n    }\n\n    pub async fn delete("
+        },
+        {
+          "start_line": 347,
+          "end_line": 444,
+          "text": "        queued_item_id: String,\n    ) -> Result<bool, QueueServiceError> {\n        let deleted = self.queue.delete(thread_id, queued_item_id).await?;\n        if deleted {\n            self.emit_changed(thread_id);\n        }\n        Ok(deleted)\n    }\n\n    pub async fn reorder(\n        &self,\n        thread_id: ThreadId,\n        ordered_ids: Vec<String>,\n    ) -> Result<(), QueueServiceError> {\n        let _dispatch_guard = self.dispatch_guard(thread_id).await;\n        self.queue.reorder(thread_id, ordered_ids).await?;\n        self.emit_changed(thread_id);\n        Ok(())\n    }\n\n    /// Starts the selected queued message only when its thread is idle.\n    pub async fn start(\n        &self,\n        thread: &CodexThread,\n        queued_item_id: Option<String>,\n        trace: Option<W3cTraceContext>,\n    ) -> Result<StartIfIdleSubmission, QueueServiceError> {\n        let thread_id = thread.startup_metadata().thread_id;\n        let _dispatch_guard = self.dispatch_guard(thread_id).await;\n        let item = self\n            .list(thread_id)\n            .await?\n            .into_iter()\n            .find(|item| queued_item_id.as_ref().is_none_or(|id| item.id == *id))\n            .ok_or_else(|| ThreadStoreError::InvalidRequest {\n                message: queued_item_id.as_ref().map_or_else(\n                    || \"queue is empty\".to_string(),\n                    |id| format!(\"queued submission not found: {id}\"),\n                ),\n            })?;\n        let queued_item_id = item.id.clone();\n        let input @ TurnInput::UserInput { .. } = item.input else {\n            return Err(QueueServiceError::InvalidInput);\n        };\n        let submission = thread\n            .start_turn_if_idle(TurnInputRequest::new(input).with_trace(trace).on_start(\n                TurnStartOptions {\n                    turn_trigger: Some(\"queue\".to_string()),\n                    ..Default::default()\n                },\n            ))\n            .await?;\n        if matches!(submission, StartIfIdleSubmission::Started { .. }) {\n            self.delete_locked(thread_id, queued_item_id).await?;\n        }\n        Ok(submission)\n    }\n\n    async fn dispatch_if_idle(&self, thread_id: ThreadId) -> Result<(), QueueServiceError> {\n        let Some(manager) = self.thread_manager.upgrade() else {\n            return Ok(());\n        };\n        let Ok(thread) = manager.get_thread(thread_id).await else {\n            return Ok(());\n        };\n\n        loop {\n            let Some(record) = self\n                .queue\n                .list_page(thread_id, /*offset*/ 0, /*limit*/ 1)\n                .await?\n                .into_iter()\n                .next()\n            else {\n                return Ok(());\n            };\n            let queued_item_id = record.id.clone();\n\n            let input = match serde_json::from_str::<TurnInput>(&record.payload) {\n                Ok(input) => input,\n                Err(error) => {\n                    tracing::warn!(%queued_item_id, %error, \"discarding invalid queued item\");\n                    self.delete_locked(thread_id, queued_item_id).await?;\n                    continue;\n                }\n            };\n            if !matches!(input, TurnInput::UserInput { .. }) {\n                tracing::warn!(%queued_item_id, \"discarding non-user queued input\");\n                self.delete_locked(thread_id, queued_item_id).await?;\n                continue;\n            }\n\n            match thread\n                .start_turn_if_idle(TurnInputRequest::new(input).on_start(TurnStartOptions {\n                    turn_trigger: Some(\"queue\".to_string()),\n                    ..Default::default()\n                }))\n                .await"
+        },
+        {
+          "start_line": 519,
+          "end_line": 535,
+          "text": "\n    tokio::task::spawn_blocking(move || {\n        let mut input = input;\n        if let TurnInput::UserInput { content, .. } = &mut input {\n            for item in content {\n                snapshot_local_user_input(item)?;\n            }\n        }\n        Ok::<TurnInput, std::io::Error>(input)\n    })\n    .await\n    .map_err(|error| QueueServiceError::InvalidAttachment(std::io::Error::other(error)))?\n    .map_err(QueueServiceError::InvalidAttachment)\n}\n\nimpl<C> ThreadLifecycleContributor<C> for QueuedItemService\nwhere"
+        }
+      ]
+    },
+    {
+      "url": "https://github.com/openai/codex/blob/rust-v0.167.0/codex-rs/core/src/session/turn_input.rs",
+      "revision": "rust-v0.167.0",
+      "source_sha256": "ca92430590dff971718ae9d9d6220e904e0695e0f7e41ff04508dfd898fcb92f",
+      "retrieval": "gh api official tagged contents, inspected locally",
+      "passages": [
+        {
+          "start_line": 479,
+          "end_line": 551,
+          "text": "    reason = \"the previous turn check and idle reservation must be atomic\"\n)]\nasync fn start_if_idle(\n    session: &Arc<Session>,\n    request: WithTurnExtensionData<TurnInputRequest>,\n    submission_id: String,\n    kind: TurnStartKind,\n    expected_previous_turn_id: Option<String>,\n) -> CodexResult<TurnInputSubmission> {\n    let WithTurnExtensionData {\n        request,\n        turn_extension_init,\n    } = request;\n    let input_metadata = user_input_metadata(&request);\n    let TurnInputRequest {\n        mut input,\n        thread_settings,\n        start,\n        additional_context,\n        responsesapi_client_metadata,\n        ..\n    } = request;\n    if session.input_queue.has_trigger_turn_mailbox_items().await {\n        return Ok(TurnInputSubmission::NotSubmitted {\n            reason: NotSubmittedReason::PendingTriggerTurn,\n        });\n    }\n    // Preserve current-Plan rejection before reservation and settings errors.\n    // The commit-time decision also checks the proposed mode.\n    if kind == TurnStartKind::Automatic\n        && !kind.permits_mode(session.collaboration_mode().await.mode)\n    {\n        return Ok(TurnInputSubmission::NotSubmitted {\n            reason: NotSubmittedReason::PlanMode,\n        });\n    }\n\n    let _admission = session.services.extensions.admit_turn_start();\n    // A one-shot review delegate completes its already-running parent's work.\n    // Its explicit input carries parent lineage; automatic starts do not qualify.\n    if _admission.is_none()\n        && !(kind == TurnStartKind::User\n            && start.parent_turn_id.is_some()\n            && matches!(\n                session\n                    .state\n                    .lock()\n                    .await\n                    .session_configuration\n                    .session_source,\n                SessionSource::SubAgent(SubAgentSource::Review)\n            ))\n    {\n        return Ok(TurnInputSubmission::NotSubmitted {\n            reason: NotSubmittedReason::ServerDraining,\n        });\n    }\n\n    let turn_state = {\n        let mut active_turn = session.active_turn.lock().await;\n        if active_turn.is_some() {\n            return Ok(TurnInputSubmission::NotSubmitted {\n                reason: NotSubmittedReason::NotIdle,\n            });\n        }\n        if let Some(expected) = expected_previous_turn_id\n            && session.state.lock().await.last_started_turn_id.as_ref() != Some(&expected)\n        {\n            return Ok(TurnInputSubmission::NotSubmitted {\n                reason: NotSubmittedReason::Superseded,\n            });\n        }\n        let active_turn = active_turn.get_or_insert_with(ActiveTurn::default);"
+        },
+        {
+          "start_line": 633,
+          "end_line": 649,
+          "text": "                            )\n                            .await,\n                        ],\n                    )\n                    .await;\n            }\n        }\n    }\n    session\n        .start_task(Arc::clone(&turn_context), task_input, RegularTask::new())\n        .await;\n    Ok(TurnInputSubmission::Started {\n        turn_id: submission_id,\n        root_turn_id: turn_context.root_turn_id(),\n    })\n}\n"
+        }
+      ]
+    },
+    {
+      "url": "https://github.com/openai/codex/blob/rust-v0.167.0/codex-rs/core/src/tasks/regular.rs",
+      "revision": "rust-v0.167.0",
+      "source_sha256": "f5734250617e924ee665e061507f23040f5a824b289de945edfb29b90792c9b6",
+      "retrieval": "gh api official tagged contents, inspected locally",
+      "passages": [
+        {
+          "start_line": 60,
+          "end_line": 93,
+          "text": "        // Regular turns emit `TurnStarted` inline so first-turn lifecycle does\n        // not wait on startup prewarm resolution.\n        let prewarmed_client_session = async {\n            sess.emit_turn_started(&ctx, TaskKind::Regular).await;\n            // Regular-start contributors run once, after the task is visible and interruptible.\n            let prepares_mcp = sess\n                .services\n                .extensions\n                .turn_lifecycle_contributors()\n                .iter()\n                .any(|contributor| {\n                    contributor.turn_start_phase(&sess.services.thread_extension_data)\n                        == TurnStartPhase::RegularTaskStart\n                        && contributor.requires_mcp_runtime(&sess.services.thread_extension_data)\n                });\n            let preparation = sess\n                .emit_turn_start_lifecycle(\n                    &ctx,\n                    /*token_usage_at_turn_start*/ None,\n                    TurnStartPhase::RegularTaskStart,\n                )\n                .or_cancel(&cancellation_token)\n                .await;\n            // Even cancelled discovery may have cleared the previous account's catalog.\n            if prepares_mcp {\n                sess.request_mcp_runtime_reprojection();\n            }\n            if preparation.is_err() {\n                return SessionStartupPrewarmResolution::Cancelled;\n            }\n            sess.consume_startup_prewarm_for_regular_turn(&cancellation_token)\n                .await\n        }\n        .instrument(trace_span!(\"regular_task.prepare_run_turn\"))"
+        }
+      ]
+    },
+    {
+      "url": "https://github.com/openai/codex/blob/rust-v0.167.0/codex-rs/core/src/session/turn.rs",
+      "revision": "rust-v0.167.0",
+      "source_sha256": "cd2f3c0f347641afc1a11ac720c5779dd5ec373dd872c6c8b9174436181c6408",
+      "retrieval": "gh api official tagged contents, inspected locally",
+      "passages": [
+        {
+          "start_line": 404,
+          "end_line": 415,
+          "text": "    if run_hooks_and_record_inputs(\n        &sess,\n        &turn_context,\n        &first_step_context.settings.model_info,\n        &input,\n        PersistContext::TurnStart,\n    )\n    .await?\n    {\n        return Ok(None);\n    }\n"
+        },
+        {
+          "start_line": 1004,
+          "end_line": 1041,
+          "text": "            _ => input_item,\n        };\n        let hook_outcome = inspect_pending_input(sess, turn_context, input_item).await;\n        if hook_outcome.should_stop {\n            blocked_input = true;\n            record_additional_contexts(sess, turn_context, hook_outcome.additional_contexts).await;\n        } else {\n            if let TurnInput::UserInput { content, .. } = input_item {\n                // Prompt telemetry can contain the full text, so emit it only after hooks accept it.\n                turn_context.session_telemetry.user_prompt(content);\n            }\n            if matches!(input_item, TurnInput::UserInput { content, .. } if !content.is_empty()) {\n                accepted_user_input = true;\n            }\n            // Tool outputs retain their durability barrier, including in mixed input batches.\n            let input_persist_context = if persist_context == PersistContext::SteeredUserInput\n                && matches!(input_item, TurnInput::FunctionCallOutput(_))\n            {\n                PersistContext::Standard\n            } else {\n                persist_context\n            };\n            record_pending_input(\n                sess,\n                turn_context,\n                model_info,\n                input_item.clone(),\n                hook_outcome.additional_contexts,\n                input_persist_context,\n            )\n            .await;\n        }\n    }\n    if rejected_uploaded_audio {\n        return Err(uploaded_audio_disabled_error());\n    }\n    Ok(blocked_input && !accepted_user_input)\n}"
+        }
+      ]
+    },
+    {
+      "url": "https://github.com/openai/codex/blob/rust-v0.167.0/codex-rs/core/src/hook_runtime.rs",
+      "revision": "rust-v0.167.0",
+      "source_sha256": "d89eec069e9d0557c419b82b5527fe08380c4649f24ceb68b03ce52288f3acb5",
+      "retrieval": "gh api official tagged contents, inspected locally",
+      "passages": [
+        {
+          "start_line": 707,
+          "end_line": 731,
+          "text": "pub(crate) async fn inspect_pending_input(\n    sess: &Arc<Session>,\n    turn_context: &Arc<TurnContext>,\n    pending_input_item: &TurnInput,\n) -> HookRuntimeOutcome {\n    match pending_input_item {\n        TurnInput::UserInput { content, .. } => {\n            let request = UserPromptSubmitRequest {\n                session_id: sess.session_id().into(),\n                turn_id: turn_context.sub_id.clone(),\n                subagent: thread_spawn_subagent_hook_context(sess, turn_context),\n                #[allow(deprecated)]\n                cwd: turn_context.cwd.clone(),\n                transcript_path: sess.hook_transcript_path().await,\n                model: turn_context.model_info().slug.clone(),\n                permission_mode: hook_permission_mode(turn_context.approval_policy()),\n                prompt: UserMessageItem::new(content).message(),\n            };\n            let hooks = with_environment_hooks(\n                sess,\n                turn_context,\n                &turn_context.initial_environments.refresh_readiness(),\n            );\n            let preview_runs = hooks.preview_user_prompt_submit(&request);\n            run_context_injecting_hook("
+        }
+      ]
+    },
+    {
+      "url": "https://github.com/openai/codex/blob/rust-v0.167.0/codex-rs/hooks/src/events/user_prompt_submit.rs",
+      "revision": "rust-v0.167.0",
+      "source_sha256": "8eaed82e2e6ceac98e1110a57037b2bb6dea89ef5cef586afa408ee30de43e72",
+      "retrieval": "gh api official tagged contents, inspected locally",
+      "passages": [
+        {
+          "start_line": 24,
+          "end_line": 42,
+          "text": "pub struct UserPromptSubmitRequest {\n    pub session_id: ThreadId,\n    pub turn_id: String,\n    pub subagent: Option<common::SubagentHookContext>,\n    pub cwd: AbsolutePathBuf,\n    pub transcript_path: Option<PathBuf>,\n    pub model: String,\n    pub permission_mode: String,\n    pub prompt: String,\n}\n\n#[derive(Debug)]\npub struct UserPromptSubmitOutcome {\n    pub hook_events: Vec<HookCompletedEvent>,\n    pub should_stop: bool,\n    pub stop_reason: Option<String>,\n    pub additional_contexts: Vec<crate::HookContext>,\n}\n"
+        },
+        {
+          "start_line": 83,
+          "end_line": 95,
+          "text": "    let input = match serde_json::to_value(UserPromptSubmitCommandInput {\n        session_id: request.session_id.to_string(),\n        turn_id: request.turn_id.clone(),\n        agent_id: subagent.agent_id,\n        agent_type: subagent.agent_type,\n        transcript_path: NullableString::from_path(request.transcript_path.clone()),\n        cwd: request.cwd.display().to_string(),\n        hook_event_name: \"UserPromptSubmit\".to_string(),\n        model: request.model.clone(),\n        permission_mode: request.permission_mode.clone(),\n        prompt: request.prompt.clone(),\n    }) {\n        Ok(input) => input,"
+        },
+        {
+          "start_line": 179,
+          "end_line": 210,
+          "text": "                            &run_result.context_metadata,\n                        );\n                    }\n                    let _ = parsed.universal.suppress_output;\n                    if handler.can_apply_control_effects() {\n                        if !parsed.universal.continue_processing {\n                            status = HookRunStatus::Stopped;\n                            should_stop = true;\n                            stop_reason = parsed.universal.stop_reason.clone();\n                            if let Some(stop_reason_text) = parsed.universal.stop_reason {\n                                entries.push(HookOutputEntry {\n                                    kind: HookOutputEntryKind::Stop,\n                                    text: stop_reason_text,\n                                });\n                            }\n                        } else if let Some(invalid_block_reason) = parsed.invalid_block_reason {\n                            status = HookRunStatus::Failed;\n                            entries.push(HookOutputEntry {\n                                kind: HookOutputEntryKind::Error,\n                                text: invalid_block_reason,\n                            });\n                        } else if parsed.should_block {\n                            status = HookRunStatus::Blocked;\n                            should_stop = true;\n                            stop_reason = parsed.reason.clone();\n                            if let Some(reason) = parsed.reason {\n                                entries.push(HookOutputEntry {\n                                    kind: HookOutputEntryKind::Feedback,\n                                    text: reason,\n                                });\n                            }\n                        }"
+        },
+        {
+          "start_line": 245,
+          "end_line": 275,
+          "text": "            }\n            Some(exit_code) => {\n                status = HookRunStatus::Failed;\n                entries.push(HookOutputEntry {\n                    kind: HookOutputEntryKind::Error,\n                    text: format!(\"hook exited with code {exit_code}\"),\n                });\n            }\n            None => {\n                status = HookRunStatus::Failed;\n                entries.push(HookOutputEntry {\n                    kind: HookOutputEntryKind::Error,\n                    text: \"hook exited without a status code\".to_string(),\n                });\n            }\n        },\n    }\n\n    let completed = HookCompletedEvent {\n        turn_id,\n        run: dispatcher::completed_summary(handler, &run_result, status, entries),\n    };\n\n    dispatcher::ParsedHandler {\n        completed,\n        data: UserPromptSubmitHandlerData {\n            should_stop,\n            stop_reason,\n            additional_contexts_for_model,\n        },\n        completion_order: 0,"
+        }
+      ]
+    },
+    {
+      "url": "https://github.com/openai/codex/blob/rust-v0.167.0/codex-rs/state/src/runtime/queued_items.rs",
+      "revision": "rust-v0.167.0",
+      "source_sha256": "3296b37044ebc00e92f47f794b689af469498e8f15b0b8fcec94e4f5bd4761b6",
+      "retrieval": "gh api official tagged contents, inspected locally",
+      "passages": [
+        {
+          "start_line": 79,
+          "end_line": 106,
+          "text": "    pub async fn enqueue(\n        &self,\n        thread_id: ThreadId,\n        payload_json: &str,\n    ) -> anyhow::Result<QueuedUserSubmissionRecord> {\n        let now_ms = datetime_to_epoch_millis(Utc::now());\n        let row = sqlx::query(\n            \"INSERT INTO queued_items (\n                id, thread_id, payload_json, queue_order,\n                created_at_ms, updated_at_ms\n             )\n             SELECT ?, ?, ?,\n                    COALESCE((SELECT MAX(queue_order) FROM queued_items WHERE thread_id = ?), -1) + 1,\n                    ?, ?\n             WHERE (SELECT COUNT(*) FROM queued_items WHERE thread_id = ?) < ?\n             RETURNING id, thread_id, payload_json\",\n        )\n        .bind(Uuid::now_v7().to_string())\n        .bind(thread_id.to_string())\n        .bind(payload_json)\n        .bind(thread_id.to_string())\n        .bind(now_ms)\n        .bind(now_ms)\n        .bind(thread_id.to_string())\n        .bind(i64::try_from(MAX_QUEUE_ITEMS)?)\n        .fetch_one_write(self.pool.as_ref())\n        .await?;\n        QueuedUserSubmissionRecord::try_from_row(&row)"
+        },
+        {
+          "start_line": 109,
+          "end_line": 126,
+          "text": "    pub async fn list_page(\n        &self,\n        thread_id: ThreadId,\n        offset: usize,\n        limit: usize,\n    ) -> anyhow::Result<Vec<QueuedUserSubmissionRecord>> {\n        let rows = sqlx::query(\n            \"SELECT id, thread_id, payload_json\n             FROM queued_items\n             WHERE thread_id = ?\n             ORDER BY queue_order LIMIT ? OFFSET ?\",\n        )\n        .bind(thread_id.to_string())\n        .bind(i64::try_from(limit)?)\n        .bind(i64::try_from(offset)?)\n        .fetch_all(self.pool.as_ref())\n        .await?;\n        rows.iter()"
+        },
+        {
+          "start_line": 154,
+          "end_line": 164,
+          "text": "    pub async fn delete(&self, thread_id: ThreadId, item_id: &str) -> anyhow::Result<bool> {\n        Ok(\n            sqlx::query(\"DELETE FROM queued_items WHERE thread_id = ? AND id = ?\")\n                .bind(thread_id.to_string())\n                .bind(item_id)\n                .execute_with_busy_retry(self.pool.as_ref())\n                .await?\n                .rows_affected()\n                > 0,\n        )\n    }"
+        }
+      ]
+    },
+    {
+      "url": "https://github.com/openai/codex/blob/rust-v0.167.0/codex-rs/config/src/config_toml.rs",
+      "revision": "rust-v0.167.0",
+      "source_sha256": "89e8c49221699a16b222f9d2f23574b1fa8d1179ddee81702de684c7fc21c2e8",
+      "retrieval": "gh api official tagged contents, inspected locally",
+      "passages": [
+        {
+          "start_line": 372,
+          "end_line": 384,
+          "text": "    #[serde(default = \"default_history\")]\n    pub history: Option<History>,\n\n    /// Directory where Codex stores the SQLite state DB.\n    /// Defaults to `$CODEX_SQLITE_HOME` when set. Otherwise uses `$CODEX_HOME`.\n    pub sqlite_home: Option<AbsolutePathBuf>,\n\n    /// Directory for log files. Setting this value explicitly also routes the\n    /// SQLite logs database here and enables the TUI text log in this directory.\n    /// When unset, log files use `$CODEX_HOME/log` and SQLite logs use `sqlite_home`.\n    /// Existing SQLite logs in `sqlite_home` are not migrated automatically.\n    /// A managed `sqlite_home` requirement keeps SQLite logs in that required directory.\n    pub log_dir: Option<AbsolutePathBuf>,"
+        }
+      ]
+    },
+    {
+      "url": "https://github.com/openai/codex/blob/rust-v0.167.0/codex-rs/rollout/src/writer_lock.rs",
+      "revision": "rust-v0.167.0",
+      "source_sha256": "c3e93ffcd45e19935ddf86e7b7a92b4263eccf048954277827e16af2c5f006a5",
+      "retrieval": "gh api official tagged contents, inspected locally",
+      "passages": [
+        {
+          "start_line": 1,
+          "end_line": 3,
+          "text": "//! Shared cross-process ownership for local thread writers and rollout publication.\n//! Thread lock-file creation and removal uses a bounded wait for the home coordination lock.\n"
+        },
+        {
+          "start_line": 19,
+          "end_line": 85,
+          "text": "const WRITER_LOCK_DIR: &str = \"thread-writer-locks\";\nconst COORDINATION_LOCK_FILE: &str = \".coordination.lock\";\n\n/// Coordinates writer ownership within one Codex home.\npub struct WriterLockCoordinator {\n    directory: PathBuf,\n    cleanup_attempted: AtomicBool,\n}\n\n/// Keeps a thread owned until all file work has finished.\npub struct WriterLockGuard {\n    coordinator: Arc<WriterLockCoordinator>,\n    path: PathBuf,\n    file: Option<File>,\n}\n\nimpl WriterLockCoordinator {\n    /// Uses the same lock namespace as existing local thread-store writers.\n    pub fn new(codex_home: &Path) -> Self {\n        Self {\n            directory: codex_home.join(WRITER_LOCK_DIR),\n            cleanup_attempted: AtomicBool::new(false),\n        }\n    }\n\n    /// Acquires exclusive writer ownership, returning `WouldBlock` for an active writer.\n    pub fn acquire(self: &Arc<Self>, thread_id: ThreadId) -> io::Result<WriterLockGuard> {\n        let _coordination_lock = self.lock_coordination()?;\n        if !self.cleanup_attempted.swap(true, Ordering::Relaxed)\n            && let Err(err) = self.remove_stale_thread_locks()\n        {\n            warn!(\"failed to clean up stale thread writer locks: {err}\");\n        }\n\n        let path = self.directory.join(format!(\"{thread_id}.lock\"));\n        let file = OpenOptions::new()\n            .read(true)\n            .write(true)\n            .create(true)\n            .truncate(false)\n            .open(&path)\n            .map_err(|err| {\n                io::Error::other(format!(\n                    \"failed to open thread writer lock {}: {err}\",\n                    path.display()\n                ))\n            })?;\n\n        match file.try_lock() {\n            Ok(()) => {}\n            Err(std::fs::TryLockError::WouldBlock) => {\n                return Err(io::Error::new(\n                    io::ErrorKind::WouldBlock,\n                    format!(\"thread {thread_id} already has an active writer\"),\n                ));\n            }\n            Err(std::fs::TryLockError::Error(err)) => {\n                return Err(io::Error::other(format!(\n                    \"failed to acquire thread writer lock {}: {err}\",\n                    path.display()\n                )));\n            }\n        }\n\n        Ok(WriterLockGuard {\n            coordinator: Arc::clone(self),\n            path,"
+        }
+      ]
+    },
+    {
+      "url": "https://github.com/openai/codex/blob/rust-v0.167.0/codex-rs/thread-store/src/local/live_writer.rs",
+      "revision": "rust-v0.167.0",
+      "source_sha256": "1e11169c69e9126de9708d8dc1506f04783c56628a43237b7fea1de8aa5480b9",
+      "retrieval": "gh api official tagged contents, inspected locally",
+      "passages": [
+        {
+          "start_line": 54,
+          "end_line": 82,
+          "text": "        None\n    };\n    let _live_writer_guard = store.live_writer_locks.lock(thread_id).await;\n    let history_mode = params.history_mode;\n    store.ensure_live_recorder_absent(thread_id).await?;\n    let writer_lock = store.acquire_writer_lock(thread_id)?;\n    let recorder = create_thread::create_thread(store, params, writer_lock.clone()).await?;\n    if let Some((state, _source_ownership)) = attachment {\n        recorder.persist().await.map_err(thread_store_io_error)?;\n        if let Err(error) = index_attached_thread(store, state, recorder.rollout_path()).await {\n            recorder.discard().await.map_err(thread_store_io_error)?;\n            super::delete_thread::delete_rollout_file(store, recorder.rollout_path())?;\n            super::delete_thread::delete_state_rows(store, &[thread_id]).await?;\n            return Err(error);\n        }\n    }\n    store\n        .insert_live_recorder(thread_id, recorder, thread_id, history_mode, writer_lock)\n        .await\n}\n\npub(super) async fn resume_thread(\n    store: &LocalThreadStore,\n    params: ResumeThreadParams,\n) -> ThreadStoreResult<Arc<Vec<RolloutItem>>> {\n    let _live_writer_guard = store.live_writer_locks.lock(params.thread_id).await;\n    store.ensure_live_recorder_absent(params.thread_id).await?;\n    let writer_lock = store.acquire_writer_lock(params.thread_id)?;\n    let rollout_path = match params.rollout_path {"
+        }
+      ]
+    }
+  ]
+}

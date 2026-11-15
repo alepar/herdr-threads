@@ -1,0 +1,2538 @@
+{
+  "version": "codex-cli 0.167.0",
+  "cases": [
+    {
+      "case": "model_request_hooks_are_live_witnesses",
+      "passed": true,
+      "observed_initial_requests": 1
+    },
+    {
+      "case": "veto_obsolete_marker_before_inference",
+      "passed": true,
+      "accepted": {
+        "queuedSubmission": {
+          "id": "01a1dd0d-f82d-79b0-a9de-2f9f76439990",
+          "input": [
+            {
+              "type": "text",
+              "text": "herdr-threads: wake up",
+              "text_elements": []
+            }
+          ],
+          "clientUserMessageId": "a7dfecc0-11a6-4e77-9b50-fba13a57f77b"
+        }
+      },
+      "marker": {
+        "session_id": "01a1dd0d-e82b-7293-9a37-8f6040dc7bfe",
+        "turn_id": "01a1dd0e-0c63-7142-980d-0aa85c8b34df",
+        "prompt": "herdr-threads: wake up",
+        "event": "UserPromptSubmit",
+        "at": 1794710048.0132303,
+        "hook_input_keys": [
+          "cwd",
+          "hook_event_name",
+          "model",
+          "permission_mode",
+          "prompt",
+          "session_id",
+          "transcript_path",
+          "turn_id"
+        ],
+        "hook_pid": 822825,
+        "parent_pid": 817932,
+        "caller_env": {
+          "CODEX_SESSION_ID": null,
+          "CODEX_THREAD_ID": null,
+          "CODEX_HOME": "$SPIKE_ROOT/codex",
+          "CODEX_EXEC_SERVER_URL": ""
+        },
+        "ancestry": [
+          {
+            "pid": 817932,
+            "ppid": 817817,
+            "start_ticks": "33775585",
+            "exe_name": "codex"
+          },
+          {
+            "pid": 817817,
+            "ppid": 3515304,
+            "start_ticks": "33775562",
+            "exe_name": "python3"
+          },
+          {
+            "pid": 3515304,
+            "ppid": 3515256,
+            "start_ticks": "32751808",
+            "exe_name": "codex"
+          },
+          {
+            "pid": 3515256,
+            "ppid": 5149,
+            "start_ticks": "32751800",
+            "exe_name": "bash"
+          },
+          {
+            "pid": 5149,
+            "ppid": 1,
+            "start_ticks": "11224",
+            "exe_name": "herdr"
+          }
+        ],
+        "queue_at_hook_entry": [],
+        "full_hook_input": {
+          "session_id": "01a1dd0d-e82b-7293-9a37-8f6040dc7bfe",
+          "turn_id": "01a1dd0e-0c63-7142-980d-0aa85c8b34df",
+          "transcript_path": "$SPIKE_ROOT/codex/sessions/2026/11/14/rollout-2026-11-14T18-33-58-01a1dd0d-e82b-7293-9a37-8f6040dc7bfe.jsonl",
+          "cwd": "$SPIKE_ROOT/work",
+          "hook_event_name": "UserPromptSubmit",
+          "model": "gpt-6.1-sol",
+          "permission_mode": "bypassPermissions",
+          "prompt": "herdr-threads: wake up"
+        }
+      },
+      "decision": {
+        "event": "AdmissionDecision",
+        "session_id": "01a1dd0d-e82b-7293-9a37-8f6040dc7bfe",
+        "turn_id": "01a1dd0e-0c63-7142-980d-0aa85c8b34df",
+        "at": 1794710048.013716,
+        "mode": "block",
+        "queue_at_decision": []
+      },
+      "delete_while_hook_held": null,
+      "model_requests_for_turn": [],
+      "queue_after": {
+        "data": [],
+        "nextCursor": null
+      },
+      "model_request_witness_total_before": 1
+    },
+    {
+      "case": "veto_after_dequeue",
+      "passed": true,
+      "accepted": {
+        "queuedSubmission": {
+          "id": "01a1dd0e-47ee-71e2-bca4-17b0a8731338",
+          "input": [
+            {
+              "type": "text",
+              "text": "herdr-threads: wake up",
+              "text_elements": []
+            }
+          ],
+          "clientUserMessageId": "bf377b60-b3be-41d6-9420-17bfae400068"
+        }
+      },
+      "marker": {
+        "session_id": "01a1dd0d-e82b-7293-9a37-8f6040dc7bfe",
+        "turn_id": "01a1dd0e-5a82-7dd1-a69a-0cd5c159548d",
+        "prompt": "herdr-threads: wake up",
+        "event": "UserPromptSubmit",
+        "at": 1794710068.0370386,
+        "hook_input_keys": [
+          "cwd",
+          "hook_event_name",
+          "model",
+          "permission_mode",
+          "prompt",
+          "session_id",
+          "transcript_path",
+          "turn_id"
+        ],
+        "hook_pid": 840324,
+        "parent_pid": 817932,
+        "caller_env": {
+          "CODEX_SESSION_ID": null,
+          "CODEX_THREAD_ID": null,
+          "CODEX_HOME": "$SPIKE_ROOT/codex",
+          "CODEX_EXEC_SERVER_URL": ""
+        },
+        "ancestry": [
+          {
+            "pid": 817932,
+            "ppid": 817817,
+            "start_ticks": "33775585",
+            "exe_name": "codex"
+          },
+          {
+            "pid": 817817,
+            "ppid": 3515304,
+            "start_ticks": "33775562",
+            "exe_name": "python3"
+          },
+          {
+            "pid": 3515304,
+            "ppid": 3515256,
+            "start_ticks": "32751808",
+            "exe_name": "codex"
+          },
+          {
+            "pid": 3515256,
+            "ppid": 5149,
+            "start_ticks": "32751800",
+            "exe_name": "bash"
+          },
+          {
+            "pid": 5149,
+            "ppid": 1,
+            "start_ticks": "11224",
+            "exe_name": "herdr"
+          }
+        ],
+        "queue_at_hook_entry": [],
+        "full_hook_input": {
+          "session_id": "01a1dd0d-e82b-7293-9a37-8f6040dc7bfe",
+          "turn_id": "01a1dd0e-5a82-7dd1-a69a-0cd5c159548d",
+          "transcript_path": "$SPIKE_ROOT/codex/sessions/2026/11/14/rollout-2026-11-14T18-33-58-01a1dd0d-e82b-7293-9a37-8f6040dc7bfe.jsonl",
+          "cwd": "$SPIKE_ROOT/work",
+          "hook_event_name": "UserPromptSubmit",
+          "model": "gpt-6.1-sol",
+          "permission_mode": "bypassPermissions",
+          "prompt": "herdr-threads: wake up"
+        }
+      },
+      "decision": {
+        "event": "AdmissionDecision",
+        "session_id": "01a1dd0d-e82b-7293-9a37-8f6040dc7bfe",
+        "turn_id": "01a1dd0e-5a82-7dd1-a69a-0cd5c159548d",
+        "at": 1794710068.4394581,
+        "mode": "block",
+        "queue_at_decision": []
+      },
+      "delete_while_hook_held": {
+        "deleted": false
+      },
+      "model_requests_for_turn": [],
+      "queue_after": {
+        "data": [],
+        "nextCursor": null
+      },
+      "model_request_witness_total_before": 2
+    },
+    {
+      "case": "admission_hook_error_is_fail_open",
+      "passed": true,
+      "characterization_only": true,
+      "accepted": {
+        "queuedSubmission": {
+          "id": "01a1dd0e-9529-70d0-82cf-c5461431c292",
+          "input": [
+            {
+              "type": "text",
+              "text": "herdr-threads: wake up",
+              "text_elements": []
+            }
+          ],
+          "clientUserMessageId": "abaf7ed1-145d-4146-884a-1ad431d625b3"
+        }
+      },
+      "marker": {
+        "session_id": "01a1dd0d-e82b-7293-9a37-8f6040dc7bfe",
+        "turn_id": "01a1dd0e-a8a2-7411-ad99-76a2a336a49f",
+        "prompt": "herdr-threads: wake up",
+        "event": "UserPromptSubmit",
+        "at": 1794710088.0347624,
+        "hook_input_keys": [
+          "cwd",
+          "hook_event_name",
+          "model",
+          "permission_mode",
+          "prompt",
+          "session_id",
+          "transcript_path",
+          "turn_id"
+        ],
+        "hook_pid": 875870,
+        "parent_pid": 817932,
+        "caller_env": {
+          "CODEX_SESSION_ID": null,
+          "CODEX_THREAD_ID": null,
+          "CODEX_HOME": "$SPIKE_ROOT/codex",
+          "CODEX_EXEC_SERVER_URL": ""
+        },
+        "ancestry": [
+          {
+            "pid": 817932,
+            "ppid": 817817,
+            "start_ticks": "33775585",
+            "exe_name": "codex"
+          },
+          {
+            "pid": 817817,
+            "ppid": 3515304,
+            "start_ticks": "33775562",
+            "exe_name": "python3"
+          },
+          {
+            "pid": 3515304,
+            "ppid": 3515256,
+            "start_ticks": "32751808",
+            "exe_name": "codex"
+          },
+          {
+            "pid": 3515256,
+            "ppid": 5149,
+            "start_ticks": "32751800",
+            "exe_name": "bash"
+          },
+          {
+            "pid": 5149,
+            "ppid": 1,
+            "start_ticks": "11224",
+            "exe_name": "herdr"
+          }
+        ],
+        "queue_at_hook_entry": [],
+        "full_hook_input": {
+          "session_id": "01a1dd0d-e82b-7293-9a37-8f6040dc7bfe",
+          "turn_id": "01a1dd0e-a8a2-7411-ad99-76a2a336a49f",
+          "transcript_path": "$SPIKE_ROOT/codex/sessions/2026/11/14/rollout-2026-11-14T18-33-58-01a1dd0d-e82b-7293-9a37-8f6040dc7bfe.jsonl",
+          "cwd": "$SPIKE_ROOT/work",
+          "hook_event_name": "UserPromptSubmit",
+          "model": "gpt-6.1-sol",
+          "permission_mode": "bypassPermissions",
+          "prompt": "herdr-threads: wake up"
+        }
+      },
+      "model_requests_for_turn": [
+        {
+          "session_id": "01a1dd0d-e82b-7293-9a37-8f6040dc7bfe",
+          "turn_id": "01a1dd0e-a8a2-7411-ad99-76a2a336a49f",
+          "event": "PreModelRequest",
+          "at": 1794710088.300822,
+          "hook_input_keys": [
+            "cwd",
+            "hook_event_name",
+            "model",
+            "session_id",
+            "transcript_path",
+            "turn_id"
+          ],
+          "hook_pid": 876098,
+          "parent_pid": 817932,
+          "caller_env": {
+            "CODEX_SESSION_ID": null,
+            "CODEX_THREAD_ID": null,
+            "CODEX_HOME": "$SPIKE_ROOT/codex",
+            "CODEX_EXEC_SERVER_URL": ""
+          },
+          "ancestry": [
+            {
+              "pid": 817932,
+              "ppid": 817817,
+              "start_ticks": "33775585",
+              "exe_name": "codex"
+            },
+            {
+              "pid": 817817,
+              "ppid": 3515304,
+              "start_ticks": "33775562",
+              "exe_name": "python3"
+            },
+            {
+              "pid": 3515304,
+              "ppid": 3515256,
+              "start_ticks": "32751808",
+              "exe_name": "codex"
+            },
+            {
+              "pid": 3515256,
+              "ppid": 5149,
+              "start_ticks": "32751800",
+              "exe_name": "bash"
+            },
+            {
+              "pid": 5149,
+              "ppid": 1,
+              "start_ticks": "11224",
+              "exe_name": "herdr"
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "case": "lost_add_reply_recovered_while_pending",
+      "passed": true,
+      "recovered": [
+        {
+          "id": "01a1dd0e-c133-7e91-b873-501d5565f38a",
+          "input": [
+            {
+              "type": "text",
+              "text": "herdr-threads: wake up",
+              "text_elements": []
+            }
+          ],
+          "clientUserMessageId": "8519cc0a-ae28-4fc3-aa24-e1a610e22c75"
+        }
+      ],
+      "deletes": [
+        {
+          "deleted": true
+        }
+      ],
+      "counts_before": {
+        "UserPromptSubmit": 6,
+        "Stop": 4,
+        "Interrupt": 0
+      },
+      "counts_after": {
+        "UserPromptSubmit": 7,
+        "Stop": 5,
+        "Interrupt": 0
+      }
+    }
+  ],
+  "error": null,
+  "session": "01a1dd0d-e82b-7293-9a37-8f6040dc7bfe",
+  "hooks": [
+    {
+      "session_id": "01a1dd0d-e82b-7293-9a37-8f6040dc7bfe",
+      "event": "SessionStart",
+      "at": 1794710040.2078452,
+      "hook_input_keys": [
+        "cwd",
+        "hook_event_name",
+        "model",
+        "permission_mode",
+        "session_id",
+        "source",
+        "transcript_path"
+      ],
+      "hook_pid": 818982,
+      "parent_pid": 817932,
+      "caller_env": {
+        "CODEX_SESSION_ID": null,
+        "CODEX_THREAD_ID": null,
+        "CODEX_HOME": "$SPIKE_ROOT/codex",
+        "CODEX_EXEC_SERVER_URL": ""
+      },
+      "ancestry": [
+        {
+          "pid": 817932,
+          "ppid": 817817,
+          "start_ticks": "33775585",
+          "exe_name": "codex"
+        },
+        {
+          "pid": 817817,
+          "ppid": 3515304,
+          "start_ticks": "33775562",
+          "exe_name": "python3"
+        },
+        {
+          "pid": 3515304,
+          "ppid": 3515256,
+          "start_ticks": "32751808",
+          "exe_name": "codex"
+        },
+        {
+          "pid": 3515256,
+          "ppid": 5149,
+          "start_ticks": "32751800",
+          "exe_name": "bash"
+        },
+        {
+          "pid": 5149,
+          "ppid": 1,
+          "start_ticks": "11224",
+          "exe_name": "herdr"
+        }
+      ]
+    },
+    {
+      "session_id": "01a1dd0d-e82b-7293-9a37-8f6040dc7bfe",
+      "turn_id": "01a1dd0d-e840-7871-8d89-0e25ac5eb8dc",
+      "prompt": "Reply exactly SPIKE_READY without using tools.",
+      "event": "UserPromptSubmit",
+      "at": 1794710040.355057,
+      "hook_input_keys": [
+        "cwd",
+        "hook_event_name",
+        "model",
+        "permission_mode",
+        "prompt",
+        "session_id",
+        "transcript_path",
+        "turn_id"
+      ],
+      "hook_pid": 819059,
+      "parent_pid": 817932,
+      "caller_env": {
+        "CODEX_SESSION_ID": null,
+        "CODEX_THREAD_ID": null,
+        "CODEX_HOME": "$SPIKE_ROOT/codex",
+        "CODEX_EXEC_SERVER_URL": ""
+      },
+      "ancestry": [
+        {
+          "pid": 817932,
+          "ppid": 817817,
+          "start_ticks": "33775585",
+          "exe_name": "codex"
+        },
+        {
+          "pid": 817817,
+          "ppid": 3515304,
+          "start_ticks": "33775562",
+          "exe_name": "python3"
+        },
+        {
+          "pid": 3515304,
+          "ppid": 3515256,
+          "start_ticks": "32751808",
+          "exe_name": "codex"
+        },
+        {
+          "pid": 3515256,
+          "ppid": 5149,
+          "start_ticks": "32751800",
+          "exe_name": "bash"
+        },
+        {
+          "pid": 5149,
+          "ppid": 1,
+          "start_ticks": "11224",
+          "exe_name": "herdr"
+        }
+      ]
+    },
+    {
+      "session_id": "01a1dd0d-e82b-7293-9a37-8f6040dc7bfe",
+      "turn_id": "01a1dd0d-e840-7871-8d89-0e25ac5eb8dc",
+      "event": "PreModelRequest",
+      "at": 1794710040.5041685,
+      "hook_input_keys": [
+        "cwd",
+        "hook_event_name",
+        "model",
+        "session_id",
+        "transcript_path",
+        "turn_id"
+      ],
+      "hook_pid": 819097,
+      "parent_pid": 817932,
+      "caller_env": {
+        "CODEX_SESSION_ID": null,
+        "CODEX_THREAD_ID": null,
+        "CODEX_HOME": "$SPIKE_ROOT/codex",
+        "CODEX_EXEC_SERVER_URL": ""
+      },
+      "ancestry": [
+        {
+          "pid": 817932,
+          "ppid": 817817,
+          "start_ticks": "33775585",
+          "exe_name": "codex"
+        },
+        {
+          "pid": 817817,
+          "ppid": 3515304,
+          "start_ticks": "33775562",
+          "exe_name": "python3"
+        },
+        {
+          "pid": 3515304,
+          "ppid": 3515256,
+          "start_ticks": "32751808",
+          "exe_name": "codex"
+        },
+        {
+          "pid": 3515256,
+          "ppid": 5149,
+          "start_ticks": "32751800",
+          "exe_name": "bash"
+        },
+        {
+          "pid": 5149,
+          "ppid": 1,
+          "start_ticks": "11224",
+          "exe_name": "herdr"
+        }
+      ]
+    },
+    {
+      "session_id": "01a1dd0d-e82b-7293-9a37-8f6040dc7bfe",
+      "turn_id": "01a1dd0d-e840-7871-8d89-0e25ac5eb8dc",
+      "event": "PostModelRequest",
+      "at": 1794710042.3716052,
+      "hook_input_keys": [
+        "cwd",
+        "error",
+        "hook_event_name",
+        "model",
+        "session_id",
+        "status",
+        "token_usage",
+        "transcript_path",
+        "turn_id"
+      ],
+      "hook_pid": 819453,
+      "parent_pid": 817932,
+      "caller_env": {
+        "CODEX_SESSION_ID": null,
+        "CODEX_THREAD_ID": null,
+        "CODEX_HOME": "$SPIKE_ROOT/codex",
+        "CODEX_EXEC_SERVER_URL": ""
+      },
+      "ancestry": [
+        {
+          "pid": 817932,
+          "ppid": 817817,
+          "start_ticks": "33775585",
+          "exe_name": "codex"
+        },
+        {
+          "pid": 817817,
+          "ppid": 3515304,
+          "start_ticks": "33775562",
+          "exe_name": "python3"
+        },
+        {
+          "pid": 3515304,
+          "ppid": 3515256,
+          "start_ticks": "32751808",
+          "exe_name": "codex"
+        },
+        {
+          "pid": 3515256,
+          "ppid": 5149,
+          "start_ticks": "32751800",
+          "exe_name": "bash"
+        },
+        {
+          "pid": 5149,
+          "ppid": 1,
+          "start_ticks": "11224",
+          "exe_name": "herdr"
+        }
+      ]
+    },
+    {
+      "session_id": "01a1dd0d-e82b-7293-9a37-8f6040dc7bfe",
+      "turn_id": "01a1dd0d-e840-7871-8d89-0e25ac5eb8dc",
+      "stop_hook_active": false,
+      "event": "Stop",
+      "at": 1794710042.526201,
+      "hook_input_keys": [
+        "cwd",
+        "hook_event_name",
+        "last_assistant_message",
+        "model",
+        "permission_mode",
+        "session_id",
+        "stop_hook_active",
+        "transcript_path",
+        "turn_id"
+      ],
+      "hook_pid": 819501,
+      "parent_pid": 817932,
+      "caller_env": {
+        "CODEX_SESSION_ID": null,
+        "CODEX_THREAD_ID": null,
+        "CODEX_HOME": "$SPIKE_ROOT/codex",
+        "CODEX_EXEC_SERVER_URL": ""
+      },
+      "ancestry": [
+        {
+          "pid": 817932,
+          "ppid": 817817,
+          "start_ticks": "33775585",
+          "exe_name": "codex"
+        },
+        {
+          "pid": 817817,
+          "ppid": 3515304,
+          "start_ticks": "33775562",
+          "exe_name": "python3"
+        },
+        {
+          "pid": 3515304,
+          "ppid": 3515256,
+          "start_ticks": "32751808",
+          "exe_name": "codex"
+        },
+        {
+          "pid": 3515256,
+          "ppid": 5149,
+          "start_ticks": "32751800",
+          "exe_name": "bash"
+        },
+        {
+          "pid": 5149,
+          "ppid": 1,
+          "start_ticks": "11224",
+          "exe_name": "herdr"
+        }
+      ]
+    },
+    {
+      "session_id": "01a1dd0d-e82b-7293-9a37-8f6040dc7bfe",
+      "turn_id": "01a1dd0e-0c63-7142-980d-0aa85c8b34df",
+      "prompt": "herdr-threads: wake up",
+      "event": "UserPromptSubmit",
+      "at": 1794710048.0132303,
+      "hook_input_keys": [
+        "cwd",
+        "hook_event_name",
+        "model",
+        "permission_mode",
+        "prompt",
+        "session_id",
+        "transcript_path",
+        "turn_id"
+      ],
+      "hook_pid": 822825,
+      "parent_pid": 817932,
+      "caller_env": {
+        "CODEX_SESSION_ID": null,
+        "CODEX_THREAD_ID": null,
+        "CODEX_HOME": "$SPIKE_ROOT/codex",
+        "CODEX_EXEC_SERVER_URL": ""
+      },
+      "ancestry": [
+        {
+          "pid": 817932,
+          "ppid": 817817,
+          "start_ticks": "33775585",
+          "exe_name": "codex"
+        },
+        {
+          "pid": 817817,
+          "ppid": 3515304,
+          "start_ticks": "33775562",
+          "exe_name": "python3"
+        },
+        {
+          "pid": 3515304,
+          "ppid": 3515256,
+          "start_ticks": "32751808",
+          "exe_name": "codex"
+        },
+        {
+          "pid": 3515256,
+          "ppid": 5149,
+          "start_ticks": "32751800",
+          "exe_name": "bash"
+        },
+        {
+          "pid": 5149,
+          "ppid": 1,
+          "start_ticks": "11224",
+          "exe_name": "herdr"
+        }
+      ],
+      "queue_at_hook_entry": [],
+      "full_hook_input": {
+        "session_id": "01a1dd0d-e82b-7293-9a37-8f6040dc7bfe",
+        "turn_id": "01a1dd0e-0c63-7142-980d-0aa85c8b34df",
+        "transcript_path": "$SPIKE_ROOT/codex/sessions/2026/11/14/rollout-2026-11-14T18-33-58-01a1dd0d-e82b-7293-9a37-8f6040dc7bfe.jsonl",
+        "cwd": "$SPIKE_ROOT/work",
+        "hook_event_name": "UserPromptSubmit",
+        "model": "gpt-6.1-sol",
+        "permission_mode": "bypassPermissions",
+        "prompt": "herdr-threads: wake up"
+      }
+    },
+    {
+      "event": "AdmissionDecision",
+      "session_id": "01a1dd0d-e82b-7293-9a37-8f6040dc7bfe",
+      "turn_id": "01a1dd0e-0c63-7142-980d-0aa85c8b34df",
+      "at": 1794710048.013716,
+      "mode": "block",
+      "queue_at_decision": []
+    },
+    {
+      "session_id": "01a1dd0d-e82b-7293-9a37-8f6040dc7bfe",
+      "turn_id": "01a1dd0e-3dc2-7cd0-91ff-5c3bc37ccc39",
+      "prompt": "Reply exactly SPIKE_RECOVERY_OK without tools.",
+      "event": "UserPromptSubmit",
+      "at": 1794710060.7107792,
+      "hook_input_keys": [
+        "cwd",
+        "hook_event_name",
+        "model",
+        "permission_mode",
+        "prompt",
+        "session_id",
+        "transcript_path",
+        "turn_id"
+      ],
+      "hook_pid": 827826,
+      "parent_pid": 817932,
+      "caller_env": {
+        "CODEX_SESSION_ID": null,
+        "CODEX_THREAD_ID": null,
+        "CODEX_HOME": "$SPIKE_ROOT/codex",
+        "CODEX_EXEC_SERVER_URL": ""
+      },
+      "ancestry": [
+        {
+          "pid": 817932,
+          "ppid": 817817,
+          "start_ticks": "33775585",
+          "exe_name": "codex"
+        },
+        {
+          "pid": 817817,
+          "ppid": 3515304,
+          "start_ticks": "33775562",
+          "exe_name": "python3"
+        },
+        {
+          "pid": 3515304,
+          "ppid": 3515256,
+          "start_ticks": "32751808",
+          "exe_name": "codex"
+        },
+        {
+          "pid": 3515256,
+          "ppid": 5149,
+          "start_ticks": "32751800",
+          "exe_name": "bash"
+        },
+        {
+          "pid": 5149,
+          "ppid": 1,
+          "start_ticks": "11224",
+          "exe_name": "herdr"
+        }
+      ]
+    },
+    {
+      "session_id": "01a1dd0d-e82b-7293-9a37-8f6040dc7bfe",
+      "turn_id": "01a1dd0e-3dc2-7cd0-91ff-5c3bc37ccc39",
+      "event": "PreModelRequest",
+      "at": 1794710060.8882153,
+      "hook_input_keys": [
+        "cwd",
+        "hook_event_name",
+        "model",
+        "session_id",
+        "transcript_path",
+        "turn_id"
+      ],
+      "hook_pid": 828198,
+      "parent_pid": 817932,
+      "caller_env": {
+        "CODEX_SESSION_ID": null,
+        "CODEX_THREAD_ID": null,
+        "CODEX_HOME": "$SPIKE_ROOT/codex",
+        "CODEX_EXEC_SERVER_URL": ""
+      },
+      "ancestry": [
+        {
+          "pid": 817932,
+          "ppid": 817817,
+          "start_ticks": "33775585",
+          "exe_name": "codex"
+        },
+        {
+          "pid": 817817,
+          "ppid": 3515304,
+          "start_ticks": "33775562",
+          "exe_name": "python3"
+        },
+        {
+          "pid": 3515304,
+          "ppid": 3515256,
+          "start_ticks": "32751808",
+          "exe_name": "codex"
+        },
+        {
+          "pid": 3515256,
+          "ppid": 5149,
+          "start_ticks": "32751800",
+          "exe_name": "bash"
+        },
+        {
+          "pid": 5149,
+          "ppid": 1,
+          "start_ticks": "11224",
+          "exe_name": "herdr"
+        }
+      ]
+    },
+    {
+      "session_id": "01a1dd0d-e82b-7293-9a37-8f6040dc7bfe",
+      "turn_id": "01a1dd0e-3dc2-7cd0-91ff-5c3bc37ccc39",
+      "event": "PostModelRequest",
+      "at": 1794710062.7881649,
+      "hook_input_keys": [
+        "cwd",
+        "error",
+        "hook_event_name",
+        "model",
+        "session_id",
+        "status",
+        "token_usage",
+        "transcript_path",
+        "turn_id"
+      ],
+      "hook_pid": 830283,
+      "parent_pid": 817932,
+      "caller_env": {
+        "CODEX_SESSION_ID": null,
+        "CODEX_THREAD_ID": null,
+        "CODEX_HOME": "$SPIKE_ROOT/codex",
+        "CODEX_EXEC_SERVER_URL": ""
+      },
+      "ancestry": [
+        {
+          "pid": 817932,
+          "ppid": 817817,
+          "start_ticks": "33775585",
+          "exe_name": "codex"
+        },
+        {
+          "pid": 817817,
+          "ppid": 3515304,
+          "start_ticks": "33775562",
+          "exe_name": "python3"
+        },
+        {
+          "pid": 3515304,
+          "ppid": 3515256,
+          "start_ticks": "32751808",
+          "exe_name": "codex"
+        },
+        {
+          "pid": 3515256,
+          "ppid": 5149,
+          "start_ticks": "32751800",
+          "exe_name": "bash"
+        },
+        {
+          "pid": 5149,
+          "ppid": 1,
+          "start_ticks": "11224",
+          "exe_name": "herdr"
+        }
+      ]
+    },
+    {
+      "session_id": "01a1dd0d-e82b-7293-9a37-8f6040dc7bfe",
+      "turn_id": "01a1dd0e-3dc2-7cd0-91ff-5c3bc37ccc39",
+      "stop_hook_active": false,
+      "event": "Stop",
+      "at": 1794710062.970177,
+      "hook_input_keys": [
+        "cwd",
+        "hook_event_name",
+        "last_assistant_message",
+        "model",
+        "permission_mode",
+        "session_id",
+        "stop_hook_active",
+        "transcript_path",
+        "turn_id"
+      ],
+      "hook_pid": 830666,
+      "parent_pid": 817932,
+      "caller_env": {
+        "CODEX_SESSION_ID": null,
+        "CODEX_THREAD_ID": null,
+        "CODEX_HOME": "$SPIKE_ROOT/codex",
+        "CODEX_EXEC_SERVER_URL": ""
+      },
+      "ancestry": [
+        {
+          "pid": 817932,
+          "ppid": 817817,
+          "start_ticks": "33775585",
+          "exe_name": "codex"
+        },
+        {
+          "pid": 817817,
+          "ppid": 3515304,
+          "start_ticks": "33775562",
+          "exe_name": "python3"
+        },
+        {
+          "pid": 3515304,
+          "ppid": 3515256,
+          "start_ticks": "32751808",
+          "exe_name": "codex"
+        },
+        {
+          "pid": 3515256,
+          "ppid": 5149,
+          "start_ticks": "32751800",
+          "exe_name": "bash"
+        },
+        {
+          "pid": 5149,
+          "ppid": 1,
+          "start_ticks": "11224",
+          "exe_name": "herdr"
+        }
+      ]
+    },
+    {
+      "session_id": "01a1dd0d-e82b-7293-9a37-8f6040dc7bfe",
+      "turn_id": "01a1dd0e-5a82-7dd1-a69a-0cd5c159548d",
+      "prompt": "herdr-threads: wake up",
+      "event": "UserPromptSubmit",
+      "at": 1794710068.0370386,
+      "hook_input_keys": [
+        "cwd",
+        "hook_event_name",
+        "model",
+        "permission_mode",
+        "prompt",
+        "session_id",
+        "transcript_path",
+        "turn_id"
+      ],
+      "hook_pid": 840324,
+      "parent_pid": 817932,
+      "caller_env": {
+        "CODEX_SESSION_ID": null,
+        "CODEX_THREAD_ID": null,
+        "CODEX_HOME": "$SPIKE_ROOT/codex",
+        "CODEX_EXEC_SERVER_URL": ""
+      },
+      "ancestry": [
+        {
+          "pid": 817932,
+          "ppid": 817817,
+          "start_ticks": "33775585",
+          "exe_name": "codex"
+        },
+        {
+          "pid": 817817,
+          "ppid": 3515304,
+          "start_ticks": "33775562",
+          "exe_name": "python3"
+        },
+        {
+          "pid": 3515304,
+          "ppid": 3515256,
+          "start_ticks": "32751808",
+          "exe_name": "codex"
+        },
+        {
+          "pid": 3515256,
+          "ppid": 5149,
+          "start_ticks": "32751800",
+          "exe_name": "bash"
+        },
+        {
+          "pid": 5149,
+          "ppid": 1,
+          "start_ticks": "11224",
+          "exe_name": "herdr"
+        }
+      ],
+      "queue_at_hook_entry": [],
+      "full_hook_input": {
+        "session_id": "01a1dd0d-e82b-7293-9a37-8f6040dc7bfe",
+        "turn_id": "01a1dd0e-5a82-7dd1-a69a-0cd5c159548d",
+        "transcript_path": "$SPIKE_ROOT/codex/sessions/2026/11/14/rollout-2026-11-14T18-33-58-01a1dd0d-e82b-7293-9a37-8f6040dc7bfe.jsonl",
+        "cwd": "$SPIKE_ROOT/work",
+        "hook_event_name": "UserPromptSubmit",
+        "model": "gpt-6.1-sol",
+        "permission_mode": "bypassPermissions",
+        "prompt": "herdr-threads: wake up"
+      }
+    },
+    {
+      "event": "AdmissionDecision",
+      "session_id": "01a1dd0d-e82b-7293-9a37-8f6040dc7bfe",
+      "turn_id": "01a1dd0e-5a82-7dd1-a69a-0cd5c159548d",
+      "at": 1794710068.4394581,
+      "mode": "block",
+      "queue_at_decision": []
+    },
+    {
+      "session_id": "01a1dd0d-e82b-7293-9a37-8f6040dc7bfe",
+      "turn_id": "01a1dd0e-8c8e-70c3-8a24-e5cd56398f11",
+      "prompt": "Reply exactly SPIKE_RECOVERY_OK without tools.",
+      "event": "UserPromptSubmit",
+      "at": 1794710080.826961,
+      "hook_input_keys": [
+        "cwd",
+        "hook_event_name",
+        "model",
+        "permission_mode",
+        "prompt",
+        "session_id",
+        "transcript_path",
+        "turn_id"
+      ],
+      "hook_pid": 866736,
+      "parent_pid": 817932,
+      "caller_env": {
+        "CODEX_SESSION_ID": null,
+        "CODEX_THREAD_ID": null,
+        "CODEX_HOME": "$SPIKE_ROOT/codex",
+        "CODEX_EXEC_SERVER_URL": ""
+      },
+      "ancestry": [
+        {
+          "pid": 817932,
+          "ppid": 817817,
+          "start_ticks": "33775585",
+          "exe_name": "codex"
+        },
+        {
+          "pid": 817817,
+          "ppid": 3515304,
+          "start_ticks": "33775562",
+          "exe_name": "python3"
+        },
+        {
+          "pid": 3515304,
+          "ppid": 3515256,
+          "start_ticks": "32751808",
+          "exe_name": "codex"
+        },
+        {
+          "pid": 3515256,
+          "ppid": 5149,
+          "start_ticks": "32751800",
+          "exe_name": "bash"
+        },
+        {
+          "pid": 5149,
+          "ppid": 1,
+          "start_ticks": "11224",
+          "exe_name": "herdr"
+        }
+      ]
+    },
+    {
+      "session_id": "01a1dd0d-e82b-7293-9a37-8f6040dc7bfe",
+      "turn_id": "01a1dd0e-8c8e-70c3-8a24-e5cd56398f11",
+      "event": "PreModelRequest",
+      "at": 1794710080.9915056,
+      "hook_input_keys": [
+        "cwd",
+        "hook_event_name",
+        "model",
+        "session_id",
+        "transcript_path",
+        "turn_id"
+      ],
+      "hook_pid": 866930,
+      "parent_pid": 817932,
+      "caller_env": {
+        "CODEX_SESSION_ID": null,
+        "CODEX_THREAD_ID": null,
+        "CODEX_HOME": "$SPIKE_ROOT/codex",
+        "CODEX_EXEC_SERVER_URL": ""
+      },
+      "ancestry": [
+        {
+          "pid": 817932,
+          "ppid": 817817,
+          "start_ticks": "33775585",
+          "exe_name": "codex"
+        },
+        {
+          "pid": 817817,
+          "ppid": 3515304,
+          "start_ticks": "33775562",
+          "exe_name": "python3"
+        },
+        {
+          "pid": 3515304,
+          "ppid": 3515256,
+          "start_ticks": "32751808",
+          "exe_name": "codex"
+        },
+        {
+          "pid": 3515256,
+          "ppid": 5149,
+          "start_ticks": "32751800",
+          "exe_name": "bash"
+        },
+        {
+          "pid": 5149,
+          "ppid": 1,
+          "start_ticks": "11224",
+          "exe_name": "herdr"
+        }
+      ]
+    },
+    {
+      "session_id": "01a1dd0d-e82b-7293-9a37-8f6040dc7bfe",
+      "turn_id": "01a1dd0e-8c8e-70c3-8a24-e5cd56398f11",
+      "event": "PostModelRequest",
+      "at": 1794710082.5111034,
+      "hook_input_keys": [
+        "cwd",
+        "error",
+        "hook_event_name",
+        "model",
+        "session_id",
+        "status",
+        "token_usage",
+        "transcript_path",
+        "turn_id"
+      ],
+      "hook_pid": 868721,
+      "parent_pid": 817932,
+      "caller_env": {
+        "CODEX_SESSION_ID": null,
+        "CODEX_THREAD_ID": null,
+        "CODEX_HOME": "$SPIKE_ROOT/codex",
+        "CODEX_EXEC_SERVER_URL": ""
+      },
+      "ancestry": [
+        {
+          "pid": 817932,
+          "ppid": 817817,
+          "start_ticks": "33775585",
+          "exe_name": "codex"
+        },
+        {
+          "pid": 817817,
+          "ppid": 3515304,
+          "start_ticks": "33775562",
+          "exe_name": "python3"
+        },
+        {
+          "pid": 3515304,
+          "ppid": 3515256,
+          "start_ticks": "32751808",
+          "exe_name": "codex"
+        },
+        {
+          "pid": 3515256,
+          "ppid": 5149,
+          "start_ticks": "32751800",
+          "exe_name": "bash"
+        },
+        {
+          "pid": 5149,
+          "ppid": 1,
+          "start_ticks": "11224",
+          "exe_name": "herdr"
+        }
+      ]
+    },
+    {
+      "session_id": "01a1dd0d-e82b-7293-9a37-8f6040dc7bfe",
+      "turn_id": "01a1dd0e-8c8e-70c3-8a24-e5cd56398f11",
+      "stop_hook_active": false,
+      "event": "Stop",
+      "at": 1794710082.6715293,
+      "hook_input_keys": [
+        "cwd",
+        "hook_event_name",
+        "last_assistant_message",
+        "model",
+        "permission_mode",
+        "session_id",
+        "stop_hook_active",
+        "transcript_path",
+        "turn_id"
+      ],
+      "hook_pid": 868910,
+      "parent_pid": 817932,
+      "caller_env": {
+        "CODEX_SESSION_ID": null,
+        "CODEX_THREAD_ID": null,
+        "CODEX_HOME": "$SPIKE_ROOT/codex",
+        "CODEX_EXEC_SERVER_URL": ""
+      },
+      "ancestry": [
+        {
+          "pid": 817932,
+          "ppid": 817817,
+          "start_ticks": "33775585",
+          "exe_name": "codex"
+        },
+        {
+          "pid": 817817,
+          "ppid": 3515304,
+          "start_ticks": "33775562",
+          "exe_name": "python3"
+        },
+        {
+          "pid": 3515304,
+          "ppid": 3515256,
+          "start_ticks": "32751808",
+          "exe_name": "codex"
+        },
+        {
+          "pid": 3515256,
+          "ppid": 5149,
+          "start_ticks": "32751800",
+          "exe_name": "bash"
+        },
+        {
+          "pid": 5149,
+          "ppid": 1,
+          "start_ticks": "11224",
+          "exe_name": "herdr"
+        }
+      ]
+    },
+    {
+      "session_id": "01a1dd0d-e82b-7293-9a37-8f6040dc7bfe",
+      "turn_id": "01a1dd0e-a8a2-7411-ad99-76a2a336a49f",
+      "prompt": "herdr-threads: wake up",
+      "event": "UserPromptSubmit",
+      "at": 1794710088.0347624,
+      "hook_input_keys": [
+        "cwd",
+        "hook_event_name",
+        "model",
+        "permission_mode",
+        "prompt",
+        "session_id",
+        "transcript_path",
+        "turn_id"
+      ],
+      "hook_pid": 875870,
+      "parent_pid": 817932,
+      "caller_env": {
+        "CODEX_SESSION_ID": null,
+        "CODEX_THREAD_ID": null,
+        "CODEX_HOME": "$SPIKE_ROOT/codex",
+        "CODEX_EXEC_SERVER_URL": ""
+      },
+      "ancestry": [
+        {
+          "pid": 817932,
+          "ppid": 817817,
+          "start_ticks": "33775585",
+          "exe_name": "codex"
+        },
+        {
+          "pid": 817817,
+          "ppid": 3515304,
+          "start_ticks": "33775562",
+          "exe_name": "python3"
+        },
+        {
+          "pid": 3515304,
+          "ppid": 3515256,
+          "start_ticks": "32751808",
+          "exe_name": "codex"
+        },
+        {
+          "pid": 3515256,
+          "ppid": 5149,
+          "start_ticks": "32751800",
+          "exe_name": "bash"
+        },
+        {
+          "pid": 5149,
+          "ppid": 1,
+          "start_ticks": "11224",
+          "exe_name": "herdr"
+        }
+      ],
+      "queue_at_hook_entry": [],
+      "full_hook_input": {
+        "session_id": "01a1dd0d-e82b-7293-9a37-8f6040dc7bfe",
+        "turn_id": "01a1dd0e-a8a2-7411-ad99-76a2a336a49f",
+        "transcript_path": "$SPIKE_ROOT/codex/sessions/2026/11/14/rollout-2026-11-14T18-33-58-01a1dd0d-e82b-7293-9a37-8f6040dc7bfe.jsonl",
+        "cwd": "$SPIKE_ROOT/work",
+        "hook_event_name": "UserPromptSubmit",
+        "model": "gpt-6.1-sol",
+        "permission_mode": "bypassPermissions",
+        "prompt": "herdr-threads: wake up"
+      }
+    },
+    {
+      "event": "AdmissionDecision",
+      "session_id": "01a1dd0d-e82b-7293-9a37-8f6040dc7bfe",
+      "turn_id": "01a1dd0e-a8a2-7411-ad99-76a2a336a49f",
+      "at": 1794710088.0353398,
+      "mode": "error",
+      "queue_at_decision": []
+    },
+    {
+      "session_id": "01a1dd0d-e82b-7293-9a37-8f6040dc7bfe",
+      "turn_id": "01a1dd0e-a8a2-7411-ad99-76a2a336a49f",
+      "event": "PreModelRequest",
+      "at": 1794710088.300822,
+      "hook_input_keys": [
+        "cwd",
+        "hook_event_name",
+        "model",
+        "session_id",
+        "transcript_path",
+        "turn_id"
+      ],
+      "hook_pid": 876098,
+      "parent_pid": 817932,
+      "caller_env": {
+        "CODEX_SESSION_ID": null,
+        "CODEX_THREAD_ID": null,
+        "CODEX_HOME": "$SPIKE_ROOT/codex",
+        "CODEX_EXEC_SERVER_URL": ""
+      },
+      "ancestry": [
+        {
+          "pid": 817932,
+          "ppid": 817817,
+          "start_ticks": "33775585",
+          "exe_name": "codex"
+        },
+        {
+          "pid": 817817,
+          "ppid": 3515304,
+          "start_ticks": "33775562",
+          "exe_name": "python3"
+        },
+        {
+          "pid": 3515304,
+          "ppid": 3515256,
+          "start_ticks": "32751808",
+          "exe_name": "codex"
+        },
+        {
+          "pid": 3515256,
+          "ppid": 5149,
+          "start_ticks": "32751800",
+          "exe_name": "bash"
+        },
+        {
+          "pid": 5149,
+          "ppid": 1,
+          "start_ticks": "11224",
+          "exe_name": "herdr"
+        }
+      ]
+    },
+    {
+      "session_id": "01a1dd0d-e82b-7293-9a37-8f6040dc7bfe",
+      "turn_id": "01a1dd0e-a8a2-7411-ad99-76a2a336a49f",
+      "event": "PostModelRequest",
+      "at": 1794710089.9118767,
+      "hook_input_keys": [
+        "cwd",
+        "error",
+        "hook_event_name",
+        "model",
+        "session_id",
+        "status",
+        "token_usage",
+        "transcript_path",
+        "turn_id"
+      ],
+      "hook_pid": 877878,
+      "parent_pid": 817932,
+      "caller_env": {
+        "CODEX_SESSION_ID": null,
+        "CODEX_THREAD_ID": null,
+        "CODEX_HOME": "$SPIKE_ROOT/codex",
+        "CODEX_EXEC_SERVER_URL": ""
+      },
+      "ancestry": [
+        {
+          "pid": 817932,
+          "ppid": 817817,
+          "start_ticks": "33775585",
+          "exe_name": "codex"
+        },
+        {
+          "pid": 817817,
+          "ppid": 3515304,
+          "start_ticks": "33775562",
+          "exe_name": "python3"
+        },
+        {
+          "pid": 3515304,
+          "ppid": 3515256,
+          "start_ticks": "32751808",
+          "exe_name": "codex"
+        },
+        {
+          "pid": 3515256,
+          "ppid": 5149,
+          "start_ticks": "32751800",
+          "exe_name": "bash"
+        },
+        {
+          "pid": 5149,
+          "ppid": 1,
+          "start_ticks": "11224",
+          "exe_name": "herdr"
+        }
+      ]
+    },
+    {
+      "session_id": "01a1dd0d-e82b-7293-9a37-8f6040dc7bfe",
+      "turn_id": "01a1dd0e-a8a2-7411-ad99-76a2a336a49f",
+      "stop_hook_active": false,
+      "event": "Stop",
+      "at": 1794710090.176575,
+      "hook_input_keys": [
+        "cwd",
+        "hook_event_name",
+        "last_assistant_message",
+        "model",
+        "permission_mode",
+        "session_id",
+        "stop_hook_active",
+        "transcript_path",
+        "turn_id"
+      ],
+      "hook_pid": 878069,
+      "parent_pid": 817932,
+      "caller_env": {
+        "CODEX_SESSION_ID": null,
+        "CODEX_THREAD_ID": null,
+        "CODEX_HOME": "$SPIKE_ROOT/codex",
+        "CODEX_EXEC_SERVER_URL": ""
+      },
+      "ancestry": [
+        {
+          "pid": 817932,
+          "ppid": 817817,
+          "start_ticks": "33775585",
+          "exe_name": "codex"
+        },
+        {
+          "pid": 817817,
+          "ppid": 3515304,
+          "start_ticks": "33775562",
+          "exe_name": "python3"
+        },
+        {
+          "pid": 3515304,
+          "ppid": 3515256,
+          "start_ticks": "32751808",
+          "exe_name": "codex"
+        },
+        {
+          "pid": 3515256,
+          "ppid": 5149,
+          "start_ticks": "32751800",
+          "exe_name": "bash"
+        },
+        {
+          "pid": 5149,
+          "ppid": 1,
+          "start_ticks": "11224",
+          "exe_name": "herdr"
+        }
+      ]
+    },
+    {
+      "session_id": "01a1dd0d-e82b-7293-9a37-8f6040dc7bfe",
+      "turn_id": "01a1dd0e-b259-7bd2-b900-9ecab171dc30",
+      "prompt": "BUSY: execute exactly `python3 barrier.py` once with exec_command, yield_time_ms=1000, wait for completion with write_stdin, then reply BUSY_DONE.",
+      "event": "UserPromptSubmit",
+      "at": 1794710090.537761,
+      "hook_input_keys": [
+        "cwd",
+        "hook_event_name",
+        "model",
+        "permission_mode",
+        "prompt",
+        "session_id",
+        "transcript_path",
+        "turn_id"
+      ],
+      "hook_pid": 878538,
+      "parent_pid": 817932,
+      "caller_env": {
+        "CODEX_SESSION_ID": null,
+        "CODEX_THREAD_ID": null,
+        "CODEX_HOME": "$SPIKE_ROOT/codex",
+        "CODEX_EXEC_SERVER_URL": ""
+      },
+      "ancestry": [
+        {
+          "pid": 817932,
+          "ppid": 817817,
+          "start_ticks": "33775585",
+          "exe_name": "codex"
+        },
+        {
+          "pid": 817817,
+          "ppid": 3515304,
+          "start_ticks": "33775562",
+          "exe_name": "python3"
+        },
+        {
+          "pid": 3515304,
+          "ppid": 3515256,
+          "start_ticks": "32751808",
+          "exe_name": "codex"
+        },
+        {
+          "pid": 3515256,
+          "ppid": 5149,
+          "start_ticks": "32751800",
+          "exe_name": "bash"
+        },
+        {
+          "pid": 5149,
+          "ppid": 1,
+          "start_ticks": "11224",
+          "exe_name": "herdr"
+        }
+      ]
+    },
+    {
+      "session_id": "01a1dd0d-e82b-7293-9a37-8f6040dc7bfe",
+      "turn_id": "01a1dd0e-b259-7bd2-b900-9ecab171dc30",
+      "event": "PreModelRequest",
+      "at": 1794710090.7696345,
+      "hook_input_keys": [
+        "cwd",
+        "hook_event_name",
+        "model",
+        "session_id",
+        "transcript_path",
+        "turn_id"
+      ],
+      "hook_pid": 878760,
+      "parent_pid": 817932,
+      "caller_env": {
+        "CODEX_SESSION_ID": null,
+        "CODEX_THREAD_ID": null,
+        "CODEX_HOME": "$SPIKE_ROOT/codex",
+        "CODEX_EXEC_SERVER_URL": ""
+      },
+      "ancestry": [
+        {
+          "pid": 817932,
+          "ppid": 817817,
+          "start_ticks": "33775585",
+          "exe_name": "codex"
+        },
+        {
+          "pid": 817817,
+          "ppid": 3515304,
+          "start_ticks": "33775562",
+          "exe_name": "python3"
+        },
+        {
+          "pid": 3515304,
+          "ppid": 3515256,
+          "start_ticks": "32751808",
+          "exe_name": "codex"
+        },
+        {
+          "pid": 3515256,
+          "ppid": 5149,
+          "start_ticks": "32751800",
+          "exe_name": "bash"
+        },
+        {
+          "pid": 5149,
+          "ppid": 1,
+          "start_ticks": "11224",
+          "exe_name": "herdr"
+        }
+      ]
+    },
+    {
+      "session_id": "01a1dd0d-e82b-7293-9a37-8f6040dc7bfe",
+      "turn_id": "01a1dd0e-b259-7bd2-b900-9ecab171dc30",
+      "event": "PostModelRequest",
+      "at": 1794710093.540342,
+      "hook_input_keys": [
+        "cwd",
+        "error",
+        "hook_event_name",
+        "model",
+        "session_id",
+        "status",
+        "token_usage",
+        "transcript_path",
+        "turn_id"
+      ],
+      "hook_pid": 884277,
+      "parent_pid": 817932,
+      "caller_env": {
+        "CODEX_SESSION_ID": null,
+        "CODEX_THREAD_ID": null,
+        "CODEX_HOME": "$SPIKE_ROOT/codex",
+        "CODEX_EXEC_SERVER_URL": ""
+      },
+      "ancestry": [
+        {
+          "pid": 817932,
+          "ppid": 817817,
+          "start_ticks": "33775585",
+          "exe_name": "codex"
+        },
+        {
+          "pid": 817817,
+          "ppid": 3515304,
+          "start_ticks": "33775562",
+          "exe_name": "python3"
+        },
+        {
+          "pid": 3515304,
+          "ppid": 3515256,
+          "start_ticks": "32751808",
+          "exe_name": "codex"
+        },
+        {
+          "pid": 3515256,
+          "ppid": 5149,
+          "start_ticks": "32751800",
+          "exe_name": "bash"
+        },
+        {
+          "pid": 5149,
+          "ppid": 1,
+          "start_ticks": "11224",
+          "exe_name": "herdr"
+        }
+      ]
+    },
+    {
+      "session_id": "01a1dd0d-e82b-7293-9a37-8f6040dc7bfe",
+      "turn_id": "01a1dd0e-b259-7bd2-b900-9ecab171dc30",
+      "tool_name": "Bash",
+      "event": "PreToolUse",
+      "at": 1794710093.8271303,
+      "hook_input_keys": [
+        "cwd",
+        "hook_event_name",
+        "model",
+        "permission_mode",
+        "session_id",
+        "tool_input",
+        "tool_name",
+        "tool_use_id",
+        "transcript_path",
+        "turn_id"
+      ],
+      "hook_pid": 884986,
+      "parent_pid": 817932,
+      "caller_env": {
+        "CODEX_SESSION_ID": null,
+        "CODEX_THREAD_ID": null,
+        "CODEX_HOME": "$SPIKE_ROOT/codex",
+        "CODEX_EXEC_SERVER_URL": ""
+      },
+      "ancestry": [
+        {
+          "pid": 817932,
+          "ppid": 817817,
+          "start_ticks": "33775585",
+          "exe_name": "codex"
+        },
+        {
+          "pid": 817817,
+          "ppid": 3515304,
+          "start_ticks": "33775562",
+          "exe_name": "python3"
+        },
+        {
+          "pid": 3515304,
+          "ppid": 3515256,
+          "start_ticks": "32751808",
+          "exe_name": "codex"
+        },
+        {
+          "pid": 3515256,
+          "ppid": 5149,
+          "start_ticks": "32751800",
+          "exe_name": "bash"
+        },
+        {
+          "pid": 5149,
+          "ppid": 1,
+          "start_ticks": "11224",
+          "exe_name": "herdr"
+        }
+      ]
+    },
+    {
+      "session_id": "01a1dd0d-e82b-7293-9a37-8f6040dc7bfe",
+      "turn_id": "01a1dd0e-b259-7bd2-b900-9ecab171dc30",
+      "tool_name": "Bash",
+      "event": "PostToolUse",
+      "at": 1794710094.635306,
+      "hook_input_keys": [
+        "cwd",
+        "hook_event_name",
+        "model",
+        "permission_mode",
+        "session_id",
+        "tool_input",
+        "tool_name",
+        "tool_response",
+        "tool_use_id",
+        "transcript_path",
+        "turn_id"
+      ],
+      "hook_pid": 887443,
+      "parent_pid": 817932,
+      "caller_env": {
+        "CODEX_SESSION_ID": null,
+        "CODEX_THREAD_ID": null,
+        "CODEX_HOME": "$SPIKE_ROOT/codex",
+        "CODEX_EXEC_SERVER_URL": ""
+      },
+      "ancestry": [
+        {
+          "pid": 817932,
+          "ppid": 817817,
+          "start_ticks": "33775585",
+          "exe_name": "codex"
+        },
+        {
+          "pid": 817817,
+          "ppid": 3515304,
+          "start_ticks": "33775562",
+          "exe_name": "python3"
+        },
+        {
+          "pid": 3515304,
+          "ppid": 3515256,
+          "start_ticks": "32751808",
+          "exe_name": "codex"
+        },
+        {
+          "pid": 3515256,
+          "ppid": 5149,
+          "start_ticks": "32751800",
+          "exe_name": "bash"
+        },
+        {
+          "pid": 5149,
+          "ppid": 1,
+          "start_ticks": "11224",
+          "exe_name": "herdr"
+        }
+      ]
+    },
+    {
+      "session_id": "01a1dd0d-e82b-7293-9a37-8f6040dc7bfe",
+      "turn_id": "01a1dd0e-b259-7bd2-b900-9ecab171dc30",
+      "event": "PreModelRequest",
+      "at": 1794710094.8176756,
+      "hook_input_keys": [
+        "cwd",
+        "hook_event_name",
+        "model",
+        "session_id",
+        "transcript_path",
+        "turn_id"
+      ],
+      "hook_pid": 888148,
+      "parent_pid": 817932,
+      "caller_env": {
+        "CODEX_SESSION_ID": null,
+        "CODEX_THREAD_ID": null,
+        "CODEX_HOME": "$SPIKE_ROOT/codex",
+        "CODEX_EXEC_SERVER_URL": ""
+      },
+      "ancestry": [
+        {
+          "pid": 817932,
+          "ppid": 817817,
+          "start_ticks": "33775585",
+          "exe_name": "codex"
+        },
+        {
+          "pid": 817817,
+          "ppid": 3515304,
+          "start_ticks": "33775562",
+          "exe_name": "python3"
+        },
+        {
+          "pid": 3515304,
+          "ppid": 3515256,
+          "start_ticks": "32751808",
+          "exe_name": "codex"
+        },
+        {
+          "pid": 3515256,
+          "ppid": 5149,
+          "start_ticks": "32751800",
+          "exe_name": "bash"
+        },
+        {
+          "pid": 5149,
+          "ppid": 1,
+          "start_ticks": "11224",
+          "exe_name": "herdr"
+        }
+      ]
+    },
+    {
+      "session_id": "01a1dd0d-e82b-7293-9a37-8f6040dc7bfe",
+      "turn_id": "01a1dd0e-b259-7bd2-b900-9ecab171dc30",
+      "event": "PostModelRequest",
+      "at": 1794710096.5465589,
+      "hook_input_keys": [
+        "cwd",
+        "error",
+        "hook_event_name",
+        "model",
+        "session_id",
+        "status",
+        "token_usage",
+        "transcript_path",
+        "turn_id"
+      ],
+      "hook_pid": 891343,
+      "parent_pid": 817932,
+      "caller_env": {
+        "CODEX_SESSION_ID": null,
+        "CODEX_THREAD_ID": null,
+        "CODEX_HOME": "$SPIKE_ROOT/codex",
+        "CODEX_EXEC_SERVER_URL": ""
+      },
+      "ancestry": [
+        {
+          "pid": 817932,
+          "ppid": 817817,
+          "start_ticks": "33775585",
+          "exe_name": "codex"
+        },
+        {
+          "pid": 817817,
+          "ppid": 3515304,
+          "start_ticks": "33775562",
+          "exe_name": "python3"
+        },
+        {
+          "pid": 3515304,
+          "ppid": 3515256,
+          "start_ticks": "32751808",
+          "exe_name": "codex"
+        },
+        {
+          "pid": 3515256,
+          "ppid": 5149,
+          "start_ticks": "32751800",
+          "exe_name": "bash"
+        },
+        {
+          "pid": 5149,
+          "ppid": 1,
+          "start_ticks": "11224",
+          "exe_name": "herdr"
+        }
+      ]
+    },
+    {
+      "session_id": "01a1dd0d-e82b-7293-9a37-8f6040dc7bfe",
+      "turn_id": "01a1dd0e-b259-7bd2-b900-9ecab171dc30",
+      "stop_hook_active": false,
+      "event": "Stop",
+      "at": 1794710096.7973104,
+      "hook_input_keys": [
+        "cwd",
+        "hook_event_name",
+        "last_assistant_message",
+        "model",
+        "permission_mode",
+        "session_id",
+        "stop_hook_active",
+        "transcript_path",
+        "turn_id"
+      ],
+      "hook_pid": 891646,
+      "parent_pid": 817932,
+      "caller_env": {
+        "CODEX_SESSION_ID": null,
+        "CODEX_THREAD_ID": null,
+        "CODEX_HOME": "$SPIKE_ROOT/codex",
+        "CODEX_EXEC_SERVER_URL": ""
+      },
+      "ancestry": [
+        {
+          "pid": 817932,
+          "ppid": 817817,
+          "start_ticks": "33775585",
+          "exe_name": "codex"
+        },
+        {
+          "pid": 817817,
+          "ppid": 3515304,
+          "start_ticks": "33775562",
+          "exe_name": "python3"
+        },
+        {
+          "pid": 3515304,
+          "ppid": 3515256,
+          "start_ticks": "32751808",
+          "exe_name": "codex"
+        },
+        {
+          "pid": 3515256,
+          "ppid": 5149,
+          "start_ticks": "32751800",
+          "exe_name": "bash"
+        },
+        {
+          "pid": 5149,
+          "ppid": 1,
+          "start_ticks": "11224",
+          "exe_name": "herdr"
+        }
+      ]
+    }
+  ],
+  "message_history": [
+    {
+      "type": "response_item",
+      "timestamp": "2026-11-15T02:34:00.063Z",
+      "payload": {
+        "type": "message",
+        "id": "msg_01a1dd0d-edff-7341-b6c9-d224f042becf",
+        "role": "user",
+        "content": [
+          {
+            "type": "input_text",
+            "text": "# AGENTS.md instructions for $SPIKE_ROOT/work\n\n<INSTRUCTIONS>\nYou are an isolated transport test recipient. Do not access any account files or network, create subagents, or run herdr-threads. Reply briefly. For a queued 'herdr-threads: wake up', include any Controlled spike mail tokens in your reply. When no tokens exist, reply QUEUE_EMPTY. If instructed BUSY, execute exactly the supplied Python barrier command once, wait for it to finish, then reply BUSY_DONE plus any mail tokens.\n\n</INSTRUCTIONS>"
+          },
+          {
+            "type": "input_text",
+            "text": "<environment_context>\n  <cwd>$SPIKE_ROOT/work</cwd>\n  <shell>bash</shell>\n  <current_date>2026-11-14</current_date>\n  <timezone>America/Los_Angeles</timezone>\n  <filesystem><workspace_roots><root>$SPIKE_ROOT/work</root></workspace_roots><permission_profile type=\"managed\"><file_system type=\"restricted\"><entry access=\"read\"><special>:root</special></entry><entry access=\"write\"><path>$SPIKE_ROOT/work</path></entry><entry access=\"write\"><special>:slash_tmp</special></entry><entry access=\"write\"><special>:tmpdir</special></entry><entry access=\"read\"><path>$SPIKE_ROOT/work/.git</path></entry><entry access=\"read\"><path>$SPIKE_ROOT/work/.agents</path></entry><entry access=\"read\"><path>$SPIKE_ROOT/work/.codex</path></entry><entry access=\"read\"><path>$SPIKE_ROOT/work/.aws</path></entry></file_system></permission_profile></filesystem>\n</environment_context>"
+          }
+        ],
+        "internal_chat_message_metadata_passthrough": {
+          "turn_id": "01a1dd0d-e840-7871-8d89-0e25ac5eb8dc",
+          "create_time": 1794710040.0634673,
+          "content_item_kinds": [
+            "agents_md.instructions",
+            "environments.environment_context"
+          ],
+          "content_item_metadata": [
+            {
+              "provenance": {
+                "type": "agents_md"
+              }
+            },
+            {
+              "provenance": {
+                "type": "harness",
+                "hook": false
+              }
+            }
+          ]
+        }
+      }
+    },
+    {
+      "type": "response_item",
+      "timestamp": "2026-11-15T02:34:00.360Z",
+      "payload": {
+        "type": "message",
+        "id": "msg_01a1dd0d-ef28-72f0-a7c0-4d0b470d31c1",
+        "role": "user",
+        "content": [
+          {
+            "type": "input_text",
+            "text": "Reply exactly SPIKE_READY without using tools."
+          }
+        ],
+        "internal_chat_message_metadata_passthrough": {
+          "turn_id": "01a1dd0d-e840-7871-8d89-0e25ac5eb8dc",
+          "create_time": 1794710040.3607466,
+          "content_item_kinds": [
+            "user.text"
+          ],
+          "content_item_metadata": [
+            {
+              "provenance": {
+                "type": "user"
+              }
+            }
+          ]
+        }
+      }
+    },
+    {
+      "type": "response_item",
+      "timestamp": "2026-11-15T02:34:02.212Z",
+      "payload": {
+        "type": "message",
+        "status": "completed",
+        "id": "msg_006e02c7187fe8b0016af91a1a1df887d197e0b2adb33d1b3b",
+        "role": "assistant",
+        "content": [
+          {
+            "type": "output_text",
+            "text": "SPIKE_READY",
+            "annotations": [],
+            "logprobs": []
+          }
+        ],
+        "phase": "final_answer",
+        "internal_chat_message_metadata_passthrough": {
+          "turn_id": "01a1dd0d-e840-7871-8d89-0e25ac5eb8dc",
+          "create_time": 1794710042.1259139,
+          "content_item_kinds": [
+            "unknown"
+          ]
+        }
+      }
+    },
+    {
+      "type": "response_item",
+      "timestamp": "2026-11-15T02:34:20.719Z",
+      "payload": {
+        "type": "message",
+        "id": "msg_01a1dd0e-3eaf-7100-b9e1-a9383f3afc44",
+        "role": "user",
+        "content": [
+          {
+            "type": "input_text",
+            "text": "Reply exactly SPIKE_RECOVERY_OK without tools."
+          }
+        ],
+        "internal_chat_message_metadata_passthrough": {
+          "turn_id": "01a1dd0e-3dc2-7cd0-91ff-5c3bc37ccc39",
+          "create_time": 1794710060.7196767,
+          "content_item_kinds": [
+            "user.text"
+          ],
+          "content_item_metadata": [
+            {
+              "provenance": {
+                "type": "user"
+              }
+            }
+          ]
+        }
+      }
+    },
+    {
+      "type": "response_item",
+      "timestamp": "2026-11-15T02:34:22.573Z",
+      "payload": {
+        "type": "message",
+        "status": "completed",
+        "id": "msg_006e02c7187fe8b0016af91a2e766c87d1b3b6d9045bf09c9a",
+        "role": "assistant",
+        "content": [
+          {
+            "type": "output_text",
+            "text": "SPIKE_RECOVERY_OK",
+            "annotations": [],
+            "logprobs": []
+          }
+        ],
+        "phase": "final_answer",
+        "internal_chat_message_metadata_passthrough": {
+          "turn_id": "01a1dd0e-3dc2-7cd0-91ff-5c3bc37ccc39",
+          "create_time": 1794710062.4673269,
+          "content_item_kinds": [
+            "unknown"
+          ]
+        }
+      }
+    },
+    {
+      "type": "response_item",
+      "timestamp": "2026-11-15T02:34:40.834Z",
+      "payload": {
+        "type": "message",
+        "id": "msg_01a1dd0e-8d41-7153-923b-c0af1553467a",
+        "role": "user",
+        "content": [
+          {
+            "type": "input_text",
+            "text": "Reply exactly SPIKE_RECOVERY_OK without tools."
+          }
+        ],
+        "internal_chat_message_metadata_passthrough": {
+          "turn_id": "01a1dd0e-8c8e-70c3-8a24-e5cd56398f11",
+          "create_time": 1794710080.8339407,
+          "content_item_kinds": [
+            "user.text"
+          ],
+          "content_item_metadata": [
+            {
+              "provenance": {
+                "type": "user"
+              }
+            }
+          ]
+        }
+      }
+    },
+    {
+      "type": "response_item",
+      "timestamp": "2026-11-15T02:34:42.335Z",
+      "payload": {
+        "type": "message",
+        "status": "completed",
+        "id": "msg_006e02c7187fe8b0016af91a423c6c87d1af5fbffcf00d45f5",
+        "role": "assistant",
+        "content": [
+          {
+            "type": "output_text",
+            "text": "SPIKE_RECOVERY_OK",
+            "annotations": [],
+            "logprobs": []
+          }
+        ],
+        "phase": "final_answer",
+        "internal_chat_message_metadata_passthrough": {
+          "turn_id": "01a1dd0e-8c8e-70c3-8a24-e5cd56398f11",
+          "create_time": 1794710082.2404776,
+          "content_item_kinds": [
+            "unknown"
+          ]
+        }
+      }
+    },
+    {
+      "type": "response_item",
+      "timestamp": "2026-11-15T02:34:48.042Z",
+      "payload": {
+        "type": "message",
+        "id": "msg_01a1dd0e-a96a-78a0-9be8-3b2f31ef0a0e",
+        "role": "user",
+        "content": [
+          {
+            "type": "input_text",
+            "text": "herdr-threads: wake up"
+          }
+        ],
+        "internal_chat_message_metadata_passthrough": {
+          "turn_id": "01a1dd0e-a8a2-7411-ad99-76a2a336a49f",
+          "create_time": 1794710088.042115,
+          "content_item_kinds": [
+            "user.text"
+          ],
+          "content_item_metadata": [
+            {
+              "provenance": {
+                "type": "user"
+              }
+            }
+          ]
+        }
+      }
+    },
+    {
+      "type": "response_item",
+      "timestamp": "2026-11-15T02:34:49.701Z",
+      "payload": {
+        "type": "message",
+        "status": "completed",
+        "id": "msg_006e02c7187fe8b0016af91a4990e087d1aebef886d7e5ce4e",
+        "role": "assistant",
+        "content": [
+          {
+            "type": "output_text",
+            "text": "QUEUE_EMPTY",
+            "annotations": [],
+            "logprobs": []
+          }
+        ],
+        "phase": "final_answer",
+        "internal_chat_message_metadata_passthrough": {
+          "turn_id": "01a1dd0e-a8a2-7411-ad99-76a2a336a49f",
+          "create_time": 1794710089.5766344,
+          "content_item_kinds": [
+            "unknown"
+          ]
+        }
+      }
+    },
+    {
+      "type": "response_item",
+      "timestamp": "2026-11-15T02:34:50.545Z",
+      "payload": {
+        "type": "message",
+        "id": "msg_01a1dd0e-b330-7af3-adc0-a225a8b71b01",
+        "role": "user",
+        "content": [
+          {
+            "type": "input_text",
+            "text": "BUSY: execute exactly `python3 barrier.py` once with exec_command, yield_time_ms=1000, wait for completion with write_stdin, then reply BUSY_DONE."
+          }
+        ],
+        "internal_chat_message_metadata_passthrough": {
+          "turn_id": "01a1dd0e-b259-7bd2-b900-9ecab171dc30",
+          "create_time": 1794710090.5449967,
+          "content_item_kinds": [
+            "user.text"
+          ],
+          "content_item_metadata": [
+            {
+              "provenance": {
+                "type": "user"
+              }
+            }
+          ]
+        }
+      }
+    },
+    {
+      "type": "response_item",
+      "timestamp": "2026-11-15T02:34:53.136Z",
+      "payload": {
+        "type": "message",
+        "status": "completed",
+        "id": "msg_006e02c7187fe8b0016af91a4c6b9887d1811c411e4976a0ed",
+        "role": "assistant",
+        "content": [
+          {
+            "type": "output_text",
+            "text": "I\u2019ll run the barrier once and wait for it to finish.",
+            "annotations": [],
+            "logprobs": []
+          }
+        ],
+        "phase": "commentary",
+        "internal_chat_message_metadata_passthrough": {
+          "turn_id": "01a1dd0e-b259-7bd2-b900-9ecab171dc30",
+          "create_time": 1794710092.4258358,
+          "content_item_kinds": [
+            "unknown"
+          ]
+        }
+      }
+    },
+    {
+      "type": "response_item",
+      "timestamp": "2026-11-15T02:34:56.294Z",
+      "payload": {
+        "type": "message",
+        "status": "completed",
+        "id": "msg_006e02c7187fe8b0016af91a50304487d1a7ff2c6f3225965a",
+        "role": "assistant",
+        "content": [
+          {
+            "type": "output_text",
+            "text": "BUSY_DONE",
+            "annotations": [],
+            "logprobs": []
+          }
+        ],
+        "phase": "final_answer",
+        "internal_chat_message_metadata_passthrough": {
+          "turn_id": "01a1dd0e-b259-7bd2-b900-9ecab171dc30",
+          "create_time": 1794710096.194511,
+          "content_item_kinds": [
+            "unknown"
+          ]
+        }
+      }
+    }
+  ],
+  "database_schema": [
+    {
+      "database": "thread_history_1.sqlite",
+      "table": "thread_turns",
+      "columns": [
+        "thread_id",
+        "turn_id",
+        "rollout_ordinal",
+        "status",
+        "error_json",
+        "started_at",
+        "completed_at",
+        "duration_ms",
+        "first_user_item_id",
+        "final_agent_item_id",
+        "rollout_byte_offset",
+        "rollout_end_ordinal",
+        "rollout_end_byte_offset",
+        "root_turn_id"
+      ],
+      "rows": 7
+    },
+    {
+      "database": "thread_history_1.sqlite",
+      "table": "thread_items",
+      "columns": [
+        "thread_id",
+        "turn_id",
+        "item_id",
+        "rollout_ordinal",
+        "created_at_ms",
+        "item_json",
+        "item_type",
+        "updated_at_ordinal",
+        "started_at_ms",
+        "completed_at_ms"
+      ],
+      "rows": 13
+    },
+    {
+      "database": "thread_history_1.sqlite",
+      "table": "thread_history_projection_state",
+      "columns": [
+        "thread_id",
+        "next_rollout_byte_offset",
+        "next_rollout_ordinal"
+      ],
+      "rows": 1
+    },
+    {
+      "database": "thread_history_1.sqlite",
+      "table": "thread_realtime_items",
+      "columns": [
+        "thread_id",
+        "item_id",
+        "rollout_ordinal",
+        "created_at_ms",
+        "item_type",
+        "item_json"
+      ],
+      "rows": 0
+    },
+    {
+      "database": "queue_1.sqlite",
+      "table": "queued_items",
+      "columns": [
+        "id",
+        "thread_id",
+        "payload_json",
+        "queue_order",
+        "created_at_ms",
+        "updated_at_ms"
+      ],
+      "rows": 0
+    },
+    {
+      "database": "queue_1.sqlite",
+      "table": "queued_thread_revisions",
+      "columns": [
+        "revision",
+        "thread_id"
+      ],
+      "rows": 1
+    },
+    {
+      "database": "goals_1.sqlite",
+      "table": "thread_goals",
+      "columns": [
+        "thread_id",
+        "goal_id",
+        "objective",
+        "status",
+        "token_budget",
+        "tokens_used",
+        "time_used_seconds",
+        "created_at_ms",
+        "updated_at_ms"
+      ],
+      "rows": 0
+    },
+    {
+      "database": "goals_1.sqlite",
+      "table": "thread_goal_continuation_deferrals",
+      "columns": [
+        "thread_id"
+      ],
+      "rows": 0
+    },
+    {
+      "database": "state_5.sqlite",
+      "table": "threads",
+      "columns": [
+        "id",
+        "rollout_path",
+        "created_at",
+        "updated_at",
+        "source",
+        "model_provider",
+        "cwd",
+        "title",
+        "sandbox_policy",
+        "approval_mode",
+        "tokens_used",
+        "has_user_event",
+        "archived",
+        "archived_at",
+        "git_sha",
+        "git_branch",
+        "git_origin_url",
+        "cli_version",
+        "first_user_message",
+        "agent_nickname",
+        "agent_role",
+        "memory_mode",
+        "model",
+        "reasoning_effort",
+        "agent_path",
+        "created_at_ms",
+        "updated_at_ms",
+        "thread_source",
+        "preview",
+        "recency_at",
+        "recency_at_ms",
+        "history_mode",
+        "name",
+        "is_pinned",
+        "thread_section_id",
+        "section_position",
+        "section_entered_at_ms",
+        "project_id",
+        "originator",
+        "daybreak_enabled",
+        "creator_user_id",
+        "creator_account_id",
+        "attached_thread_parent_id"
+      ],
+      "rows": 1
+    },
+    {
+      "database": "state_5.sqlite",
+      "table": "thread_dynamic_tools",
+      "columns": [
+        "thread_id",
+        "position",
+        "name",
+        "description",
+        "input_schema",
+        "defer_loading",
+        "namespace"
+      ],
+      "rows": 0
+    },
+    {
+      "database": "state_5.sqlite",
+      "table": "thread_spawn_edges",
+      "columns": [
+        "parent_thread_id",
+        "child_thread_id",
+        "status"
+      ],
+      "rows": 0
+    },
+    {
+      "database": "state_5.sqlite",
+      "table": "thread_sections",
+      "columns": [
+        "id",
+        "name",
+        "appearance"
+      ],
+      "rows": 1
+    },
+    {
+      "database": "state_5.sqlite",
+      "table": "thread_attachments",
+      "columns": [
+        "id",
+        "thread_id",
+        "attachment_type",
+        "identity_key",
+        "payload",
+        "created_at"
+      ],
+      "rows": 0
+    },
+    {
+      "database": "state_5.sqlite",
+      "table": "thread_read_receipts",
+      "columns": [
+        "thread_id",
+        "first_unread_turn",
+        "revision",
+        "last_published_turn"
+      ],
+      "rows": 1
+    }
+  ],
+  "source_auth_unchanged": true,
+  "private_auth_refreshed": false,
+  "cleanup_tagged_descendants": []
+}

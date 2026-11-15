@@ -1,0 +1,27 @@
+{
+  "checked_at_utc": "2026-11-15T02:44:00.820315+00:00",
+  "runs": {
+    "run-7-admission": {
+      "source_auth_unchanged": true,
+      "private_auth_refreshed": false,
+      "cleanup_tagged_descendants": []
+    },
+    "run-8-receivers": {
+      "source_auth_unchanged": true,
+      "private_auth_refreshed": false,
+      "cleanup_tagged_descendants": []
+    }
+  },
+  "tagged_processes_remaining": [],
+  "scratch_roots_remaining": [],
+  "public_artifact_sensitive_pattern_matches": [],
+  "python_ast_parse": "passed",
+  "repository_checks": {
+    "clippy_all_targets_all_features_warnings_denied": "passed (58.70s)",
+    "harness_neutral": "passed",
+    "wire_compat": "passed",
+    "cargo_fmt_check": "passed",
+    "default_features": "passed"
+  },
+  "owned_build_artifacts_remaining": false
+}
