@@ -1,0 +1,51 @@
+{
+  "schema": 1,
+  "task": "ht-d2jq.6.4",
+  "authorization": "mnSGh1PVOa0H",
+  "matrix_evidence_commit": "da2f796f7",
+  "scope": "driver-only opt-in UI evidence correction; no production change",
+  "regressions": {
+    "stale_viewport_original_red_subcases": 2,
+    "stale_viewport_green_subcases": 2,
+    "reader_association_privacy_red": 2,
+    "reader_exact_identifier_red": 2,
+    "driver_queue_green": 20,
+    "sqlite_rollout_green": 23
+  },
+  "self_test": {
+    "passed": 282,
+    "failed": 0,
+    "seconds": 102.757,
+    "agents_started": false
+  },
+  "checks": {
+    "clippy_all_targets_all_features": {
+      "exit": 0,
+      "seconds": 26.87
+    },
+    "default_features": 0,
+    "fmt": 0,
+    "harness_neutral": 0,
+    "wire_compat": 0,
+    "python39_syntax": 0,
+    "diff": 0
+  },
+  "bounds": {
+    "rollout_files": 64,
+    "overflow_sentinel": 1,
+    "rollout_read_bytes": 8388608,
+    "output_message_ids": 32,
+    "canonical_samples": 128,
+    "host_observations": 512,
+    "canonical_evidence_bytes": 524288
+  },
+  "source_sha256": {
+    "scripts/wake-e2e.py": "a60152adcdb62a52834099707300e8a75b28dd5ac76ec9e3c54e74152d378b87",
+    "scripts/wake_e2e_selftest.py": "a93bca9a6e3705774bd551b21f2fb8b78edfccc57eb89fe77786c293b35c22c0",
+    "scripts/wake_e2e_queue.py": "90b23063f40c4d60d3f069a03ee9d0e509249d5eac97f937f2f262b147ac3b2f",
+    "scripts/wake_e2e_queue_selftest.py": "2540b98a4760d5bd043fd767bc87d7387f90e77c1196c4bca0758c3bcdc809d6"
+  },
+  "report_sha256": "f01caa5fd65a60fe61011b601a84a6c29dc761598831d788b16ef728df89cc8f",
+  "routine_production_model_visible_bytes_added": 0,
+  "next_live_scope": "modal-hold/group and draft-hold/group only after focused owner review; no repeat of passing rows"
+}

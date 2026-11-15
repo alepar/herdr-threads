@@ -7,7 +7,7 @@ import tempfile
 import unittest
 from unittest import mock
 
-from wake_e2e_queue import eligible_scope, queue_activity_intervals, queue_proof, queue_snapshot
+from wake_e2e_queue import codex_turn_delivery, eligible_scope, queue_activity_intervals, queue_proof, queue_snapshot
 
 SESSION = "00000000-0000-0000-0000-000000000001"
 OWNER = "00000000-0000-0000-0000-000000000002"
@@ -299,3 +299,73 @@ class QueueEvidence(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class TargetTurnDelivery(unittest.TestCase):
+    def setUp(self):
+        self.tmp = tempfile.TemporaryDirectory(prefix="ht-target-turn-selftest.")
+        self.addCleanup(self.tmp.cleanup)
+        self.home = Path(self.tmp.name)
+        self.path = self.home / "sessions" / "rollout-session.jsonl"
+        self.path.parent.mkdir()
+        self.bodies = {"mONE": "body one", "mTWO": "body two"}
+
+    def write(self, turn="turn", output=None, developer=True, complete=True):
+        text = "RECEIVED mONE: body one\nRECEIVED mTWO: body two" if output is None else output
+        def row(kind, payload):
+            return {"timestamp": "2026-11-15T00:00:00Z", "type": kind, "payload": payload}
+        rows = [row("event_msg", {"type": "task_started", "turn_id": turn})]
+        if developer:
+            rows.append(row("response_item", {"type": "message", "role": "developer", "content": [
+                {"text": "mONE: body one\nmTWO: body two"}]}))
+        rows.append(row("response_item", {"type": "message", "role": "assistant", "content": [{"text": text}]}))
+        if complete:
+            rows.append(row("event_msg", {"type": "task_complete", "turn_id": turn, "last_agent_message": text}))
+        self.path.write_text("".join(json.dumps(r) + "\n" for r in rows))
+
+    def read(self):
+        return codex_turn_delivery(self.home, "session", "turn", self.bodies)
+
+    def test_matching_target_turn_requires_context_and_completed_both_bodies(self):
+        self.write()
+        out = self.read()
+        self.assertTrue(out["passed"], out)
+        self.assertEqual(out["input_ids"], ["mONE", "mTWO"])
+        self.assertEqual(out["output_ids"], ["mONE", "mTWO"])
+        self.assertNotIn("body one", json.dumps(out))
+        self.assertNotIn(str(self.home), json.dumps(out))
+
+    def test_wrong_session_or_turn_is_not_delivery(self):
+        self.write(turn="other")
+        self.assertFalse(self.read()["passed"])
+        self.write()
+        self.path.rename(self.path.with_name("rollout-other.jsonl"))
+        self.assertFalse(self.read()["passed"])
+        self.path.with_name("rollout-other.jsonl").rename(self.path.with_name("rollout-sessionX.jsonl"))
+        self.assertFalse(self.read()["passed"])
+
+    def test_missing_context_body_or_completion_fails(self):
+        for options in ({"developer": False}, {"complete": False},
+                        {"output": "RECEIVED mONE: body one"},
+                        {"output": "RECEIVED mONEX: body one\nRECEIVED mTWOX: body two"},
+                        {"output": "RECEIVED mONE: body two\nRECEIVED mTWO: body one"}):
+            with self.subTest(options=options):
+                self.write(**options)
+                self.assertFalse(self.read()["passed"])
+
+    def test_file_and_byte_bounds_fail_closed(self):
+        self.write()
+        (self.path.parent / "other.jsonl").write_text("{}\n")
+        with mock.patch("wake_e2e_queue.ROLLOUT_FILE_LIMIT", 1):
+            self.assertFalse(self.read()["passed"])
+        with mock.patch("wake_e2e_queue.ROLLOUT_BYTE_LIMIT", 100):
+            out = self.read()
+            self.assertFalse(out["passed"])
+            self.assertLessEqual(out["bytes_read"], 100)
+
+    def test_malformed_timestamp_never_exports_private_data(self):
+        self.write()
+        self.path.write_text(self.path.read_text().replace("2026-11-15T00:00:00Z", "/private/profile/secret"))
+        out = self.read()
+        self.assertFalse(out["passed"])
+        self.assertNotIn("/private/profile", json.dumps(out))

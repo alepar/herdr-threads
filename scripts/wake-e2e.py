@@ -1969,6 +1969,26 @@ class QueueCaseEvidence:
             self.latest_publication_scope = eligible_scope(current_scope)
             self._capture()
 
+    def qualified_activity(self):
+        from wake_e2e_queue import queue_proof
+        with self.lock:
+            samples = list(self.samples)
+        proof = queue_proof(self.before, samples, "accepted")
+        if not proof["passed"]:
+            return None
+        for sample in samples:
+            for intent in sample.get("intents", ()):
+                matched = next((a for a in proof["attempts"] if a["attempt"] == intent["attempt"]), None)
+                fulfillment = intent.get("fulfillment")
+                if (matched and intent.get("logical_status") == "fulfilled" and fulfillment
+                        and intent.get("owner_boot") == matched["owner_boot"]
+                        and fulfillment["turn_id"] != matched["baseline"]["turn_id"]
+                        and fulfillment["ordinal"] > matched["baseline"]["ordinal"]):
+                    return {"attempt": intent["attempt"], "native_session": intent["scope"]["native_session"],
+                            "turn_id": intent["fulfillment"]["turn_id"],
+                            "observed_at_ms": sample["observation_end_ms"]}
+        return None
+
     def hold_ended(self):
         with self.lock:
             self._capture()
@@ -2012,6 +2032,15 @@ class QueueCaseEvidence:
                 result["reasons"].append("busy publication lacks canonical Started observation")
         if self.held_samples is not None:
             held = queue_proof(self.before, self.held_samples, "none")
+            baseline = eligible_scope(self.before)
+            held_activity = bool(baseline) and any(
+                n["scope"] == baseline["scope"] and n["turn_id"] != baseline["turn_id"]
+                and n["ordinal"] > baseline["ordinal"]
+                for sample in self.held_samples for n in sample.get("native", ()))
+            held["native_activity_observed"] = held_activity
+            if held_activity:
+                held["passed"] = False
+                held["reasons"].append("native activity while UI held")
             result["held_interval"] = held
             result["passed"] = result["passed"] and held["passed"]
         proved = {item["attempt"] for item in result.get("attempts", ())}
@@ -2957,17 +2986,39 @@ class Recipient:
                 proof.release_interval_ms = [proof.offset(release_start), proof.offset(time.monotonic())]
                 self.wake_window()
         checks["send_warnings"] = sends
-        t0, t_wake = time.time(), None
-        while opened and time.time() - t0 < WAKE_BLOCK_WAIT_S:  # the wake is a typed wake line
-            if wake_count(self.screen(1000)) > wakes_before:
+        t0, t_wake, activity = time.time(), None, None
+        while opened and time.time() - t0 < WAKE_BLOCK_WAIT_S:
+            if proof is not None:
+                activity = proof.qualified_activity()
+                if activity is not None:
+                    elapsed = activity["observed_at_ms"] - proof.release_interval_ms[0]
+                    if 0 <= elapsed <= WAKE_BLOCK_WAIT_S * 1000:
+                        t_wake = round(elapsed / 1000, 3)
+                        break
+            elif wake_count(self.screen(1000)) > wakes_before:
                 t_wake = round(time.time() - t0, 2)
                 break
             time.sleep(0.5)
         woke = t_wake is not None
+        if activity is not None and woke:
+            from wake_e2e_queue import codex_turn_delivery
+            checks["activity_evidence"] = activity
+            expected = {mid: f"{tag} #{n}" for n, mid in enumerate(mids) if mid}
+            end = time.monotonic() + TURN_TIMEOUT_MS / 1000
+            delivery = {"passed": False}
+            while time.monotonic() < end and len(expected) == 2:
+                delivery = codex_turn_delivery(self.run.codex_home, activity["native_session"],
+                                               activity["turn_id"], expected)
+                if delivery.get("complete") or delivery.get("error"):
+                    break
+                self.run.stopping.wait(0.5)
+            checks["delivery_evidence"] = delivery
+            checks["delivered"] = delivery["passed"]
+        else:
+            checks["delivered"] = bool(mids) and all(self.on_screen(m) for m in mids if m)
         if woke:
             self.last_wake = time.time()
             self.wait_idle()
-        checks["delivered"] = bool(mids) and all(self.on_screen(m) for m in mids if m)
         checks["footer_after"] = footer()
         passed = (opened and checks["wakes_while_open"] == 0 and sends == [[], []] and woke
                   and checks["delivered"] and checks["footer_after"] == checks["footer_before"]

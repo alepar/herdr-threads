@@ -3568,6 +3568,102 @@ class QueueLifecycleCorrelation(TempDir):
         self.assertFalse(result["known_busy_started"])
 
 
+class QueueUIActivity(TempDir):
+    snapshot = QueueSamplerLifetime.snapshot
+    recipient = QueueSamplerLifetime.recipient
+
+    def test_bare_accepted_or_baseline_turn_is_not_activity(self):
+        proof = W.QueueCaseEvidence(self.recipient(), "modal-hold/group")
+        intent = {"attempt": "a", "owner_boot": "owner", "scope": {"native_session": "session"},
+                  "logical_status": "active", "fulfillment": None}
+        proof.samples = [{"observation_end_ms": 2000, "intents": [intent]}]
+        accepted = {"passed": True, "attempts": [{"attempt": "a", "owner_boot": "owner",
+                                                    "baseline": {"turn_id": "baseline", "ordinal": 2}}]}
+        with mock.patch("wake_e2e_queue.queue_proof", return_value=accepted):
+            self.assertIsNone(proof.qualified_activity())
+            intent.update(logical_status="fulfilled", fulfillment={"turn_id": "baseline", "ordinal": 2})
+            self.assertIsNone(proof.qualified_activity())
+            intent["fulfillment"] = {"turn_id": "next", "ordinal": 3}
+            self.assertEqual(proof.qualified_activity()["turn_id"], "next")
+            intent["owner_boot"] = "other"
+            self.assertIsNone(proof.qualified_activity())
+
+    def test_native_activity_while_ui_held_is_refused_even_without_new_queue_effect(self):
+        self.recipient()
+        scope = {"binding": "b", "native_session": "session"}
+        proof = W.QueueCaseEvidence(SimpleNamespace(run=SimpleNamespace(state=self.tmp), seat="seat", name="co-t0"),
+                                    "modal-hold/group")
+        proof.held_samples = [{"native": [{"scope": scope, "turn_id": "next", "ordinal": 3}]}]
+        baseline = {"scope": scope, "turn_id": "baseline", "ordinal": 2}
+        def judged(*args):
+            return {"passed": True, "reasons": [], "attempts": []}
+        with mock.patch("wake_e2e_queue.eligible_scope", return_value=baseline), \
+             mock.patch("wake_e2e_queue.queue_proof", side_effect=judged):
+            result = proof.finish({"expect_wake": True})
+        self.assertTrue(result["held_interval"]["native_activity_observed"])
+        self.assertFalse(result["held_interval"]["passed"])
+
+
+
+class QueueUIStaleViewport(TempDir):
+    def test_exact_queue_turn_delivery_passes_without_jumping_stale_viewport(self):
+        for case in ("modal-hold/group", "draft-hold/group"):
+            with self.subTest(case=case):
+                clock, rows, keys, state = [100.0], [], [], {"draft": False, "picker": False}
+                def advance(seconds):
+                    clock[0] += seconds
+                proof = SimpleNamespace(published=True, latest_publication_scope={"scope": "current"},
+                                        selected_windows=[], release_interval_ms=None, publication=lambda: None,
+                                        hold_ended=lambda: None, offset=lambda at: round((at - 100) * 1000))
+                def activity():
+                    advance(1)
+                    return {"attempt": "attempt", "native_session": "session", "turn_id": "turn",
+                            "observed_at_ms": round((clock[0] - 100) * 1000)}
+                proof.qualified_activity = activity
+                sent = []
+                def send(*args, **kwargs):
+                    mid = ("mONE", "mTWO")[len(sent)]
+                    sent.append(mid)
+                    return json.dumps({"result": {"data": mid}}), ""
+                def herdr(*args, **kwargs):
+                    if args[:2] == ("pane", "send-text"):
+                        state["draft"] = args[-1] == W.SIDE_DRAFT
+                    elif args[1] == "send-keys":
+                        keys.append(args[-1])
+                        state["picker"] = args[-1] == "enter"
+                        if args[-1] == "ctrl+u":
+                            state["draft"] = False
+                    return {"raw": "GPT test · ~/fixture\nNew activity · Back to bottom · esc\n"
+                            + ("› " + W.SIDE_DRAFT if state["draft"] else "› 1. model" if state["picker"] else "› ")}
+                run = SimpleNamespace(run_id="test", codex_home=self.tmp, coords={"main": {"pane": "sender"}},
+                                      stopping=SimpleNamespace(wait=advance), herdr=herdr, ht_err=send,
+                                      record=rows.append)
+                recipient = W.Recipient(run, "co-t0", "codex", 0, "pane", "seat")
+                recipient.group, recipient.queue_evidence = "thread", proof
+                recipient.last_wake = clock[0]
+                recipient.wait_idle = recipient.settled = lambda: None
+                recipient.screen = lambda *args: "Old turn\nNew activity · Back to bottom · esc"
+                recipient.on_screen = lambda *args: False
+                recipient.doctor_wake = lambda: None
+                text = "\n".join(f"RECEIVED {mid}: {case} test #{n}" for n, mid in enumerate(("mONE", "mTWO")))
+                records = [{"timestamp": "2026-11-15T00:00:00Z", "type": "event_msg",
+                            "payload": {"type": "task_started", "turn_id": "turn"}},
+                           {"timestamp": "2026-11-15T00:00:01Z", "type": "response_item",
+                            "payload": {"type": "message", "role": "developer", "content": [{"text": text}]}},
+                           {"timestamp": "2026-11-15T00:00:02Z", "type": "event_msg",
+                            "payload": {"type": "task_complete", "turn_id": "turn", "last_agent_message": text}}]
+                path = self.tmp / "sessions" / "rollout-session.jsonl"
+                path.parent.mkdir(exist_ok=True)
+                path.write_text("".join(json.dumps(r) + "\n" for r in records))
+                with mock.patch.object(W, "time", SimpleNamespace(time=lambda: clock[0],
+                                       monotonic=lambda: clock[0], sleep=advance)):
+                    recipient.wake_block_case(case)
+                self.assertEqual(rows[-1]["result"], "PASS", rows[-1])
+                self.assertTrue(rows[-1]["checks"]["delivered"])
+                self.assertEqual(keys, ["ctrl+u"] if case.startswith("draft") else ["enter", "esc"])
+
+
+
 class QueueFailureEvidence(TempDir):
     snapshot = QueueSamplerLifetime.snapshot
     recipient = QueueSamplerLifetime.recipient

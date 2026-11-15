@@ -9,6 +9,8 @@ from __future__ import annotations
 
 import contextlib
 import json
+import re
+from datetime import datetime
 from pathlib import Path
 import sqlite3
 
@@ -299,4 +301,95 @@ def queue_activity_intervals(samples: list[dict], attempts: set[str]) -> list[di
                             accepted_to_activity_lower_ms=lower, accepted_to_activity_upper_ms=upper,
                             status="passed" if upper <= 15000 else "failed" if lower > 15000 else "ambiguous")
         result.append(item)
+    return result
+
+
+ROLLOUT_FILE_LIMIT = 64
+ROLLOUT_BYTE_LIMIT = 8 * 1024 * 1024
+
+
+def codex_turn_delivery(home: Path, session: str, turn: str, bodies: dict[str, str]) -> dict:
+    """Bounded target-turn context and completed-output evidence, never a receipt.
+
+    Only identifiers, timestamps and presence flags leave the private rollout.
+    A stale viewport is irrelevant; bare acceptance or a cursor cannot pass.
+    """
+    result = {"passed": False, "complete": False,
+              "input_ids": [], "output_ids": [], "started_utc": None, "completed_utc": None,
+              "bytes_read": 0, "files_examined": 0}
+    def timestamp(value):
+        if not isinstance(value, str) or not re.fullmatch(r"[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9:.]+(?:Z|[+-][0-9]{2}:[0-9]{2})", value):
+            raise ValueError("invalid timestamp")
+        datetime.fromisoformat(value.replace("Z", "+00:00"))
+        return value
+    def received(text):
+        if not isinstance(text, str):
+            raise ValueError("invalid output")
+        return {mid for mid, body in bodies.items() for line in text.splitlines()
+                if "RECEIVED" in line and (match := patterns[mid].search(line))
+                and body in line[match.end():]}
+    try:
+        if any(not isinstance(v, str) or not re.fullmatch(r"[A-Za-z0-9_-]{1,128}", v)
+               for v in (session, turn, *bodies)):
+            raise ValueError("invalid identifier")
+        result.update(session=session, turn_id=turn)
+        patterns = {mid: re.compile(r"(?<![A-Za-z0-9_-])" + re.escape(mid) + r"(?![A-Za-z0-9_-])")
+                    for mid in bodies}
+        if not bodies or len(bodies) > 32 or any(not isinstance(b, str) or len(b.encode()) > 8192 for b in bodies.values()):
+            raise ValueError("invalid bodies")
+        for mid in bodies:
+            _text(mid)
+        files = []
+        for path in (Path(home) / "sessions").rglob("*.jsonl"):
+            result["files_examined"] += 1
+            if result["files_examined"] > ROLLOUT_FILE_LIMIT:
+                result["error"] = "rollout_file_limit"
+                return result
+            if path.name.endswith("-" + session + ".jsonl"):
+                files.append(path)
+        inputs, outputs = set(), set()
+        for path in files:
+            remaining = ROLLOUT_BYTE_LIMIT - result["bytes_read"]
+            if remaining <= 0:
+                result["error"] = "rollout_byte_limit"
+                return result
+            with path.open("rb") as source:
+                size = source.seek(0, 2)
+                offset = max(0, size - remaining)
+                source.seek(offset)
+                data = source.read(remaining)
+            result["bytes_read"] += len(data)
+            lines = data.splitlines()[1 if offset else 0:]
+            active = False
+            for line in lines:
+                try:
+                    row = json.loads(line)
+                except (ValueError, UnicodeError):
+                    continue  # a growing final record is not evidence
+                payload = row.get("payload", {})
+                kind = payload.get("type")
+                if row.get("type") == "event_msg" and kind == "task_started":
+                    active = payload.get("turn_id") == turn
+                    if active:
+                        result["started_utc"] = timestamp(row.get("timestamp"))
+                if not active:
+                    continue
+                if row.get("type") == "response_item" and kind == "message":
+                    text = "\n".join(p.get("text", "") for p in payload.get("content", ()) if isinstance(p, dict))
+                    found = {mid for mid, body in bodies.items() if patterns[mid].search(text) and body in text}
+                    if payload.get("role") == "developer":
+                        inputs.update(found)
+                    elif payload.get("role") == "assistant" and "RECEIVED" in text:
+                        outputs.update(received(text))
+                if row.get("type") == "event_msg" and kind == "task_complete" and payload.get("turn_id") == turn:
+                    text = payload.get("last_agent_message") or ""
+                    if "RECEIVED" in text:
+                        outputs.update(received(text))
+                    result["complete"] = True
+                    result["completed_utc"] = timestamp(row.get("timestamp"))
+                    active = False
+        result["input_ids"], result["output_ids"] = sorted(inputs), sorted(outputs)
+        result["passed"] = result["complete"] and inputs == set(bodies) and outputs == set(bodies)
+    except (OSError, ValueError, TypeError, AttributeError, KeyError, RecursionError):
+        result["error"] = "rollout_unavailable_or_invalid"
     return result
