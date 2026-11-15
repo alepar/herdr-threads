@@ -355,6 +355,20 @@ test('per-item framing matches the shared delivery goldens', () => {
   }
 })
 
+async function assertWatchConnected(io, env, script, firstRowMs = 3000) {
+  let watcher, timer, resolveLine, rejectLine, seen = false, exited = false
+  try {
+    const line = new Promise((resolve, reject) => { resolveLine = resolve; rejectLine = reject })
+    timer = setTimeout(() => rejectLine(new Error('watch first row timeout')), firstRowMs)
+    watcher = io.spawn([process.execPath, '-e', script], { env, maxBytes: 65536 }, {
+      line: row => { seen = true; resolveLine(row) },
+      exit: code => { exited = true; if (!seen) rejectLine(new Error(`watch exited before first row (${code})`)) },
+    })
+    assert.equal((await line).state, 'connected')
+  } finally { clearTimeout(timer); await watcher?.stop() }
+  assert.equal(exited, true)
+}
+
 test('native IO bounds stdout, honors deadlines and reaps watch children', async () => {
   // No service is started: owned node children exercise the real transport.
   const root = fs.mkdtempSync(path.join(path.dirname(new URL(import.meta.url).pathname), '.scratch-io-'))
@@ -365,10 +379,36 @@ test('native IO bounds stdout, honors deadlines and reaps watch children', async
     assert.equal(r.code, 1)
     const timed = await io.run([process.execPath, '-e', 'setInterval(()=>{},1000)'], { env, stdin: '', timeoutMs: 30, maxBytes: 4096 })
     assert.equal(timed.code, 1)
-    let resolveLine, exited = false
-    const line = new Promise(resolve => { resolveLine = resolve })
-    const watcher = io.spawn([process.execPath, '-e', 'console.log(JSON.stringify({id:"status:0",schema:1,kind:"status",state:"connected"}));setInterval(()=>{},1000)'], { env, maxBytes: 65536 }, { line: resolveLine, exit: () => { exited = true } })
-    assert.equal((await line).state, 'connected'); await watcher.stop(); assert.equal(exited, true)
+    await assertWatchConnected(io, env, 'console.log(JSON.stringify({id:"status:0",schema:1,kind:"status",state:"connected"}));setInterval(()=>{},1000)')
+  } finally { fs.rmSync(root, { recursive: true, force: true }) }
+})
+
+test('native watch fixture reaps on assertion failure, early exit and first-row timeout', async t => {
+  const root = fs.mkdtempSync(path.join(import.meta.dirname, '.scratch-watch-failure-'))
+  const native = nodeIO()
+  const env = { HOME: root, PATH: process.env.PATH, HT_LEAK_RUN_ID: process.env.HT_LEAK_RUN_ID ?? 'pi-watch-failure' }
+  try {
+    for (const scenario of [
+      { name: 'wrong-state assertion', script: 'console.log(JSON.stringify({state:"wrong"}));setInterval(()=>{},1000)', deadline: 3000, expected: { code: 'ERR_ASSERTION' } },
+      { name: 'early child exit', script: 'process.exit(2)', deadline: 3000, expected: /watch exited before first row \(2\)/ },
+      { name: 'no first row', script: 'setInterval(()=>{},1000)', deadline: 100, expected: /watch first row timeout/ },
+    ]) {
+      await t.test(scenario.name, async () => {
+        let watcher, exited = false, guard
+        const io = { ...native, spawn: (argv, options, handlers) => {
+          watcher = native.spawn(argv, options, { ...handlers, exit: (...args) => { exited = true; handlers.exit(...args) } })
+          return watcher
+        } }
+        try {
+          const fixture = assertWatchConnected(io, env, scenario.script, scenario.deadline)
+          const bounded = Promise.race([fixture, new Promise((_resolve, reject) => {
+            guard = setTimeout(() => reject(new Error('outer first-row guard')), 5000)
+          })])
+          await assert.rejects(bounded, scenario.expected)
+          assert.equal(exited, true, 'fixture must reap before propagating its failure')
+        } finally { clearTimeout(guard); await watcher?.stop() }
+      })
+    }
   } finally { fs.rmSync(root, { recursive: true, force: true }) }
 })
 
@@ -422,6 +462,45 @@ test('missing native branch shape degrades delivery without inventing receipt ev
   assert.match(h.diagnostics.join('\n'), /branch API unavailable/)
   for (const mode of [undefined, 'rpc', 'json', 'print']) {
     const other = harness(); other.ctx.mode = mode; await other.start(); assert.equal(other.calls.length, 0)
+  }
+})
+
+test('missing mode uses native capability warning without enrollment or stderr', async t => {
+  for (const mode of [undefined, null]) await t.test(String(mode), async () => {
+    const h = harness(), notices = []
+    h.ctx.mode = mode; h.ctx.ui.notify = (...args) => notices.push(args)
+    await h.start()
+    assert.deepEqual(notices, [['herdr-threads: pi boundary API unavailable', 'warning']])
+    assert.equal(h.diagnostics.length, 0, 'pre-owner warning must not use raw diagnostic output')
+    assert.equal(h.calls.length, 0); assert.equal(h.watches.length, 0)
+    assert.deepEqual(h.env, {}); assert.deepEqual(Reflect.ownKeys(h.registry), [])
+  })
+})
+
+test('explicit non-tui modes and forbidden or duplicate missing-mode instances stay quiet', async () => {
+  for (const mode of ['rpc', 'json', 'print', 'future-mode']) {
+    const h = harness(); h.ctx.mode = mode; await h.start()
+    assert.equal(h.diagnostics.length, 0); assert.equal(h.calls.length, 0); assert.equal(h.watches.length, 0)
+    assert.deepEqual(h.env, {}); assert.deepEqual(Reflect.ownKeys(h.registry), [])
+  }
+  for (const env of [{ HERDR_THREADS_PI_ROLE: 'child' }, { HERDR_THREADS_PI_PID: '419' }]) {
+    const h = harness({ env }); h.ctx.mode = undefined; await h.start()
+    assert.equal(h.diagnostics.length, 0); assert.equal(h.calls.length, 0); assert.equal(h.watches.length, 0)
+    assert.deepEqual(h.env, env); assert.deepEqual(Reflect.ownKeys(h.registry), [])
+  }
+  const first = harness(); await first.start()
+  const duplicate = harness({ registry: first.registry }); duplicate.ctx.mode = undefined; await duplicate.start()
+  assert.equal(duplicate.diagnostics.length, 0); assert.equal(duplicate.calls.length, 0); assert.equal(duplicate.watches.length, 0)
+  assert.deepEqual(duplicate.env, {})
+  await first.emit('session_shutdown')
+})
+
+test('missing mode with absent or throwing native notification stays inert', async () => {
+  for (const notify of [undefined, null, 'unsupported', () => { throw new Error('native notification unavailable') }]) {
+    const h = harness(); h.ctx.mode = undefined; h.ctx.ui.notify = notify; await h.start()
+    assert.equal(h.diagnostics.length, 0, 'missing notification must never fall back to raw stderr')
+    assert.equal(h.calls.length, 0); assert.equal(h.watches.length, 0)
+    assert.deepEqual(h.env, {}); assert.deepEqual(Reflect.ownKeys(h.registry), [])
   }
 })
 

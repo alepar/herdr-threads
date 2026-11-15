@@ -307,7 +307,14 @@ export function register(pi, io) {
     return o.closing
   }
   pi.on('session_start', async (event, ctx) => {
-    if (forbidden || ctx.mode !== 'tui' || (io.registry[OWNER] && io.registry[OWNER] !== token)) return
+    if (forbidden || (io.registry[OWNER] && io.registry[OWNER] !== token)) return
+    if (ctx.mode === undefined || ctx.mode === null) {
+      try {
+        if (typeof ctx.ui?.notify === 'function') ctx.ui.notify('herdr-threads: pi boundary API unavailable', 'warning')
+      } catch {}
+      return
+    }
+    if (ctx.mode !== 'tui') return
     if (typeof ctx.sessionManager?.getSessionId !== 'function' || typeof ctx.sessionManager?.getBranch !== 'function') { diagnostic('boundary API unavailable'); return }
     const sid = ctx.sessionManager.getSessionId()
     if (typeof sid !== 'string' || !sid || size(sid) > 128 || /[\x00-\x20\x7f]/.test(sid)) { diagnostic('session unavailable'); return }
