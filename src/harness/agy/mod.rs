@@ -79,6 +79,7 @@ impl HarnessAdapter for AgyAdapter {
             session_var: "ANTIGRAVITY_CONVERSATION_ID",
             role: Some(witness::caller_session),
             process_match: None,
+            validate_process_claim: None,
             pid_var: None,
             paneless: None,
             session_marker_vars: &[],

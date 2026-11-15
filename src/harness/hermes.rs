@@ -841,6 +841,7 @@ impl HarnessAdapter for HermesAdapter {
             session_var: "HERMES_SESSION_ID",
             role: None,
             process_match: Some(is_hermes_launcher),
+            validate_process_claim: None,
             pid_var: None,
             paneless: None,
             session_marker_vars: &[],

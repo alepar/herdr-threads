@@ -250,6 +250,12 @@ fn fingerprint_for(
     kind: &'static str,
     ancestor: &ProcessRecord,
 ) -> Result<LivenessFingerprint, EnvRefusal> {
+    if let Some(validate) = shape_of(kind).and_then(|shape| shape.validate_process_claim) {
+        validate(ancestor, inputs.env).map_err(|detail| EnvRefusal::UnattributedSession {
+            harness: kind,
+            detail,
+        })?;
+    }
     // A harness that exports its own pid: prefer that record when it still exists.
     let record = shape_of(kind)
         .and_then(|shape| exported_pid(&shape, inputs.env))

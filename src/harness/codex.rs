@@ -1478,6 +1478,7 @@ impl HarnessAdapter for CodexAdapter {
             session_var: "CODEX_SESSION_ID",
             role: Some(caller_session),
             process_match: Some(is_codex_shape),
+            validate_process_claim: None,
             pid_var: None,
             paneless: Some(PanelessProcess {
                 matches: is_managed_daemon,

@@ -74,6 +74,7 @@ impl HarnessAdapter for OpencodeAdapter {
             session_var: witness::SESSION_VAR,
             role: Some(witness::caller_session),
             process_match: None,
+            validate_process_claim: None,
             pid_var: Some(witness::PID_VAR),
             paneless: None,
             // The plugin's parent and pid-echo variables name the session's role (D2).

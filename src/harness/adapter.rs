@@ -337,6 +337,9 @@ pub struct CallerEnvShape {
     /// Other process shapes of the harness beyond the argv[0] names (argv contents, interpreter
     /// launchers).
     pub process_match: Option<fn(&crate::ports::ProcessRecord) -> bool>,
+    /// Optional consistency check against the already selected actual ancestor. Refusal never
+    /// searches past it for an outer owner. No process is identified by this assertion alone.
+    pub validate_process_claim: Option<ProcessClaimValidator>,
     /// A variable in which the harness exports its own pid to its descendants: a process with
     /// that pid is this harness, and its record is preferred for the fingerprint while it exists.
     pub pid_var: Option<&'static str>,
@@ -347,6 +350,9 @@ pub struct CallerEnvShape {
     /// thread id), beyond `session_var` and `pid_var`. Default: none.
     pub session_marker_vars: &'static [&'static str],
 }
+
+pub type ProcessClaimValidator =
+    fn(&crate::ports::ProcessRecord, &dyn Fn(&str) -> Option<String>) -> Result<(), String>;
 
 impl CallerEnvShape {
     /// Every variable this shape reads to name a session: `session_var`, `pid_var` and

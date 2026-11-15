@@ -1016,6 +1016,7 @@ impl HarnessAdapter for ClaudeAdapter {
                     .iter()
                     .any(|a| a.contains("@anthropic-ai/claude-code"))
             }),
+            validate_process_claim: None,
             pid_var: Some("CLAUDE_PID"),
             paneless: None,
             session_marker_vars: &[],
