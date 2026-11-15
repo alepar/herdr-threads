@@ -373,6 +373,9 @@ class Run:
         row = self.wait("actual agent-authored notice cause", lambda: next((r for r in self.rows()[since:]
                         if r["event"] == "notice_cause" and r["state"]["sid"] == self.main_sid
                         and r["body"] == body and r["target"] == self.sink["seat"]), None))
+        post_command = self.observe_state(sid=self.main_sid)
+        post_capture = self.capture("notice-cause-" + label + "-after-command")
+        post_capture["native_observation"] = post_command
         mid = row["result"]["result"]["data"]
         receipt = self.recipient_receipt(mid, self.sink["seat"])
         deadline = require_pending_cause(receipt, self.sink["seat"], int(time.time() * 1000))
