@@ -954,6 +954,11 @@ fn run_hook_event_reporting_inner<C: LocalClient + ?Sized, W: Write>(
     else {
         return Ok(());
     };
+    if super::registry::builtins().channel_owned_delivery(event.harness.as_str()) {
+        // Admission is durable; completing its local operation is not presentation evidence.
+        journal.complete_operation(&OperationId::new(request.operation_id.to_string()))?;
+        return Ok(());
+    }
     let reason = if turn.is_some() && request.mode == CheckInMode::Lifecycle {
         OverviewReason::Lifecycle
     } else {

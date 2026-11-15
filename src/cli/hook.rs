@@ -727,6 +727,11 @@ fn compose_context_limited(
     context_budget: usize,
     continuation_managed: bool,
 ) -> String {
+    let (text, summary, actions, overview, recovery) = if policy.channel_owned_delivery {
+        (&[][..], None, None, None, None)
+    } else {
+        (text, summary, actions, overview, recovery)
+    };
     // Compaction drops what the session start said, and tool boundaries no
     // longer repeat it: a compact re-entry restates the fixed section even
     // with nothing new pending.
@@ -2956,10 +2961,13 @@ impl PaneCall<'_> {
             // channel delivers itself.
             // One rule for both boundaries (TRUST-POLICY A8): a hook-pull seat's lazy
             // rows ride only `DeliveryPull`, never this page.
-            let (lazy, page_failure) = match (crate::delivery::routing::hook_inbox_page(
-                crate::harness::registry::builtins().delivery_policy(event.harness.as_str()),
-                boundary.live,
-            ) && !boundary.text.is_empty())
+            let (lazy, page_failure) = match (!crate::harness::registry::builtins()
+                .channel_owned_delivery(event.harness.as_str())
+                && crate::delivery::routing::hook_inbox_page(
+                    crate::harness::registry::builtins().delivery_policy(event.harness.as_str()),
+                    boundary.live,
+                )
+                && !boundary.text.is_empty())
             .then(|| {
                 self.inbox_offer(
                     &contexts,
@@ -2977,10 +2985,13 @@ impl PaneCall<'_> {
                 token,
             });
             return Ok(CheckedIn {
-                coverage: if crate::delivery::routing::hook_inbox_page(
-                    crate::harness::registry::builtins().delivery_policy(event.harness.as_str()),
-                    boundary.live,
-                ) {
+                coverage: if !crate::harness::registry::builtins()
+                    .channel_owned_delivery(event.harness.as_str())
+                    && crate::delivery::routing::hook_inbox_page(
+                        crate::harness::registry::builtins()
+                            .delivery_policy(event.harness.as_str()),
+                        boundary.live,
+                    ) {
                     super::hook_inbox::DeliveryCoverage::Unavailable
                 } else {
                     super::hook_inbox::DeliveryCoverage::Delegated
@@ -3030,10 +3041,12 @@ impl PaneCall<'_> {
             .as_ref()
             .map(|mark| mark.key.clone())
             .filter(|_| {
-                crate::delivery::routing::hook_inbox_page(
-                    crate::harness::registry::builtins().delivery_policy(event.harness.as_str()),
-                    false,
-                )
+                !crate::harness::registry::builtins().channel_owned_delivery(event.harness.as_str())
+                    && crate::delivery::routing::hook_inbox_page(
+                        crate::harness::registry::builtins()
+                            .delivery_policy(event.harness.as_str()),
+                        false,
+                    )
             })
         {
             match self
@@ -3594,6 +3607,7 @@ fn lifecycle_check_in(
     };
     Ok(CheckedIn {
         coverage: if mod_live
+            || crate::harness::registry::builtins().channel_owned_delivery(event.harness.as_str())
             || !crate::delivery::routing::hook_inbox_page(
                 crate::harness::registry::builtins().delivery_policy(event.harness.as_str()),
                 false,
@@ -3700,65 +3714,68 @@ pub(crate) fn run_hook_registered(
     clock: Arc<dyn Clock>,
     ensure_executable: Option<&Path>,
 ) -> HookOutcome {
-    if registration.callback_admission() && !env.located() {
-        return HookOutcome::default();
-    }
-    let input = HookInput {
-        bytes: stdin.to_vec(),
-        registered_event: args.event.clone(),
-    };
-    let installed = match registration.hook_admission_policy() {
-        HookAdmissionPolicy::QualifiedCallback => callback_install_observation(registration),
-        // The handle names a registered contract and carries no installed
-        // probe: a hook never resolves or runs an executable.
-        HookAdmissionPolicy::RegisteredContract | HookAdmissionPolicy::InstalledObservation => {
-            InstallObservation::NotRequested
+    let outcome = (|| {
+        if registration.callback_admission() && !env.located() {
+            return HookOutcome::default();
         }
-    };
-    let request = hook_admission_request(registration, installed, &input, clock.as_ref());
-    let admitted = match registration.admit(&request, &budget(deadline, clock.as_ref())) {
-        Ok(handle) => handle,
-        Err(error) => return quiet_outcome(error.to_string()),
-    };
-    let decoded = match decode_refined(
-        registration,
-        &admitted,
-        &input,
-        args,
-        env,
-        clock.instant_now(),
-        clock.as_ref(),
-    ) {
-        Ok(event) => event,
-        Err(error) => {
-            {
-                report_parse_failure_to_daemon(
-                    args,
-                    &native_decode_error(&error),
-                    env,
-                    deadline,
-                    clock,
-                );
+        let input = HookInput {
+            bytes: stdin.to_vec(),
+            registered_event: args.event.clone(),
+        };
+        let installed = match registration.hook_admission_policy() {
+            HookAdmissionPolicy::QualifiedCallback => callback_install_observation(registration),
+            // The handle names a registered contract and carries no installed
+            // probe: a hook never resolves or runs an executable.
+            HookAdmissionPolicy::RegisteredContract | HookAdmissionPolicy::InstalledObservation => {
+                InstallObservation::NotRequested
             }
-            return quiet_outcome(format!(
-                "unsupported hook payload: {}",
-                decode_failure_detail(registration, &error)
-            ));
-        }
-    };
-    run_admitted_hook_since(
-        args,
-        registration,
-        &admitted,
-        &decoded,
-        Some(&input),
-        env,
-        deadline,
-        clock.instant_now(),
-        None,
-        clock,
-        ensure_executable,
-    )
+        };
+        let request = hook_admission_request(registration, installed, &input, clock.as_ref());
+        let admitted = match registration.admit(&request, &budget(deadline, clock.as_ref())) {
+            Ok(handle) => handle,
+            Err(error) => return quiet_outcome(error.to_string()),
+        };
+        let decoded = match decode_refined(
+            registration,
+            &admitted,
+            &input,
+            args,
+            env,
+            clock.instant_now(),
+            clock.as_ref(),
+        ) {
+            Ok(event) => event,
+            Err(error) => {
+                {
+                    report_parse_failure_to_daemon(
+                        args,
+                        &native_decode_error(&error),
+                        env,
+                        deadline,
+                        clock,
+                    );
+                }
+                return quiet_outcome(format!(
+                    "unsupported hook payload: {}",
+                    decode_failure_detail(registration, &error)
+                ));
+            }
+        };
+        run_admitted_hook_since(
+            args,
+            registration,
+            &admitted,
+            &decoded,
+            Some(&input),
+            env,
+            deadline,
+            clock.instant_now(),
+            None,
+            clock,
+            ensure_executable,
+        )
+    })();
+    channel_owned_outcome(registration.output_policy().channel_owned_delivery, outcome)
 }
 /// The end-to-end bound of one event: the lifecycle budget for a lifecycle or qualified-turn
 /// intent, else the observer budget. Derived from the (refined) intent.
@@ -3973,6 +3990,20 @@ pub(crate) fn encode_prepared_result(
         encoding_event.intent = EventIntent::Lifecycle(kind);
     }
     output_bytes(registration.encode(admitted, &encoding_event, &neutral_offer(context)))
+}
+/// Channel command transports distinguish a quiet success from a refused lifecycle through
+/// the existing unavailable sentinel. This observer output carries no completion evidence.
+fn channel_owned_outcome(channel_owned: bool, mut outcome: HookOutcome) -> HookOutcome {
+    if channel_owned && outcome.stdout.is_empty() && outcome.diagnostic.is_some() {
+        let encoded = EncodedOutput::ObserverOnly {
+            bytes: b"herdr-threads: check-in unavailable (hook refused).\n".to_vec(),
+        };
+        outcome.stdout = output_bytes(Ok(encoded)).0;
+        outcome.attention = None;
+        outcome.lazy = None;
+        outcome.step_completion = None;
+    }
+    outcome
 }
 fn quiet_outcome(detail: String) -> HookOutcome {
     HookOutcome {
@@ -4230,7 +4261,7 @@ pub fn run_admitted_hook(
     clock: Arc<dyn Clock>,
     ensure_executable: Option<&Path>,
 ) -> HookOutcome {
-    run_admitted_hook_since(
+    let outcome = run_admitted_hook_since(
         args,
         registration,
         admitted,
@@ -4242,7 +4273,8 @@ pub fn run_admitted_hook(
         None,
         clock,
         ensure_executable,
-    )
+    );
+    channel_owned_outcome(registration.output_policy().channel_owned_delivery, outcome)
 }
 /// [`admitted_hook_outcome`], then the event's turn edge to the daemon (N2-turn). A `Stop` the hook
 /// answered with a continuation (non-empty stdout) did not end the turn, so it reports nothing and
@@ -5024,6 +5056,11 @@ fn run_hook_process(
     watchdog: Watchdog,
 ) -> i32 {
     let started = Instant::now();
+    let channel_owned = parsed
+        .as_ref()
+        .ok()
+        .and_then(|args| registration_for(args.harness).ok())
+        .is_some_and(|registration| registration.output_policy().channel_owned_delivery);
     // At the process boundary only, the watchdog is armed before any
     // file-system call (a parse-failure drain, `same_endpoint`'s canonicalize,
     // a foreign session's evidence work), so no path on this process can
@@ -5039,7 +5076,12 @@ fn run_hook_process(
     // without its "budget expired" line.
     let quiet = Arc::new(AtomicBool::new(false));
     if watchdog == Watchdog::Armed {
-        spawn_watchdog(started, Arc::clone(&deadline_ms), Arc::clone(&quiet));
+        spawn_watchdog(
+            started,
+            Arc::clone(&deadline_ms),
+            Arc::clone(&quiet),
+            channel_owned,
+        );
     }
     // Not a pane of the installed Herdr instance: silent, before any probe.
     if let Err(detail) = &parsed
@@ -5055,6 +5097,12 @@ fn run_hook_process(
         && foreign_session(env).is_some()
     {
         quiet.store(true, Ordering::SeqCst);
+        if channel_owned {
+            emit(&channel_owned_outcome(
+                true,
+                quiet_outcome("not running at a supported caller site".into()),
+            ));
+        }
         // Silent, but the payload is still evidence about the harness: a
         // bounded read, then a short best-effort note (never a version probe
         // or a daemon start).
@@ -5190,6 +5238,7 @@ fn run_hook_process(
                 }))
                 .unwrap_or_else(|_| quiet_outcome("internal error".into()))
             })();
+            let outcome = channel_owned_outcome(channel_owned, outcome);
             let outcome = with_subagent_rewrite(&args, &stdin, outcome);
             let delivered = emit(&outcome);
             // Only suppress unchanged-attention delivery after every required
@@ -5227,7 +5276,11 @@ fn run_hook_process(
             deadline
         },
         |detail| {
-            emit(&with_subagent_rewrite(&args, &stdin, quiet_outcome(detail)));
+            emit(&with_subagent_rewrite(
+                &args,
+                &stdin,
+                channel_owned_outcome(channel_owned, quiet_outcome(detail)),
+            ));
         },
         |deadline| {
             if read_ok {
@@ -5249,7 +5302,12 @@ fn run_hook_process(
 /// limit is `deadline_ms` (milliseconds since `started`), which a parsed
 /// lifecycle event raises. `quiet` suppresses the stderr line (foreign
 /// sessions stay silent).
-fn spawn_watchdog(started: Instant, deadline_ms: Arc<AtomicU64>, quiet: Arc<AtomicBool>) {
+fn spawn_watchdog(
+    started: Instant,
+    deadline_ms: Arc<AtomicU64>,
+    quiet: Arc<AtomicBool>,
+    channel_owned: bool,
+) {
     std::thread::spawn(move || {
         loop {
             let limit = Duration::from_millis(deadline_ms.load(Ordering::SeqCst));
@@ -5257,6 +5315,12 @@ fn spawn_watchdog(started: Instant, deadline_ms: Arc<AtomicU64>, quiet: Arc<Atom
                 let _guard = OUTPUT.lock().unwrap_or_else(|p| p.into_inner());
                 if !quiet.load(Ordering::SeqCst) {
                     let _ = writeln!(io::stderr(), "herdr-threads hook: budget expired");
+                }
+                if channel_owned {
+                    let refused =
+                        channel_owned_outcome(true, quiet_outcome("budget expired".into()));
+                    let mut stdout = io::stdout().lock();
+                    let _ = write_and_flush(&refused.stdout, &mut stdout);
                 }
                 std::process::exit(0);
             }

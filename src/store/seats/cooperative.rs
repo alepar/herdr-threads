@@ -1189,16 +1189,20 @@ pub fn register_available(
                 .inbox
                 .validate()
                 .map_err(|e| api_error(ErrorCode::InvalidBudget, e))?;
-            tx.execute("INSERT INTO warning_offer(binding_id,seat_id,offered_through_seq) VALUES (?1,?2,?3) ON CONFLICT(binding_id) DO UPDATE SET offered_through_seq=MAX(warning_offer.offered_through_seq,excluded.offered_through_seq)",
+            // Channel-owned lifecycle output presents no warning or notice offer.
+            if !crate::harness::registry::builtins().channel_owned_delivery(claim.harness.as_str())
+            {
+                tx.execute("INSERT INTO warning_offer(binding_id,seat_id,offered_through_seq) VALUES (?1,?2,?3) ON CONFLICT(binding_id) DO UPDATE SET offered_through_seq=MAX(warning_offer.offered_through_seq,excluded.offered_through_seq)",
                 params![binding_id.as_str(),seat.as_str(),seq as i64]).map_err(store_error)?;
-            // Lifecycle and Current offers alike settle only the notices
-            // they carry (wave-2 fix2 root decision (a)), on this binding's own frontier.
-            super::super::attention::settle_carried_notices(
-                tx,
-                seat.as_str(),
-                &binding_id,
-                &offer.notices.items,
-            )?;
+                // Lifecycle and Current offers alike settle only the notices
+                // they carry (wave-2 fix2 root decision (a)), on this binding's own frontier.
+                super::super::attention::settle_carried_notices(
+                    tx,
+                    seat.as_str(),
+                    &binding_id,
+                    &offer.notices.items,
+                )?;
+            }
             Ok(CommandResult::CheckedIn(offer))
         },
         present_check_in_result,

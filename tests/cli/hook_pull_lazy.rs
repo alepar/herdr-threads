@@ -21,7 +21,7 @@ fn herdr() -> HookEnv {
         pane: Some("w9:p1".into()),
         ambiguous: None,
         named: None,
-        caller: Default::default(),
+        caller: crate::cli::caller_location::CallerEnv::from_lookup(|_| None),
     }
 }
 
@@ -385,6 +385,10 @@ fn hook_pull_lifecycle_check_in_reads_no_inbox_page() {
     );
     assert!(context_text(&outcome).contains("Before using threads"));
     assert_no_page(&fixture, &outcome);
+    assert!(
+        !context_text(&outcome).contains("More inbox content may remain"),
+        "hook-pull coverage stays delegated without an explicit-inbox fallback"
+    );
 }
 
 /// Kills: a tool-boundary check-in that appends an inbox page when the digest token advanced

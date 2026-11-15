@@ -83,6 +83,7 @@ impl HarnessAdapter for OpencodeAdapter {
     }
     fn output_policy(&self) -> OutputPolicy {
         OutputPolicy {
+            channel_owned_delivery: false,
             child_requires_endpoint: true,
             extra_guidance: OPENCODE_COMMAND_GUIDANCE,
             empty_lifecycle: true,

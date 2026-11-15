@@ -1236,6 +1236,7 @@ impl HarnessAdapter for ClaudeAdapter {
     }
     fn output_policy(&self) -> OutputPolicy {
         OutputPolicy {
+            channel_owned_delivery: false,
             child_requires_endpoint: true,
             extra_guidance: "",
             empty_lifecycle: false,

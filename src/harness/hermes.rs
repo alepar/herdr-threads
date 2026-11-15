@@ -881,6 +881,7 @@ impl HarnessAdapter for HermesAdapter {
     /// first turn's guidance decays after the first compaction.
     fn output_policy(&self) -> super::adapter::OutputPolicy {
         super::adapter::OutputPolicy {
+            channel_owned_delivery: false,
             guidance_every_turn: true,
             ..Default::default()
         }

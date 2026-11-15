@@ -1585,6 +1585,13 @@ impl Registry {
                         .is_some_and(|p| p.idle_wake() == IdleWake::Channel)
             })
     }
+    /// Channel-owned hooks never offer mail; unknown and human callers retain ordinary behavior.
+    pub fn channel_owned_delivery(&self, harness_id: &str) -> bool {
+        self.registrations
+            .iter()
+            .find(|r| r.metadata().id == harness_id)
+            .is_some_and(|r| r.output_policy().channel_owned_delivery)
+    }
     /// The binding policy of an agent harness id; `"human"` and unknown ids give the default.
     pub fn binding_policy(&self, harness_id: &str) -> BindingPolicy {
         self.registrations

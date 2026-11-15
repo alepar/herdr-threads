@@ -2088,6 +2088,9 @@ mod tests {
 
 #[derive(Default)]
 pub struct OutputPolicy {
+    /// Mail belongs exclusively to the push channel. Hooks register lifecycle and guidance
+    /// without selecting, settling or composing an inbox/notice offer.
+    pub channel_owned_delivery: bool,
     /// Legacy native child startup stays silent without a local daemon endpoint.
     pub child_requires_endpoint: bool,
     pub extra_guidance: &'static str,

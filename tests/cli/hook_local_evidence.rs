@@ -68,6 +68,8 @@ struct Evidenced {
     evidence: LocalEvidence,
     refuse_evidence: std::sync::atomic::AtomicBool,
     session_end: std::sync::atomic::AtomicBool,
+    channel_owned: std::sync::atomic::AtomicBool,
+    refuse_admission: std::sync::atomic::AtomicBool,
     call_pane_session: bool,
     seen: Mutex<Vec<Seen>>,
     step: Option<Step>,
@@ -86,7 +88,21 @@ impl HarnessAdapter for Evidenced {
     fn observe_install(&self, e: &InstallEnvironment, b: &CallBudget) -> InstallObservation {
         ADAPTER.observe_install(e, b)
     }
+    fn output_policy(&self) -> OutputPolicy {
+        OutputPolicy {
+            channel_owned_delivery: self.channel_owned.load(std::sync::atomic::Ordering::SeqCst),
+            ..Default::default()
+        }
+    }
     fn admit(&self, r: &AdmissionRequest, b: &CallBudget) -> AdmissionDecision<()> {
+        if self
+            .refuse_admission
+            .load(std::sync::atomic::Ordering::SeqCst)
+        {
+            return AdmissionDecision::Refused {
+                diagnostic: "admission refused".into(),
+            };
+        }
         ADAPTER.admit(r, b)
     }
     fn version_ladder(&self, r: &RuntimeIdentity) -> Ladder {
@@ -160,6 +176,8 @@ fn adapter(
         evidence,
         refuse_evidence: std::sync::atomic::AtomicBool::new(false),
         session_end: std::sync::atomic::AtomicBool::new(false),
+        channel_owned: std::sync::atomic::AtomicBool::new(false),
+        refuse_admission: std::sync::atomic::AtomicBool::new(false),
         call_pane_session,
         seen: Mutex::default(),
         step: step.map(|output| Step {
@@ -931,4 +949,68 @@ fn refused_local_evidence_cannot_check_in_or_disconnect_even_a_decoded_session_e
             0
         );
     }
+}
+
+#[test]
+fn channel_owned_refusal_has_an_unavailable_sentinel_before_any_binding_mutation() {
+    let f = fixture("channel-evidence-refusal", true);
+    let a = adapter(LocalEvidence::default(), false, None);
+    let r = registration(a);
+    a.channel_owned
+        .store(true, std::sync::atomic::Ordering::SeqCst);
+    for admission_failure in [false, true] {
+        a.refuse_evidence
+            .store(!admission_failure, std::sync::atomic::Ordering::SeqCst);
+        a.refuse_admission
+            .store(admission_failure, std::sync::atomic::Ordering::SeqCst);
+        for (event, ended) in [
+            ("SyntheticStart", false),
+            ("SyntheticTool", false),
+            ("SyntheticObserver", true),
+        ] {
+            a.session_end
+                .store(ended, std::sync::atomic::Ordering::SeqCst);
+            f.service.0.lock().unwrap().clear();
+            let out = run(
+                &f,
+                r,
+                event,
+                &payload(event, "refused", "foreign", "top_level"),
+            );
+            assert!(
+                String::from_utf8(out.stdout)
+                    .unwrap()
+                    .contains("herdr-threads: check-in unavailable (")
+            );
+            assert!(out.attention.is_none());
+            assert!(out.lazy.is_none());
+            assert!(out.step_completion.is_none());
+            assert_eq!(
+                f.service.count(|c| matches!(
+                    c,
+                    Command::CheckIn(_)
+                        | Command::BindingEvent(_)
+                        | Command::ResolveSeat(_)
+                        | Command::CompleteInboxDelivery(_)
+                )),
+                0
+            );
+        }
+    }
+}
+
+#[test]
+fn channel_refusal_gate_preserves_success_empty_and_default_quiet_outputs() {
+    let good = channel_owned_outcome(true, HookOutcome::default());
+    assert_eq!(good, HookOutcome::default());
+    let quiet = channel_owned_outcome(false, quiet_outcome("refused".into()));
+    assert!(quiet.stdout.is_empty());
+    let marked = channel_owned_outcome(true, quiet_outcome("refused".into()));
+    assert_eq!(
+        marked.stdout,
+        b"herdr-threads: check-in unavailable (hook refused).\n"
+    );
+    assert!(marked.attention.is_none());
+    assert!(marked.lazy.is_none());
+    assert!(marked.step_completion.is_none());
 }
