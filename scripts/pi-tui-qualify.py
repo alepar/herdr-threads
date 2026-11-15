@@ -66,6 +66,7 @@ class Run:
                      "CARGO_BUILD_JOBS": "4", "NEXTEST_TEST_THREADS": "4", "RUST_TEST_THREADS": "4"}
         self.env = dict(self.base)
         self.host = self.root = self.workspace = self.recipient = self.sender = self.seat = None
+        self.main_sid = None
         self.tmux_socket = None
         self.secrets = []
         self.commands, self.results, self.captures = [], [], {}
@@ -204,15 +205,21 @@ class Run:
         for field in ("sid", "editor", "provider", "model"):
             assert field in observed["state"] and observed["state"][field] == current["state"].get(field), "blocked native state changed: " + field
 
-    def wake_lane(self):
+    def wake_lane(self, sid=None):
         # A refusal test must not pass merely because the preceding successful
         # wake still owns the host's ordinary 30-second spacing window.
+        sid = sid or self.main_sid
+        if not sid or not any(r["event"] == "session_start" and r["state"]["sid"] == sid for r in self.rows()):
+            raise RuntimeError("wake lane lacks a native session witness")
         while True:
-            wakes = [r["at"] / 1000 for r in self.rows() if r["event"] == "before_agent_start" and r["data"].get("prompt") == WAKE]
-            if not wakes:
-                return
-            remaining = wakes[-1] + 32 - time.time()
+            wakes = [r["at"] / 1000 for r in self.rows() if r["event"] == "before_agent_start"
+                     and r["state"]["sid"] == sid and r["data"].get("prompt") == WAKE]
+            last = max(wakes) if wakes else None
+            ready = last + 32 if last is not None else None
+            remaining = ready - time.time() if ready is not None else 0
             if remaining <= 0:
+                self.facts.setdefault("wake_lanes", []).append({"sid": sid, "last_native_start": last,
+                                                               "eligible_at": ready, "observed_at": time.time()})
                 return
             time.sleep(min(remaining, 1))
 
@@ -307,6 +314,8 @@ read -r _ || true
             raise RuntimeError("public launch did not confirm startup")
         self.seat = self.facts["launch"]["launch"]["seat"]
         self.wait("native session_start", lambda: self.count("session_start"))
+        self.main_sid = next(r["state"]["sid"] for r in self.rows() if r["event"] == "session_start")
+        self.facts["main_session"] = self.main_sid
         self.turn("Qualification baseline. Reply only READY. Do not call tools.")
         self.capture("startup")
 
@@ -369,6 +378,7 @@ read -r _ || true
         equivalent = self.capture("whitespace-home-limit")
         assert baseline["styled"]["raw"] == equivalent["styled"]["raw"], "record actual equivalence, never assert preservation"
         self.keys("ctrl+c")
+        self.wake_lane()
         self.herdr("pane", "send-text", self.recipient, "first")
         self.keys("shift+enter")
         self.herdr("pane", "send-text", self.recipient, "second")
@@ -392,6 +402,7 @@ read -r _ || true
     def case_threshold(self):
         # Set the threshold as the current native process, not the controller.
         self.prompt("/probe-threshold 0"); time.sleep(.2)
+        self.wake_lane()
         since = len(self.rows())
         self.send_quiet("PASSIVE-P1", priority=1, seconds=2)
         self.turn("Qualification manual turn. Reply READY without tools.")
@@ -496,7 +507,7 @@ read -r _ || true
         self.facts["invitation"] = {"native_wake": True, "accepted": True}
 
     def case_failures(self):
-        for mode in ("error", "abort", "cancel-settle"):
+        for mode in ("error", "abort"):
             (self.root / "release-text").unlink(missing_ok=True)
             (self.root / "mode.txt").write_text("hold-error" if mode == "error" else "hold-text")
             held = self.count("stream_held"); settled = self.count("agent_settled")
@@ -505,8 +516,6 @@ read -r _ || true
             starts = self.count("before_agent_start")
             since = len(self.rows())
             self.send_quiet("FAILED-BOUNDARY-" + mode, priority=1, seconds=.5)
-            if mode == "cancel-settle":
-                (self.root / "cancel-settle").touch()
             if mode == "abort":
                 self.keys("esc")
             else:
@@ -515,11 +524,63 @@ read -r _ || true
             self.quiet(starts, .5)
             assert self.count("before_agent_start") == starts
             # Non-receipt p1 rows remain unread until the next actual user turn.
-            assert not any(r["event"] == "context" and "FAILED-BOUNDARY-" + mode in json.dumps(r) for r in self.rows()[since:])
-            (self.root / "cancel-settle").unlink(missing_ok=True)
+            assert not any(r["event"] == "context" and "FAILED-BOUNDARY-" + mode in json.dumps(r) for r in self.rows()[since:]), "failed " + mode + " boundary injected pending mail"
             self.turn("User recovery after " + mode + ". Reply READY without tools.")
             assert self.model_saw("FAILED-BOUNDARY-" + mode)
+        self.cancel_settle_probe()
         self.facts["failed_boundaries"] = ["provider error", "native abort", "cancellation at settle"]
+
+    def cancel_settle_probe(self):
+        # A requested receipt is fixed p0. Keep an owned draft in the composer
+        # after abort so a legitimate Native wake cannot mask the receipt proof.
+        for name in ("settle-barrier", "cancel-settle"):
+            (self.root / name).touch()
+        (self.root / "release-settle").unlink(missing_ok=True)
+        (self.root / "mode.txt").write_text("normal")
+        barriers, settled = self.count("settle_barrier"), self.count("agent_settled")
+        self.prompt("qualification cancellation at the actual settle boundary")
+        self.wait("completed-turn cancellation barrier", lambda: self.count("settle_barrier") > barriers)
+        barrier = [r for r in self.rows() if r["event"] == "settle_barrier"][-1]
+        assert barrier["entries"] == [] and barrier["continue"] is False, "production turn boundary was not empty before the target send"
+        starts, since = self.count("before_agent_start"), len(self.rows())
+        body = "CANCELLED-SETTLE-EXACT " + str(uuid.uuid4())
+        mid = self.send(body, ack=True)
+        draft = "OWNED CANCEL RECOVERY DRAFT"
+        self.herdr("pane", "send-text", self.recipient, draft)
+        before_state = self.observe_state(draft)
+        before = self.capture("cancel-settle-before")
+        before.update(native_observation=before_state, run_starts=starts)
+        assert self.receipt(mid)["effective_status"] == "pending", "target receipt settled while the earlier turn boundary was blocked"
+        (self.root / "release-settle").touch()
+        self.wait("cancelled settle boundary", lambda: self.count("agent_settled") > settled)
+        self.quiet(starts, .5)
+        after_state = self.observe_state()
+        after = self.capture("cancel-settle-after")
+        after.update(native_observation=after_state, run_starts=self.count("before_agent_start"))
+        self.quiet(starts, 0)
+        for field in ("sid", "editor", "provider", "model"):
+            assert before_state["state"][field] == after_state["state"][field], "cancellation changed held " + field
+        def draft_line(capture):
+            lines = [line for line in capture["styled"]["raw"].splitlines() if draft in line]
+            assert len(lines) == 1, "held draft is not uniquely visible in the composer"
+            return lines[0]
+        assert draft_line(before) == draft_line(after), "cancellation altered the styled composer draft"
+        observed = self.rows()[since:]
+        abort = next(r for r in observed if r["event"] == "settle_abort")
+        assert mid in json.dumps(abort["entries"]) and body in json.dumps(abort["entries"]), "target was not proposed at the cancelled settle boundary"
+        assert [r for r in observed if r["event"] == "agent_settled"][-1]["data"]["aborted"] is True
+        assert not any(r["event"] in ("context", "provider_request") and mid in json.dumps(r) for r in observed), "cancelled settle draft reached model context"
+        pending = self.receipt(mid)
+        assert pending["effective_status"] == "pending", "cancelled unobserved draft supplied a receipt"
+        for name in ("settle-barrier", "cancel-settle"):
+            (self.root / name).unlink()
+        settled = self.count("agent_settled")
+        self.keys("enter")  # Submit the existing draft directly: no empty idle gap.
+        self.wait("actual user recovery after cancellation", lambda: self.count("agent_settled") > settled)
+        self.wait("recovery exact context receipt", lambda: self.receipt(mid)["effective_status"] == "acknowledged")
+        assert self.model_saw(body, since), "recovery did not observe the exact cancellation target"
+        self.facts["settle_cancellation"] = {"message": mid, "pending": pending, "recovered": self.receipt(mid),
+                                             "barrier": barrier, "abort": abort, "draft_preserved": True}
 
     def case_compaction(self):
         self.turn("Synthetic compaction history " + "qualification data " * 150)
@@ -585,6 +646,7 @@ read -r _ || true
             self.wait("verified tmux native wake", lambda: any(r["event"] == "agent_settled" and r["state"]["sid"] == sid for r in self.rows()), 45)
             self.wait("named context receipt", lambda: self.receipt(mid)["effective_status"] == "acknowledged")
             assert self.count("agent_settled") > before
+            self.wake_lane(sid)
             self.send_quiet("NAMED-PASSIVE-P1", priority=1)
             before = self.count("agent_settled")
             self.run(["tmux", "-S", self.tmux_socket, "send-keys", "-t", "pi", "Named user turn after passive p1.", "Enter"])
@@ -652,6 +714,7 @@ read -r _ || true
         self.facts["live_wake_tools"] = tools
         self.facts["live_wake_inbox_calls"] = inbox_calls
         assert inbox_calls == 0, "redundant inbox call after exact native context delivery"
+        self.wake_lane()
         self.send_quiet("LIVE PASSIVE P1. Reply only RECEIVED when delivered.", priority=1, seconds=2)
         self.turn("Reply READY without tools.")
         models = {(r["state"]["provider"], r["state"]["model"]) for r in self.rows() if r.get("state") and r["event"] in ("before_agent_start", "context")}
@@ -757,6 +820,127 @@ read -r _ || true
 
 
 class DriverTests(unittest.TestCase):
+    def test_settle_fixture_barrier_precedes_send_and_follows_production_turn_handler(self):
+        with tempfile.TemporaryDirectory(prefix="ht-pi-settle-selftest-") as root:
+            code = r'''
+import assert from 'node:assert/strict'
+import fs from 'node:fs'
+import { pathToFileURL } from 'node:url'
+const root=process.env.HT_PI_QUALIFY_ROOT, handlers=new Map(), order=[]
+let queued=false
+const pi={on(name,fn){if(!handlers.has(name))handlers.set(name,[]);handlers.get(name).push(fn)},registerCommand(){},registerTool(){},registerProvider(){}}
+pi.on('turn_end',()=>{assert.equal(queued,false);order.push('production-turn-end')})
+pi.on('agent_before_settle',()=>{order.push('production-settle');return {entries:[{type:'custom_message',content:'CANCEL TARGET'}],continue:true}})
+const {default:fixture}=await import(pathToFileURL(process.env.HT_PI_FIXTURE))
+fixture(pi)
+const ctx={isIdle:()=>false,ui:{getEditorText:()=> 'OWNED DRAFT'},sessionManager:{getSessionId:()=> 'test',getBranch:()=> []},model:{id:'scripted',provider:'fixture'},abort(){order.push('abort')}}
+async function emit(name,event){for(const fn of handlers.get(name)??[]){const result=await fn(event,ctx);if(result)event={...event,...result}}return event}
+fs.writeFileSync(root+'/settle-barrier','');fs.writeFileSync(root+'/cancel-settle','')
+const pending=emit('turn_end',{type:'turn_end',outcome:'completed',entries:[],continue:false})
+let seen
+for(let i=0;i<200;i++){
+ const text=fs.existsSync(root+'/native.jsonl')?fs.readFileSync(root+'/native.jsonl','utf8'):''
+ seen=text.split('\n').filter(Boolean).map(JSON.parse).find(r=>r.event==='settle_barrier')
+ if(seen)break
+ await new Promise(resolve=>setTimeout(resolve,5))
+}
+assert.ok(seen,'completed-turn barrier was not reached')
+assert.deepEqual(seen.entries,[]);assert.deepEqual(order,['production-turn-end'])
+queued=true;order.push('send');fs.writeFileSync(root+'/release-settle','')
+await pending
+await emit('agent_before_settle',{type:'agent_before_settle',outcome:'completed',entries:[],continue:false})
+assert.deepEqual(order,['production-turn-end','send','production-settle','abort'])
+const logged=fs.readFileSync(root+'/native.jsonl','utf8').split('\n').filter(Boolean).map(JSON.parse)
+assert.ok(logged.find(r=>r.event==='settle_abort'&&JSON.stringify(r.entries).includes('CANCEL TARGET')))
+'''
+            env = {"PATH": os.environ["PATH"], "HOME": root, "HT_PI_QUALIFY_ROOT": root,
+                   "HT_PI_QUALIFY_MODULES": str(MODULES), "HT_PI_FIXTURE": str(FIXTURE),
+                   "HT_PI_QUALIFY_LIVE": "1", "HT_TEST_OWNER": str(os.getpid()),
+                   "HT_LEAK_RUN_ID": os.environ.get("HT_LEAK_RUN_ID", str(uuid.uuid4()))}
+            result = subprocess.run(["node", "--input-type=module", "-e", code], env=env, cwd=REPO,
+                                    capture_output=True, text=True, timeout=5)
+            self.assertEqual(result.returncode, 0, result.stderr)
+
+    def test_passive_controls_are_cooldown_eligible_before_the_send(self):
+        class Checked(Exception):
+            pass
+        for case in ("threshold", "live"):
+            with self.subTest(case=case):
+                run = Run.__new__(Run)
+                now = [100.0]
+                run.main_sid, run.facts = "main", {}
+                run.rows = lambda: [{"event": "session_start", "state": {"sid": "main"}},
+                                    {"event": "before_agent_start", "at": 100000, "state": {"sid": "main"}, "data": {"prompt": WAKE}}]
+                run.count = lambda _event: 0
+                run.prompt = lambda _text: None
+                run.case_receipts = lambda: None
+                def send(*_args, **_kwargs):
+                    self.assertGreaterEqual(now[0], 132.0)
+                    raise Checked()
+                run.send = send
+                with mock.patch.object(time, "time", side_effect=lambda: now[0]), mock.patch.object(time, "sleep", side_effect=lambda seconds: now.__setitem__(0, now[0] + seconds)), self.assertRaises(Checked):
+                    getattr(run, "case_" + case)()
+
+    def test_multiline_control_is_eligible_after_the_preceding_native_wake(self):
+        class Checked(Exception):
+            pass
+        run = Run.__new__(Run)
+        run.main_sid, run.facts, run.recipient = "main", {}, "owned-pane"
+        now, settled = [100.0], [0]
+        rows = [{"event": "session_start", "state": {"sid": "main"}}]
+        run.rows = lambda: rows
+        run.count = lambda event: settled[0] if event == "agent_settled" else sum(r["event"] == event for r in rows)
+        run.capture = lambda _label: {"styled": {"raw": "equivalent controlled UI"}}
+        run.herdr = lambda *_args, **_kwargs: None
+        run.keys = lambda *_args: None
+        run.wait = lambda _label, predicate, *_args: predicate()
+        def send(*_args, **_kwargs):
+            rows.append({"event": "before_agent_start", "at": now[0] * 1000, "state": {"sid": "main"}, "data": {"prompt": WAKE}})
+            settled[0] += 1
+        run.send = send
+        run.model_saw = lambda *_args: True
+        def blocked(label, *_args, **_kwargs):
+            if label == "multiline-home":
+                self.assertGreaterEqual(now[0], rows[-1]["at"] / 1000 + 32)
+                raise Checked()
+        run.blocked_send = blocked
+        with mock.patch.object(time, "time", side_effect=lambda: now[0]), mock.patch.object(time, "sleep", side_effect=lambda seconds: now.__setitem__(0, now[0] + seconds)), self.assertRaises(Checked):
+            run.case_safety()
+
+    def test_named_control_uses_its_own_actual_native_start(self):
+        class Checked(Exception):
+            pass
+        with tempfile.TemporaryDirectory(prefix="ht-pi-named-clock-selftest-") as root:
+            run = Run.__new__(Run)
+            run.root, run.main_sid, run.facts = Path(root), "main", {}
+            run.env, run.provider, run.model = {"PATH": "/fake"}, "fixture", "model"
+            run.shim, run.extension_args, run.sender, run.seat = Path("/fake/pi"), [], "sender", "main-seat"
+            now = [100.0]
+            rows = [{"event": "session_start", "state": {"sid": "main"}}]
+            run.rows = lambda: rows
+            run.count = lambda event: sum(r["event"] == event for r in rows)
+            def command(argv, *_args, **_kwargs):
+                if "new-session" in argv:
+                    rows.append({"event": "session_start", "state": {"sid": "named"}})
+                return 0, "", ""
+            run.run = command
+            run.ht = lambda *args, **_kwargs: {"result": {"data": {"items": [{"seat": "named-seat", "target": "pi-qualification-named", "active": True, "bindings": [{"harness": "pi", "connected": True}]}]}}}
+            run.wait = lambda _label, predicate, *_args: predicate()
+            run.receipt = lambda _mid: {"effective_status": "acknowledged"}
+            def send(body, **_kwargs):
+                if body == "NAMED-EXACT-WAKE":
+                    rows.extend([{"event": "before_agent_start", "at": 100000, "state": {"sid": "named"}, "data": {"prompt": WAKE}},
+                                 {"event": "agent_settled", "state": {"sid": "named"}},
+                                 {"event": "before_agent_start", "at": 101000, "state": {"sid": "main"}, "data": {"prompt": WAKE}}])
+                    now[0] = 101.0
+                    return "message"
+                self.assertEqual(body, "NAMED-PASSIVE-P1")
+                self.assertEqual(now[0], 132.0, "only the named session's actual wake sets its lane")
+                raise Checked()
+            run.send = send
+            with mock.patch.object(shutil, "which", return_value="/fake/tmux"), mock.patch.object(time, "time", side_effect=lambda: now[0]), mock.patch.object(time, "sleep", side_effect=lambda seconds: now.__setitem__(0, now[0] + seconds)), self.assertRaises(Checked):
+                run.case_named()
+
     def cleanup_failure_fixture(self, interruption, ignore_term=False, capture_failure=False):
         with tempfile.TemporaryDirectory(prefix="ht-pi-driver-selftest-") as evidence:
             root = Path(tempfile.mkdtemp(prefix="ih."))
@@ -861,7 +1045,9 @@ while True: time.sleep(.05)
                 run = Run.__new__(Run)
                 starts = [0]
                 run.count = lambda _event: starts[0]
-                run.rows = lambda: []
+                run.main_sid = "main"
+                run.rows = lambda: [{"event": "session_start", "state": {"sid": "main"}},
+                                    {"event": "before_agent_start", "at": 0, "state": {"sid": "main"}, "data": {"prompt": WAKE}}]
                 run.prompt = lambda _text: None
                 run.case_receipts = lambda: None
                 run.facts = {}

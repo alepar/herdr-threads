@@ -82,10 +82,22 @@ export default function fixture(pi) {
     log({ event: 'threshold', code: result.code, stdout: result.stdout, stderr: result.stderr })
     if (result.code !== 0) throw new Error('qualification threshold command refused')
   } })
-  pi.on('turn_end', event => {
+  pi.on('turn_end', async (event, ctx) => {
+    // Loaded after production: its completed-turn handler has already seen
+    // the empty queue before the controller sends the cancellation target.
+    if (fs.existsSync(path.join(root, 'settle-barrier')) && event.outcome === 'completed' && event.continue === false) {
+      log({ event: 'settle_barrier', entries: event.entries, outcome: event.outcome, continue: event.continue })
+      await hold('release-settle', ctx.signal)
+      log({ event: 'settle_barrier_released' })
+    }
     if (fs.existsSync(path.join(root, 'transform'))) return { entries: event.entries.map(entry => entry.type === 'custom_message' && entry.customType.startsWith('herdr-threads:') ? { ...entry, content: 'qualification replaced draft' } : entry) }
   })
-  pi.on('agent_before_settle', (_event, ctx) => { if (fs.existsSync(path.join(root, 'cancel-settle'))) ctx.abort() })
+  pi.on('agent_before_settle', (event, ctx) => {
+    if (fs.existsSync(path.join(root, 'cancel-settle'))) {
+      log({ event: 'settle_abort', entries: event.entries, outcome: event.outcome, continue: event.continue })
+      ctx.abort()
+    }
+  })
   pi.registerCommand('probe-fork', { description: 'private native fork qualification', handler: async (_args, ctx) => {
     const entry = ctx.sessionManager.getBranch().find(e => e.type === 'message' && e.message.role === 'user')
     if (!entry) throw new Error('no user entry to fork')

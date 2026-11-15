@@ -1,0 +1,91 @@
+{
+  "source_base": "ae6626ff88b11c50dcddc47800b6201441e8e8f2",
+  "frozen_diff_sha256": "485406dcebb5704293c860e2450a09c2930bd8f991e7283e9c87190116b9cc37",
+  "driver_sha256": "2a16e19e2cfe13ff95adf93707b60af129eb8761b5b1e9784a9ff4ac68f4cfb8",
+  "fixture_sha256": "1a818c4deb0e15ce4bea08f1cd77ecb272e0e2586a39db8537fc611132d6cf67",
+  "candidate_sha256": "ac61f5958bc0dea2eadb41b1c27f6aaa669ec2b8089d9d71a3f936149ad25cff",
+  "results": [
+    {
+      "case": "safety",
+      "outcome": "pass",
+      "elapsed_s": 182.537
+    },
+    {
+      "case": "threshold",
+      "outcome": "pass",
+      "elapsed_s": 101.877
+    },
+    {
+      "case": "failures",
+      "outcome": "pass",
+      "elapsed_s": 4.436
+    },
+    {
+      "case": "named",
+      "outcome": "pass",
+      "elapsed_s": 66.12
+    }
+  ],
+  "cleanup": {
+    "ok": true,
+    "helper_rc": 0,
+    "helper_reaped": true,
+    "root_removed": true,
+    "leak_rc": 0,
+    "errors": {}
+  },
+  "eligible_controls": [
+    {
+      "body": "MULTILINE DRAFT",
+      "session": "01a1de26-564d-77b3-b980-6991898853de",
+      "last_native_start": 1794728494.925,
+      "eligible_at": 1794728526.925,
+      "readiness_observed_at": 1794728526.9274232,
+      "send_command_completed_at": 1794728527.0993223,
+      "send_after_eligibility_s": 0.174
+    },
+    {
+      "body": "PASSIVE-P1",
+      "session": "01a1de26-564d-77b3-b980-6991898853de",
+      "last_native_start": 1794728603.175,
+      "eligible_at": 1794728635.175,
+      "readiness_observed_at": 1794728635.179421,
+      "send_command_completed_at": 1794728635.221397,
+      "send_after_eligibility_s": 0.046
+    },
+    {
+      "body": "NAMED-PASSIVE-P1",
+      "session": "01a1de2a-ced9-71e7-b47b-5964434d5c3d",
+      "last_native_start": 1794728710.474,
+      "eligible_at": 1794728742.474,
+      "readiness_observed_at": 1794728742.491311,
+      "send_command_completed_at": 1794728742.5440755,
+      "send_after_eligibility_s": 0.07
+    }
+  ],
+  "cancellation": {
+    "message": "moNcziCrIRsm",
+    "barrier_at": 1794728708222,
+    "abort_at": 1794728708624,
+    "barrier_entries": [],
+    "pending": "pending",
+    "recovered": "acknowledged",
+    "target_proposed": true,
+    "draft_preserved": true,
+    "before": {
+      "editor": "OWNED CANCEL RECOVERY DRAFT",
+      "observation": "1cf545a6-af7e-4c49-9a00-7ba248cb742f",
+      "run_starts": 16,
+      "styled_composer_row": "OWNED CANCEL RECOVERY DRAFT\u001b[0m\u001b[7m \u001b[0m                                                                                           ",
+      "styled_composer_sha256": "f1ac24a0738329b38175bb5742609c5bee66d8cdf4f18ad7f0a888e7bdd69624"
+    },
+    "after": {
+      "editor": "OWNED CANCEL RECOVERY DRAFT",
+      "observation": "084e7e64-0037-4a19-9a72-22d1cf4647e1",
+      "run_starts": 16,
+      "styled_composer_row": "OWNED CANCEL RECOVERY DRAFT\u001b[0m\u001b[7m \u001b[0m                                                                                           ",
+      "styled_composer_sha256": "f1ac24a0738329b38175bb5742609c5bee66d8cdf4f18ad7f0a888e7bdd69624"
+    },
+    "target_context_or_provider_request_count": 0
+  }
+}
