@@ -1683,6 +1683,21 @@ pub struct ResolvedTargetCheck {
     pub guard: OrdinaryResolutionGuard,
 }
 
+/// Canonical named ownership and whether its saved structural floor is currently observed.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct NamedTargetStatus {
+    pub generation: u64,
+    pub current: bool,
+}
+
+/// A named publication must still belong to the seat generation read before observing it.
+#[derive(Debug)]
+pub struct NamedTargetCheck {
+    pub expected_seat: SeatId,
+    pub expected_generation: u64,
+    pub guard: OrdinaryResolutionGuard,
+}
+
 /// Per-request host evidence for explicit operator repair. This grants no
 /// native caller, receipt, or checkpoint authority.
 #[derive(Debug)]
@@ -3824,12 +3839,24 @@ pub trait StorePort: ModStoreReads + Send + Sync {
         check: ResolvedTargetCheck,
         budget: &CallBudget,
     ) -> Result<(), ApiError>;
-    /// Validate a named allocation against its newly published current-target observation.
-    /// Cooperative named ownership does not require a previously saved structural proof.
+    /// Read canonical named ownership and its publication freshness without allocating or
+    /// publishing. Missing structural evidence requires a real observation; unsupported stores
+    /// refuse rather than treating an allocation result as current evidence.
+    fn named_target_status(
+        &self,
+        _host: HostId,
+        _seat: &SeatId,
+        _target: &HostTargetId,
+        _budget: &CallBudget,
+    ) -> Result<NamedTargetStatus, ApiError> {
+        Err(ApiError::unsupported("named target currentness"))
+    }
+    /// Validate a named allocation against its newly published current-target observation and
+    /// the seat generation read before that observation.
     /// Never replays, allocates, repairs or changes a mapping; unsupported stores refuse.
     fn check_named_target(
         &self,
-        _check: ResolvedTargetCheck,
+        _check: NamedTargetCheck,
         _budget: &CallBudget,
     ) -> Result<(), ApiError> {
         Err(ApiError::unsupported("named target currentness"))

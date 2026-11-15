@@ -113,6 +113,32 @@ fn observe_current_target_is_present_generation_one() {
     assert!(second.observation_sequence > first.observation_sequence);
 }
 
+// S3: structural presence does not inspect binding liveness or a tmux pane. Those reads belong
+// to the wake gate immediately before typing, not every seat-acting resolve.
+#[test]
+fn named_structural_observation_does_not_probe_tmux_bindings() {
+    struct NoProcessReads;
+    impl ProcessInfo for NoProcessReads {
+        fn process(&self, _: u32) -> Option<crate::ports::ProcessRecord> {
+            panic!("structural observation inspected a tmux binding");
+        }
+    }
+    let (mut host, _) = host_with(&[]);
+    host.processes = Arc::new(NoProcessReads);
+    host.tmux.lock().unwrap().insert(
+        "reviewer".into(),
+        vec![TmuxBinding {
+            anchor: crate::protocol::authority::LivenessFingerprint::TEST,
+            hint: tmux::TmuxHint::parse("tmux:/unused-named-observation:1:%1").unwrap(),
+            walk: vec![1],
+        }],
+    );
+    let observation = host
+        .observe_current_target(&HostTargetId::new("reviewer"), &context())
+        .unwrap();
+    assert!(!observation.focused);
+}
+
 // Pins (ht-esl review): the named host classifies no composer, even for the read a several-target
 // wake takes, so the dispatcher's several-target idle gate never passes for a named seat; its
 // tmux wake gate decides those seats instead (TRUST-POLICY A4).

@@ -2,8 +2,9 @@
 
 use crate::{
     ports::{
-        DurableStructuralProof, HostId, OrdinaryResolutionAttempt, OrdinaryResolutionGuard,
-        OrdinaryResolutionOutcome, ResolvedTargetCheck, SnapshotGenerationId,
+        DurableStructuralProof, HostId, NamedTargetCheck, NamedTargetStatus,
+        OrdinaryResolutionAttempt, OrdinaryResolutionGuard, OrdinaryResolutionOutcome,
+        ResolvedTargetCheck, SnapshotGenerationId,
     },
     protocol::{
         authority::MutationPermit,
@@ -866,6 +867,12 @@ fn reattach_named_seat(
     name: &SeatName,
 ) -> Result<(), ApiError> {
     rebind_unresolved_seat(tx, instance, host, seat, name.as_str(), 1, at.utc)?;
+    // Target generation is always one on the named host. The prior seat generation's proof
+    // therefore cannot establish that this reattachment has been observed.
+    tx.execute(
+        "UPDATE seats SET structural_terminal_id=NULL,structural_incarnation=NULL,structural_incarnation_kind=NULL,structural_host_boot=NULL,structural_host_epoch=NULL,structural_connection_epoch=NULL,structural_observation_sequence=NULL WHERE id=?1",
+        [seat.as_str()],
+    ).map_err(store_error)?;
     let (boot, epoch): (Option<String>, i64) = tx
         .query_row(
             "SELECT host_boot,host_epoch FROM herdr_hosts WHERE host_id=?1",
@@ -1023,26 +1030,91 @@ pub fn resolve_named_seat(
     )
 }
 
-/// A currentness check for cooperative named ownership, without the saved structural proof
-/// required by ordinary pane resolution. The read cannot establish ownership or release holds.
+/// A read-only currentness gate for a name's exact canonical owner. Its saved structural proof
+/// is a floor established by a real publication after allocation/reattachment, never a clock
+/// heuristic or the historical allocation result. Epochs order sequence resets across restart.
+pub fn named_target_status(
+    context: &StoreContext,
+    tx: &Transaction<'_>,
+    instance: &str,
+    host: HostId,
+    seat: &SeatId,
+    target: &HostTargetId,
+    budget: &CallBudget,
+) -> Result<NamedTargetStatus, ApiError> {
+    snapshot_budget(context, budget)?;
+    let generation: Option<i64> = tx
+        .query_row(
+            &format!(
+                "SELECT s.generation FROM seats s JOIN herdr_hosts h ON h.host_id=s.host_id \
+         WHERE s.id=?1 AND s.instance_id=?2 AND s.{LOCAL_SEAT} AND s.state='resolved' \
+           AND s.retired_at IS NULL AND s.retired_seq IS NULL AND h.kind='named' \
+           AND s.host_id=?3 AND s.name=?4 AND s.target_id=?4 AND s.target_generation=1"
+            ),
+            params![seat.as_str(), instance, host.get(), target.as_str()],
+            |r| r.get(0),
+        )
+        .optional()
+        .map_err(store_error)?;
+    let generation = generation.ok_or_else(|| {
+        api_error(
+            ErrorCode::TargetUnresolved,
+            "resolved seat is no longer the target owner",
+        )
+    })?;
+    let generation = u64::try_from(generation)
+        .map_err(|_| api_error(ErrorCode::StoreCorrupt, "negative named seat generation"))?;
+    let mut status = NamedTargetStatus {
+        generation,
+        current: false,
+    };
+    let Some(proof) = super::observation::seat_structural_proof(tx, seat)? else {
+        return Ok(status);
+    };
+    let Some(observed) = effective::effective_observation(tx, host, target.as_str())? else {
+        return Ok(status);
+    };
+    let floor_epoch = checked_host_number(proof.host_epoch())?;
+    let floor_sequence = checked_host_number(proof.observation_sequence())?;
+    if observed.host_boot != proof.host_boot().as_str()
+        || observed.structural_generation != checked_host_number(proof.target_generation())?
+        || observed.terminal_id.as_deref() != Some(proof.terminal().as_str())
+        || observed.incarnation.as_deref() != Some(proof.incarnation())
+        || observed.connection_epoch != Some(observed.epoch)
+        || proof.connection_epoch() != proof.host_epoch()
+        || observed
+            .incarnation_source_kind
+            .as_deref()
+            .and_then(crate::ports::EvidenceKind::from_structural_storage)
+            .is_none()
+        || (observed.epoch, observed.observation_sequence) < (floor_epoch, floor_sequence)
+    {
+        return Ok(status);
+    }
+    status.current = tx.query_row(
+        "SELECT EXISTS(SELECT 1 FROM herdr_hosts h JOIN snapshot_generations g ON g.id=h.active_snapshot_id \
+         AND g.host_id=h.host_id AND g.status='published' AND g.staged_targets=g.expected_targets \
+         WHERE h.host_id=?1 AND h.node_id=?2 AND h.kind='named' AND h.host_boot=?3 AND h.host_epoch=?4 \
+           AND g.host_boot=h.host_boot AND g.epoch=h.host_epoch AND g.incarnation=?5 \
+           AND g.published_invalidation_revision=h.invalidation_revision AND h.baseline_hold_unclaimed=0 \
+           AND NOT EXISTS(SELECT 1 FROM recovery_holds r WHERE r.host_id=h.host_id AND r.target_id=?6 AND r.released_at IS NULL))",
+        params![host.get(),instance,observed.host_boot,observed.epoch,proof.incarnation(),target.as_str()],
+        |r| r.get(0),
+    ).map_err(store_error)?;
+    snapshot_budget(context, budget)?;
+    Ok(status)
+}
+
 pub fn check_named_target(
     context: &StoreContext,
     tx: &Transaction<'_>,
     instance: &str,
-    check: ResolvedTargetCheck,
+    check: NamedTargetCheck,
     budget: &CallBudget,
 ) -> Result<(), ApiError> {
     snapshot_budget(context, budget)?;
     validate_resolution_evidence(tx, instance, &check.guard)?;
     let proof = check.guard.structural_proof();
-    let lifecycle = checked_host_number(check.guard.admission().lifecycle_revision)?
-        .checked_add(1)
-        .ok_or_else(|| {
-            api_error(
-                ErrorCode::SequenceExhausted,
-                "resolution lifecycle revision exhausted",
-            )
-        })?;
     let current: bool = tx
         .query_row(
             &format!(
@@ -1050,7 +1122,7 @@ pub fn check_named_target(
          WHERE s.id=?1 AND s.instance_id=?2 AND s.{LOCAL_SEAT} AND s.state='resolved' \
            AND s.retired_at IS NULL AND s.retired_seq IS NULL AND h.kind='named' \
            AND s.host_id=?3 AND s.name=?4 AND s.target_id=?4 AND s.target_generation=?5 \
-           AND h.host_boot=?6 AND h.host_epoch=?7 AND h.lifecycle_revision=?8 \
+           AND h.host_boot=?6 AND h.host_epoch=?7 AND s.generation=?8 \
            AND NOT EXISTS(SELECT 1 FROM recovery_holds r WHERE r.host_id=s.host_id \
                           AND r.target_id=s.target_id AND r.released_at IS NULL))"
             ),
@@ -1062,7 +1134,7 @@ pub fn check_named_target(
                 checked_host_number(proof.target_generation())?,
                 proof.host_boot().as_str(),
                 checked_host_number(proof.host_epoch())?,
-                lifecycle
+                checked_host_number(check.expected_generation)?
             ],
             |row| row.get(0),
         )

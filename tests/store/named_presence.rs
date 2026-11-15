@@ -124,6 +124,82 @@ fn fixture() -> Fx {
 }
 
 impl Fx {
+    fn named_status(&self, seat: &SeatId, name: &str) -> crate::ports::NamedTargetStatus {
+        let tx = self.conn.unchecked_transaction().unwrap();
+        let status = crate::store::seats::named_target_status(
+            &self.context,
+            &tx,
+            INSTANCE,
+            self.host,
+            seat,
+            &HostTargetId::new(name),
+            &budget(),
+        )
+        .unwrap();
+        tx.rollback().unwrap();
+        status
+    }
+
+    fn current_guard(&mut self, name: &str) -> crate::ports::OrdinaryResolutionGuard {
+        let request = ResolveSeat {
+            target: HostTargetId::new(name),
+            host: HostLocator::parse(NAMED_HOST_LOCATOR).unwrap(),
+            operation: OperationId::new(format!("check-{name}")),
+            locator_hint: None,
+            tmux_hint: None,
+            continuity_key: None,
+        };
+        let admission = begin_host_observation(
+            &self.context,
+            &mut self.conn,
+            INSTANCE,
+            self.host,
+            &budget(),
+        )
+        .unwrap();
+        let observation = self
+            .named
+            .observe_current_target(
+                &request.target,
+                &HostCallContext {
+                    budget: budget(),
+                    expected_boot: None,
+                    expected_epoch: None,
+                },
+            )
+            .unwrap();
+        assert!(
+            publish_current_target_observation(
+                &self.context,
+                &mut self.conn,
+                &admission,
+                &observation,
+                &budget()
+            )
+            .unwrap()
+        );
+        crate::ports::OrdinaryResolutionGuard::try_new(&request, observation, &admission).unwrap()
+    }
+
+    fn retire(&mut self, seat: &SeatId) {
+        crate::store::seats::mutate_operator(
+            &self.context,
+            &mut self.conn,
+            INSTANCE,
+            crate::ports::OperatorRequest::Retire(crate::protocol::commands::OperatorRetire {
+                seat: seat.clone(),
+                operation: OperationId::new(format!("retire-{}", seat.as_str())),
+            }),
+            crate::protocol::authority::OperatorActor::from_peer(
+                crate::protocol::authority::PeerIdentity::from_kernel(501),
+                501,
+            )
+            .unwrap(),
+            None,
+        )
+        .unwrap();
+    }
+
     /// A named seat by a seat-acting resolve, with a registered, connected binding at the host's
     /// current epoch (the shape a cooperative registration leaves).
     fn seat(&mut self, name: &str) -> SeatId {
@@ -401,6 +477,314 @@ fn delayed_empty_named_capture_preserves_newer_current_mapping_for_admission() {
         effective.is_some() && registration.is_ok(),
         "old empty capture hid current admission evidence: effective={effective:?}, registration={registration:?}"
     );
+}
+
+// S1: a different name can commit while the observation lane is held, after this target's
+// real current read publishes. Its host-wide lifecycle bump does not change this owner.
+#[test]
+fn named_currentness_survives_an_unrelated_allocation_after_publication() {
+    let mut f = fixture();
+    f.publish();
+    let seat = f.seat("alpha");
+    let guard = f.current_guard("alpha");
+    let beta = f.seat("beta");
+    f.retire(&beta);
+    let tx = f.conn.unchecked_transaction().unwrap();
+    crate::store::seats::check_named_target(
+        &f.context,
+        &tx,
+        INSTANCE,
+        crate::ports::NamedTargetCheck {
+            expected_seat: seat,
+            expected_generation: 1,
+            guard,
+        },
+        &budget(),
+    )
+    .unwrap();
+    tx.rollback().unwrap();
+}
+
+#[test]
+fn named_currentness_still_refuses_own_retirement_reattachment_hold_and_invalidation() {
+    for change in ["retire", "reattach", "hold", "invalidate"] {
+        let mut f = fixture();
+        let seat = f.seat("alpha");
+        let published = f.publish();
+        let generation = f.named_status(&seat, "alpha").generation;
+        let guard = f.current_guard("alpha");
+        match change {
+            "retire" => f.retire(&seat),
+            "reattach" => {
+                f.unresolve(&published, &seat, "alpha");
+                let request = ResolveSeat {
+                    target: HostTargetId::new("alpha"),
+                    host: HostLocator::parse(NAMED_HOST_LOCATOR).unwrap(),
+                    operation: OperationId::new("reattach-alpha"),
+                    locator_hint: None,
+                    tmux_hint: None,
+                    continuity_key: None,
+                };
+                let result = resolve_named_seat(
+                    &f.context,
+                    &mut f.conn,
+                    INSTANCE,
+                    f.host,
+                    &request,
+                    &budget(),
+                )
+                .unwrap();
+                assert!(
+                    matches!(result, CommandResult::NamedSeatResolved { seat: current, .. } if current == seat)
+                );
+                assert_eq!(
+                    f.named_status(&seat, "alpha"),
+                    crate::ports::NamedTargetStatus {
+                        generation: generation + 2,
+                        current: false
+                    }
+                );
+            }
+            "hold" => {
+                f.conn.execute("INSERT INTO recovery_holds(host_id,target_id,baseline_boot,baseline_epoch,reason) VALUES (?1,'alpha',?2,1,'test recovery hold')", rusqlite::params![f.host.get(), BOOT]).unwrap();
+                assert!(!f.named_status(&seat, "alpha").current);
+            }
+            "invalidate" => {
+                let admission =
+                    begin_host_observation(&f.context, &mut f.conn, INSTANCE, f.host, &budget())
+                        .unwrap();
+                invalidate_host_observation(
+                    &f.context,
+                    &mut f.conn,
+                    &admission,
+                    crate::ports::HostInvalidationReason::CoherenceLost,
+                    &budget(),
+                )
+                .unwrap();
+                assert!(!f.named_status(&seat, "alpha").current);
+            }
+            _ => unreachable!(),
+        }
+        let tx = f.conn.unchecked_transaction().unwrap();
+        let result = crate::store::seats::check_named_target(
+            &f.context,
+            &tx,
+            INSTANCE,
+            crate::ports::NamedTargetCheck {
+                expected_seat: seat,
+                expected_generation: generation,
+                guard,
+            },
+            &budget(),
+        );
+        assert!(
+            matches!(result, Err(ref error) if matches!(error.code, ErrorCode::TargetUnresolved | ErrorCode::StaleHostObservation)),
+            "{change}: {result:?}"
+        );
+        tx.rollback().unwrap();
+    }
+}
+
+#[test]
+fn named_restart_without_open_bindings_accepts_a_new_epoch_with_a_smaller_sequence() {
+    let mut f = fixture();
+    let seat = f.seat("alpha");
+    // Keep the saved floor above the replacement host's first sequence.
+    for _ in 0..2 {
+        f.named
+            .observe_current_target(
+                &HostTargetId::new("alpha"),
+                &HostCallContext {
+                    budget: budget(),
+                    expected_boot: None,
+                    expected_epoch: None,
+                },
+            )
+            .unwrap();
+    }
+    f.publish();
+    let old_sequence =
+        f.scalar("SELECT structural_observation_sequence FROM seats WHERE name='alpha'");
+    f.named = named_host(f.host, &f.names, 1);
+    let restarted = f.publish();
+    assert_eq!(restarted.epoch, 2);
+    assert!(old_sequence > restarted.observation_sequence as i64);
+    assert_eq!(f.scalar("SELECT count(*) FROM occupant_bindings"), 0);
+    assert_eq!(
+        f.scalar("SELECT structural_host_epoch FROM seats WHERE name='alpha'"),
+        1
+    );
+    assert!(
+        f.named_status(&seat, "alpha").current,
+        "a newer epoch is fresh despite its sequence reset"
+    );
+    assert!(
+        f.named_status(&seat, "alpha").current,
+        "read-only checks cannot consume freshness"
+    );
+}
+
+#[test]
+fn named_reattachment_after_failed_publication_still_requires_observation_on_a_new_operation() {
+    let mut f = fixture();
+    let seat = f.seat("alpha");
+    let published = f.publish();
+    f.unresolve(&published, &seat, "alpha");
+    let mut request = ResolveSeat {
+        target: HostTargetId::new("alpha"),
+        host: HostLocator::parse(NAMED_HOST_LOCATOR).unwrap(),
+        operation: OperationId::new("reattach-alpha"),
+        locator_hint: None,
+        tmux_hint: None,
+        continuity_key: None,
+    };
+    resolve_named_seat(
+        &f.context,
+        &mut f.conn,
+        INSTANCE,
+        f.host,
+        &request,
+        &budget(),
+    )
+    .unwrap();
+    assert!(!f.named_status(&seat, "alpha").current);
+    let admission =
+        begin_host_observation(&f.context, &mut f.conn, INSTANCE, f.host, &budget()).unwrap();
+    f.seat("beta"); // Supersedes the admission before it can publish.
+    let observation = f
+        .named
+        .observe_current_target(
+            &request.target,
+            &HostCallContext {
+                budget: budget(),
+                expected_boot: None,
+                expected_epoch: None,
+            },
+        )
+        .unwrap();
+    assert!(
+        !publish_current_target_observation(
+            &f.context,
+            &mut f.conn,
+            &admission,
+            &observation,
+            &budget()
+        )
+        .unwrap()
+    );
+    request.operation = OperationId::new("reattach-new-operation");
+    resolve_named_seat(
+        &f.context,
+        &mut f.conn,
+        INSTANCE,
+        f.host,
+        &request,
+        &budget(),
+    )
+    .unwrap();
+    assert!(
+        !f.named_status(&seat, "alpha").current,
+        "a new operation cannot borrow the prior generation's observation"
+    );
+    f.current_guard("alpha");
+    assert!(f.named_status(&seat, "alpha").current);
+}
+
+#[test]
+fn named_snapshot_captured_before_replacement_cannot_stamp_the_new_owner() {
+    let mut f = fixture();
+    let old = f.seat("alpha");
+    f.publish();
+    let admission =
+        begin_host_observation(&f.context, &mut f.conn, INSTANCE, f.host, &budget()).unwrap();
+    let snapshot = stamp_fixed_structure(
+        f.named
+            .enumerate_targets(&HostCallContext {
+                budget: budget(),
+                expected_boot: None,
+                expected_epoch: None,
+            })
+            .unwrap(),
+    );
+    let header = SnapshotHeader::from_captured(admission, &snapshot).unwrap();
+    let stage = begin_snapshot_stage(&f.context, &mut f.conn, header, &budget()).unwrap();
+    crate::test_support::snapshot::stage_all(&snapshot.targets, |offset, targets| {
+        stage_snapshot_targets(
+            &f.context,
+            &mut f.conn,
+            &stage.id,
+            offset,
+            targets,
+            DurableWorkAdmission::new(16).unwrap(),
+            &budget(),
+        )
+    })
+    .unwrap();
+    seal_snapshot_stage(&f.context, &mut f.conn, &stage.id, &budget()).unwrap();
+    f.retire(&old);
+    let request = ResolveSeat {
+        target: HostTargetId::new("alpha"),
+        host: HostLocator::parse(NAMED_HOST_LOCATOR).unwrap(),
+        operation: OperationId::new("replacement-alpha"),
+        locator_hint: None,
+        tmux_hint: None,
+        continuity_key: None,
+    };
+    let CommandResult::NamedSeatResolved { seat, .. } = resolve_named_seat(
+        &f.context,
+        &mut f.conn,
+        INSTANCE,
+        f.host,
+        &request,
+        &budget(),
+    )
+    .unwrap() else {
+        panic!("replacement")
+    };
+    let result = publish_snapshot_stage(&f.context, &mut f.conn, &stage.id, &budget());
+    assert!(
+        matches!(result, Err(ref error) if error.code == ErrorCode::StaleHostObservation),
+        "{result:?}"
+    );
+    assert!(!f.named_status(&seat, "alpha").current);
+}
+
+#[test]
+fn new_named_allocation_cannot_borrow_its_retired_predecessors_observation() {
+    let mut f = fixture();
+    let old = f.seat("alpha");
+    f.publish();
+    assert!(f.named_status(&old, "alpha").current);
+    f.retire(&old);
+    let request = ResolveSeat {
+        target: HostTargetId::new("alpha"),
+        host: HostLocator::parse(NAMED_HOST_LOCATOR).unwrap(),
+        operation: OperationId::new("new-alpha"),
+        locator_hint: None,
+        tmux_hint: None,
+        continuity_key: None,
+    };
+    let CommandResult::NamedSeatResolved { seat, .. } = resolve_named_seat(
+        &f.context,
+        &mut f.conn,
+        INSTANCE,
+        f.host,
+        &request,
+        &budget(),
+    )
+    .unwrap() else {
+        panic!("new allocation")
+    };
+    assert_ne!(seat, old);
+    assert!(
+        crate::store::effective::effective_observation(&f.conn, f.host, "alpha")
+            .unwrap()
+            .is_some(),
+        "the predecessor's observation still exists"
+    );
+    assert!(!f.named_status(&seat, "alpha").current);
+    f.current_guard("alpha");
+    assert!(f.named_status(&seat, "alpha").current);
 }
 
 // Kills: an unresolved named row that arms `baseline_hold_unclaimed` (or a recovery hold) for the

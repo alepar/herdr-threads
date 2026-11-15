@@ -265,13 +265,21 @@ pub fn publish_current_target_observation(
                 "UPDATE herdr_hosts SET observation_decided_sequence=?1 WHERE host_id=?3 AND node_id=?2 AND observation_decided_sequence<?1",
                 params![admission_sequence,admission.instance(),admission.host_id.get()],
             ).map_err(store_error)?;
-            let current_seat: Option<(String, bool)> = tx.query_row(
-                "SELECT s.id, s.target_generation=?3 AND EXISTS(SELECT 1 FROM occupant_bindings b WHERE b.seat_id=s.id AND b.ended_at IS NULL AND b.registered_at IS NOT NULL AND b.target_id=s.target_id AND b.target_generation=s.target_generation AND b.host_boot=?4 AND b.host_epoch=?5) FROM seats s WHERE s.host_id=?1 AND s.target_id=?2 AND s.state='resolved' AND s.is_local=1",
+            let current_seat: Option<(String, bool, bool)> = tx.query_row(
+                "SELECT s.id, s.target_generation=?3 AND EXISTS(SELECT 1 FROM occupant_bindings b WHERE b.seat_id=s.id AND b.ended_at IS NULL AND b.registered_at IS NOT NULL AND b.target_id=s.target_id AND b.target_generation=s.target_generation AND b.host_boot=?4 AND b.host_epoch=?5), s.structural_terminal_id IS NULL AND EXISTS(SELECT 1 FROM herdr_hosts h WHERE h.host_id=s.host_id AND h.kind='named') FROM seats s WHERE s.host_id=?1 AND s.target_id=?2 AND s.state='resolved' AND s.is_local=1",
                 params![admission.host_id.get(),observation.target.as_str(),generation,observation.host_boot.as_str(),host_epoch],
-                |r| Ok((r.get(0)?,r.get(1)?)),
+                |r| Ok((r.get(0)?,r.get(1)?,r.get(2)?)),
             ).optional().map_err(store_error)?;
-            if let Some((seat, false)) = current_seat {
-                schema::ensure_unavailability_episode(tx, &SeatId::new(seat))?;
+            if let Some((seat, registered, missing_named_proof)) = current_seat {
+                let seat = SeatId::new(seat);
+                if !registered {
+                    schema::ensure_unavailability_episode(tx, &seat)?;
+                }
+                if missing_named_proof && let Some(proof) = &proof {
+                    // The admission's lifecycle fence proves this publication follows the
+                    // allocation/reattachment. Save that floor for read-only named resolves.
+                    update_structural_proof(tx, &seat, proof)?;
+                }
             }
             schema::apply_eligibility_transition(tx, admission.instance(), |_| Ok(true))?;
             schema::bump_host_lifecycle_revision(tx, admission.host_id)?;
@@ -1055,7 +1063,7 @@ pub(super) fn update_structural_proof(
     Ok(())
 }
 
-fn seat_structural_proof(
+pub(super) fn seat_structural_proof(
     conn: &Connection,
     seat: &SeatId,
 ) -> Result<Option<DurableStructuralProof>, ApiError> {

@@ -90,7 +90,7 @@ use crate::{
             Command, DirectoryMembership, OperatorCommand, PermitMutation, ResolveSeat,
             RetirementJobsQuery, SendMessage,
         },
-        ids::{RetirementJobId, SeatId, WakeAttemptId},
+        ids::{HostTargetId, RetirementJobId, SeatId, WakeAttemptId},
         pagination::{
             Consistency, Cursor, CursorDirection, CursorScope, Page, PageRequest, StopReason,
         },
@@ -2306,7 +2306,7 @@ impl StorePort for SqliteStore {
     }
     fn check_named_target(
         &self,
-        check: crate::ports::ResolvedTargetCheck,
+        check: crate::ports::NamedTargetCheck,
         budget: &CallBudget,
     ) -> Result<(), ApiError> {
         let db = self.context.open_query(budget.clone())?;
@@ -2314,6 +2314,28 @@ impl StorePort for SqliteStore {
         seats::check_named_target(&self.context, &tx, &self.instance, check, budget)?;
         tx.rollback().map_err(store_error)?;
         self.live_budget(budget)
+    }
+    fn named_target_status(
+        &self,
+        host: HostId,
+        seat: &SeatId,
+        target: &HostTargetId,
+        budget: &CallBudget,
+    ) -> Result<crate::ports::NamedTargetStatus, ApiError> {
+        let db = self.context.open_query(budget.clone())?;
+        let tx = db.unchecked_transaction().map_err(store_error)?;
+        let status = seats::named_target_status(
+            &self.context,
+            &tx,
+            &self.instance,
+            host,
+            seat,
+            target,
+            budget,
+        )?;
+        tx.rollback().map_err(store_error)?;
+        self.live_budget(budget)?;
+        Ok(status)
     }
     fn replay_operator(
         &self,

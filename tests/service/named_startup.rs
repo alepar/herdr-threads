@@ -271,3 +271,165 @@ fn replayed_named_allocation_does_not_admit_a_retired_owner_or_replace_its_succe
         new.as_str()
     );
 }
+
+// S2: existing named callers must not invalidate global audience/cursor fences simply by
+// resolving their unchanged name. A historical allocation replay has the same requirement.
+#[test]
+fn unchanged_named_resolution_preserves_publication_and_eligibility_fences() {
+    use crate::{
+        ports::{DurableWorkAdmission, SendPreparationProgress},
+        protocol::{
+            authority::{MutationPermit, ObligationRef},
+            commands::{
+                CreateThread, DeliveryMode, InvitationConfirmation, Invite, ParticipantsQuery,
+                SendMessage,
+            },
+            pagination::PageRequest,
+        },
+        store::messages,
+    };
+    let rig = Rig::new();
+    rig.capture();
+    let seat = rig.resolved();
+    let CommandResult::CheckedIn(checked) = rig.check_in(seat.clone()).unwrap() else {
+        panic!("check-in")
+    };
+    let claim = checked.context;
+    let CommandResult::ThreadCreated(thread) = rig
+        .call(
+            Command::CreateThread(CreateThread {
+                name: None,
+                topic: "stable named audience".into(),
+                goal: "stable pagination and send".into(),
+                operation: OperationId::new("stable-thread"),
+                claim: claim.clone(),
+            }),
+            1_000,
+        )
+        .unwrap()
+    else {
+        panic!("thread")
+    };
+    let mut other = rig.request();
+    other.target = HostTargetId::new("other-agent");
+    other.operation = OperationId::new("other-agent");
+    let CommandResult::NamedSeatResolved { seat: other, .. } =
+        rig.call(Command::ResolveSeat(other), 1_000).unwrap()
+    else {
+        panic!("other seat")
+    };
+    rig.call(
+        Command::Invite(Invite {
+            confirmation: Some(InvitationConfirmation::Lazy),
+            thread: thread.clone(),
+            seat: other.clone(),
+            deadline_millis: None,
+            operation: OperationId::new("invite-other"),
+            claim: claim.clone(),
+        }),
+        1_000,
+    )
+    .unwrap();
+    rig.capture();
+    let mut participants = ParticipantsQuery {
+        thread: thread.clone(),
+        page: PageRequest {
+            limit: 1,
+            ..Default::default()
+        },
+        caller: None,
+    };
+    let CommandResult::Participants(first) = rig
+        .call(Command::Participants(participants.clone()), 1_000)
+        .unwrap()
+    else {
+        panic!("participants")
+    };
+    participants.page.cursor = Some(
+        first
+            .next_cursor
+            .expect("two participants yield a continuation"),
+    );
+    let send = SendMessage {
+        priority: None,
+        delivery_mode: DeliveryMode::Ordinary,
+        thread: thread.clone(),
+        body: "sealed before unchanged resolve".into(),
+        direct_recipient: None,
+        invited_recipients: vec![other],
+        deadline_millis: None,
+        operation: OperationId::new("stable-send"),
+        claim: claim.clone(),
+        relays_user: false,
+        user_intent: None,
+    };
+    let mut db = rig.store.context().open_writer().unwrap();
+    loop {
+        if matches!(
+            messages::prepare_send_step(
+                rig.store.context(),
+                &mut db,
+                &send,
+                messages::MessageLimits::default(),
+                &rig.budget(1_000),
+                DurableWorkAdmission::new(16).unwrap()
+            )
+            .unwrap(),
+            SendPreparationProgress::Ready { .. }
+        ) {
+            break;
+        }
+    }
+    let fences = || {
+        rig.sql()
+            .query_row(
+                "SELECT h.lifecycle_revision,n.send_eligibility_revision,h.observation_admission_sequence,h.observation_decided_sequence,h.observation_sequence FROM herdr_hosts h JOIN local_node n ON n.id=h.node_id WHERE h.host_id=?1",
+                [rig.host.get()],
+                |r| Ok((r.get::<_, i64>(0)?,r.get::<_, i64>(1)?,r.get::<_, i64>(2)?,r.get::<_, i64>(3)?,r.get::<_, i64>(4)?)),
+            )
+            .unwrap()
+    };
+    let before = fences();
+    let mut request = rig.request();
+    request.operation = OperationId::new("unchanged-new-operation");
+    assert!(matches!(
+        rig.call(Command::ResolveSeat(request), 1_000),
+        Ok(CommandResult::NamedSeatResolved { seat: current, created: false, .. }) if current == seat
+    ));
+    assert_eq!(fences(), before, "an unchanged resolve published again");
+    assert_eq!(rig.resolved(), seat);
+    assert_eq!(fences(), before, "a historical replay published again");
+    let resumed = rig.call(Command::Participants(participants), 1_000);
+    assert!(
+        matches!(resumed, Ok(CommandResult::Participants(_))),
+        "cursor invalidated: {resumed:?}"
+    );
+    let digest = crate::store::schema::canonical_digest(&messages::send_payload(&send)).unwrap();
+    let mut permit = MutationPermit::cooperative(
+        claim,
+        send.operation.clone(),
+        ObligationRef::Control(thread),
+        digest,
+        rig.clock.monotonic_now(),
+        (1, 0),
+        rig.budget(1_000),
+    );
+    let sent = messages::publish_send(
+        rig.store.context(),
+        &mut db,
+        &send,
+        &mut permit,
+        &rig.budget(1_000),
+        || messages::MAX_BODY_BYTES,
+    )
+    .unwrap();
+    assert!(matches!(sent, CommandResult::MessageSent(_)));
+    let scheduled = ScheduledStore::new(rig.store.clone(), rig.writer.clone());
+    assert!(
+        rig.identity
+            .capture_if_due(&scheduled, &rig.budget(1_000), &rig.budget(1_000))
+            .unwrap()
+            .is_none(),
+        "unchanged resolve requested an explicit capture"
+    );
+}

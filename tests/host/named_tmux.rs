@@ -1715,10 +1715,10 @@ fn two_attached_clients_still_read_as_focused() {
     assert_eq!(rig.host.wake_block(&rig.seat), Some(WakeBlock::Focused));
 }
 
-// Kills: a hard-coded `focused` in the observation, and a focus reported for a seat with no
-// verified binding.
+// Structural presence is nonfocused even for a focused, verified pane. The wake gate below
+// retains the real focus probe and its focused-empty delay.
 #[test]
-fn observation_reports_the_panes_focus() {
+fn structural_observation_leaves_focus_to_the_wake_gate() {
     let Some(rig) = idle_rig("focused_observation") else {
         return;
     };
@@ -1730,7 +1730,7 @@ fn observation_reports_the_panes_focus() {
     };
     assert!(!observe("seat-wake"));
     let _client = focus(&rig);
-    assert!(observe("seat-wake"));
+    assert!(!observe("seat-wake"));
     assert!(!observe("no-binding"));
 }
 

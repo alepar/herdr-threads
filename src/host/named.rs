@@ -530,23 +530,6 @@ impl NamedHost {
         }
     }
 
-    /// Whether a live verified binding's pane is focused. With no binding there is no pane; an
-    /// unreadable pane answers false, and `wake_gate` refuses it on its own read.
-    fn pane_focused(&self, target: &HostTargetId) -> bool {
-        let hints = self
-            .live_bindings(target, |bindings| {
-                bindings
-                    .iter()
-                    .map(|held| held.hint.clone())
-                    .collect::<Vec<_>>()
-            })
-            .unwrap_or_default();
-        hints.iter().any(|hint| {
-            tmux::pane_facts(hint)
-                .is_some_and(|facts| facts.server_pid == hint.server_pid && facts.focused())
-        })
-    }
-
     fn live(&self, budget: &CallBudget) -> Result<Vec<(SeatId, SeatName)>, ApiError> {
         self.source.live_named(&self.host_id, budget)
     }
@@ -663,7 +646,9 @@ impl HostPort for NamedHost {
         let name = SeatName::parse(target.as_str())
             .map_err(|_| ApiError::new(ErrorCode::NotFound, "not a seat name"))?;
         let sequence = self.sequence.fetch_add(1, Ordering::SeqCst) + 1;
-        Ok(self.observation(&name, self.pane_focused(target), sequence))
+        // Structural presence never reads focus; the wake gate probes its own pane immediately
+        // before typing, including the focused-empty hold.
+        Ok(self.observation(&name, false, sequence))
     }
     fn seat_labels(&self, budget: &CallBudget) -> Result<Vec<SeatHostLabels>, ApiError> {
         Ok(self

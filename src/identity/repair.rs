@@ -3,9 +3,10 @@ use crate::{
     ports::{
         BootstrapAttachmentGuard, BootstrapObserver, ContinuityRequest, ContinuityTargetGuard,
         HostCallContext, HostId, HostInvalidationReason, HostObservation, HostObservationAdmission,
-        HostPort, OperatorRequest, OperatorTargetGuard, OrdinaryResolutionAttempt,
-        OrdinaryResolutionGuard, OrdinaryResolutionOutcome, ProcessInfo, ResolvedTargetCheck,
-        ShellContinuityCandidate, ShellContinuityGuard, ShellContinuityRequest, StorePort,
+        HostPort, NamedTargetCheck, OperatorRequest, OperatorTargetGuard,
+        OrdinaryResolutionAttempt, OrdinaryResolutionGuard, OrdinaryResolutionOutcome, ProcessInfo,
+        ResolvedTargetCheck, ShellContinuityCandidate, ShellContinuityGuard,
+        ShellContinuityRequest, StorePort,
     },
     protocol::{
         authority::OperatorActor,
@@ -374,6 +375,12 @@ impl OrdinaryIdentity {
                 .resolve_named_seat(request.clone(), self.host_id, budget)?
         };
         if let CommandResult::NamedSeatResolved { seat, .. } = &result {
+            let status =
+                self.store
+                    .named_target_status(self.host_id, seat, &request.target, budget)?;
+            if status.current {
+                return Ok(result);
+            }
             self.note_named_seat(seat);
             // The allocation writer is released before taking the observation lane. A stored
             // operation result remains historical: replay needs the same currentness check.
@@ -382,8 +389,9 @@ impl OrdinaryIdentity {
                     .map_err(|detail| error(ErrorCode::StaleHostObservation, detail))?;
                 let _turn = self.writer.enter_foreground(budget, self.clock.as_ref())?;
                 self.store.check_named_target(
-                    ResolvedTargetCheck {
+                    NamedTargetCheck {
                         expected_seat: seat.clone(),
+                        expected_generation: status.generation,
                         guard,
                     },
                     budget,
