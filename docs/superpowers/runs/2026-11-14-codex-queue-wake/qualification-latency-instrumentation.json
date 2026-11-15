@@ -1,0 +1,31 @@
+{
+  "schema": 1,
+  "assignment": "mnSGTQmOhp0Z / mnSGkMNhPexJ",
+  "scope": "ONE diagnostic repeat; no production change and no wake-window widening",
+  "base_candidate": "04387c7bad25485fc4d18efe35e60a383b2aac83",
+  "sample_instrumentation": "Monotonic read-start/read-end offsets relative to publication on changed canonical states only; timing excluded from dedup identity. Each existing Herdr status observation is captured with read-start/read-end offsets. No new host RPC calls.",
+  "bounds": {
+    "distinct_canonical_samples": 128,
+    "host_observations": 512,
+    "combined_evidence_bytes": 524288
+  },
+  "regressions": {
+    "red_missing_instrumentation": 2,
+    "focused_driver_queue_green": 15,
+    "focused_sqlite_green": 17
+  },
+  "checks": {
+    "clippy": 0,
+    "default_features": 0,
+    "fmt": 0,
+    "harness_neutral": 0,
+    "wire_compat": 0,
+    "python39_syntax": 0,
+    "diff": 0
+  },
+  "source_sha256": {
+    "scripts/wake-e2e.py": "072b9ae328cc5b21db51f3a1e68a41b2c24d53a9bf96f848098bb04f84f2cdc2",
+    "scripts/wake_e2e_selftest.py": "a6d4036fa2fccd6b77e0699549aea27eddce7e77ef05fcb6ad2cb69f3c98a9c9"
+  },
+  "routine_production_model_visible_bytes_added": 0
+}

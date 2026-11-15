@@ -3413,6 +3413,45 @@ class QueueSamplerLifetime(TempDir):
             self.assertFalse(proof.worker.is_alive())
         self.assertFalse(proof.worker.is_alive())
 
+    def test_capture_timestamps_do_not_make_unchanged_state_distinct(self):
+        recipient = self.recipient()
+        proof = W.QueueCaseEvidence(recipient, "send-p0/group")
+        proof.publication_monotonic = 10.0
+        with mock.patch.object(W.time, "monotonic", side_effect=[10.1, 10.2, 10.3, 10.4]):
+            proof._capture()
+            proof._capture()
+        self.assertEqual(len(proof.samples), 1)
+        self.assertEqual(proof.samples[0]["observation_start_ms"], 100)
+        self.assertEqual(proof.samples[0]["observation_end_ms"], 200)
+
+    def test_status_offsets_share_publication_clock_and_are_bounded(self):
+        recipient = self.recipient()
+        proof = W.QueueCaseEvidence(recipient, "send-p0/group")
+        proof.publication_monotonic = 10.0
+        proof.observe_status(10.25, 10.3, "idle")
+        proof.observe_status(16.25, 17.0, "working")
+        self.assertEqual(proof.host_observations, [
+            {"start_ms": 250, "end_ms": 300, "status": "idle"},
+            {"start_ms": 6250, "end_ms": 7000, "status": "working"}])
+        for _ in range(600):
+            proof.observe_status(17.0, 18.0, "idle")
+        self.assertEqual(len(proof.host_observations), 512)
+        self.assertTrue(proof.overflow)
+
+    def test_recipient_records_each_existing_host_observation_after_publication(self):
+        run = SimpleNamespace(herdr=mock.Mock(return_value={"result": {"agent": {"agent_status": "working"}}}))
+        recipient = W.Recipient(run, "co-t0", "codex", 0, "pane", "seat")
+        proof = SimpleNamespace(published=True, observe_status=mock.Mock())
+        recipient.queue_evidence = proof
+        for _ in range(2):
+            self.assertEqual(recipient.status(), "working")
+        self.assertEqual(proof.observe_status.call_count, 2)
+        self.assertEqual(run.herdr.call_count, 2)
+        for call in proof.observe_status.call_args_list:
+            start, end, status = call.args
+            self.assertLessEqual(start, end)
+            self.assertEqual(status, "working")
+
     def test_evidence_overflow_fails_without_unbounded_growth(self):
         recipient = self.recipient()
         with mock.patch.object(W, "QUEUE_SAMPLE_LIMIT", 2):

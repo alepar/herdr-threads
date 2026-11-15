@@ -1899,12 +1899,32 @@ class QueueCaseEvidence:
         self.lock = threading.Lock()
         self.worker = None
         self.result = None
+        self.publication_monotonic = None
+        self.publication_unix_ms = None
+        self.host_observations = []
+
+    def offset(self, at):
+        return round((at - self.publication_monotonic) * 1000) if self.publication_monotonic is not None else None
+
+    def observe_status(self, start, end, status):
+        with self.lock:
+            observation = {"start_ms": self.offset(start), "end_ms": self.offset(end),
+                           "status": status if status in IDLE + ("working", "blocked", "unknown") else "other"}
+            size = len(json.dumps(observation).encode())
+            if len(self.host_observations) >= 512 or self.bytes + size > QUEUE_EVIDENCE_BYTES:
+                self.overflow = True
+            else:
+                self.host_observations.append(observation)
+                self.bytes += size
 
     def _capture(self):
+        start = time.monotonic()
         snapshot = self.read(self.after)
+        end = time.monotonic()
         encoded = json.dumps(snapshot, sort_keys=True)
         if encoded != self.encoded:
-            size = len(encoded.encode())
+            snapshot = dict(snapshot, observation_start_ms=self.offset(start), observation_end_ms=self.offset(end))
+            size = len(json.dumps(snapshot).encode())
             if len(self.samples) >= QUEUE_SAMPLE_LIMIT or self.bytes + size > QUEUE_EVIDENCE_BYTES:
                 self.overflow = True
             else:
@@ -1931,6 +1951,8 @@ class QueueCaseEvidence:
     def publication(self):
         with self.lock:
             if not self.published:
+                self.publication_monotonic = time.monotonic()
+                self.publication_unix_ms = round(time.time() * 1000)
                 current = self.read(0)
                 self.after = current.get("watermark", self.after)
                 self.before = self.read(self.after)
@@ -1968,6 +1990,8 @@ class QueueCaseEvidence:
         result["before"] = self.before
         result["published"] = self.published
         result["sample_bytes"] = self.bytes
+        result["publication_unix_ms"] = self.publication_unix_ms
+        result["host_observations"] = self.host_observations
         if not self.published or self.overflow or self.error:
             result["passed"] = False
             result["reasons"].append(self.error or ("canonical evidence bound exceeded" if self.overflow
@@ -2041,7 +2065,12 @@ class Recipient:
             if not screen.strip():
                 raise RuntimeError(f"{self.name}: unreadable Hermes screen")
             return "idle" if hermes_idle(screen) else "working"
-        return self.run.herdr("agent", "get", self.pane)["result"]["agent"]["agent_status"]
+        start = time.monotonic()
+        status = self.run.herdr("agent", "get", self.pane)["result"]["agent"]["agent_status"]
+        proof = getattr(self, "queue_evidence", None)
+        if proof is not None and proof.published:
+            proof.observe_status(start, time.monotonic(), status)
+        return status
 
     def read(self, source, *extra):
         """The pane's `source` snapshot: `agent read`, else `pane read` (once the agent has exited, e.g. at startup,

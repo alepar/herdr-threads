@@ -1,0 +1,208 @@
+{
+  "schema": 1,
+  "candidate_sha": "04387c7bad25485fc4d18efe35e60a383b2aac83",
+  "exit": 1,
+  "classification": "transport-positive, behavioral-qualification-negative",
+  "wake_window_seconds": 6.0,
+  "versions": {
+    "herdr": "herdr 0.9.5",
+    "herdr-threads": "herdr-threads 3.2.0",
+    "codex": "codex-cli 0.167.0"
+  },
+  "rows": [
+    {
+      "recipient": "co-t0",
+      "threshold": 0,
+      "result": "FAIL",
+      "woke_within_six_seconds": false,
+      "delivered": true,
+      "second_window_wake_delay_s": 0.76,
+      "approximate_wake_from_watch_start_s": 6.76,
+      "send_completed_utc_second_resolution": "2026-11-15T19:48:27Z",
+      "accepted_utc": "2026-11-15T19:48:27.808+00:00",
+      "first_observed_nonidle_utc_second_resolution": "2026-11-15T19:48:34Z",
+      "queue_transport_ok": true,
+      "proved_attempts": [
+        {
+          "attempt": "1eb84719-739a-4559-aebb-d1d8265bf4c6",
+          "ordinal": 4,
+          "phase": "accepted",
+          "owner_boot": "c0a80c0c-aa5f-4f98-9c46-ab88b34ee40b",
+          "arm_nonce": "8d7a4bc5-0811-46c2-ac3d-5315c75ed672",
+          "baseline": {
+            "turn_id": "01a1e0c0-568e-7710-a414-55b2cd4d1355",
+            "ordinal": 4
+          },
+          "owned_id_count": 1,
+          "owned_ids": [
+            "01a1e0c1-0219-7980-aa13-93e27853b202"
+          ],
+          "add_helper": {
+            "id": "4c390a13-99b8-43ac-9ddb-13d81a4ffa32",
+            "purpose": "add",
+            "subject": null,
+            "owner_boot": "c0a80c0c-aa5f-4f98-9c46-ab88b34ee40b",
+            "kernel_boot": "6d757418-e8a4-456d-a680-21953e8fa0a3",
+            "witness": {
+              "process": {
+                "pid": 2384166,
+                "start": 39982593
+              },
+              "pgid": 2384166,
+              "kernel_boot": "6d757418-e8a4-456d-a680-21953e8fa0a3"
+            }
+          },
+          "logical_status": "fulfilled",
+          "fulfillment": {
+            "turn_id": "01a1e0c1-19dd-7f63-8549-3548c038e8be",
+            "ordinal": 5
+          },
+          "cleanup_quarantined": false,
+          "cleanup_list_attempted": true
+        }
+      ],
+      "lifecycle_attempts": [
+        "1eb84719-739a-4559-aebb-d1d8265bf4c6"
+      ]
+    },
+    {
+      "recipient": "co-t-1",
+      "threshold": -1,
+      "result": "FAIL",
+      "woke_within_six_seconds": false,
+      "delivered": true,
+      "second_window_wake_delay_s": 1.52,
+      "approximate_wake_from_watch_start_s": 7.52,
+      "send_completed_utc_second_resolution": "2026-11-15T19:48:30Z",
+      "accepted_utc": "2026-11-15T19:48:31.169+00:00",
+      "first_observed_nonidle_utc_second_resolution": "2026-11-15T19:48:38Z",
+      "queue_transport_ok": true,
+      "proved_attempts": [
+        {
+          "attempt": "ef201a9f-3146-4035-9924-c9152adbde15",
+          "ordinal": 5,
+          "phase": "accepted",
+          "owner_boot": "c0a80c0c-aa5f-4f98-9c46-ab88b34ee40b",
+          "arm_nonce": "82649305-1845-4341-ac0a-e75a0d08aa9f",
+          "baseline": {
+            "turn_id": "01a1e0c0-662c-7022-a83f-4697e4cbe97d",
+            "ordinal": 4
+          },
+          "owned_id_count": 1,
+          "owned_ids": [
+            "01a1e0c1-0f3c-7632-adc9-290b72054612"
+          ],
+          "add_helper": {
+            "id": "f773e9f0-5d68-420a-ba5e-1bed12756716",
+            "purpose": "add",
+            "subject": null,
+            "owner_boot": "c0a80c0c-aa5f-4f98-9c46-ab88b34ee40b",
+            "kernel_boot": "6d757418-e8a4-456d-a680-21953e8fa0a3",
+            "witness": {
+              "process": {
+                "pid": 2385125,
+                "start": 39982928
+              },
+              "pgid": 2385125,
+              "kernel_boot": "6d757418-e8a4-456d-a680-21953e8fa0a3"
+            }
+          },
+          "logical_status": "fulfilled",
+          "fulfillment": {
+            "turn_id": "01a1e0c1-297c-7192-bdf8-e6b03d95d6b4",
+            "ordinal": 5
+          },
+          "cleanup_quarantined": false,
+          "cleanup_list_attempted": true
+        }
+      ],
+      "lifecycle_attempts": [
+        "ef201a9f-3146-4035-9924-c9152adbde15"
+      ]
+    },
+    {
+      "recipient": "co-t3",
+      "threshold": 3,
+      "result": "FAIL",
+      "woke_within_six_seconds": false,
+      "delivered": true,
+      "second_window_wake_delay_s": 1.76,
+      "approximate_wake_from_watch_start_s": 7.76,
+      "send_completed_utc_second_resolution": "2026-11-15T19:48:34Z",
+      "accepted_utc": "2026-11-15T19:48:34.868+00:00",
+      "first_observed_nonidle_utc_second_resolution": "2026-11-15T19:48:42Z",
+      "queue_transport_ok": true,
+      "proved_attempts": [
+        {
+          "attempt": "d2d59f66-eff0-4ceb-98e4-846a683f64ce",
+          "ordinal": 6,
+          "phase": "accepted",
+          "owner_boot": "c0a80c0c-aa5f-4f98-9c46-ab88b34ee40b",
+          "arm_nonce": "710bd5c5-7330-48e0-99de-dabe79490028",
+          "baseline": {
+            "turn_id": "01a1e0c0-75e8-78d0-adb6-d03804b96df9",
+            "ordinal": 4
+          },
+          "owned_id_count": 1,
+          "owned_ids": [
+            "01a1e0c1-1dae-7f62-8eb9-66cb8802e4fe"
+          ],
+          "add_helper": {
+            "id": "8c8437a6-3909-418f-a300-d34b9d2e93b4",
+            "purpose": "add",
+            "subject": null,
+            "owner_boot": "c0a80c0c-aa5f-4f98-9c46-ab88b34ee40b",
+            "kernel_boot": "6d757418-e8a4-456d-a680-21953e8fa0a3",
+            "witness": {
+              "process": {
+                "pid": 2385617,
+                "start": 39983298
+              },
+              "pgid": 2385617,
+              "kernel_boot": "6d757418-e8a4-456d-a680-21953e8fa0a3"
+            }
+          },
+          "logical_status": "fulfilled",
+          "fulfillment": {
+            "turn_id": "01a1e0c1-3937-78d3-bb0d-cc0b8e72fa5a",
+            "ordinal": 5
+          },
+          "cleanup_quarantined": false,
+          "cleanup_list_attempted": true
+        }
+      ],
+      "lifecycle_attempts": [
+        "d2d59f66-eff0-4ceb-98e4-846a683f64ce"
+      ]
+    }
+  ],
+  "cleanup": {
+    "problems": [],
+    "owned_workspace_closed": true,
+    "owned_daemon_stopped": true,
+    "scratch_root_removed": true,
+    "scratch_auth_copy": "deleted unchanged"
+  },
+  "source": {
+    "url": "https://github.com/openai/codex/blob/rust-v0.167.0/codex-rs/ext/queue/src/service.rs",
+    "external_poll_lines": [
+      82,
+      89
+    ],
+    "external_poll_seconds": 10,
+    "enqueue_local_wake_lines": [
+      252,
+      265
+    ],
+    "interpretation": "Separate-process enqueue commits to the shared store; immediate wake is local to the helper manager. Receiver external commits are discovered on a ten-second polling cadence. Source behavior explains a possible delay, not a measurement of this run."
+  },
+  "evidence_limits": [
+    "Canonical samples lack observation timestamps; exact first native Start wall time cannot be recovered.",
+    "Command log UTC has second resolution. The late_wake_s values are offsets from a second window, not publication-to-wake latency.",
+    "No full rollout transcript was retained before scratch cleanup."
+  ],
+  "raw_sha256": {
+    "results.json": "4b1cbf2247d2fec4ff758c00fff5e05d24bed1d134f7c57f898e42bbf9a80927",
+    "commands.jsonl": "104e25dab19c89e95cc4b23e37c39cec1d55cfb15e69a48f343854cb185b9250"
+  }
+}
