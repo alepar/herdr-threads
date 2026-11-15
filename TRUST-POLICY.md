@@ -3980,3 +3980,31 @@ surviving process, this observation can remain stale. It may admit a marker for 
 unloaded session, which can remain pending until an explicit resume. This combined
 failure is an accepted observation limit, not an asserted cross-process loadedness
 query. It changes no seat continuity, binding attribution or receipt evidence.
+
+
+### Qualified native-turn observation for queue wake purpose (2026-11-14)
+
+A canonically validated native turn-start from an exact top-level binding/session,
+execution/generation and live process scope may fulfill the logical purpose of a
+previous queue wake: the target became active. It is not queue-consumption proof,
+body display, receipt evidence or invitation acceptance. A user-started turn may
+satisfy this purpose while an older marker remains; its cancellation is best effort.
+Generic seat contact, sibling activity, queue absence and newer attention do not
+supply this observation. Physical effect phase/owned IDs and helper-cleanup
+uncertainty remain independent of logical fulfillment.
+
+The qualified observation uses validated adapter-native turn IDs and bounded
+durable current-turn state, ordered by canonical acceptance. It does not assume
+wall-clock ordering or sortable native IDs. Ordinary current-ID repeats and
+End-first reports are idempotent; a mismatched End cannot idle a different active
+turn. Matched Start/End bootstraps queue eligibility. Missing metadata leaves
+ordinary hook delivery available. Native turn payloads never enroll/reconnect or
+move bindings; exact canonical claim checks precede qualified recording.
+
+Accepted limit: these best-effort, non-journaled native hook reports provide
+observation order, not proof of actual runtime chronology. An arbitrarily delayed
+old payload with an ID no longer current may be observed as new. No lifetime replay
+proof or unbounded seen-ID history is claimed. This cooperative wake observation
+changes no receipt provenance and cannot authorize another add for the same durable
+attempt. The storage/report prerequisite is inactive until scheduler integration
+implements and qualifies the separate logical and physical state transitions.
