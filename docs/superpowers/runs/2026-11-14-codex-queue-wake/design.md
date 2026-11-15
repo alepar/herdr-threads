@@ -61,6 +61,11 @@ Initial refusal bounds: capture budget 100ms, at most 1024 descriptors, env 64Ki
 
 Any partial write of add bytes makes transport failure uncertain; no retry/native fallback follows from an error after that boundary. Known accepted ID remains accepted even if cleanup reports an error. Deterministic tests cover partial writes, initialization and final-callback refusal, mismatched files, overflows, timeouts, descendant cleanup and incomplete list. The slice adds no scheduler selection or persistent wake policy; those follow a separate reviewed retry contract.
 
+Final source-contract ruling: the isolated no-auth private-home/shared-SQLite check passed: helper loaded/list stayed empty before and after add/list/delete, queue database device/inode matched, no turn or auth operation ran, and owned scratch/processes were cleaned. Retain its source/check artifacts with the adapter implementation. The final add callback is mutable and fallible, invoked once after helper initialization and exact database/receiver revalidation. False or error means no add bytes are written.
+
+Cooperative observed-loadedness is accepted for this slice, without a cross-process runtime-query prerequisite. Normal SessionEnd invalidates canonical eligibility before persistence cleanup; a missing session lock also refuses queue. Missed SessionEnd combined with failed writer cleanup can retain stale eligibility in a surviving process and admit a marker for an unloaded session, possibly retained until explicit resume. That combined failure is an accepted observation limit, now recorded in TRUST-POLICY. It is not evidence that lock presence means dispatchability. Explicit End cannot manufacture dormant native authority; existing canonical fallback rules remain decisive. With these rulings, ht-d2jq.3 is authorized to proceed without further design confirmation for routine implementation choices.
+
+
 ## Historical conditional design (superseded where the amendment differs)
 
 ## Evidence and decision

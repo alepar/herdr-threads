@@ -3966,3 +3966,17 @@ receipt evidence. Exact canonical target and ordinary body-delivery attribution
 remain unchanged. This policy permits a future qualified transport; it does not
 claim one is implemented. Design: `docs/superpowers/runs/2026-11-14-codex-queue-wake/design.md`,
 “Current amendment: observed-idle enqueue”.
+
+
+For the initial queue adapter, loadedness is a cooperative observation: a current
+canonical connected top-level SessionStart binding, its live foreground process
+fingerprint/kernel boot and its current native-session writer-lock file, rechecked
+after helper initialization and at final authorization. The lock alone is not
+proof that the runtime still has the session loaded. A normal SessionEnd disconnect
+or missing lock refuses queue admission; any native fallback follows existing
+canonical rules and cannot infer dormant authority from an ended binding.
+If SessionEnd reporting is missed and failed writer cleanup retains the lock in a
+surviving process, this observation can remain stale. It may admit a marker for an
+unloaded session, which can remain pending until an explicit resume. This combined
+failure is an accepted observation limit, not an asserted cross-process loadedness
+query. It changes no seat continuity, binding attribution or receipt evidence.
