@@ -13,9 +13,10 @@ type Any = any
 const WAKE = 'wake up'
 
 const BASE_SEED = 20261009
-const SCHEDULES = 800
+const SCHEDULES = 2400
 const STEPS = 60
 const HOLD_MS = 120_000
+const SETTLE_MS = 500
 // Set to a failing schedule's seed to print its steps and calls when replaying.
 const TRACE_SEED: number | null = null
 
@@ -65,7 +66,7 @@ function runSchedule(seed: number) {
   }
   // model of what the engine told the mod
   // provisional: `${sid}|${id}` keys attached to an errored main result, confirmed by the next main step
-  const m: Any = { mainOpen: null as string | null, lingering: [] as string[], hold: false, holdSince: 0, rejected: false, provisional: [] as string[] }
+  const m: Any = { mainOpen: null as string | null, lingering: [] as string[], hold: false, holdSince: 0, rejected: false, provisional: [] as string[], entering: 0, settleUntil: 0 }
   const items = new Map<string, Any>() // streamed items by id
   const deliveredVia = new Map<string, string>() // `${sid}|${id}` -> via
   const settled = new Set<string>()
@@ -110,6 +111,8 @@ function runSchedule(seed: number) {
       if (seed === TRACE_SEED) console.log('  submit', idsOf(text).join(','), 'sid', core.snapshot().sid)
       if (m.mainOpen !== null) fail(`submit while main turn ${m.mainOpen} is open`)
       if (m.hold) fail('submit within the post-abort hold')
+      if (m.entering > 0) fail('submit while another prompt is entering')
+      if (world.t < m.settleUntil) fail('submit within the turn settle')
       if (text !== WAKE) fail(`submit carries more than the wake prompt: ${text.slice(0, 40)}`)
       totals.submits++
       const ids = idsOf(text)
@@ -217,6 +220,9 @@ function runSchedule(seed: number) {
 
   const child = () => world.spawns[world.spawns.length - 1]
   const newCore = async () => {
+    // the entering count and the settle live in the core's memory only
+    m.entering = 0
+    m.settleUntil = 0
     core = createCore(io)
     await core.onLoad()
   }
@@ -299,7 +305,20 @@ function runSchedule(seed: number) {
       } else m.hold = false
       m.rejected = false
       m.provisional = []
+      m.settleUntil = Math.max(m.settleUntil, world.t + SETTLE_MS)
       core.onTurnComplete({ turnId: id, isAborted: aborted })
+    }],
+    [4, 'prompt.in', async () => {
+      if (m.entering >= 2) return
+      m.entering++
+      core.onPromptIn({ origin: { kind: 'composer' }, text: 'typed' })
+    }],
+    [5, 'prompt.out', async () => {
+      if (m.entering === 0) return
+      m.entering--
+      const dropped = r.chance(0.3)
+      if (!dropped && m.mainOpen === null) m.settleUntil = Math.max(m.settleUntil, world.t + SETTLE_MS)
+      core.onPromptOut({ origin: { kind: 'composer' }, text: 'typed' }, dropped ? { drop: 'blocked by hook' } : { text: 'typed' })
     }],
     [3, 'subagent turn', async () => {
       core.onTurnStart({ turnId: `sub${r.int(5)}`, agentId: 'a1' })
@@ -447,6 +466,8 @@ function runSchedule(seed: number) {
     [2, 'session end', async () => {
       const reason = r.pick(['clear', 'resume', 'branch'])
       m.provisional = []
+      m.entering = 0
+      m.settleUntil = 0
       core.onSessionEnd(reason === 'branch' ? 'resume' : reason)
       if (reason !== 'resume') world.sid = `s${++world.sidN}`
       await advance(0)

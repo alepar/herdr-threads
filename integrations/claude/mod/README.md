@@ -117,7 +117,12 @@ builds `io` from `$`. Rules (spec D5, D6):
   `wake up` is submitted (Claude Code labels it as a message from the herdr-threads plugin) with `$.prompt.submit`; the turn it starts sees the rows. The
   append is awaited before the submit, so the order is append, then submit. A denied append submits no wake
   (items stay queued, ledger `refused` via `append`, 30 s backoff). The submit is never awaited in a hook and
-  never issued while a main turn is open (re-checked right before the call). Rows the daemon
+  never issued while a main turn is open (re-checked right before the call), nor while the engine already holds
+  another prompt: a `prompt.submit` dispatch of another origin counts as busy until it settles (the turn
+  hooks run between Enter and `turn.start`), and for 500 ms after a main `turn.complete`, or after such a
+  dispatch settles without a turn, only the wake waits (ledger `held`, reason `settle`), so a queued user
+  message or task notification starts first; its `turn.start` reads the appended rows and clears the wake
+  (`docs/validation/claude-wake-busy-2026-11-14.md`). Rows the daemon
   marks `wakes: false` (priority above the seat's nudge threshold; streamed as `lazy`) go to
   `$.session.append` at once. Each context or append delivery logs one dim `$.ui.log` line
   (`delivered N message(s)`; Claude Code adds the plugin-name prefix).
@@ -175,7 +180,7 @@ builds `io` from `$`. Rules (spec D5, D6):
 
 `scripts/test-claude-mod` runs `claude plugin validate --strict` and `claude plugin test` with
 an isolated `CLAUDE_CONFIG_DIR`, or prints `skipped: <reason>` when `claude` is absent or older
-than 2.1.287. `tests/delivery.test.ts` has one test per rule; `tests/stress.test.ts` runs 600
+than 2.1.287. `tests/delivery.test.ts` has one test per rule; `tests/stress.test.ts` runs 2400
 seeded schedules (base seed constant `BASE_SEED`; a failure names the seed and step, and
 `TRACE_SEED` replays one). The runner gives tests no environment, so the seed is edited in the
 file.

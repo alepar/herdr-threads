@@ -73,6 +73,11 @@ function harness(opts: Any = {}) {
       if (h.boxFails) throw new Error('no prompt')
       return { text: h.box }
     },
+    // `settle: 'manual'` leaves the turn-boundary settle to the test's clock; otherwise the timer fires at once.
+    after: opts.settle === 'manual' ? undefined : (ms: number, fn: () => void) => {
+      h.t += ms
+      fn()
+    },
     submit: (text) => {
       h.submits.push(text)
       h.calls.push({ op: 'submit', text })
@@ -697,13 +702,110 @@ test('a draft in the prompt box delays an idle submit up to 120 s, then it submi
   expect(h.submits.length).toBe(1)
 })
 
-test('a draft that is cleared lets the submit go at the next tick', async () => {
+test('a draft deleted without a prompt entering lets the submit go at the next tick', async () => {
   const h = await harness({ state: IDLE, box: 'my draft' }).boot()
   h.line(msg('m1'))
   await flush()
   h.box = ''
   await h.advance(1000)
   expect(h.submits.length).toBe(1)
+})
+
+// ---- a prompt the engine already holds (wake-busy investigation, 2026-11-14) ----
+
+const COMPOSER = { origin: { kind: 'composer' }, text: 'the user prompt' }
+
+test('a prompt entering the engine holds the wake until its turn starts (Enter to turn.start)', async () => {
+  const h = await harness({ state: IDLE, box: 'my draft', settle: 'manual' }).boot()
+  h.line(msg('m1'))
+  await flush()
+  expect(h.entries.some((e: Any) => e.kind === 'held' && e.reason === 'draft')).toBe(true)
+  // Enter: the composer is empty, the UserPromptSubmit hooks run, no turn is open yet
+  h.box = ''
+  h.core.onPromptIn(COMPOSER)
+  await h.advance(1000)
+  expect(h.appends.length).toBe(0)
+  expect(h.submits.length).toBe(0)
+  h.core.onTurnStart({ turnId: 'u1', text: COMPOSER.text })
+  h.core.onPromptOut(COMPOSER, { text: COMPOSER.text, origin: COMPOSER.origin })
+  await h.advance(1000)
+  expect(h.submits.length).toBe(0)
+  // the user's turn carries the item; nothing is left to wake for
+  const out = await h.core.onToolCall({}, answered)
+  expect(out.context[0]).toContain('body of m1')
+  h.core.onTurnComplete({ turnId: 'u1' })
+  await h.advance(1000)
+  expect(h.submits.length).toBe(0)
+  expect(h.core.snapshot().queue).toEqual([])
+})
+
+test('a prompt queued behind the turn starts first: the rows are appended and no wake is submitted', async () => {
+  const h = await harness({ state: IDLE, settle: 'manual' }).boot()
+  h.core.onTurnStart({ turnId: 't1' })
+  h.line(msg('m1'))
+  await flush()
+  h.core.onTurnComplete({ turnId: 't1' })
+  await flush()
+  expect(h.appends.length).toBe(1)
+  expect(h.submits.length).toBe(0)
+  expect(h.entries.some((e: Any) => e.kind === 'held' && e.reason === 'settle')).toBe(true)
+  // the engine starts the queued prompt's turn 19 ms later (probe on 2.1.325)
+  h.t += 19
+  h.core.onTurnStart({ turnId: 't2' })
+  await h.advance(1000)
+  expect(h.submits.length).toBe(0)
+  expect(h.core.snapshot().turns.wake).toBeNull()
+  h.core.onTurnComplete({ turnId: 't2' })
+  await h.advance(1000)
+  expect(h.submits.length).toBe(0)
+})
+
+test('after a turn ends with nothing queued the wake is submitted once the settle elapses', async () => {
+  const h = await harness({ state: IDLE, settle: 'manual' }).boot()
+  h.core.onTurnStart({ turnId: 't1' })
+  h.line(msg('m1'))
+  await flush()
+  h.core.onTurnComplete({ turnId: 't1' })
+  await flush()
+  expect(h.appends.length).toBe(1)
+  expect(h.submits.length).toBe(0)
+  await h.advance(499)
+  expect(h.submits.length).toBe(0)
+  await h.advance(1)
+  expect(h.submits).toEqual([WAKE])
+  expect(h.appends.length).toBe(1)
+})
+
+test('a dropped prompt clears the entering state and the wake goes out', async () => {
+  const h = await harness({ state: IDLE, settle: 'manual' }).boot()
+  h.core.onPromptIn(COMPOSER)
+  h.line(msg('m1'))
+  await flush()
+  expect(h.submits.length).toBe(0)
+  h.core.onPromptOut(COMPOSER, { drop: 'UserPromptSubmit operation blocked by hook' })
+  await flush()
+  expect(h.submits).toEqual([WAKE])
+})
+
+test('a prompt that enters without starting a turn releases the wake after the settle', async () => {
+  const h = await harness({ state: IDLE, settle: 'manual' }).boot()
+  h.core.onPromptIn(COMPOSER)
+  h.line(msg('m1'))
+  await flush()
+  h.core.onPromptOut(COMPOSER, { text: COMPOSER.text, origin: COMPOSER.origin })
+  await flush()
+  expect(h.appends.length).toBe(1)
+  expect(h.submits.length).toBe(0)
+  await h.advance(500)
+  expect(h.submits).toEqual([WAKE])
+})
+
+test("the mod's own wake prompt entering is not a rival prompt", async () => {
+  const h = await harness({ state: IDLE, settle: 'manual' }).boot()
+  h.core.onPromptIn({ origin: { kind: 'plugin', name: 'herdr-threads' }, text: WAKE })
+  h.line(msg('m1'))
+  await flush()
+  expect(h.submits).toEqual([WAKE])
 })
 
 test('one wake submit in flight: later items wait for the next opportunity', async () => {

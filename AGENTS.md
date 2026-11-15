@@ -120,6 +120,7 @@ python3 scripts/wake-e2e.py                   # both harnesses, all cases (~10 m
 #   --harness claude|codex  --cases CASE,...  --keep (leave the workspace up)  --evidence-dir DIR
 #   opt-in, not in the default matrix: --harness codex --cases side-nudge/group,side-draft/group,modal-hold/group,wake-unreceived/group
 #   opt-in, not in the default matrix: --harness claude --cases hooks-wake/group,hooks-suggestion/group,hooks-busy-tool/group (hooks-only Claude, no mod)
+#   opt-in, not in the default matrix: --harness claude --cases enter-race/group,queued-prompt/group (mod Claude at T=0: no wake while the engine holds another prompt)
 #   opt-in: --harness codex --cases resume-idle/group (Codex killed and resumed in its pane: p1 stays silent, p0 wakes it)
 #   opt-in end-of-turn delivery (Codex Stop continuation): --harness codex --cases eot-send-p0/group
 #   opt-in real-model agy: --harness agy (credential GEMINI_API_KEY, optionally GOOGLE_GEMINI_BASE_URL for the relay)

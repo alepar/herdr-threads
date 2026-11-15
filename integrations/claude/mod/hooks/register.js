@@ -10,9 +10,13 @@ const LAUNCH = null // herdr-threads:launch (setup claude writes the hooks' invo
 const HEADER = '[herdr-threads] new messages:'
 // The content-free wake prompt (R18); pinned to src/notification/policy.rs CHANNEL_WAKE_UP by tests/harness/claude_mod.rs.
 const WAKE_PROMPT = 'wake up'
+const PLUGIN_NAME = 'herdr-threads'
 const BACKOFF_S = [1, 2, 5, 10, 30]
 const ASSUMED_BUSY_IDLE_MS = 5000
 const HOLD_IDLE_MS = 120000
+// After a main turn ends, or a prompt entered without starting one, the wake waits this long so a prompt
+// the engine already holds (a queued user message or task notification, about 20 ms on 2.1.325) starts first.
+const TURN_SETTLE_MS = 500
 const DRAFT_WAIT_MS = 120000
 const DROP_BACKOFF_MS = 30000
 const ACK_RETRY_MS = 30000
@@ -153,6 +157,9 @@ export function createCore(io) {
     submitInflight: false,
     appendInflight: false,
     submitBackoffUntil: 0,
+    // prompt.submit dispatches of other origins in flight (Enter to turn.start: the turn hooks run here)
+    entering: 0,
+    settleUntil: 0,
     appendBackoffUntil: 0,
     pred: null,
     draftSince: null,
@@ -181,7 +188,7 @@ export function createCore(io) {
 
   const cmd = (...rest) => [...(io.argv || [io.bin || 'herdr-threads']), ...rest]
   const key = (sid) => `delivered:${sid}`
-  const busy = () => S.turns.open.length > 0 || S.turns.assumedBusy || S.pred != null
+  const busy = () => S.turns.open.length > 0 || S.turns.assumedBusy || S.pred != null || S.entering > 0
   const predHas = (id) => (S.pred != null && S.pred.ids.includes(id)) || S.heldProv.some((h) => h.ids.includes(id))
 
   function ledger(kind, fields = {}) {
@@ -643,6 +650,16 @@ export function createCore(io) {
       if (S.turns.wake && !S.disposed && gen === S.gen) held(busy() ? 'busy' : 'post_abort', bids)
       return
     }
+    // The rows are in the session; only the wake waits. A turn that starts meanwhile reads them and clears it.
+    const settle = S.settleUntil - io.now()
+    if (settle > 0) {
+      S.submitInflight = false
+      held('settle', bids)
+      try {
+        io.after?.(settle, () => void pump())
+      } catch {}
+      return
+    }
     const wake = S.turns.wake
     ledger('submit', { ids: [], via: 'submit', reason: 'wake' })
     let q
@@ -934,7 +951,25 @@ export function createCore(io) {
     const interrupted = e.isAborted === true || e.reason === 'aborted' || S.turnRejected
     S.turnRejected = false
     S.turns.abortHoldSince = interrupted ? io.now() : null
+    S.settleUntil = Math.max(S.settleUntil, io.now() + TURN_SETTLE_MS)
     persistTurns()
+    void pump()
+  }
+
+  const ownPrompt = (e) => e?.origin?.kind === 'plugin' && e.origin.name === PLUGIN_NAME
+
+  /** A prompt of another origin entered the engine: until its turn starts the session is not idle. */
+  function onPromptIn(e) {
+    if (S.inert || !e || ownPrompt(e)) return
+    S.entering++
+  }
+
+  /** Its dispatch settled: a started turn is in turns.open by now; a drop frees the wake at once. */
+  function onPromptOut(e, result) {
+    if (S.inert || !e || ownPrompt(e)) return
+    if (S.entering > 0) S.entering--
+    const dropped = !result || result.drop !== undefined
+    if (!dropped && S.turns.open.length === 0) S.settleUntil = Math.max(S.settleUntil, io.now() + TURN_SETTLE_MS)
     void pump()
   }
 
@@ -968,6 +1003,8 @@ export function createCore(io) {
     S.gen++
     S.submitInflight = false
     S.appendInflight = false
+    S.entering = 0
+    S.settleUntil = 0
     S.provisional = []
     S.heldProv = []
     S.turns.provisional = []
@@ -1054,6 +1091,8 @@ export function createCore(io) {
     onTurnStep,
     onTurnComplete,
     onToolCall,
+    onPromptIn,
+    onPromptOut,
     onLine,
     onChildExit,
     onSessionEnd,
@@ -1116,6 +1155,7 @@ function buildIo($, ledgerFile, binName, watchEnv = null) {
     now: () => Date.now(),
     sessionId: () => $.session.id(),
     promptRead: () => $.prompt.read(),
+    after: (ms, fn) => $.clock.after(ms, fn),
     submit: (text) => guard(() => $.prompt.submit({ text })),
     append: (text) =>
       guard(() => $.session.append({ message: { type: 'user', content: [{ type: 'text', text }] } })),
@@ -1221,6 +1261,26 @@ export const register = (on) => {
     const r = await next(e)
     // The handler has returned: the tick re-reads the session id and restarts watch.
     if (core) void core.onTick()
+    return r
+  })
+
+  // Observes only: the engine rejects a $.prompt.submit made from this dispatch, and busy() keeps pump out of it.
+  on('prompt.submit', async ($, e, next) => {
+    try {
+      if (core) core.onPromptIn(e)
+    } catch {}
+    let r
+    try {
+      r = await next(e)
+    } catch (err) {
+      try {
+        if (core) core.onPromptOut(e, null)
+      } catch {}
+      throw err
+    }
+    try {
+      if (core) core.onPromptOut(e, r)
+    } catch {}
     return r
   })
 

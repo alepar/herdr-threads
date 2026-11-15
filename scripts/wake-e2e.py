@@ -191,6 +191,25 @@ WAKE_BLOCK_CASES = ("modal-hold/group",)
 WAKE_BLOCK_HOLD_S = 30
 PICKER_ROW = re.compile(r"^\u203a 1\. ")
 WAKE_BLOCK_WAIT_S = 90
+# Opt-in, mod Claude at T=0 only (docs/validation/claude-wake-busy-2026-11-14.md): the mod must not submit its wake
+# while the engine already holds another prompt. enter-race: an ACK request is held by a typed composer draft; the
+# driver presses Enter, and a 2 s UserPromptSubmit hook (added to the scratch settings for these cases only) keeps the
+# prompt between Enter and its turn.start; the item must arrive in that turn at its tool boundary (`via: context`).
+# queued-prompt: an ACK request and a follow-up prompt both arrive while the turn writes its final answer, after its
+# last tool call; the mod appends the item at the turn's end (`via: append`) and the follow-up's turn reads it. Neither
+# may put a `wake up` into the engine's queue (the transcript's `queue-operation` rows) or on screen. A run whose
+# `via` is the other one did not stage the window and fails as such (`window_staged`).
+PROMPT_RACE_CASES = ("enter-race/group", "queued-prompt/group")
+PROMPT_RACE_HOOK_S = 2
+PROMPT_RACE_DRAFT_S = 4.0
+ENTER_RACE_PROMPT = ("Enter-race test {tag}: run the shell command `true`, then handle any herdr-threads items exactly "
+                     "as your standing instructions say, and finally print RACE-DONE.")
+QUEUED_PROMPT = ("Queued-prompt test {tag}: run the shell command `{hold}` and no other command, then write a 500-word "
+                 "essay about ocean tides without using any tool, and finally print ESSAY-DONE.")
+QUEUED_FOLLOWUP = ("Queued follow-up {tag}: handle any herdr-threads items exactly as your standing instructions say, "
+                   "and finally print RACE-DONE.")
+RACE_DONE_LINE = re.compile(r"^[^\w\n]*RACE-DONE.*$", re.M)
+RACE_PROMPT_END = "RACE-DONE."
 # Opt-in, Codex at T=0 only (ht-unmk): Codex is killed and resumed in the same pane. A resumed Codex runs no hook until
 # its first turn, so its seat stays unavailable while it sits idle; a p1 still leaves it idle, and a p0 wakes it.
 RESUME_CASES = ("resume-idle/group",)
@@ -1093,6 +1112,8 @@ class Run:
                 self.hermes_passthrough()
                 continue
             self.ht("setup", h, "--with-permissions", env=setup_env, tag=f"setup:{h}", timeout=120)
+        if "claude" in self.args.harness and getattr(self, "prompt_race_cases", False):
+            add_slow_prompt_hook(self.claude_cfg / "settings.json", PROMPT_RACE_HOOK_S)
         if self.linux and "claude" in self.args.harness:
             seed_claude_config(self.claude_cfg, self.cwd, os.environ)
             # The panes' shells are the Herdr server's, not this process's: they get the credential only from
@@ -1766,6 +1787,37 @@ def wake_delta(before, after):
 def admission_observation(observations):
     """The ACK observation to judge: one that carries a `row` if any does, else the first, else None."""
     return next((o for o in observations if o.get("row")), observations[0] if observations else None)
+
+
+def claude_wake_enqueues(cfg, sessions):
+    """How many times the mod's wake prompt entered the engine's queue in `sessions`' transcripts
+    (`<cfg>/projects/*/<session>.jsonl`, `queue-operation` `enqueue` rows whose content is the wake prompt)."""
+    count = 0
+    for session in sessions:
+        for path in (Path(cfg) / "projects").glob(f"*/{session}.jsonl"):
+            try:
+                with open(path, encoding="utf-8", errors="replace") as lines:
+                    for line in lines:
+                        if '"queue-operation"' not in line or len(line) > 4096:
+                            continue
+                        try:
+                            row = json.loads(line)
+                        except ValueError:
+                            continue
+                        count += (row.get("type") == "queue-operation" and row.get("operation") == "enqueue"
+                                  and row.get("content") == CHANNEL_WAKE_UP)
+            except OSError:
+                continue
+    return count
+
+
+def add_slow_prompt_hook(settings_path, seconds):
+    """Append a UserPromptSubmit command hook that sleeps `seconds` to a scratch Claude settings.json."""
+    path = Path(settings_path)
+    doc = json.loads(path.read_text()) if path.is_file() else {}
+    doc.setdefault("hooks", {}).setdefault("UserPromptSubmit", []).append(
+        {"hooks": [{"type": "command", "command": f"sleep {seconds}"}]})
+    path.write_text(json.dumps(doc, indent=2) + "\n")
 
 
 def transcript_has_row(cfg, sessions, row):
@@ -2767,8 +2819,93 @@ class Recipient:
                          "expect_wake": True, "woke": woke, "t_wake_s": t_wake, "checks": checks,
                          "ref": {"messages": [silent, urgent]}, "result": "PASS" if passed else "FAIL", "utc": utc()})
 
+    # ---------- prompt-race cases (mod Claude) ----------
+    def claude_cfg_dir(self):
+        return self.run.claude_cfg if self.run.linux else Path(self.run.args.claude_config_dir or Path.home() / ".claude")
+
+    def wake_enqueues(self):
+        return claude_wake_enqueues(self.claude_cfg_dir(), {b["session"] for b in self.bindings() if b["session"]})
+
+    def ack_via(self, mid, timeout=20):
+        """How the recipient's ACK of `mid` was observed (`context`, `append`, ...), or None."""
+        end = time.time() + timeout
+        while True:
+            obs = admission_observation([json.loads(text) for table in ("receipt_state", "receipts")
+                                         for (text,) in self.store_rows(
+                f"SELECT ack_observation FROM {table} WHERE message_id=? AND seat_id=? AND ack_observation IS NOT NULL",
+                (mid, self.seat))])
+            if obs is not None or time.time() >= end:
+                return obs.get("via") if obs else None
+            time.sleep(1)
+
+    def prompt_race_case(self, case):
+        """PROMPT_RACE_CASES: no wake is submitted while the engine holds another prompt (Enter to turn.start, or a
+        prompt queued behind the turn), and the item reaches the model in that prompt's turn."""
+        tag = f"{case} {self.run.run_id}"
+        enter = case.startswith("enter-race")
+        gap = SPACING_S - (time.time() - self.last_wake)
+        if gap > 0:
+            self.run.stopping.wait(gap)
+        self.wait_idle()
+        before, enqueued_before, checks = self.screen(1000), self.wake_enqueues(), {}
+        if enter:
+            anchor = f"Enter-race test {tag}"
+            self.run.herdr("pane", "send-text", self.pane, ENTER_RACE_PROMPT.format(tag=tag))  # a draft, no Enter
+            time.sleep(1)
+            mid = self.send("ack", tag, direct=False)
+            self.run.stopping.wait(PROMPT_RACE_DRAFT_S)
+            checks["held_by_draft"] = (self.status() in IDLE and wake_delta(before, self.screen(1000)) == 0
+                                       and self.wake_enqueues() == enqueued_before)
+            self.run.herdr("agent", "send-keys", self.pane, "enter", check=False)
+        else:
+            anchor = f"Queued follow-up {tag}"
+            with BusyBarrier(self.run.root) as hold:
+                entry, _ = self.enter_busy(hold, QUEUED_PROMPT.format(tag=tag, hold=hold.command()),
+                                           f"Queued-prompt test {tag}")
+                checks.update(entry)
+            # The hold is released: the turn is past its last tool call and writing the essay.
+            time.sleep(1.5)
+            mid = self.send("ack", tag, direct=False)
+            checks["busy_at_send"] = self.status()
+            self.run.herdr("pane", "send-text", self.pane, QUEUED_FOLLOWUP.format(tag=tag))
+            time.sleep(0.5)
+            self.run.herdr("agent", "send-keys", self.pane, "enter", check=False)
+        end, idle_since = time.time() + TURN_TIMEOUT_MS / 1000, None
+        while time.time() < end and not (busy_turn_split(self.screen(1000), anchor, done=RACE_DONE_LINE,
+                                                         prompt_end_text=RACE_PROMPT_END) or ("", "", False))[2]:
+            idle_since = (idle_since or time.time()) if self.status() in IDLE else None
+            if idle_since and time.time() - idle_since > BUSY_END_GRACE_S + PROMPT_RACE_HOOK_S:
+                break
+            time.sleep(0.5)
+        while time.time() < end and self.status() not in IDLE:
+            time.sleep(0.25)
+        checks["self_started_turn_after_s"] = self.watch_quiet(BUSY_AFTER_S)
+        self.wait_idle()
+        screen = self.screen(1000)
+        split = busy_turn_split(screen, anchor, done=RACE_DONE_LINE, prompt_end_text=RACE_PROMPT_END)
+        checks["turn_end_seen"] = split[2] if split else "prompt not on screen"
+        checks["wake_prompts_on_screen"] = wake_delta(before, screen)
+        checks["wake_enqueues"] = self.wake_enqueues() - enqueued_before
+        checks["delivered"] = self.on_screen(mid)
+        checks["ack"] = self.receipt(mid)
+        checks["ack_via"] = self.ack_via(mid)
+        checks["window_staged"] = checks["ack_via"] == ("context" if enter else "append")
+        self.settled()
+        passed = (checks["wake_enqueues"] == 0 and checks["wake_prompts_on_screen"] == 0
+                  and checks["self_started_turn_after_s"] is None and checks["turn_end_seen"] is True
+                  and checks["delivered"] and checks["ack"] == "acknowledged" and checks["window_staged"]
+                  and checks.get("held_by_draft", True) and checks.get("busy_at_send", "working") not in IDLE)
+        self.run.record({"case": case, "harness": self.harness, "threshold": self.threshold, "recipient": self.name,
+                         "expect_wake": False,
+                         "woke": checks["wake_enqueues"] != 0 or checks["wake_prompts_on_screen"] != 0
+                         or checks["self_started_turn_after_s"] is not None,
+                         "t_wake_s": None, "hello_sent": False, "checks": checks, "ref": {"message": mid},
+                         "result": "PASS" if passed else "FAIL", "utc": utc()})
+
     # ---------- one case ----------
     def case(self, case):
+        if case in PROMPT_RACE_CASES:
+            return self.prompt_race_case(case)
         if case in WAKE_BLOCK_CASES:
             return self.wake_block_case(case)
         if case in RESUME_CASES:
@@ -3264,6 +3401,9 @@ def applies(recipient, case):
         return getattr(recipient, "tmux", False) and case in TMUX_CASES
     if case in SIDE_CASES:
         return recipient.harness == "codex"
+    if case in PROMPT_RACE_CASES:
+        return (recipient.harness == "claude" and recipient.threshold == 0
+                and not getattr(recipient, "hooks_only", False))
     if getattr(recipient, "hooks_only", False) or case in HOOKS_CASES:
         return getattr(recipient, "hooks_only", False) and case in HOOKS_CASES
     if case in EOT_CASES or case.startswith("busy-tool-"):
@@ -3378,6 +3518,7 @@ def main(argv=None):
                     + "; opt-in, Codex only: " + ", ".join(SIDE_CASES + EOT_CASES + WAKE_BLOCK_CASES + UNRECEIVED_CASES
                                                       + RESUME_CASES)
                     + "; opt-in, hooks-only Claude: " + ", ".join(HOOKS_CASES)
+                    + "; opt-in, mod Claude at T=0: " + ", ".join(PROMPT_RACE_CASES)
                     + "; opt-in, a named seat in a private tmux server (claude): " + ", ".join(TMUX_CASES))
     ap.add_argument("--evidence-dir", help="default: sibling ht-wake-evidence.<run id>")
     ap.add_argument("--keep", action="store_true", help="leave the workspace and daemon running for inspection")
@@ -3418,7 +3559,7 @@ def main(argv=None):
     cases = [c for c in args.cases.split(",") if c]
     unknown = ([c for c in cases
                 if c not in CASES + SIDE_CASES + HOOKS_CASES + EOT_CASES + WAKE_BLOCK_CASES + UNRECEIVED_CASES
-                                 + RESUME_CASES + TMUX_CASES]
+                                 + RESUME_CASES + TMUX_CASES + PROMPT_RACE_CASES]
                + [h for h in args.harness if h not in HARNESSES])
     if unknown:
         ap.error(f"unknown case/harness: {unknown}")
@@ -3433,6 +3574,7 @@ def main(argv=None):
     signal.signal(signal.SIGTERM, terminate)  # SIGTERM takes the same cleanup path as Ctrl-C
     run.side_cases = any(c in SIDE_CASES for c in cases)
     run.hooks_cases = any(c in HOOKS_CASES for c in cases)
+    run.prompt_race_cases = any(c in PROMPT_RACE_CASES for c in cases)
     run.tmux_cases = any(c in TMUX_CASES for c in cases)
     rc = EXIT_FAIL
     try:
