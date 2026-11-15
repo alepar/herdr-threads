@@ -331,69 +331,7 @@ it only for the caller's own pane. The retained continuity intent stores the key
 records a fresh intent. A hook answered with a key refusal (a conflict or `ContinuityKeyPending`) succeeds with no enrollment
 and shows the model nothing; the refusal goes to its stderr diagnostic and the next event presents the key again. A keyed
 claim answered `ServiceBusy` keeps its intent the same way, unseen, and never falls back to a keyless enrollment. Limits:
-*Hookless harnesses and the continuity key*, *Key inheritance outside threads* (`## Pi native extension (2026-11-14, ht-jr1g)
-
-Pi admits only an explicitly claimed terminal TUI owner. Its extension supplies the native
-`sessionManager.getSessionId()` together with `HERDR_THREADS_PI_SESSION`,
-`HERDR_THREADS_PI_ROLE=top_level`, `HERDR_THREADS_PI_MODE=tui` and its positive process PID in
-`HERDR_THREADS_PI_PID`. The client selects the innermost actual supported pi entrypoint or native
-process before checking those claims. A PID variable alone never identifies pi. The claimed PID
-must equal that selected process; an inherited outer PID, missing or malformed role/session/mode,
-nonterminal mode or explicit child marker refuses attribution. Hook payload fields must agree with
-that same environment and actual process fingerprint before any lifecycle, Current or SessionEnd
-binding event. Evidence failure returns a decode refusal; it never downgrades and proceeds with a
-SessionEnd event. These are cooperative consistency checks under `cooperative_env_session`, not
-security or native top-level attestation. `PI_SESSION_ID` alone grants no attribution.
-
-Startup/reload, new, resume and fork claim their native session through the existing lifecycle
-rules; compact/tree re-entry retains it. Native metadata never merges seats or moves/ends a
-binding by inference. Shutdown reports only the existing SessionEnd liveness disconnect. Local
-execution and branch fences invalidate stale callbacks, retries, timers and pending context
-evidence; cleanup removes only environment values still equal to the old owner's. A failed
-best-effort disconnect retains the existing conservative stale-liveness limit.
-
-Pi's lifecycle hook is observer-only: it registers/refreshes the canonical binding and carries
-fixed guidance/routing/diagnostics, never inbox or notice bodies. The adapter's neutral
-channel-owned output policy omits canonical CheckIn inbox hydration and notice selection before
-settlement; it advances neither warning-offer nor notice-offer frontiers for omitted output.
-Hook stdout grants no hook-context receipt, display, lazy completion or read-cursor advancement.
-Existing lifecycle cursor seeding and reconnect history rules retain their ordinary semantics.
-Only the extension's watch channel delivers mail. Guidance is tracked separately and never ACKed.
-
-Under the existing `cooperative_mod_delivery` provenance, a pi receipt requires the exact full
-unchanged custom-message frame and nonce both in the current native session's finalized current
-branch and in its model-bound context callback, under the same admitted local execution and branch
-revision. The extension then names only eligible complete ordinary/lazy IDs with
-`watch ack --via context`; it invents no stored-row ID. Returned drafts, preview entries, void API
-returns, queue acceptance, message-end events, context without the accepted current-branch entry,
-and accepted entries without later context supply no receipt. Truncated items never ACK and
-invitations are never automatically accepted. Failed ACKs retry only already evidenced exact IDs
-under their original execution/branch fences. Tree changes invalidate unconsumed evidence;
-previously valid receipts remain settled.
-
-Wake is channel-only and content-free, using the existing wake marker. With no admitted live
-extension/channel there is no native composer fallback; explicit inbox remains available.
-Threshold admission still comes from the daemon. Fresh native idle, current owner, editor-empty
-and UI-span checks gate the extension's synchronous submission. Missing required native APIs,
-watch failure, rejected/altered drafts, non-completed boundaries, saturated wake novelty history
-or an unreceived wake conservatively degrade the affected delivery/wake capability; unchanged
-attention cannot repeatedly start runs. Reconnect, a new owner or a qualifying authentic native
-event may retry admission under the existing bounded backoff. Omitted/displaced bodies remain
-canonical and unacknowledged for replay.
-
-Accepted limits: the explicit role is the bundled extension's cooperative assertion. A third-party
-launcher that strips ownership/child markers and starts another interactive TUI is indistinguishable
-from a new ordinary owner and must participate in the child contract. Arbitrary SDK/multisession,
-RPC/JSON/print and unknown-child hosts are excluded. Custom or remote shells that strip owner claims
-cannot be attributed. Current-branch and context observation are not disk flush, provider receipt
-or model consumption: later context handlers can transform/remove data and downstream transport can
-fail. Late callbacks that escaped an extension/runtime's own fences cannot supply native
-attestation; local evidence is only the cooperative claim carried by that invocation. Built-in
-modal behavior beyond observed editor/UI APIs remains a qualification limit, never permission to
-type into the composer. No new provenance, wire field, seat merge or heuristic continuity rule is
-introduced.
-
-## Accepted limits`).
+*Hookless harnesses and the continuity key*, *Key inheritance outside threads* (`## Accepted limits`).
 
 A herdr-threads daemon upgrade can leave a still-running native session needing recovery;
 C1 does not require that session to restart or emit a resumed SessionStart. Non-resume
@@ -2414,6 +2352,68 @@ A tombstone is removed, and the node is shown and its logs wanted again, in exac
 - the node itself completes a direct link handshake with this node (N6 binds the link to its key), which proves it
   alive: the daemon removes the tombstone in the same write as an `unforgotten` `peer events` row and logs it.
   Relayed contact, gossip or a third node's link never removes one.
+
+## Pi native extension (2026-11-14, ht-jr1g)
+
+Pi admits only an explicitly claimed terminal TUI owner. Its extension supplies the native
+`sessionManager.getSessionId()` together with `HERDR_THREADS_PI_SESSION`,
+`HERDR_THREADS_PI_ROLE=top_level`, `HERDR_THREADS_PI_MODE=tui` and its positive process PID in
+`HERDR_THREADS_PI_PID`. The client selects the innermost actual supported pi entrypoint or native
+process before checking those claims. A PID variable alone never identifies pi. The claimed PID
+must equal that selected process; an inherited outer PID, missing or malformed role/session/mode,
+nonterminal mode or explicit child marker refuses attribution. Hook payload fields must agree with
+that same environment and actual process fingerprint before any lifecycle, Current or SessionEnd
+binding event. Evidence failure returns a decode refusal; it never downgrades and proceeds with a
+SessionEnd event. These are cooperative consistency checks under `cooperative_env_session`, not
+security or native top-level attestation. `PI_SESSION_ID` alone grants no attribution.
+
+Startup/reload, new, resume and fork claim their native session through the existing lifecycle
+rules; compact/tree re-entry retains it. Native metadata never merges seats or moves/ends a
+binding by inference. Shutdown reports only the existing SessionEnd liveness disconnect. Local
+execution and branch fences invalidate stale callbacks, retries, timers and pending context
+evidence; cleanup removes only environment values still equal to the old owner's. A failed
+best-effort disconnect retains the existing conservative stale-liveness limit.
+
+Pi's lifecycle hook is observer-only: it registers/refreshes the canonical binding and carries
+fixed guidance/routing/diagnostics, never inbox or notice bodies. The adapter's neutral
+channel-owned output policy omits canonical CheckIn inbox hydration and notice selection before
+settlement; it advances neither warning-offer nor notice-offer frontiers for omitted output.
+Hook stdout grants no hook-context receipt, display, lazy completion or read-cursor advancement.
+Existing lifecycle cursor seeding and reconnect history rules retain their ordinary semantics.
+Only the extension's watch channel delivers mail. Guidance is tracked separately and never ACKed.
+
+Under the existing `cooperative_mod_delivery` provenance, a pi receipt requires the exact full
+unchanged custom-message frame and nonce both in the current native session's finalized current
+branch and in its model-bound context callback, under the same admitted local execution and branch
+revision. The extension then names only eligible complete ordinary/lazy IDs with
+`watch ack --via context`; it invents no stored-row ID. Returned drafts, preview entries, void API
+returns, queue acceptance, message-end events, context without the accepted current-branch entry,
+and accepted entries without later context supply no receipt. Truncated items never ACK and
+invitations are never automatically accepted. Failed ACKs retry only already evidenced exact IDs
+under their original execution/branch fences. Tree changes invalidate unconsumed evidence;
+previously valid receipts remain settled.
+
+Wake is channel-only and content-free, using the existing wake marker. With no admitted live
+extension/channel there is no native composer fallback; explicit inbox remains available.
+Threshold admission still comes from the daemon. Fresh native idle, current owner, editor-empty
+and UI-span checks gate the extension's synchronous submission. Missing required native APIs,
+watch failure, rejected/altered drafts, non-completed boundaries, saturated wake novelty history
+or an unreceived wake conservatively degrade the affected delivery/wake capability; unchanged
+attention cannot repeatedly start runs. Reconnect, a new owner or a qualifying authentic native
+event may retry admission under the existing bounded backoff. Omitted/displaced bodies remain
+canonical and unacknowledged for replay.
+
+Accepted limits: the explicit role is the bundled extension's cooperative assertion. A third-party
+launcher that strips ownership/child markers and starts another interactive TUI is indistinguishable
+from a new ordinary owner and must participate in the child contract. Arbitrary SDK/multisession,
+RPC/JSON/print and unknown-child hosts are excluded. Custom or remote shells that strip owner claims
+cannot be attributed. Current-branch and context observation are not disk flush, provider receipt
+or model consumption: later context handlers can transform/remove data and downstream transport can
+fail. Late callbacks that escaped an extension/runtime's own fences cannot supply native
+attestation; local evidence is only the cooperative claim carried by that invocation. Built-in
+modal behavior beyond observed editor/UI APIs remains a qualification limit, never permission to
+type into the composer. No new provenance, wire field, seat merge or heuristic continuity rule is
+introduced.
 
 ## Accepted limits
 
