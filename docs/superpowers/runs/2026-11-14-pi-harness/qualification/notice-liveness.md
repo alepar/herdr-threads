@@ -25,3 +25,46 @@ Causal RED deliberately omitted record_contact only: the positive case failed wi
 Focused compatibility gate: 14/14 existing and new wake-receipt/canonical presentation tests passed (0.02 s build, 0.534 s execution). All-target/all-feature clippy passed without warnings (17.37 s; real 17.42 s). Neutral and peer-wire guards passed with zero violations. Final format passed (7.89 s), git diff --check passed, and scoped host/builder process and scratch checks found no owned leftovers. The host checker consumed the clean scratch ledger before the builder repeat. Independent source review approved the frozen test diff without findings. No full suite, live run, real profile/service, credentials or production change was added.
 
 Retained private evidence: `.superpowers/sdd/implementation-plan/notice-liveness-gates/` contains red.log, green.log, focused.log, clippy.log, neutral.log, wire.log, fmt.log, cleanup logs and the frozen test diff. Frozen three-file test diff SHA256: `4c6ebe33fc5abeae4a5e0573f2e9fe253fe52e301bd5969b06c31a50b42dcc5a`.
+
+
+## Actual SDK late-confirmation boundary
+
+Test-only commit `c0b6ce379` adds `manual-late-confirm` to the existing actual-SDK
+suite. The first real `session.prompt` persists and observes the old Notice.
+Its controlled confirmation result remains held until after actual
+`agent_settled` and prompt completion. Releasing it requests predecessor stop;
+a second held gate proves no successor watch starts until that stop completes.
+The successor then supplies a new opaque-key Notice after settlement.
+
+Starts, provider calls, settlements and confirmations do not advance merely
+because that new page arrives. An explicitly supplied public
+`session.prompt("herdr-threads: wake up")` then proves exact new branch/context
+uptake and its distinct confirmation, without duplicate old content or an
+ordinary ACK. This explicit input proves extension uptake only; the scheduler
+regression above supplies the automatic-retry proof. Controlled IO also does not
+attest physical child-process cleanup or real canonical confirmation.
+
+Independent review caught an initially unbounded prompt while confirmation was
+held. Both prompts now have rejecting three-second deadlines; teardown releases
+both gates before shutdown/disposal. A private mutated copy that awaited held
+confirmation inside context failed at 3036ms and exited at 4590ms, without an
+external kill or unhandled rejection. This was a test failure-path challenge,
+not a production defect.
+
+The final affected callback/SDK suite passed **81/81 in 1017.578ms**, with no
+skips or cancellations, and scoped host/builder process/temp checks passed.
+Frozen test patch SHA256:
+`89c55fe9564d92001d99a07bc00f945334cdf1698a255c72110b44b8c56d07ad`.
+Independent review approved the revised patch with its timeout finding closed.
+No production JS or model-visible string changed. Private reports:
+`.superpowers/sdd/implementation-plan/f1-liveness-sdk-report.md` and
+`f1-liveness-sdk-review.md`.
+
+A clear/resolution Notice alone intentionally does not wake; it may wait for
+another eligible wake or user turn. A newer actionable warning stays eligible
+independently of the retained page. Retry follows the existing completion-anchored
+30/60/120/300-second ladder and safety checks. These are conditional policy facts,
+not a universal delivery deadline: an unsafe composer, focus protection, service
+failure or failure to establish body uptake can defer progress. The separate
+native `notice_hol` case is still pending here and must report actual same-turn
+or later-wake behavior without claiming a forced interleaving.
