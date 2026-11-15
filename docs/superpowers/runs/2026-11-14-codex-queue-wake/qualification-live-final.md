@@ -1,0 +1,11 @@
+# Live queue-wake qualification
+
+All 72 unique Codex behavior rows now pass under the user-accepted contract: 30 queue positives, six native-fallback inferences and 36 silent/in-turn/no-wake rows. The three-threshold baseline contributes three passes, the complete matrix contributes 67 retained passes, and only the two failed UI cases were rerun after focused driver corrections. Passing matrix cases were not repeated.
+
+Queue positives require exact-attempt Accepted evidence, baseline/nonce and committed helper witness. Regular message bodies and requested receipts still use hooks; queueing remains wake-only. Priority controls, ordinary/pair sends, invitations, ordering, requested ACKs, busy/tool delivery, UI holds, dormant resume and actual side-session census passed. No-native-after-effect and native fallback remain the approved compositional inferences, not independent host RPC traces.
+
+The final UI reruns preserve held no-activity/no-effect, model/footer and draft checks. Release-to-activity observations were 22.505 and 24.701 seconds within their unchanged 90-second retry gates. Separate conservative Accepted-to-activity upper bounds were 4.842 and 1.052 seconds within15 seconds. Exact session/turn developer input and completed output contain both correctly associated message IDs/bodies. Generic eligible queue positives use15 seconds; native/default six-second checks and gate-specific retry allowances remain unchanged.
+
+All earlier FAIL evidence remains. The initial latency failures led to explicit user acceptance of external polling latency; the UI false negatives led to reviewed oracle corrections, including the actual captured inbox_peer_data envelope. Source-derived formatter fixtures remain labeled separately from that redacted capture.
+
+Owned workspaces, daemons, scratch roots and unchanged credential copies were removed. Scoped process checking passed; temp checking reported no ledger for the live run. [Per-row coverage and provenance](qualification-live-final.json) retains current transport/window/attempt evidence. Corrected full-suite correctness, timing and final integration review remain pending; this live outcome does not waive the five-minute budget or authorize merge/release.

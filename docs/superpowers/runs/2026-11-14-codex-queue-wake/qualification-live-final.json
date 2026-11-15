@@ -1,0 +1,2552 @@
+{
+  "schema": 1,
+  "qualified_unique_rows": 72,
+  "passing_matrix_rows_reused": 67,
+  "passing_baseline_rows_reused": 3,
+  "focused_ui_rows": 2,
+  "sources": {
+    "live-accepted-baseline": {
+      "sha": "17f88564ca5ddf9cab29b335b513210285c7e566",
+      "raw_results_sha256": "78ec69cbeee007cdb7e5bcb3e242d37cd5efcfab0ffcb6708b9c2ca907f22a40"
+    },
+    "live-remaining": {
+      "sha": "285ced0bc046bc05c4729762f9fd232b07438171",
+      "raw_results_sha256": "70e409ac3d8c0b1be49ce79f5612dc87ae472f1b0f277fe3ffa96c7ea600f124"
+    },
+    "live-ui-wrapper": {
+      "sha": "23211c8db58518888a49d4015f564f8cdfa1da3c",
+      "raw_results_sha256": "234fdaecafb54e77b8f7b61cd550a57a9809e32d814e4769c0d1e0e8aa058a34"
+    }
+  },
+  "rows": [
+    {
+      "recipient": "co-plain",
+      "threshold": 0,
+      "case": "native-fallback/group",
+      "result": "PASS",
+      "actual_transport": "native_inference",
+      "wake_windows": [
+        {
+          "seconds": 6.0,
+          "queue_eligible": false,
+          "expect_wake": true
+        }
+      ],
+      "t_wake_s": 1.26,
+      "source_stage": "live-remaining",
+      "queue_proof_passed": true,
+      "accepted_attempts": [],
+      "lifecycle_attempts": []
+    },
+    {
+      "recipient": "co-plain",
+      "threshold": 0,
+      "case": "side-draft/group",
+      "result": "PASS",
+      "actual_transport": "none",
+      "wake_windows": [],
+      "t_wake_s": null,
+      "source_stage": "live-remaining",
+      "queue_proof_passed": true,
+      "accepted_attempts": [],
+      "lifecycle_attempts": []
+    },
+    {
+      "recipient": "co-plain",
+      "threshold": 0,
+      "case": "side-nudge/group",
+      "result": "PASS",
+      "actual_transport": "native_inference",
+      "wake_windows": [
+        {
+          "seconds": 6.0,
+          "queue_eligible": false,
+          "expect_wake": true
+        },
+        {
+          "seconds": 6.0,
+          "queue_eligible": false,
+          "expect_wake": true
+        }
+      ],
+      "t_wake_s": 1.26,
+      "source_stage": "live-remaining",
+      "queue_proof_passed": true,
+      "accepted_attempts": [],
+      "lifecycle_attempts": []
+    },
+    {
+      "recipient": "co-t-1",
+      "threshold": -1,
+      "case": "busy-invite/1:1",
+      "result": "PASS",
+      "actual_transport": "none",
+      "wake_windows": [],
+      "t_wake_s": null,
+      "source_stage": "live-remaining",
+      "queue_proof_passed": true,
+      "accepted_attempts": [],
+      "lifecycle_attempts": []
+    },
+    {
+      "recipient": "co-t-1",
+      "threshold": -1,
+      "case": "busy-invite/group",
+      "result": "PASS",
+      "actual_transport": "none",
+      "wake_windows": [],
+      "t_wake_s": null,
+      "source_stage": "live-remaining",
+      "queue_proof_passed": true,
+      "accepted_attempts": [],
+      "lifecycle_attempts": []
+    },
+    {
+      "recipient": "co-t-1",
+      "threshold": -1,
+      "case": "busy-send-ack/1:1",
+      "result": "PASS",
+      "actual_transport": "none",
+      "wake_windows": [],
+      "t_wake_s": null,
+      "source_stage": "live-remaining",
+      "queue_proof_passed": true,
+      "accepted_attempts": [],
+      "lifecycle_attempts": []
+    },
+    {
+      "recipient": "co-t-1",
+      "threshold": -1,
+      "case": "busy-send-ack/group",
+      "result": "PASS",
+      "actual_transport": "none",
+      "wake_windows": [],
+      "t_wake_s": null,
+      "source_stage": "live-remaining",
+      "queue_proof_passed": true,
+      "accepted_attempts": [],
+      "lifecycle_attempts": []
+    },
+    {
+      "recipient": "co-t-1",
+      "threshold": -1,
+      "case": "busy-send-p0/1:1",
+      "result": "PASS",
+      "actual_transport": "none",
+      "wake_windows": [],
+      "t_wake_s": null,
+      "source_stage": "live-remaining",
+      "queue_proof_passed": true,
+      "accepted_attempts": [],
+      "lifecycle_attempts": []
+    },
+    {
+      "recipient": "co-t-1",
+      "threshold": -1,
+      "case": "busy-send-p0/group",
+      "result": "PASS",
+      "actual_transport": "none",
+      "wake_windows": [],
+      "t_wake_s": null,
+      "source_stage": "live-remaining",
+      "queue_proof_passed": true,
+      "accepted_attempts": [],
+      "lifecycle_attempts": []
+    },
+    {
+      "recipient": "co-t-1",
+      "threshold": -1,
+      "case": "busy-send-p1/1:1",
+      "result": "PASS",
+      "actual_transport": "none",
+      "wake_windows": [],
+      "t_wake_s": null,
+      "source_stage": "live-remaining",
+      "queue_proof_passed": true,
+      "accepted_attempts": [],
+      "lifecycle_attempts": []
+    },
+    {
+      "recipient": "co-t-1",
+      "threshold": -1,
+      "case": "busy-send-p1/group",
+      "result": "PASS",
+      "actual_transport": "none",
+      "wake_windows": [],
+      "t_wake_s": null,
+      "source_stage": "live-remaining",
+      "queue_proof_passed": true,
+      "accepted_attempts": [],
+      "lifecycle_attempts": []
+    },
+    {
+      "recipient": "co-t-1",
+      "threshold": -1,
+      "case": "busy-tool-p1/group",
+      "result": "PASS",
+      "actual_transport": "none",
+      "wake_windows": [],
+      "t_wake_s": null,
+      "source_stage": "live-remaining",
+      "queue_proof_passed": true,
+      "accepted_attempts": [],
+      "lifecycle_attempts": []
+    },
+    {
+      "recipient": "co-t-1",
+      "threshold": -1,
+      "case": "invite/group",
+      "result": "PASS",
+      "actual_transport": "queue",
+      "wake_windows": [
+        {
+          "seconds": 15.0,
+          "queue_eligible": true,
+          "expect_wake": true
+        }
+      ],
+      "t_wake_s": 9.86,
+      "source_stage": "live-remaining",
+      "queue_proof_passed": true,
+      "accepted_attempts": [
+        {
+          "attempt": "5c653116-37d1-4e8d-b7a4-e6dcd18a7a08",
+          "ordinal": 2,
+          "phase": "accepted",
+          "owner_boot": "7674fad5-2670-4c00-87db-4565c5dd66f6",
+          "arm_nonce": "fcb9d855-d80d-4ff9-a3a8-4c9de80860ec",
+          "baseline": {
+            "turn_id": "01a1e0d6-8963-76a1-bfb0-363ec560dc03",
+            "ordinal": 2
+          },
+          "owned_id_count": 1,
+          "owned_ids": [
+            "01a1e0d7-3fcb-70c1-b113-7dfb49048ae3"
+          ],
+          "add_helper": {
+            "id": "ec1b2bdc-5300-4353-9aaa-ae340804847a",
+            "purpose": "add",
+            "subject": null,
+            "owner_boot": "7674fad5-2670-4c00-87db-4565c5dd66f6",
+            "kernel_boot": "6d757418-e8a4-456d-a680-21953e8fa0a3",
+            "witness": {
+              "process": {
+                "pid": 4132249,
+                "start": 40128340
+              },
+              "pgid": 4132249,
+              "kernel_boot": "6d757418-e8a4-456d-a680-21953e8fa0a3"
+            }
+          },
+          "logical_status": "fulfilled",
+          "fulfillment": {
+            "turn_id": "01a1e0d7-6337-7071-a86e-ae4cc17480b5",
+            "ordinal": 3
+          },
+          "cleanup_quarantined": false,
+          "cleanup_list_attempted": true
+        }
+      ],
+      "lifecycle_attempts": [
+        "5c653116-37d1-4e8d-b7a4-e6dcd18a7a08"
+      ]
+    },
+    {
+      "recipient": "co-t-1",
+      "threshold": -1,
+      "case": "mixed-order/group",
+      "result": "PASS",
+      "actual_transport": "queue",
+      "wake_windows": [
+        {
+          "seconds": 15.0,
+          "queue_eligible": true,
+          "expect_wake": true
+        }
+      ],
+      "t_wake_s": 10.35,
+      "source_stage": "live-remaining",
+      "queue_proof_passed": true,
+      "accepted_attempts": [
+        {
+          "attempt": "b69d9bd1-eb22-4784-ba8c-cd3425d6142b",
+          "ordinal": 24,
+          "phase": "accepted",
+          "owner_boot": "7674fad5-2670-4c00-87db-4565c5dd66f6",
+          "arm_nonce": "ab390ca9-b5ef-4c0a-a3f0-ec032fb93b47",
+          "baseline": {
+            "turn_id": "01a1e0dd-7db7-7393-ae43-a3714bd88ffe",
+            "ordinal": 20
+          },
+          "owned_id_count": 1,
+          "owned_ids": [
+            "01a1e0de-1cfb-7210-a4b6-6040bf2c9b8a"
+          ],
+          "add_helper": {
+            "id": "b6f9755d-0fc6-4641-87d7-6bbb053ea335",
+            "purpose": "add",
+            "subject": null,
+            "owner_boot": "7674fad5-2670-4c00-87db-4565c5dd66f6",
+            "kernel_boot": "6d757418-e8a4-456d-a680-21953e8fa0a3",
+            "witness": {
+              "process": {
+                "pid": 734403,
+                "start": 40173334
+              },
+              "pgid": 734403,
+              "kernel_boot": "6d757418-e8a4-456d-a680-21953e8fa0a3"
+            }
+          },
+          "logical_status": "fulfilled",
+          "fulfillment": {
+            "turn_id": "01a1e0de-4106-74d2-a9fe-c714f16add09",
+            "ordinal": 21
+          },
+          "cleanup_quarantined": false,
+          "cleanup_list_attempted": true
+        }
+      ],
+      "lifecycle_attempts": [
+        "b69d9bd1-eb22-4784-ba8c-cd3425d6142b"
+      ]
+    },
+    {
+      "recipient": "co-t-1",
+      "threshold": -1,
+      "case": "pair-open/1:1",
+      "result": "PASS",
+      "actual_transport": "queue",
+      "wake_windows": [
+        {
+          "seconds": 15.0,
+          "queue_eligible": true,
+          "expect_wake": true
+        }
+      ],
+      "t_wake_s": 5.56,
+      "source_stage": "live-remaining",
+      "queue_proof_passed": true,
+      "accepted_attempts": [
+        {
+          "attempt": "f2906569-548e-404f-a425-d8323de3d04e",
+          "ordinal": 4,
+          "phase": "accepted",
+          "owner_boot": "7674fad5-2670-4c00-87db-4565c5dd66f6",
+          "arm_nonce": "085842eb-2ce8-41ca-8342-9005a48486a7",
+          "baseline": {
+            "turn_id": "01a1e0d7-6337-7071-a86e-ae4cc17480b5",
+            "ordinal": 4
+          },
+          "owned_id_count": 1,
+          "owned_ids": [
+            "01a1e0d8-144f-7ca3-a680-6d4f3cfcc009"
+          ],
+          "add_helper": {
+            "id": "f902e5e5-5fe2-431a-b3f5-ea8cb5969c1e",
+            "purpose": "add",
+            "subject": null,
+            "owner_boot": "7674fad5-2670-4c00-87db-4565c5dd66f6",
+            "kernel_boot": "6d757418-e8a4-456d-a680-21953e8fa0a3",
+            "witness": {
+              "process": {
+                "pid": 42541,
+                "start": 40133781
+              },
+              "pgid": 42541,
+              "kernel_boot": "6d757418-e8a4-456d-a680-21953e8fa0a3"
+            }
+          },
+          "logical_status": "fulfilled",
+          "fulfillment": {
+            "turn_id": "01a1e0d8-2687-7840-bd5c-4ba3124ad0ed",
+            "ordinal": 5
+          },
+          "cleanup_quarantined": false,
+          "cleanup_list_attempted": true
+        }
+      ],
+      "lifecycle_attempts": [
+        "f2906569-548e-404f-a425-d8323de3d04e"
+      ]
+    },
+    {
+      "recipient": "co-t-1",
+      "threshold": -1,
+      "case": "send-ack/1:1",
+      "result": "PASS",
+      "actual_transport": "queue",
+      "wake_windows": [
+        {
+          "seconds": 15.0,
+          "queue_eligible": true,
+          "expect_wake": true
+        }
+      ],
+      "t_wake_s": 10.09,
+      "source_stage": "live-remaining",
+      "queue_proof_passed": true,
+      "accepted_attempts": [
+        {
+          "attempt": "8dd792cf-cc50-4bc6-9e65-4ab88ed1dec8",
+          "ordinal": 21,
+          "phase": "accepted",
+          "owner_boot": "7674fad5-2670-4c00-87db-4565c5dd66f6",
+          "arm_nonce": "7ecaad89-fc66-4049-9323-33198c22a9e1",
+          "baseline": {
+            "turn_id": "01a1e0dc-ba67-7643-937a-cd428e0971b6",
+            "ordinal": 18
+          },
+          "owned_id_count": 1,
+          "owned_ids": [
+            "01a1e0dd-59c8-77e2-a782-039ce0a4cd24"
+          ],
+          "add_helper": {
+            "id": "6c86a3c9-d49a-4f3b-8419-3158ab0aadd5",
+            "purpose": "add",
+            "subject": null,
+            "owner_boot": "7674fad5-2670-4c00-87db-4565c5dd66f6",
+            "kernel_boot": "6d757418-e8a4-456d-a680-21953e8fa0a3",
+            "witness": {
+              "process": {
+                "pid": 671139,
+                "start": 40168337
+              },
+              "pgid": 671139,
+              "kernel_boot": "6d757418-e8a4-456d-a680-21953e8fa0a3"
+            }
+          },
+          "logical_status": "fulfilled",
+          "fulfillment": {
+            "turn_id": "01a1e0dd-7db7-7393-ae43-a3714bd88ffe",
+            "ordinal": 19
+          },
+          "cleanup_quarantined": false,
+          "cleanup_list_attempted": true
+        }
+      ],
+      "lifecycle_attempts": [
+        "8dd792cf-cc50-4bc6-9e65-4ab88ed1dec8"
+      ]
+    },
+    {
+      "recipient": "co-t-1",
+      "threshold": -1,
+      "case": "send-ack/group",
+      "result": "PASS",
+      "actual_transport": "queue",
+      "wake_windows": [
+        {
+          "seconds": 15.0,
+          "queue_eligible": true,
+          "expect_wake": true
+        }
+      ],
+      "t_wake_s": 9.46,
+      "source_stage": "live-remaining",
+      "queue_proof_passed": true,
+      "accepted_attempts": [
+        {
+          "attempt": "fdae536b-af47-49f4-9643-563ac0b03b7b",
+          "ordinal": 11,
+          "phase": "accepted",
+          "owner_boot": "7674fad5-2670-4c00-87db-4565c5dd66f6",
+          "arm_nonce": "a5e77e76-4cce-49d8-a9cf-706ed60e8128",
+          "baseline": {
+            "turn_id": "01a1e0d9-ad27-70d3-a999-a207826449a5",
+            "ordinal": 10
+          },
+          "owned_id_count": 1,
+          "owned_ids": [
+            "01a1e0da-4fb4-7451-a7af-0640d118d51c"
+          ],
+          "add_helper": {
+            "id": "e35f5b98-d44c-4fd0-9d77-e7d843da06a2",
+            "purpose": "add",
+            "subject": null,
+            "owner_boot": "7674fad5-2670-4c00-87db-4565c5dd66f6",
+            "kernel_boot": "6d757418-e8a4-456d-a680-21953e8fa0a3",
+            "witness": {
+              "process": {
+                "pid": 267717,
+                "start": 40148409
+              },
+              "pgid": 267717,
+              "kernel_boot": "6d757418-e8a4-456d-a680-21953e8fa0a3"
+            }
+          },
+          "logical_status": "fulfilled",
+          "fulfillment": {
+            "turn_id": "01a1e0da-7076-77f2-8656-229432b0a9c5",
+            "ordinal": 11
+          },
+          "cleanup_quarantined": false,
+          "cleanup_list_attempted": true
+        }
+      ],
+      "lifecycle_attempts": [
+        "fdae536b-af47-49f4-9643-563ac0b03b7b"
+      ]
+    },
+    {
+      "recipient": "co-t-1",
+      "threshold": -1,
+      "case": "send-p0/1:1",
+      "result": "PASS",
+      "actual_transport": "queue",
+      "wake_windows": [
+        {
+          "seconds": 15.0,
+          "queue_eligible": true,
+          "expect_wake": true
+        }
+      ],
+      "t_wake_s": 9.83,
+      "source_stage": "live-remaining",
+      "queue_proof_passed": true,
+      "accepted_attempts": [
+        {
+          "attempt": "92252efe-ea61-459d-9fc4-7720da925c5b",
+          "ordinal": 16,
+          "phase": "accepted",
+          "owner_boot": "7674fad5-2670-4c00-87db-4565c5dd66f6",
+          "arm_nonce": "6da7fdca-0ce9-43d8-a2a4-b89174bd10e7",
+          "baseline": {
+            "turn_id": "01a1e0db-33c7-7440-aacf-cba9fcc657ae",
+            "ordinal": 14
+          },
+          "owned_id_count": 1,
+          "owned_ids": [
+            "01a1e0db-d437-7ef3-a42d-46078b6515d1"
+          ],
+          "add_helper": {
+            "id": "d70b4910-9e07-4157-94b5-54dd96d7c212",
+            "purpose": "add",
+            "subject": null,
+            "owner_boot": "7674fad5-2670-4c00-87db-4565c5dd66f6",
+            "kernel_boot": "6d757418-e8a4-456d-a680-21953e8fa0a3",
+            "witness": {
+              "process": {
+                "pid": 524001,
+                "start": 40158354
+              },
+              "pgid": 524001,
+              "kernel_boot": "6d757418-e8a4-456d-a680-21953e8fa0a3"
+            }
+          },
+          "logical_status": "fulfilled",
+          "fulfillment": {
+            "turn_id": "01a1e0db-f716-7ca2-88c9-76b8592d736b",
+            "ordinal": 15
+          },
+          "cleanup_quarantined": false,
+          "cleanup_list_attempted": true
+        }
+      ],
+      "lifecycle_attempts": [
+        "92252efe-ea61-459d-9fc4-7720da925c5b"
+      ]
+    },
+    {
+      "recipient": "co-t-1",
+      "threshold": -1,
+      "case": "send-p0/group",
+      "result": "PASS",
+      "actual_transport": "queue",
+      "wake_windows": [
+        {
+          "seconds": 15.0,
+          "queue_eligible": true,
+          "expect_wake": true
+        }
+      ],
+      "t_wake_s": 8.32,
+      "source_stage": "live-accepted-baseline",
+      "queue_proof_passed": true,
+      "accepted_attempts": [
+        {
+          "attempt": "f5d3326b-5c62-4cf2-be6d-b518e35bf1d0",
+          "ordinal": 5,
+          "phase": "accepted",
+          "owner_boot": "89f8a394-78c6-4c42-a1bd-093be9116bcc",
+          "arm_nonce": "1eb98459-ffea-4c0d-97c0-c23a8e5e6fa7",
+          "baseline": {
+            "turn_id": "01a1e0d3-9c49-7a13-ae79-44a30ff93065",
+            "ordinal": 4
+          },
+          "owned_id_count": 1,
+          "owned_ids": [
+            "01a1e0d4-42bc-7de1-817a-be3039ce9479"
+          ],
+          "add_helper": {
+            "id": "8518b9de-0745-41db-9a51-a4655cbf4eac",
+            "purpose": "add",
+            "subject": null,
+            "owner_boot": "89f8a394-78c6-4c42-a1bd-093be9116bcc",
+            "kernel_boot": "6d757418-e8a4-456d-a680-21953e8fa0a3",
+            "witness": {
+              "process": {
+                "pid": 3888397,
+                "start": 40108755
+              },
+              "pgid": 3888397,
+              "kernel_boot": "6d757418-e8a4-456d-a680-21953e8fa0a3"
+            }
+          },
+          "logical_status": "fulfilled",
+          "fulfillment": {
+            "turn_id": "01a1e0d4-5f98-7631-b5bc-4f93d860a1c7",
+            "ordinal": 5
+          },
+          "cleanup_quarantined": false,
+          "cleanup_list_attempted": true
+        }
+      ],
+      "lifecycle_attempts": [
+        "f5d3326b-5c62-4cf2-be6d-b518e35bf1d0"
+      ]
+    },
+    {
+      "recipient": "co-t-1",
+      "threshold": -1,
+      "case": "send-p1/1:1",
+      "result": "PASS",
+      "actual_transport": "queue",
+      "wake_windows": [
+        {
+          "seconds": 15.0,
+          "queue_eligible": true,
+          "expect_wake": true
+        }
+      ],
+      "t_wake_s": 8.84,
+      "source_stage": "live-remaining",
+      "queue_proof_passed": true,
+      "accepted_attempts": [
+        {
+          "attempt": "86eb8e85-604a-44fa-ba48-ed0b342aebaf",
+          "ordinal": 13,
+          "phase": "accepted",
+          "owner_boot": "7674fad5-2670-4c00-87db-4565c5dd66f6",
+          "arm_nonce": "7288d839-566e-4376-9aff-de61921a0165",
+          "baseline": {
+            "turn_id": "01a1e0da-7076-77f2-8656-229432b0a9c5",
+            "ordinal": 12
+          },
+          "owned_id_count": 1,
+          "owned_ids": [
+            "01a1e0db-15ac-71f0-9e2f-523752e3fa1f"
+          ],
+          "add_helper": {
+            "id": "ac211232-644d-43ea-b96b-206f14612458",
+            "purpose": "add",
+            "subject": null,
+            "owner_boot": "7674fad5-2670-4c00-87db-4565c5dd66f6",
+            "kernel_boot": "6d757418-e8a4-456d-a680-21953e8fa0a3",
+            "witness": {
+              "process": {
+                "pid": 402582,
+                "start": 40153477
+              },
+              "pgid": 402582,
+              "kernel_boot": "6d757418-e8a4-456d-a680-21953e8fa0a3"
+            }
+          },
+          "logical_status": "fulfilled",
+          "fulfillment": {
+            "turn_id": "01a1e0db-33c7-7440-aacf-cba9fcc657ae",
+            "ordinal": 13
+          },
+          "cleanup_quarantined": false,
+          "cleanup_list_attempted": true
+        }
+      ],
+      "lifecycle_attempts": [
+        "86eb8e85-604a-44fa-ba48-ed0b342aebaf"
+      ]
+    },
+    {
+      "recipient": "co-t-1",
+      "threshold": -1,
+      "case": "send-p1/group",
+      "result": "PASS",
+      "actual_transport": "queue",
+      "wake_windows": [
+        {
+          "seconds": 15.0,
+          "queue_eligible": true,
+          "expect_wake": true
+        }
+      ],
+      "t_wake_s": 7.82,
+      "source_stage": "live-remaining",
+      "queue_proof_passed": true,
+      "accepted_attempts": [
+        {
+          "attempt": "8d659a0f-43b9-4e6b-bc0b-07f4c110ba44",
+          "ordinal": 6,
+          "phase": "accepted",
+          "owner_boot": "7674fad5-2670-4c00-87db-4565c5dd66f6",
+          "arm_nonce": "0fb12891-b05c-4e31-a845-8c0efbdaa001",
+          "baseline": {
+            "turn_id": "01a1e0d8-2687-7840-bd5c-4ba3124ad0ed",
+            "ordinal": 6
+          },
+          "owned_id_count": 1,
+          "owned_ids": [
+            "01a1e0d8-cdda-7401-9752-cb1a5e895d94"
+          ],
+          "add_helper": {
+            "id": "8cc240f4-adb1-4466-af5d-a9625c682fa1",
+            "purpose": "add",
+            "subject": null,
+            "owner_boot": "7674fad5-2670-4c00-87db-4565c5dd66f6",
+            "kernel_boot": "6d757418-e8a4-456d-a680-21953e8fa0a3",
+            "witness": {
+              "process": {
+                "pid": 109196,
+                "start": 40138541
+              },
+              "pgid": 109196,
+              "kernel_boot": "6d757418-e8a4-456d-a680-21953e8fa0a3"
+            }
+          },
+          "logical_status": "fulfilled",
+          "fulfillment": {
+            "turn_id": "01a1e0d8-e9d6-75b3-bf7e-84eedb068ec9",
+            "ordinal": 7
+          },
+          "cleanup_quarantined": false,
+          "cleanup_list_attempted": true
+        }
+      ],
+      "lifecycle_attempts": [
+        "8d659a0f-43b9-4e6b-bc0b-07f4c110ba44"
+      ]
+    },
+    {
+      "recipient": "co-t-1",
+      "threshold": -1,
+      "case": "send-p3/1:1",
+      "result": "PASS",
+      "actual_transport": "queue",
+      "wake_windows": [
+        {
+          "seconds": 15.0,
+          "queue_eligible": true,
+          "expect_wake": true
+        }
+      ],
+      "t_wake_s": 8.84,
+      "source_stage": "live-remaining",
+      "queue_proof_passed": true,
+      "accepted_attempts": [
+        {
+          "attempt": "2e727b50-1288-4a68-8ea6-c6c448a8cab8",
+          "ordinal": 18,
+          "phase": "accepted",
+          "owner_boot": "7674fad5-2670-4c00-87db-4565c5dd66f6",
+          "arm_nonce": "96284d15-8e96-4e83-b613-706a47e095e0",
+          "baseline": {
+            "turn_id": "01a1e0db-f716-7ca2-88c9-76b8592d736b",
+            "ordinal": 16
+          },
+          "owned_id_count": 1,
+          "owned_ids": [
+            "01a1e0dc-9b52-7970-82f3-87bd6e75c086"
+          ],
+          "add_helper": {
+            "id": "38d2f8ca-f091-453d-8c19-4da129f75fb3",
+            "purpose": "add",
+            "subject": null,
+            "owner_boot": "7674fad5-2670-4c00-87db-4565c5dd66f6",
+            "kernel_boot": "6d757418-e8a4-456d-a680-21953e8fa0a3",
+            "witness": {
+              "process": {
+                "pid": 646914,
+                "start": 40163462
+              },
+              "pgid": 646914,
+              "kernel_boot": "6d757418-e8a4-456d-a680-21953e8fa0a3"
+            }
+          },
+          "logical_status": "fulfilled",
+          "fulfillment": {
+            "turn_id": "01a1e0dc-ba67-7643-937a-cd428e0971b6",
+            "ordinal": 17
+          },
+          "cleanup_quarantined": false,
+          "cleanup_list_attempted": true
+        }
+      ],
+      "lifecycle_attempts": [
+        "2e727b50-1288-4a68-8ea6-c6c448a8cab8"
+      ]
+    },
+    {
+      "recipient": "co-t-1",
+      "threshold": -1,
+      "case": "send-p3/group",
+      "result": "PASS",
+      "actual_transport": "queue",
+      "wake_windows": [
+        {
+          "seconds": 15.0,
+          "queue_eligible": true,
+          "expect_wake": true
+        }
+      ],
+      "t_wake_s": 8.13,
+      "source_stage": "live-remaining",
+      "queue_proof_passed": true,
+      "accepted_attempts": [
+        {
+          "attempt": "e0ef07cd-7466-4b38-a54f-f4d316a77432",
+          "ordinal": 8,
+          "phase": "accepted",
+          "owner_boot": "7674fad5-2670-4c00-87db-4565c5dd66f6",
+          "arm_nonce": "03343186-7742-4b9b-8943-098bcbed9184",
+          "baseline": {
+            "turn_id": "01a1e0d8-e9d6-75b3-bf7e-84eedb068ec9",
+            "ordinal": 8
+          },
+          "owned_id_count": 1,
+          "owned_ids": [
+            "01a1e0d9-8f7f-7511-9b7f-6708bea73859"
+          ],
+          "add_helper": {
+            "id": "acb6b5d9-a48e-406e-8932-760a494e9a29",
+            "purpose": "add",
+            "subject": null,
+            "owner_boot": "7674fad5-2670-4c00-87db-4565c5dd66f6",
+            "kernel_boot": "6d757418-e8a4-456d-a680-21953e8fa0a3",
+            "witness": {
+              "process": {
+                "pid": 179651,
+                "start": 40143498
+              },
+              "pgid": 179651,
+              "kernel_boot": "6d757418-e8a4-456d-a680-21953e8fa0a3"
+            }
+          },
+          "logical_status": "fulfilled",
+          "fulfillment": {
+            "turn_id": "01a1e0d9-ad27-70d3-a999-a207826449a5",
+            "ordinal": 9
+          },
+          "cleanup_quarantined": false,
+          "cleanup_list_attempted": true
+        }
+      ],
+      "lifecycle_attempts": [
+        "e0ef07cd-7466-4b38-a54f-f4d316a77432"
+      ]
+    },
+    {
+      "recipient": "co-t-1",
+      "threshold": -1,
+      "case": "side-draft/group",
+      "result": "PASS",
+      "actual_transport": "none",
+      "wake_windows": [],
+      "t_wake_s": null,
+      "source_stage": "live-remaining",
+      "queue_proof_passed": true,
+      "accepted_attempts": [],
+      "lifecycle_attempts": []
+    },
+    {
+      "recipient": "co-t-1",
+      "threshold": -1,
+      "case": "side-nudge/group",
+      "result": "PASS",
+      "actual_transport": "native_inference",
+      "wake_windows": [
+        {
+          "seconds": 6.0,
+          "queue_eligible": false,
+          "expect_wake": true
+        },
+        {
+          "seconds": 15.0,
+          "queue_eligible": true,
+          "expect_wake": true
+        }
+      ],
+      "t_wake_s": 1.01,
+      "source_stage": "live-remaining",
+      "queue_proof_passed": true,
+      "accepted_attempts": [],
+      "lifecycle_attempts": []
+    },
+    {
+      "recipient": "co-t0",
+      "threshold": 0,
+      "case": "busy-invite/1:1",
+      "result": "PASS",
+      "actual_transport": "none",
+      "wake_windows": [],
+      "t_wake_s": null,
+      "source_stage": "live-remaining",
+      "queue_proof_passed": true,
+      "accepted_attempts": [],
+      "lifecycle_attempts": []
+    },
+    {
+      "recipient": "co-t0",
+      "threshold": 0,
+      "case": "busy-invite/group",
+      "result": "PASS",
+      "actual_transport": "none",
+      "wake_windows": [],
+      "t_wake_s": null,
+      "source_stage": "live-remaining",
+      "queue_proof_passed": true,
+      "accepted_attempts": [],
+      "lifecycle_attempts": []
+    },
+    {
+      "recipient": "co-t0",
+      "threshold": 0,
+      "case": "busy-send-ack/1:1",
+      "result": "PASS",
+      "actual_transport": "none",
+      "wake_windows": [],
+      "t_wake_s": null,
+      "source_stage": "live-remaining",
+      "queue_proof_passed": true,
+      "accepted_attempts": [],
+      "lifecycle_attempts": []
+    },
+    {
+      "recipient": "co-t0",
+      "threshold": 0,
+      "case": "busy-send-ack/group",
+      "result": "PASS",
+      "actual_transport": "none",
+      "wake_windows": [],
+      "t_wake_s": null,
+      "source_stage": "live-remaining",
+      "queue_proof_passed": true,
+      "accepted_attempts": [],
+      "lifecycle_attempts": []
+    },
+    {
+      "recipient": "co-t0",
+      "threshold": 0,
+      "case": "busy-send-p0/1:1",
+      "result": "PASS",
+      "actual_transport": "none",
+      "wake_windows": [],
+      "t_wake_s": null,
+      "source_stage": "live-remaining",
+      "queue_proof_passed": true,
+      "accepted_attempts": [],
+      "lifecycle_attempts": []
+    },
+    {
+      "recipient": "co-t0",
+      "threshold": 0,
+      "case": "busy-send-p0/group",
+      "result": "PASS",
+      "actual_transport": "none",
+      "wake_windows": [],
+      "t_wake_s": null,
+      "source_stage": "live-remaining",
+      "queue_proof_passed": true,
+      "accepted_attempts": [],
+      "lifecycle_attempts": []
+    },
+    {
+      "recipient": "co-t0",
+      "threshold": 0,
+      "case": "busy-send-p1/1:1",
+      "result": "PASS",
+      "actual_transport": "none",
+      "wake_windows": [],
+      "t_wake_s": null,
+      "source_stage": "live-remaining",
+      "queue_proof_passed": true,
+      "accepted_attempts": [],
+      "lifecycle_attempts": []
+    },
+    {
+      "recipient": "co-t0",
+      "threshold": 0,
+      "case": "busy-send-p1/group",
+      "result": "PASS",
+      "actual_transport": "none",
+      "wake_windows": [],
+      "t_wake_s": null,
+      "source_stage": "live-remaining",
+      "queue_proof_passed": true,
+      "accepted_attempts": [],
+      "lifecycle_attempts": []
+    },
+    {
+      "recipient": "co-t0",
+      "threshold": 0,
+      "case": "busy-tool-p1/group",
+      "result": "PASS",
+      "actual_transport": "none",
+      "wake_windows": [],
+      "t_wake_s": null,
+      "source_stage": "live-remaining",
+      "queue_proof_passed": true,
+      "accepted_attempts": [],
+      "lifecycle_attempts": []
+    },
+    {
+      "recipient": "co-t0",
+      "threshold": 0,
+      "case": "draft-hold/group",
+      "result": "PASS",
+      "actual_transport": "queue",
+      "wake_windows": [
+        {
+          "seconds": 15.0,
+          "queue_eligible": true,
+          "expect_wake": true
+        }
+      ],
+      "t_wake_s": 24.701,
+      "source_stage": "live-ui-wrapper",
+      "queue_proof_passed": true,
+      "accepted_attempts": [
+        {
+          "attempt": "65166af1-a367-42e0-8027-a743149c45f2",
+          "ordinal": 3,
+          "phase": "accepted",
+          "owner_boot": "6d77c416-ee02-4883-aeec-ad6ff16f0a7e",
+          "arm_nonce": "51c50b31-7ad9-4218-a852-fe3e307a6c17",
+          "baseline": {
+            "turn_id": "01a1e120-7571-7c23-81b2-518ed878ccbd",
+            "ordinal": 6
+          },
+          "owned_id_count": 1,
+          "owned_ids": [
+            "01a1e121-f95d-7720-b0b2-72b0d848bd60"
+          ],
+          "add_helper": {
+            "id": "0396f6f9-d23d-484f-b834-c70254f2d2b9",
+            "purpose": "add",
+            "subject": null,
+            "owner_boot": "6d77c416-ee02-4883-aeec-ad6ff16f0a7e",
+            "kernel_boot": "6d757418-e8a4-456d-a680-21953e8fa0a3",
+            "witness": {
+              "process": {
+                "pid": 317990,
+                "start": 40618058
+              },
+              "pgid": 317990,
+              "kernel_boot": "6d757418-e8a4-456d-a680-21953e8fa0a3"
+            }
+          },
+          "logical_status": "fulfilled",
+          "fulfillment": {
+            "turn_id": "01a1e121-fc11-7030-bf81-7c45a8cf099c",
+            "ordinal": 7
+          },
+          "cleanup_quarantined": false,
+          "cleanup_list_attempted": true
+        }
+      ],
+      "lifecycle_attempts": [
+        "65166af1-a367-42e0-8027-a743149c45f2"
+      ],
+      "held_interval": {
+        "passed": true,
+        "expectation": "none",
+        "reasons": [],
+        "attempts": [],
+        "observed": {
+          "samples": 18,
+          "intents": 0,
+          "armed": 0,
+          "accepted": 0,
+          "unknown": 0,
+          "add_witnesses": 0
+        },
+        "transport_inference": "measured interval only; no lifetime absence claim",
+        "native_activity_observed": false
+      },
+      "release_interval_ms": [
+        32398,
+        32400
+      ],
+      "queue_activity_intervals": [
+        {
+          "attempt": "65166af1-a367-42e0-8027-a743149c45f2",
+          "status": "passed",
+          "accepted_row_updated_unix_ms": 1794778462563,
+          "first_accepted_observation_ms": [
+            56364,
+            56369
+          ],
+          "first_activity_observation_ms": [
+            57095,
+            57099
+          ],
+          "accepted_to_activity_lower_ms": 0,
+          "accepted_to_activity_upper_ms": 1052
+        }
+      ],
+      "delivery_evidence": {
+        "passed": true,
+        "complete": true,
+        "input_ids": [
+          "mNCK27usq1Ga",
+          "mNCKhRGVK6eA"
+        ],
+        "output_ids": [
+          "mNCK27usq1Ga",
+          "mNCKhRGVK6eA"
+        ],
+        "started_utc": "2026-11-15T21:34:23.251Z",
+        "completed_utc": "2026-11-15T21:34:27.306Z",
+        "bytes_read": 323875,
+        "files_examined": 1,
+        "session": "01a1e11e-a252-7472-a904-21c1450c5d24",
+        "turn_id": "01a1e121-fc11-7030-bf81-7c45a8cf099c"
+      },
+      "footer_unchanged": true,
+      "draft_intact": true,
+      "wakes_while_open": 0
+    },
+    {
+      "recipient": "co-t0",
+      "threshold": 0,
+      "case": "invite/group",
+      "result": "PASS",
+      "actual_transport": "queue",
+      "wake_windows": [
+        {
+          "seconds": 15.0,
+          "queue_eligible": true,
+          "expect_wake": true
+        }
+      ],
+      "t_wake_s": 10.35,
+      "source_stage": "live-remaining",
+      "queue_proof_passed": true,
+      "accepted_attempts": [
+        {
+          "attempt": "6055de50-de15-459d-8fab-f5753e53f591",
+          "ordinal": 1,
+          "phase": "accepted",
+          "owner_boot": "7674fad5-2670-4c00-87db-4565c5dd66f6",
+          "arm_nonce": "7662548b-8fdb-4c36-b177-fe0aedfba75b",
+          "baseline": {
+            "turn_id": "01a1e0d6-79b4-7421-a87e-a689563a9ba2",
+            "ordinal": 2
+          },
+          "owned_id_count": 1,
+          "owned_ids": [
+            "01a1e0d7-2fb7-75e2-9061-e235c9226a8d"
+          ],
+          "add_helper": {
+            "id": "6d6cd07f-177f-45fc-964f-4434f8341fee",
+            "purpose": "add",
+            "subject": null,
+            "owner_boot": "7674fad5-2670-4c00-87db-4565c5dd66f6",
+            "kernel_boot": "6d757418-e8a4-456d-a680-21953e8fa0a3",
+            "witness": {
+              "process": {
+                "pid": 4123707,
+                "start": 40127929
+              },
+              "pgid": 4123707,
+              "kernel_boot": "6d757418-e8a4-456d-a680-21953e8fa0a3"
+            }
+          },
+          "logical_status": "fulfilled",
+          "fulfillment": {
+            "turn_id": "01a1e0d7-53a7-77b2-b426-031827af9bc3",
+            "ordinal": 3
+          },
+          "cleanup_quarantined": false,
+          "cleanup_list_attempted": true
+        }
+      ],
+      "lifecycle_attempts": [
+        "6055de50-de15-459d-8fab-f5753e53f591"
+      ]
+    },
+    {
+      "recipient": "co-t0",
+      "threshold": 0,
+      "case": "mixed-order/group",
+      "result": "PASS",
+      "actual_transport": "queue",
+      "wake_windows": [
+        {
+          "seconds": 15.0,
+          "queue_eligible": true,
+          "expect_wake": true
+        }
+      ],
+      "t_wake_s": 9.6,
+      "source_stage": "live-remaining",
+      "queue_proof_passed": true,
+      "accepted_attempts": [
+        {
+          "attempt": "43cd5c84-bb0e-458d-bb89-fe5389a4147d",
+          "ordinal": 23,
+          "phase": "accepted",
+          "owner_boot": "7674fad5-2670-4c00-87db-4565c5dd66f6",
+          "arm_nonce": "5f685718-bf0a-4761-bad9-8b2e010972b5",
+          "baseline": {
+            "turn_id": "01a1e0dd-2008-7632-bc02-0acaa6a6123e",
+            "ordinal": 20
+          },
+          "owned_id_count": 1,
+          "owned_ids": [
+            "01a1e0dd-c1dd-7210-985a-f2ddc04a53fe"
+          ],
+          "add_helper": {
+            "id": "aceb192d-4e2b-49a1-b8b4-c63647708f8b",
+            "purpose": "add",
+            "subject": null,
+            "owner_boot": "7674fad5-2670-4c00-87db-4565c5dd66f6",
+            "kernel_boot": "6d757418-e8a4-456d-a680-21953e8fa0a3",
+            "witness": {
+              "process": {
+                "pid": 686772,
+                "start": 40170992
+              },
+              "pgid": 686772,
+              "kernel_boot": "6d757418-e8a4-456d-a680-21953e8fa0a3"
+            }
+          },
+          "logical_status": "fulfilled",
+          "fulfillment": {
+            "turn_id": "01a1e0dd-e357-7b20-bc3e-a5c5d0eb0317",
+            "ordinal": 21
+          },
+          "cleanup_quarantined": false,
+          "cleanup_list_attempted": true
+        }
+      ],
+      "lifecycle_attempts": [
+        "43cd5c84-bb0e-458d-bb89-fe5389a4147d"
+      ]
+    },
+    {
+      "recipient": "co-t0",
+      "threshold": 0,
+      "case": "modal-hold/group",
+      "result": "PASS",
+      "actual_transport": "queue",
+      "wake_windows": [
+        {
+          "seconds": 15.0,
+          "queue_eligible": true,
+          "expect_wake": true
+        }
+      ],
+      "t_wake_s": 22.505,
+      "source_stage": "live-ui-wrapper",
+      "queue_proof_passed": true,
+      "accepted_attempts": [
+        {
+          "attempt": "3814ba57-6175-4284-aa24-5fb25e25c592",
+          "ordinal": 2,
+          "phase": "accepted",
+          "owner_boot": "6d77c416-ee02-4883-aeec-ad6ff16f0a7e",
+          "arm_nonce": "5538dffb-c595-435d-82c4-9bf65aff347a",
+          "baseline": {
+            "turn_id": "01a1e11e-eed1-7ac2-b82b-b46b668581c4",
+            "ordinal": 4
+          },
+          "owned_id_count": 1,
+          "owned_ids": [
+            "01a1e120-63af-72f0-8ba8-5e2a88cdef8c"
+          ],
+          "add_helper": {
+            "id": "aec17f78-8348-4492-8431-1c9ce3f21169",
+            "purpose": "add",
+            "subject": null,
+            "owner_boot": "6d77c416-ee02-4883-aeec-ad6ff16f0a7e",
+            "kernel_boot": "6d757418-e8a4-456d-a680-21953e8fa0a3",
+            "witness": {
+              "process": {
+                "pid": 120838,
+                "start": 40607681
+              },
+              "pgid": 120838,
+              "kernel_boot": "6d757418-e8a4-456d-a680-21953e8fa0a3"
+            }
+          },
+          "logical_status": "fulfilled",
+          "fulfillment": {
+            "turn_id": "01a1e120-7571-7c23-81b2-518ed878ccbd",
+            "ordinal": 5
+          },
+          "cleanup_quarantined": false,
+          "cleanup_list_attempted": true
+        }
+      ],
+      "lifecycle_attempts": [
+        "3814ba57-6175-4284-aa24-5fb25e25c592"
+      ],
+      "held_interval": {
+        "passed": true,
+        "expectation": "none",
+        "reasons": [],
+        "attempts": [],
+        "observed": {
+          "samples": 18,
+          "intents": 0,
+          "armed": 0,
+          "accepted": 0,
+          "unknown": 0,
+          "add_witnesses": 0
+        },
+        "transport_inference": "measured interval only; no lifetime absence claim",
+        "native_activity_observed": false
+      },
+      "release_interval_ms": [
+        32392,
+        32396
+      ],
+      "queue_activity_intervals": [
+        {
+          "attempt": "3814ba57-6175-4284-aa24-5fb25e25c592",
+          "status": "passed",
+          "accepted_row_updated_unix_ms": 1794778358710,
+          "first_accepted_observation_ms": [
+            50264,
+            50269
+          ],
+          "first_activity_observation_ms": [
+            54892,
+            54897
+          ],
+          "accepted_to_activity_lower_ms": 0,
+          "accepted_to_activity_upper_ms": 4842
+        }
+      ],
+      "delivery_evidence": {
+        "passed": true,
+        "complete": true,
+        "input_ids": [
+          "mNCKfTv2dOp7",
+          "mNCKihdDeUcC"
+        ],
+        "output_ids": [
+          "mNCKfTv2dOp7",
+          "mNCKihdDeUcC"
+        ],
+        "started_utc": "2026-11-15T21:32:43.251Z",
+        "completed_utc": "2026-11-15T21:32:47.564Z",
+        "bytes_read": 312527,
+        "files_examined": 1,
+        "session": "01a1e11e-a252-7472-a904-21c1450c5d24",
+        "turn_id": "01a1e120-7571-7c23-81b2-518ed878ccbd"
+      },
+      "footer_unchanged": true,
+      "draft_intact": null,
+      "wakes_while_open": 0
+    },
+    {
+      "recipient": "co-t0",
+      "threshold": 0,
+      "case": "pair-open/1:1",
+      "result": "PASS",
+      "actual_transport": "none",
+      "wake_windows": [
+        {
+          "seconds": 6.0,
+          "queue_eligible": true,
+          "expect_wake": false
+        }
+      ],
+      "t_wake_s": null,
+      "source_stage": "live-remaining",
+      "queue_proof_passed": true,
+      "accepted_attempts": [],
+      "lifecycle_attempts": []
+    },
+    {
+      "recipient": "co-t0",
+      "threshold": 0,
+      "case": "resume-idle/group",
+      "result": "PASS",
+      "actual_transport": "native_inference",
+      "wake_windows": [],
+      "t_wake_s": 17.71,
+      "source_stage": "live-remaining",
+      "queue_proof_passed": true,
+      "accepted_attempts": [],
+      "lifecycle_attempts": []
+    },
+    {
+      "recipient": "co-t0",
+      "threshold": 0,
+      "case": "send-ack/1:1",
+      "result": "PASS",
+      "actual_transport": "queue",
+      "wake_windows": [
+        {
+          "seconds": 15.0,
+          "queue_eligible": true,
+          "expect_wake": true
+        }
+      ],
+      "t_wake_s": 1.26,
+      "source_stage": "live-remaining",
+      "queue_proof_passed": true,
+      "accepted_attempts": [
+        {
+          "attempt": "005a0de6-dfe5-4a4c-8a47-4844c2ae3e46",
+          "ordinal": 20,
+          "phase": "accepted",
+          "owner_boot": "7674fad5-2670-4c00-87db-4565c5dd66f6",
+          "arm_nonce": "3d585bee-2d10-4d00-95c2-659b9a6af303",
+          "baseline": {
+            "turn_id": "01a1e0dc-78b1-72f3-b376-6d171eecf2c4",
+            "ordinal": 18
+          },
+          "owned_id_count": 1,
+          "owned_ids": [
+            "01a1e0dd-1d64-75e0-b3a3-0d71776e2fc9"
+          ],
+          "add_helper": {
+            "id": "795319e7-3653-4d7f-b22a-c12f3489c79f",
+            "purpose": "add",
+            "subject": null,
+            "owner_boot": "7674fad5-2670-4c00-87db-4565c5dd66f6",
+            "kernel_boot": "6d757418-e8a4-456d-a680-21953e8fa0a3",
+            "witness": {
+              "process": {
+                "pid": 665774,
+                "start": 40166791
+              },
+              "pgid": 665774,
+              "kernel_boot": "6d757418-e8a4-456d-a680-21953e8fa0a3"
+            }
+          },
+          "logical_status": "fulfilled",
+          "fulfillment": {
+            "turn_id": "01a1e0dd-2008-7632-bc02-0acaa6a6123e",
+            "ordinal": 19
+          },
+          "cleanup_quarantined": false,
+          "cleanup_list_attempted": true
+        }
+      ],
+      "lifecycle_attempts": [
+        "005a0de6-dfe5-4a4c-8a47-4844c2ae3e46"
+      ]
+    },
+    {
+      "recipient": "co-t0",
+      "threshold": 0,
+      "case": "send-ack/group",
+      "result": "PASS",
+      "actual_transport": "queue",
+      "wake_windows": [
+        {
+          "seconds": 15.0,
+          "queue_eligible": true,
+          "expect_wake": true
+        }
+      ],
+      "t_wake_s": 9.85,
+      "source_stage": "live-remaining",
+      "queue_proof_passed": true,
+      "accepted_attempts": [
+        {
+          "attempt": "36b97714-b934-4519-8e31-dd41bfdd0e3f",
+          "ordinal": 10,
+          "phase": "accepted",
+          "owner_boot": "7674fad5-2670-4c00-87db-4565c5dd66f6",
+          "arm_nonce": "301ceb05-999b-40a5-b0d3-717ec3d7211f",
+          "baseline": {
+            "turn_id": "01a1e0d9-979f-7593-a14e-71c785d19f10",
+            "ordinal": 10
+          },
+          "owned_id_count": 1,
+          "owned_ids": [
+            "01a1e0da-3e51-7450-86dd-dd65c8c87323"
+          ],
+          "add_helper": {
+            "id": "e81266a1-e3b6-4cbe-a62d-7b54f04b6d75",
+            "purpose": "add",
+            "subject": null,
+            "owner_boot": "7674fad5-2670-4c00-87db-4565c5dd66f6",
+            "kernel_boot": "6d757418-e8a4-456d-a680-21953e8fa0a3",
+            "witness": {
+              "process": {
+                "pid": 255909,
+                "start": 40147963
+              },
+              "pgid": 255909,
+              "kernel_boot": "6d757418-e8a4-456d-a680-21953e8fa0a3"
+            }
+          },
+          "logical_status": "fulfilled",
+          "fulfillment": {
+            "turn_id": "01a1e0da-60e9-7681-bc9f-b08c5da8839b",
+            "ordinal": 11
+          },
+          "cleanup_quarantined": false,
+          "cleanup_list_attempted": true
+        }
+      ],
+      "lifecycle_attempts": [
+        "36b97714-b934-4519-8e31-dd41bfdd0e3f"
+      ]
+    },
+    {
+      "recipient": "co-t0",
+      "threshold": 0,
+      "case": "send-p0/1:1",
+      "result": "PASS",
+      "actual_transport": "queue",
+      "wake_windows": [
+        {
+          "seconds": 15.0,
+          "queue_eligible": true,
+          "expect_wake": true
+        }
+      ],
+      "t_wake_s": 2.52,
+      "source_stage": "live-remaining",
+      "queue_proof_passed": true,
+      "accepted_attempts": [
+        {
+          "attempt": "80a8b918-1254-4098-8b2d-02613c6ac9af",
+          "ordinal": 15,
+          "phase": "accepted",
+          "owner_boot": "7674fad5-2670-4c00-87db-4565c5dd66f6",
+          "arm_nonce": "4002f6ab-5f92-4550-b086-0d56786ddef7",
+          "baseline": {
+            "turn_id": "01a1e0db-1813-7271-91b5-1de6be0d33ad",
+            "ordinal": 14
+          },
+          "owned_id_count": 1,
+          "owned_ids": [
+            "01a1e0db-b9da-7413-b2e8-4180db5407db"
+          ],
+          "add_helper": {
+            "id": "9686575a-f38d-4776-9814-07052026c914",
+            "purpose": "add",
+            "subject": null,
+            "owner_boot": "7674fad5-2670-4c00-87db-4565c5dd66f6",
+            "kernel_boot": "6d757418-e8a4-456d-a680-21953e8fa0a3",
+            "witness": {
+              "process": {
+                "pid": 506456,
+                "start": 40157690
+              },
+              "pgid": 506456,
+              "kernel_boot": "6d757418-e8a4-456d-a680-21953e8fa0a3"
+            }
+          },
+          "logical_status": "fulfilled",
+          "fulfillment": {
+            "turn_id": "01a1e0db-c077-7502-9444-6a0f970fdfa9",
+            "ordinal": 15
+          },
+          "cleanup_quarantined": false,
+          "cleanup_list_attempted": true
+        }
+      ],
+      "lifecycle_attempts": [
+        "80a8b918-1254-4098-8b2d-02613c6ac9af"
+      ]
+    },
+    {
+      "recipient": "co-t0",
+      "threshold": 0,
+      "case": "send-p0/group",
+      "result": "PASS",
+      "actual_transport": "queue",
+      "wake_windows": [
+        {
+          "seconds": 15.0,
+          "queue_eligible": true,
+          "expect_wake": true
+        }
+      ],
+      "t_wake_s": 6.57,
+      "source_stage": "live-accepted-baseline",
+      "queue_proof_passed": true,
+      "accepted_attempts": [
+        {
+          "attempt": "c67089f9-dfd3-4c02-89d9-ccfb91117fdc",
+          "ordinal": 4,
+          "phase": "accepted",
+          "owner_boot": "89f8a394-78c6-4c42-a1bd-093be9116bcc",
+          "arm_nonce": "f4ec1722-7a29-4bb5-a048-fc870158675e",
+          "baseline": {
+            "turn_id": "01a1e0d3-8cb2-7932-9782-ccbc93ff9174",
+            "ordinal": 4
+          },
+          "owned_id_count": 1,
+          "owned_ids": [
+            "01a1e0d4-3906-7260-870e-c94a57f282bc"
+          ],
+          "add_helper": {
+            "id": "72c1f4c8-c535-48a8-ae0d-530ac9d4902c",
+            "purpose": "add",
+            "subject": null,
+            "owner_boot": "89f8a394-78c6-4c42-a1bd-093be9116bcc",
+            "kernel_boot": "6d757418-e8a4-456d-a680-21953e8fa0a3",
+            "witness": {
+              "process": {
+                "pid": 3886967,
+                "start": 40108507
+              },
+              "pgid": 3886967,
+              "kernel_boot": "6d757418-e8a4-456d-a680-21953e8fa0a3"
+            }
+          },
+          "logical_status": "fulfilled",
+          "fulfillment": {
+            "turn_id": "01a1e0d4-5002-7332-945c-0a2bc8d6e263",
+            "ordinal": 5
+          },
+          "cleanup_quarantined": false,
+          "cleanup_list_attempted": true
+        }
+      ],
+      "lifecycle_attempts": [
+        "c67089f9-dfd3-4c02-89d9-ccfb91117fdc"
+      ]
+    },
+    {
+      "recipient": "co-t0",
+      "threshold": 0,
+      "case": "send-p1/1:1",
+      "result": "PASS",
+      "actual_transport": "none",
+      "wake_windows": [
+        {
+          "seconds": 6.0,
+          "queue_eligible": true,
+          "expect_wake": false
+        }
+      ],
+      "t_wake_s": null,
+      "source_stage": "live-remaining",
+      "queue_proof_passed": true,
+      "accepted_attempts": [],
+      "lifecycle_attempts": []
+    },
+    {
+      "recipient": "co-t0",
+      "threshold": 0,
+      "case": "send-p1/group",
+      "result": "PASS",
+      "actual_transport": "none",
+      "wake_windows": [
+        {
+          "seconds": 6.0,
+          "queue_eligible": true,
+          "expect_wake": false
+        }
+      ],
+      "t_wake_s": null,
+      "source_stage": "live-remaining",
+      "queue_proof_passed": true,
+      "accepted_attempts": [],
+      "lifecycle_attempts": []
+    },
+    {
+      "recipient": "co-t0",
+      "threshold": 0,
+      "case": "send-p3/1:1",
+      "result": "PASS",
+      "actual_transport": "none",
+      "wake_windows": [
+        {
+          "seconds": 6.0,
+          "queue_eligible": true,
+          "expect_wake": false
+        }
+      ],
+      "t_wake_s": null,
+      "source_stage": "live-remaining",
+      "queue_proof_passed": true,
+      "accepted_attempts": [],
+      "lifecycle_attempts": []
+    },
+    {
+      "recipient": "co-t0",
+      "threshold": 0,
+      "case": "send-p3/group",
+      "result": "PASS",
+      "actual_transport": "none",
+      "wake_windows": [
+        {
+          "seconds": 6.0,
+          "queue_eligible": true,
+          "expect_wake": false
+        }
+      ],
+      "t_wake_s": null,
+      "source_stage": "live-remaining",
+      "queue_proof_passed": true,
+      "accepted_attempts": [],
+      "lifecycle_attempts": []
+    },
+    {
+      "recipient": "co-t0",
+      "threshold": 0,
+      "case": "side-draft/group",
+      "result": "PASS",
+      "actual_transport": "none",
+      "wake_windows": [],
+      "t_wake_s": null,
+      "source_stage": "live-remaining",
+      "queue_proof_passed": true,
+      "accepted_attempts": [],
+      "lifecycle_attempts": []
+    },
+    {
+      "recipient": "co-t0",
+      "threshold": 0,
+      "case": "side-nudge/group",
+      "result": "PASS",
+      "actual_transport": "native_inference",
+      "wake_windows": [
+        {
+          "seconds": 6.0,
+          "queue_eligible": false,
+          "expect_wake": true
+        },
+        {
+          "seconds": 6.0,
+          "queue_eligible": false,
+          "expect_wake": true
+        }
+      ],
+      "t_wake_s": 1.26,
+      "source_stage": "live-remaining",
+      "queue_proof_passed": true,
+      "accepted_attempts": [],
+      "lifecycle_attempts": []
+    },
+    {
+      "recipient": "co-t3",
+      "threshold": 3,
+      "case": "busy-invite/1:1",
+      "result": "PASS",
+      "actual_transport": "none",
+      "wake_windows": [],
+      "t_wake_s": null,
+      "source_stage": "live-remaining",
+      "queue_proof_passed": true,
+      "accepted_attempts": [],
+      "lifecycle_attempts": []
+    },
+    {
+      "recipient": "co-t3",
+      "threshold": 3,
+      "case": "busy-invite/group",
+      "result": "PASS",
+      "actual_transport": "none",
+      "wake_windows": [],
+      "t_wake_s": null,
+      "source_stage": "live-remaining",
+      "queue_proof_passed": true,
+      "accepted_attempts": [],
+      "lifecycle_attempts": []
+    },
+    {
+      "recipient": "co-t3",
+      "threshold": 3,
+      "case": "busy-send-ack/1:1",
+      "result": "PASS",
+      "actual_transport": "none",
+      "wake_windows": [],
+      "t_wake_s": null,
+      "source_stage": "live-remaining",
+      "queue_proof_passed": true,
+      "accepted_attempts": [],
+      "lifecycle_attempts": []
+    },
+    {
+      "recipient": "co-t3",
+      "threshold": 3,
+      "case": "busy-send-ack/group",
+      "result": "PASS",
+      "actual_transport": "none",
+      "wake_windows": [],
+      "t_wake_s": null,
+      "source_stage": "live-remaining",
+      "queue_proof_passed": true,
+      "accepted_attempts": [],
+      "lifecycle_attempts": []
+    },
+    {
+      "recipient": "co-t3",
+      "threshold": 3,
+      "case": "busy-send-p0/1:1",
+      "result": "PASS",
+      "actual_transport": "none",
+      "wake_windows": [],
+      "t_wake_s": null,
+      "source_stage": "live-remaining",
+      "queue_proof_passed": true,
+      "accepted_attempts": [],
+      "lifecycle_attempts": []
+    },
+    {
+      "recipient": "co-t3",
+      "threshold": 3,
+      "case": "busy-send-p0/group",
+      "result": "PASS",
+      "actual_transport": "none",
+      "wake_windows": [],
+      "t_wake_s": null,
+      "source_stage": "live-remaining",
+      "queue_proof_passed": true,
+      "accepted_attempts": [],
+      "lifecycle_attempts": []
+    },
+    {
+      "recipient": "co-t3",
+      "threshold": 3,
+      "case": "busy-send-p1/1:1",
+      "result": "PASS",
+      "actual_transport": "none",
+      "wake_windows": [],
+      "t_wake_s": null,
+      "source_stage": "live-remaining",
+      "queue_proof_passed": true,
+      "accepted_attempts": [],
+      "lifecycle_attempts": []
+    },
+    {
+      "recipient": "co-t3",
+      "threshold": 3,
+      "case": "busy-send-p1/group",
+      "result": "PASS",
+      "actual_transport": "none",
+      "wake_windows": [],
+      "t_wake_s": null,
+      "source_stage": "live-remaining",
+      "queue_proof_passed": true,
+      "accepted_attempts": [],
+      "lifecycle_attempts": []
+    },
+    {
+      "recipient": "co-t3",
+      "threshold": 3,
+      "case": "busy-tool-p1/group",
+      "result": "PASS",
+      "actual_transport": "none",
+      "wake_windows": [],
+      "t_wake_s": null,
+      "source_stage": "live-remaining",
+      "queue_proof_passed": true,
+      "accepted_attempts": [],
+      "lifecycle_attempts": []
+    },
+    {
+      "recipient": "co-t3",
+      "threshold": 3,
+      "case": "invite/group",
+      "result": "PASS",
+      "actual_transport": "queue",
+      "wake_windows": [
+        {
+          "seconds": 15.0,
+          "queue_eligible": true,
+          "expect_wake": true
+        }
+      ],
+      "t_wake_s": 10.2,
+      "source_stage": "live-remaining",
+      "queue_proof_passed": true,
+      "accepted_attempts": [
+        {
+          "attempt": "046e3575-2ce6-4dcf-80d4-bc48ec1fc03a",
+          "ordinal": 3,
+          "phase": "accepted",
+          "owner_boot": "7674fad5-2670-4c00-87db-4565c5dd66f6",
+          "arm_nonce": "fd7bc00c-b2a9-434a-9597-920bb9ada44f",
+          "baseline": {
+            "turn_id": "01a1e0d6-9924-7443-a3c8-66e2425caa03",
+            "ordinal": 2
+          },
+          "owned_id_count": 1,
+          "owned_ids": [
+            "01a1e0d7-4e02-7af3-b3b7-1dbf4931d32f"
+          ],
+          "add_helper": {
+            "id": "bc24e8e3-d524-46c3-b7fe-a3a2ab1e8a91",
+            "purpose": "add",
+            "subject": null,
+            "owner_boot": "7674fad5-2670-4c00-87db-4565c5dd66f6",
+            "kernel_boot": "6d757418-e8a4-456d-a680-21953e8fa0a3",
+            "witness": {
+              "process": {
+                "pid": 4141632,
+                "start": 40128715
+              },
+              "pgid": 4141632,
+              "kernel_boot": "6d757418-e8a4-456d-a680-21953e8fa0a3"
+            }
+          },
+          "logical_status": "fulfilled",
+          "fulfillment": {
+            "turn_id": "01a1e0d7-72f3-7673-892c-e945f588e06b",
+            "ordinal": 3
+          },
+          "cleanup_quarantined": false,
+          "cleanup_list_attempted": true
+        }
+      ],
+      "lifecycle_attempts": [
+        "046e3575-2ce6-4dcf-80d4-bc48ec1fc03a"
+      ]
+    },
+    {
+      "recipient": "co-t3",
+      "threshold": 3,
+      "case": "mixed-order/group",
+      "result": "PASS",
+      "actual_transport": "queue",
+      "wake_windows": [
+        {
+          "seconds": 15.0,
+          "queue_eligible": true,
+          "expect_wake": true
+        }
+      ],
+      "t_wake_s": 10.07,
+      "source_stage": "live-remaining",
+      "queue_proof_passed": true,
+      "accepted_attempts": [
+        {
+          "attempt": "0e1195bc-ae14-4e26-88a2-85ac26205150",
+          "ordinal": 25,
+          "phase": "accepted",
+          "owner_boot": "7674fad5-2670-4c00-87db-4565c5dd66f6",
+          "arm_nonce": "bee527f9-4d7b-4912-be7f-9b4f76b4b983",
+          "baseline": {
+            "turn_id": "01a1e0dd-8d73-7ec2-b9e9-c42e20c14400",
+            "ordinal": 20
+          },
+          "owned_id_count": 1,
+          "owned_ids": [
+            "01a1e0de-2e0c-7741-83e7-f382652dcf1d"
+          ],
+          "add_helper": {
+            "id": "9ae0bb9a-ffe0-4f51-ab09-fc4c29ff00de",
+            "purpose": "add",
+            "subject": null,
+            "owner_boot": "7674fad5-2670-4c00-87db-4565c5dd66f6",
+            "kernel_boot": "6d757418-e8a4-456d-a680-21953e8fa0a3",
+            "witness": {
+              "process": {
+                "pid": 739131,
+                "start": 40173761
+              },
+              "pgid": 739131,
+              "kernel_boot": "6d757418-e8a4-456d-a680-21953e8fa0a3"
+            }
+          },
+          "logical_status": "fulfilled",
+          "fulfillment": {
+            "turn_id": "01a1e0de-50c3-7163-b7a7-60f6e98bc291",
+            "ordinal": 21
+          },
+          "cleanup_quarantined": false,
+          "cleanup_list_attempted": true
+        }
+      ],
+      "lifecycle_attempts": [
+        "0e1195bc-ae14-4e26-88a2-85ac26205150"
+      ]
+    },
+    {
+      "recipient": "co-t3",
+      "threshold": 3,
+      "case": "pair-open/1:1",
+      "result": "PASS",
+      "actual_transport": "queue",
+      "wake_windows": [
+        {
+          "seconds": 15.0,
+          "queue_eligible": true,
+          "expect_wake": true
+        }
+      ],
+      "t_wake_s": 7.1,
+      "source_stage": "live-remaining",
+      "queue_proof_passed": true,
+      "accepted_attempts": [
+        {
+          "attempt": "c9544392-bd25-4457-813b-5e790c1fcdd2",
+          "ordinal": 5,
+          "phase": "accepted",
+          "owner_boot": "7674fad5-2670-4c00-87db-4565c5dd66f6",
+          "arm_nonce": "bf892995-56a4-423c-aa9d-8d583ec3763f",
+          "baseline": {
+            "turn_id": "01a1e0d7-72f3-7673-892c-e945f588e06b",
+            "ordinal": 4
+          },
+          "owned_id_count": 1,
+          "owned_ids": [
+            "01a1e0d8-1d1a-7d01-8f95-e5b3759146e7"
+          ],
+          "add_helper": {
+            "id": "67b0235a-4e8d-45da-bc67-98a7fe9f208c",
+            "purpose": "add",
+            "subject": null,
+            "owner_boot": "7674fad5-2670-4c00-87db-4565c5dd66f6",
+            "kernel_boot": "6d757418-e8a4-456d-a680-21953e8fa0a3",
+            "witness": {
+              "process": {
+                "pid": 49326,
+                "start": 40134013
+              },
+              "pgid": 49326,
+              "kernel_boot": "6d757418-e8a4-456d-a680-21953e8fa0a3"
+            }
+          },
+          "logical_status": "fulfilled",
+          "fulfillment": {
+            "turn_id": "01a1e0d8-3643-74b1-b889-d24806c0cfff",
+            "ordinal": 5
+          },
+          "cleanup_quarantined": false,
+          "cleanup_list_attempted": true
+        }
+      ],
+      "lifecycle_attempts": [
+        "c9544392-bd25-4457-813b-5e790c1fcdd2"
+      ]
+    },
+    {
+      "recipient": "co-t3",
+      "threshold": 3,
+      "case": "send-ack/1:1",
+      "result": "PASS",
+      "actual_transport": "queue",
+      "wake_windows": [
+        {
+          "seconds": 15.0,
+          "queue_eligible": true,
+          "expect_wake": true
+        }
+      ],
+      "t_wake_s": 8.8,
+      "source_stage": "live-remaining",
+      "queue_proof_passed": true,
+      "accepted_attempts": [
+        {
+          "attempt": "76d43bf8-2b9c-44c6-8a9c-078ba383e02f",
+          "ordinal": 22,
+          "phase": "accepted",
+          "owner_boot": "7674fad5-2670-4c00-87db-4565c5dd66f6",
+          "arm_nonce": "398433ca-fc4f-4284-9be4-f21397f3f511",
+          "baseline": {
+            "turn_id": "01a1e0dc-ca23-7c91-8a66-473a98d872ec",
+            "ordinal": 18
+          },
+          "owned_id_count": 1,
+          "owned_ids": [
+            "01a1e0dd-6ea1-70d1-8f23-0a22b8527007"
+          ],
+          "add_helper": {
+            "id": "0196170c-0e37-484c-8bc1-e47a94cbb2e4",
+            "purpose": "add",
+            "subject": null,
+            "owner_boot": "7674fad5-2670-4c00-87db-4565c5dd66f6",
+            "kernel_boot": "6d757418-e8a4-456d-a680-21953e8fa0a3",
+            "witness": {
+              "process": {
+                "pid": 672532,
+                "start": 40168871
+              },
+              "pgid": 672532,
+              "kernel_boot": "6d757418-e8a4-456d-a680-21953e8fa0a3"
+            }
+          },
+          "logical_status": "fulfilled",
+          "fulfillment": {
+            "turn_id": "01a1e0dd-8d73-7ec2-b9e9-c42e20c14400",
+            "ordinal": 19
+          },
+          "cleanup_quarantined": false,
+          "cleanup_list_attempted": true
+        }
+      ],
+      "lifecycle_attempts": [
+        "76d43bf8-2b9c-44c6-8a9c-078ba383e02f"
+      ]
+    },
+    {
+      "recipient": "co-t3",
+      "threshold": 3,
+      "case": "send-ack/group",
+      "result": "PASS",
+      "actual_transport": "queue",
+      "wake_windows": [
+        {
+          "seconds": 15.0,
+          "queue_eligible": true,
+          "expect_wake": true
+        }
+      ],
+      "t_wake_s": 10.21,
+      "source_stage": "live-remaining",
+      "queue_proof_passed": true,
+      "accepted_attempts": [
+        {
+          "attempt": "a9af4eb7-4104-4cdd-9672-9b7e9446e421",
+          "ordinal": 12,
+          "phase": "accepted",
+          "owner_boot": "7674fad5-2670-4c00-87db-4565c5dd66f6",
+          "arm_nonce": "9b708542-ce40-4e3f-828c-f0b43b298c22",
+          "baseline": {
+            "turn_id": "01a1e0d9-bce4-7183-ae8b-a139ca53c844",
+            "ordinal": 10
+          },
+          "owned_id_count": 1,
+          "owned_ids": [
+            "01a1e0da-5d04-7ff1-98cf-00635abed56f"
+          ],
+          "add_helper": {
+            "id": "c2d2e155-70ab-4182-b539-e5650f6acc13",
+            "purpose": "add",
+            "subject": null,
+            "owner_boot": "7674fad5-2670-4c00-87db-4565c5dd66f6",
+            "kernel_boot": "6d757418-e8a4-456d-a680-21953e8fa0a3",
+            "witness": {
+              "process": {
+                "pid": 276897,
+                "start": 40148756
+              },
+              "pgid": 276897,
+              "kernel_boot": "6d757418-e8a4-456d-a680-21953e8fa0a3"
+            }
+          },
+          "logical_status": "fulfilled",
+          "fulfillment": {
+            "turn_id": "01a1e0da-8033-7853-8993-fc5b847548de",
+            "ordinal": 11
+          },
+          "cleanup_quarantined": false,
+          "cleanup_list_attempted": true
+        }
+      ],
+      "lifecycle_attempts": [
+        "a9af4eb7-4104-4cdd-9672-9b7e9446e421"
+      ]
+    },
+    {
+      "recipient": "co-t3",
+      "threshold": 3,
+      "case": "send-p0/1:1",
+      "result": "PASS",
+      "actual_transport": "queue",
+      "wake_windows": [
+        {
+          "seconds": 15.0,
+          "queue_eligible": true,
+          "expect_wake": true
+        }
+      ],
+      "t_wake_s": 9.58,
+      "source_stage": "live-remaining",
+      "queue_proof_passed": true,
+      "accepted_attempts": [
+        {
+          "attempt": "ddc6135b-c96e-47d1-bb0b-d94671d01d61",
+          "ordinal": 17,
+          "phase": "accepted",
+          "owner_boot": "7674fad5-2670-4c00-87db-4565c5dd66f6",
+          "arm_nonce": "3cf87fac-d164-4240-a790-6886384d02e2",
+          "baseline": {
+            "turn_id": "01a1e0db-4383-7501-86e8-76ab8c6e93f9",
+            "ordinal": 14
+          },
+          "owned_id_count": 1,
+          "owned_ids": [
+            "01a1e0db-e630-7d21-a045-6de77db4638a"
+          ],
+          "add_helper": {
+            "id": "e4b5d959-3955-4c34-9860-e8fa5d7e337c",
+            "purpose": "add",
+            "subject": null,
+            "owner_boot": "7674fad5-2670-4c00-87db-4565c5dd66f6",
+            "kernel_boot": "6d757418-e8a4-456d-a680-21953e8fa0a3",
+            "witness": {
+              "process": {
+                "pid": 535046,
+                "start": 40158815
+              },
+              "pgid": 535046,
+              "kernel_boot": "6d757418-e8a4-456d-a680-21953e8fa0a3"
+            }
+          },
+          "logical_status": "fulfilled",
+          "fulfillment": {
+            "turn_id": "01a1e0dc-06d3-7fd2-b1fb-09bf24935afb",
+            "ordinal": 15
+          },
+          "cleanup_quarantined": false,
+          "cleanup_list_attempted": true
+        }
+      ],
+      "lifecycle_attempts": [
+        "ddc6135b-c96e-47d1-bb0b-d94671d01d61"
+      ]
+    },
+    {
+      "recipient": "co-t3",
+      "threshold": 3,
+      "case": "send-p0/group",
+      "result": "PASS",
+      "actual_transport": "queue",
+      "wake_windows": [
+        {
+          "seconds": 15.0,
+          "queue_eligible": true,
+          "expect_wake": true
+        }
+      ],
+      "t_wake_s": 7.83,
+      "source_stage": "live-accepted-baseline",
+      "queue_proof_passed": true,
+      "accepted_attempts": [
+        {
+          "attempt": "5f6cc6e8-5da1-4c51-92b7-96f1c4ddfea2",
+          "ordinal": 6,
+          "phase": "accepted",
+          "owner_boot": "89f8a394-78c6-4c42-a1bd-093be9116bcc",
+          "arm_nonce": "8565dcf7-e4aa-43c9-9bea-ae4ccaf45fa6",
+          "baseline": {
+            "turn_id": "01a1e0d3-abfa-7d30-a8ad-35120ce2668a",
+            "ordinal": 4
+          },
+          "owned_id_count": 1,
+          "owned_ids": [
+            "01a1e0d4-53fd-7851-983f-affac51a4cb4"
+          ],
+          "add_helper": {
+            "id": "c166dc62-11cc-4334-94aa-bd84212ee711",
+            "purpose": "add",
+            "subject": null,
+            "owner_boot": "89f8a394-78c6-4c42-a1bd-093be9116bcc",
+            "kernel_boot": "6d757418-e8a4-456d-a680-21953e8fa0a3",
+            "witness": {
+              "process": {
+                "pid": 3889839,
+                "start": 40109207
+              },
+              "pgid": 3889839,
+              "kernel_boot": "6d757418-e8a4-456d-a680-21953e8fa0a3"
+            }
+          },
+          "logical_status": "fulfilled",
+          "fulfillment": {
+            "turn_id": "01a1e0d4-6f4a-7883-80ab-2176578e733f",
+            "ordinal": 5
+          },
+          "cleanup_quarantined": false,
+          "cleanup_list_attempted": true
+        }
+      ],
+      "lifecycle_attempts": [
+        "5f6cc6e8-5da1-4c51-92b7-96f1c4ddfea2"
+      ]
+    },
+    {
+      "recipient": "co-t3",
+      "threshold": 3,
+      "case": "send-p1/1:1",
+      "result": "PASS",
+      "actual_transport": "queue",
+      "wake_windows": [
+        {
+          "seconds": 15.0,
+          "queue_eligible": true,
+          "expect_wake": true
+        }
+      ],
+      "t_wake_s": 10.69,
+      "source_stage": "live-remaining",
+      "queue_proof_passed": true,
+      "accepted_attempts": [
+        {
+          "attempt": "57b4f1fa-8b24-4277-adff-903afff3b482",
+          "ordinal": 14,
+          "phase": "accepted",
+          "owner_boot": "7674fad5-2670-4c00-87db-4565c5dd66f6",
+          "arm_nonce": "f2beb6ee-ebcb-4ba4-b81f-523cef2cad74",
+          "baseline": {
+            "turn_id": "01a1e0da-8033-7853-8993-fc5b847548de",
+            "ordinal": 12
+          },
+          "owned_id_count": 1,
+          "owned_ids": [
+            "01a1e0db-1e6d-7d42-9f89-cab4472ef850"
+          ],
+          "add_helper": {
+            "id": "e0b12122-56ce-46b1-9b21-2036286289af",
+            "purpose": "add",
+            "subject": null,
+            "owner_boot": "7674fad5-2670-4c00-87db-4565c5dd66f6",
+            "kernel_boot": "6d757418-e8a4-456d-a680-21953e8fa0a3",
+            "witness": {
+              "process": {
+                "pid": 408006,
+                "start": 40153701
+              },
+              "pgid": 408006,
+              "kernel_boot": "6d757418-e8a4-456d-a680-21953e8fa0a3"
+            }
+          },
+          "logical_status": "fulfilled",
+          "fulfillment": {
+            "turn_id": "01a1e0db-4383-7501-86e8-76ab8c6e93f9",
+            "ordinal": 13
+          },
+          "cleanup_quarantined": false,
+          "cleanup_list_attempted": true
+        }
+      ],
+      "lifecycle_attempts": [
+        "57b4f1fa-8b24-4277-adff-903afff3b482"
+      ]
+    },
+    {
+      "recipient": "co-t3",
+      "threshold": 3,
+      "case": "send-p1/group",
+      "result": "PASS",
+      "actual_transport": "queue",
+      "wake_windows": [
+        {
+          "seconds": 15.0,
+          "queue_eligible": true,
+          "expect_wake": true
+        }
+      ],
+      "t_wake_s": 8.07,
+      "source_stage": "live-remaining",
+      "queue_proof_passed": true,
+      "accepted_attempts": [
+        {
+          "attempt": "9f89435a-10f2-4a35-8786-099ffe03a29f",
+          "ordinal": 7,
+          "phase": "accepted",
+          "owner_boot": "7674fad5-2670-4c00-87db-4565c5dd66f6",
+          "arm_nonce": "4e0a33dd-13b4-41a3-beac-79f31b7b79ed",
+          "baseline": {
+            "turn_id": "01a1e0d8-3643-74b1-b889-d24806c0cfff",
+            "ordinal": 6
+          },
+          "owned_id_count": 1,
+          "owned_ids": [
+            "01a1e0d8-dd10-73e3-976c-6c417d8fad54"
+          ],
+          "add_helper": {
+            "id": "756985e4-eaa5-446c-ab83-c81f3036d5fc",
+            "purpose": "add",
+            "subject": null,
+            "owner_boot": "7674fad5-2670-4c00-87db-4565c5dd66f6",
+            "kernel_boot": "6d757418-e8a4-456d-a680-21953e8fa0a3",
+            "witness": {
+              "process": {
+                "pid": 115864,
+                "start": 40138920
+              },
+              "pgid": 115864,
+              "kernel_boot": "6d757418-e8a4-456d-a680-21953e8fa0a3"
+            }
+          },
+          "logical_status": "fulfilled",
+          "fulfillment": {
+            "turn_id": "01a1e0d8-f994-7d02-a5eb-3e3e8b5ef655",
+            "ordinal": 7
+          },
+          "cleanup_quarantined": false,
+          "cleanup_list_attempted": true
+        }
+      ],
+      "lifecycle_attempts": [
+        "9f89435a-10f2-4a35-8786-099ffe03a29f"
+      ]
+    },
+    {
+      "recipient": "co-t3",
+      "threshold": 3,
+      "case": "send-p3/1:1",
+      "result": "PASS",
+      "actual_transport": "queue",
+      "wake_windows": [
+        {
+          "seconds": 15.0,
+          "queue_eligible": true,
+          "expect_wake": true
+        }
+      ],
+      "t_wake_s": 10.1,
+      "source_stage": "live-remaining",
+      "queue_proof_passed": true,
+      "accepted_attempts": [
+        {
+          "attempt": "3b690b45-f2ea-49f8-a391-b02ae6dbaf31",
+          "ordinal": 19,
+          "phase": "accepted",
+          "owner_boot": "7674fad5-2670-4c00-87db-4565c5dd66f6",
+          "arm_nonce": "905a65dd-804a-484a-aaab-ee1964bd3827",
+          "baseline": {
+            "turn_id": "01a1e0dc-06d3-7fd2-b1fb-09bf24935afb",
+            "ordinal": 16
+          },
+          "owned_id_count": 1,
+          "owned_ids": [
+            "01a1e0dc-a66e-7572-af68-b2b9b16c80ed"
+          ],
+          "add_helper": {
+            "id": "ef5aca70-8e42-4ec7-bd54-f5e47c8e55e2",
+            "purpose": "add",
+            "subject": null,
+            "owner_boot": "7674fad5-2670-4c00-87db-4565c5dd66f6",
+            "kernel_boot": "6d757418-e8a4-456d-a680-21953e8fa0a3",
+            "witness": {
+              "process": {
+                "pid": 648585,
+                "start": 40163746
+              },
+              "pgid": 648585,
+              "kernel_boot": "6d757418-e8a4-456d-a680-21953e8fa0a3"
+            }
+          },
+          "logical_status": "fulfilled",
+          "fulfillment": {
+            "turn_id": "01a1e0dc-ca23-7c91-8a66-473a98d872ec",
+            "ordinal": 17
+          },
+          "cleanup_quarantined": false,
+          "cleanup_list_attempted": true
+        }
+      ],
+      "lifecycle_attempts": [
+        "3b690b45-f2ea-49f8-a391-b02ae6dbaf31"
+      ]
+    },
+    {
+      "recipient": "co-t3",
+      "threshold": 3,
+      "case": "send-p3/group",
+      "result": "PASS",
+      "actual_transport": "queue",
+      "wake_windows": [
+        {
+          "seconds": 15.0,
+          "queue_eligible": true,
+          "expect_wake": true
+        }
+      ],
+      "t_wake_s": 8.84,
+      "source_stage": "live-remaining",
+      "queue_proof_passed": true,
+      "accepted_attempts": [
+        {
+          "attempt": "a746e160-830d-4671-9413-d73ade8a39fe",
+          "ordinal": 9,
+          "phase": "accepted",
+          "owner_boot": "7674fad5-2670-4c00-87db-4565c5dd66f6",
+          "arm_nonce": "9693cc1a-d8c3-4987-aa85-902a46e29faf",
+          "baseline": {
+            "turn_id": "01a1e0d8-f994-7d02-a5eb-3e3e8b5ef655",
+            "ordinal": 8
+          },
+          "owned_id_count": 1,
+          "owned_ids": [
+            "01a1e0d9-9cff-7c71-9cf8-c20bbdcad1bf"
+          ],
+          "add_helper": {
+            "id": "6b23bbf5-07ae-47f7-8df8-95f778c85d27",
+            "purpose": "add",
+            "subject": null,
+            "owner_boot": "7674fad5-2670-4c00-87db-4565c5dd66f6",
+            "kernel_boot": "6d757418-e8a4-456d-a680-21953e8fa0a3",
+            "witness": {
+              "process": {
+                "pid": 183176,
+                "start": 40143834
+              },
+              "pgid": 183176,
+              "kernel_boot": "6d757418-e8a4-456d-a680-21953e8fa0a3"
+            }
+          },
+          "logical_status": "fulfilled",
+          "fulfillment": {
+            "turn_id": "01a1e0d9-bce4-7183-ae8b-a139ca53c844",
+            "ordinal": 9
+          },
+          "cleanup_quarantined": false,
+          "cleanup_list_attempted": true
+        }
+      ],
+      "lifecycle_attempts": [
+        "a746e160-830d-4671-9413-d73ade8a39fe"
+      ]
+    },
+    {
+      "recipient": "co-t3",
+      "threshold": 3,
+      "case": "side-draft/group",
+      "result": "PASS",
+      "actual_transport": "none",
+      "wake_windows": [],
+      "t_wake_s": null,
+      "source_stage": "live-remaining",
+      "queue_proof_passed": true,
+      "accepted_attempts": [],
+      "lifecycle_attempts": []
+    },
+    {
+      "recipient": "co-t3",
+      "threshold": 3,
+      "case": "side-nudge/group",
+      "result": "PASS",
+      "actual_transport": "native_inference",
+      "wake_windows": [
+        {
+          "seconds": 6.0,
+          "queue_eligible": false,
+          "expect_wake": true
+        },
+        {
+          "seconds": 6.0,
+          "queue_eligible": false,
+          "expect_wake": true
+        }
+      ],
+      "t_wake_s": 1.01,
+      "source_stage": "live-remaining",
+      "queue_proof_passed": true,
+      "accepted_attempts": [],
+      "lifecycle_attempts": []
+    }
+  ],
+  "historical_failures": "All earlier six-second and UI FAIL records remain unchanged in their original evidence.",
+  "full_suite_gate": "Pending corrected full suite; no timing waiver, merge or release.",
+  "transport_counts": {
+    "native_inference": 6,
+    "none": 36,
+    "queue": 30
+  },
+  "focused_ui_cleanup": {
+    "problems": [],
+    "owned_workspace_closed": true,
+    "owned_daemon_stopped": true,
+    "scratch_root_removed": true,
+    "auth_copy": "deleted unchanged",
+    "scoped_leak_run": "29c991d0-5597-4601-9330-01893d6dd154",
+    "scoped_leak_exit": 0,
+    "temp_check": "no ledger for this run"
+  }
+}
