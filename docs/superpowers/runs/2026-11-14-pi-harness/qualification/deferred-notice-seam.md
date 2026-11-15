@@ -33,8 +33,28 @@ Focused evidence is recorded below when checks complete. No full suite, live har
 
 ## Focused validation checkpoint
 
-Causal RED: before the flag existed, both focused cases rejected its unknown field. After compile-consistent false defaults, both reached the real store and failed: allocation advanced the notice frontier to1 instead of0, and a default pull accepted the deferred page. After the canonical fix, both passed. The explicit CLI parser case independently failed before the manual flag/subcommand were implemented.
+Causal RED: before the flag existed, both focused cases rejected its unknown field. After compile-consistent false defaults, both reached the real store and failed: allocation advanced the notice frontier to 1 instead of 0, and a default pull accepted the deferred page. After the canonical fix, both passed. The explicit CLI parser case independently failed before the manual flag/subcommand were implemented.
 
-The focused combined/lib/service gate passed207/207 tests (173s build,11.122s execution), including canonical deferred prefix/frontier/fence/malformed-retired-tag/partial-covered/owner/execution-reset cases, actual historical old-confirm/new-default reoffer, pending canonical notice preservation, current Watch lease refusal, existing Watch/ACK/output tests, both default channel harnesses' exact output and flush order, protocol capability routes and existing wake tests. The final added mixed-page atomic-refusal regression and tightened missing-new-capability test are a separate delta gate; required lint/default-feature/format/guards/leak checks remain pending at this source checkpoint.
+The focused combined/lib/service gate passed 207/207 tests (173 s build, 11.122 s execution), including canonical deferred prefix/frontier/fence/malformed-retired-tag/partial-covered/owner/execution-reset cases, actual historical old-confirm/new-default reoffer, pending canonical notice preservation, current Watch lease refusal, existing Watch/ACK/output tests, both default channel harnesses' exact output and flush order, protocol capability routes and existing wake tests. The final added mixed-page atomic-refusal regression and tightened missing-new-capability test passed a separate 2/2 delta gate (95 s build, 0.905 s execution). The former uses an actual canonical Notice/Invitation/Attention page and verifies the entire retained state and notice frontier stay unchanged, with no control acknowledgment.
 
 The CLI hidden-Unknown sequence is deliberately injected to prove the watch continuation state machine, not evidence of a real relevance scan or native branch uptake. Same-scope replay and execution-only reset are tested directly; generation changes and native reload/overflow/partial-context uptake are not claimed by those fixtures. The pending canonical warning is an unavailable-member notice: it proves notice-frontier retention, not origin p0 native wake. Actual receipt-overdue-after-settled wake belongs to the subsequent isolated native qualification.
+
+## Final neutral gate
+
+Independent source review approved frozen source commit `5b2713226` with no findings. The subsequent root commit `e45e71aeb` changes design/event-contract documentation only. No source change followed the checkpoint.
+
+| Check | Result | Observed duration |
+|---|---|---|
+| Focused lib/combined/service selection | 207 passed | 173 s build + 11.122 s tests |
+| Final atomicity/capability delta | 2 passed | 95 s build + 0.905 s tests |
+| clippy --locked --all-targets --all-features -- -D warnings | PASS, no warnings | 94 s |
+| scripts/check-default-features | PASS, exit 0; script suppresses successful cargo output | Not instrumented; completion observed within 92 s of wrapper slot acquisition |
+| cargo fmt --all -- --check | PASS | 7.31 s |
+| scripts/check-harness-neutral | PASS, 0 violations | Not instrumented |
+| scripts/check-wire-compat | PASS, 0 violations or stale entries | Not instrumented |
+| Scoped process/temp checks in host and builder | PASS, no owned leftovers | Not instrumented |
+| git diff --check | PASS | Not instrumented |
+
+The 94 s clippy result exceeds the 60 s per-change budget. This is a recorded budget miss; the run supplies no baseline attribution or introduced-regression conclusion. The 173 s focused build and later 95 s delta rebuild are concrete run timings, not a generic incremental-build benchmark. Root owns the existing budget issue and later final gates. All builds reused the existing target with concurrency capped at four; no stress, full-suite or live run was added.
+
+Retained private evidence: `.superpowers/sdd/implementation-plan/deferred-seam-gates/` contains causal RED/GREEN notes, focused/final-delta output, required checks, scoped cleanup and the frozen source diff. Frozen diff SHA256: `40362022bf4246d852441a0f5f92de50615de2f1c69de8e02b7fd0899c975626`. Independent review: `.superpowers/sdd/implementation-plan/notice-canonical-source-review.md`. These private logs are not part of the public model-visible contract.
