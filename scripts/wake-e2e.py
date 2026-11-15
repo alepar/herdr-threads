@@ -193,17 +193,18 @@ PICKER_ROW = re.compile(r"^\u203a 1\. ")
 WAKE_BLOCK_WAIT_S = 90
 # Opt-in, mod Claude at T=0 only (docs/validation/claude-wake-busy-2026-11-14.md): the mod must not submit its wake
 # while the engine already holds another prompt. enter-race: an ACK request is held by a typed composer draft; the
-# driver presses Enter, and a 2 s UserPromptSubmit hook (added to the scratch settings for these cases only) keeps the
-# prompt between Enter and its turn.start; the item must arrive in that turn at its tool boundary (`via: context`).
-# queued-prompt: an ACK request and a follow-up prompt both arrive while the turn writes its final answer, after its
-# last tool call; the mod appends the item at the turn's end (`via: append`) and the follow-up's turn reads it. Neither
-# may put a `wake up` into the engine's queue (the transcript's `queue-operation` rows) or on screen. A run whose
-# `via` is the other one did not stage the window and fails as such (`window_staged`).
+# driver presses Enter, and a 2 s UserPromptSubmit hook keeps the prompt between Enter and its turn.start; the mod
+# appends the item in that window and the prompt's turn, which calls no tool, must name it. queued-prompt: an ACK
+# request and a follow-up prompt both arrive while the turn writes its final answer, after its last tool call; the mod
+# appends the item at the turn's end and the follow-up's turn reads it. Both are ACKed `via: append`, and neither may
+# put a `wake up` into the engine's queue (the transcript's `queue-operation` rows) or on screen. A run that did not
+# stage its window fails as such (`window_staged`). The slow hook sits in the scratch settings every Claude recipient
+# of the run shares, so these cases run alone: a `--cases` list mixing them with others is refused.
 PROMPT_RACE_CASES = ("enter-race/group", "queued-prompt/group")
 PROMPT_RACE_HOOK_S = 2
 PROMPT_RACE_DRAFT_S = 4.0
-ENTER_RACE_PROMPT = ("Enter-race test {tag}: run the shell command `true`, then handle any herdr-threads items exactly "
-                     "as your standing instructions say, and finally print RACE-DONE.")
+ENTER_RACE_PROMPT = ("Enter-race test {tag}: without running any command or using any tool, name the id of every "
+                     "herdr-threads item you have received so far, and finally print RACE-DONE.")
 QUEUED_PROMPT = ("Queued-prompt test {tag}: run the shell command `{hold}` and no other command, then write a 500-word "
                  "essay about ocean tides without using any tool, and finally print ESSAY-DONE.")
 QUEUED_FOLLOWUP = ("Queued follow-up {tag}: handle any herdr-threads items exactly as your standing instructions say, "
@@ -2889,7 +2890,7 @@ class Recipient:
         checks["delivered"] = self.on_screen(mid)
         checks["ack"] = self.receipt(mid)
         checks["ack_via"] = self.ack_via(mid)
-        checks["window_staged"] = checks["ack_via"] == ("context" if enter else "append")
+        checks["window_staged"] = checks["ack_via"] == "append"
         self.settled()
         passed = (checks["wake_enqueues"] == 0 and checks["wake_prompts_on_screen"] == 0
                   and checks["self_started_turn_after_s"] is None and checks["turn_end_seen"] is True
@@ -3563,6 +3564,9 @@ def main(argv=None):
                + [h for h in args.harness if h not in HARNESSES])
     if unknown:
         ap.error(f"unknown case/harness: {unknown}")
+    if any(c in PROMPT_RACE_CASES for c in cases) and not all(c in PROMPT_RACE_CASES for c in cases):
+        ap.error("the prompt-race cases (" + ", ".join(PROMPT_RACE_CASES) + ") run alone: their slow "
+                 "UserPromptSubmit hook would skew other cases")
     def terminate(signum, _frame):
         raise KeyboardInterrupt(f"signal {signum}")
     try:

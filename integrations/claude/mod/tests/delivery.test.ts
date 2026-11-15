@@ -61,6 +61,7 @@ function harness(opts: Any = {}) {
       return { code: 0, stdout: ids.map((id) => JSON.stringify({ id, result: 'settled' })).join('\n') }
     },
     pending: [] as Any[],
+    timers: [] as Any[],
     spawnThrows: null as Any,
   }
   const io: Any = {
@@ -73,11 +74,8 @@ function harness(opts: Any = {}) {
       if (h.boxFails) throw new Error('no prompt')
       return { text: h.box }
     },
-    // `settle: 'manual'` leaves the turn-boundary settle to the test's clock; otherwise the timer fires at once.
-    after: opts.settle === 'manual' ? undefined : (ms: number, fn: () => void) => {
-      h.t += ms
-      fn()
-    },
+    // Timers fire only when the test's clock reaches them (h.elapse, h.advance).
+    after: (ms: number, fn: () => void) => void h.timers.push({ at: h.t + ms, fn }),
     submit: (text) => {
       h.submits.push(text)
       h.calls.push({ op: 'submit', text })
@@ -120,8 +118,25 @@ function harness(opts: Any = {}) {
   h.child = () => h.spawns[h.spawns.length - 1]
   h.line = (o: Any) => h.child().cb.line(o)
   h.exit = (code: number) => h.child().cb.exit(code)
+  const runTimers = async () => {
+    for (;;) {
+      const due = h.timers.filter((t: Any) => t.at <= h.t)
+      if (!due.length) return
+      h.timers = h.timers.filter((t: Any) => t.at > h.t)
+      for (const t of due) t.fn()
+      await flush()
+    }
+  }
+  // Moves the clock and fires due timers, without a tick.
+  h.elapse = async (ms: number) => {
+    await flush()
+    h.t += ms
+    await runTimers()
+    await flush()
+  }
   h.advance = async (ms: number) => {
     h.t += ms
+    await runTimers()
     await h.core.onTick()
     await flush()
   }
@@ -320,7 +335,7 @@ test('assumed busy ends at the first main turn.complete', async () => {
   await h.advance(1000)
   expect(h.submits.length).toBe(0)
   h.core.onTurnComplete({ turnId: 'x' })
-  await flush()
+  await h.elapse(500)
   expect(h.submits.length).toBe(1)
 })
 
@@ -388,7 +403,7 @@ test('a turn that ends before a tool result delivers by append, then a wake subm
   await flush()
   expect(h.submits.length).toBe(0)
   h.core.onTurnComplete({ turnId: 't1' })
-  await flush()
+  await h.elapse(500)
   expect(h.appends.length).toBe(1)
   expect(h.appends[0]).toContain('body of m1')
   expect(h.submits).toEqual([WAKE])
@@ -419,7 +434,7 @@ test('submit is re-checked and never issued while a main turn is open', async ()
   expect(h.submits.length).toBe(0)
   h.io.promptRead = async () => ({ text: '' })
   h.core.onTurnComplete({ turnId: 't1' })
-  await flush()
+  await h.elapse(500)
   expect(h.submits.length).toBe(1)
 })
 
@@ -444,7 +459,7 @@ test('turn.start before the aborted turn.complete of the previous turn', async (
   await flush()
   expect(h.submits.length).toBe(0)
   h.core.onTurnComplete({ turnId: 't2', isAborted: false })
-  await flush()
+  await h.elapse(500)
   expect(h.core.snapshot().turns.abortHoldSince).toBe(null)
   expect(h.submits.length).toBe(1)
 })
@@ -470,7 +485,7 @@ test('post-abort hold lasts until a later non-aborted complete', async () => {
   expect(h.entries.some((e: Any) => e.kind === 'held' && e.reason === 'post_abort')).toBe(true)
   h.core.onTurnStart({ turnId: 't2' })
   h.core.onTurnComplete({ turnId: 't2' })
-  await flush()
+  await h.elapse(500)
   expect(h.submits.length).toBe(1)
 })
 
@@ -524,7 +539,7 @@ test('Esc at a permission dialog holds the idle submit like an aborted turn', as
   expect(h.submits.length).toBe(0)
   h.core.onTurnStart({ turnId: 't2' })
   h.core.onTurnComplete({ turnId: 't2', isAborted: false })
-  await flush()
+  await h.elapse(500)
   expect(h.submits.length).toBe(1)
   expect(h.appends[0]).toContain('body of m1')
   expect(h.ackRuns().map((r: string[]) => r.slice(5))).toEqual([['--via', 'append', 'm1']])
@@ -539,11 +554,11 @@ test('a rejected tool call followed by an answered one in the same turn sets no 
   h.core.onTurnStep({ turnId: 't1', index: 1 })
   await h.core.onToolCall({ tool: 'Bash' }, answered)
   h.core.onTurnComplete({ turnId: 't1', isAborted: false, reason: 'answer' })
-  await flush()
+  await h.elapse(500)
   expect(h.entries.some((e: Any) => e.kind === 'held' && e.reason === 'post_abort')).toBe(false)
   expect(h.core.snapshot().turns.abortHoldSince).toBe(null)
   h.line(msg('m2'))
-  await flush()
+  await h.elapse(500)
   expect(h.submits.length).toBe(1)
 })
 
@@ -554,7 +569,7 @@ test('a subagent rejected tool call sets no hold', async () => {
   await flush()
   expect(await h.core.onToolCall({ tool: 'Bash', agentId: 'a1' }, REJECTED)).toBe(REJECTED)
   h.core.onTurnComplete({ turnId: 't1', isAborted: false, reason: 'answer' })
-  await flush()
+  await h.elapse(500)
   expect(h.core.snapshot().turns.abortHoldSince).toBe(null)
   expect(h.submits.length).toBe(1)
 })
@@ -577,7 +592,7 @@ test('the rejected flag does not leak into the next turn', async () => {
   h.core.onTurnComplete({ turnId: 't2', isAborted: false, reason: 'answer' })
   expect(h.core.snapshot().turns.abortHoldSince).toBe(null)
   h.line(msg('m1'))
-  await flush()
+  await h.elapse(500)
   expect(h.submits.length).toBe(1)
 })
 
@@ -622,10 +637,10 @@ test('a failing last tool call followed by the final answer sets no hold', async
   await h.core.onToolCall({ tool: 'Bash' }, FAILED)
   h.core.onTurnStep({ turnId: 't1', index: 1 })
   h.core.onTurnComplete({ turnId: 't1', isAborted: false, reason: 'answer' })
-  await flush()
+  await h.elapse(500)
   expect(h.core.snapshot().turns.abortHoldSince).toBe(null)
   h.line(msg('m1'))
-  await flush()
+  await h.elapse(500)
   expect(h.submits).toEqual([WAKE])
 })
 
@@ -715,32 +730,71 @@ test('a draft deleted without a prompt entering lets the submit go at the next t
 
 const COMPOSER = { origin: { kind: 'composer' }, text: 'the user prompt' }
 
-test('a prompt entering the engine holds the wake until its turn starts (Enter to turn.start)', async () => {
-  const h = await harness({ state: IDLE, box: 'my draft', settle: 'manual' }).boot()
+test('a prompt entering the engine holds only the wake: the rows are appended ahead of its turn', async () => {
+  const h = await harness({ state: IDLE, box: 'my draft' }).boot()
   h.line(msg('m1'))
   await flush()
   expect(h.entries.some((e: Any) => e.kind === 'held' && e.reason === 'draft')).toBe(true)
   // Enter: the composer is empty, the UserPromptSubmit hooks run, no turn is open yet
   h.box = ''
   h.core.onPromptIn(COMPOSER)
+  await h.elapse(1)
+  expect(h.appends.length).toBe(1)
+  expect(h.appends[0]).toContain('body of m1')
   await h.advance(1000)
-  expect(h.appends.length).toBe(0)
   expect(h.submits.length).toBe(0)
+  expect(h.entries.some((e: Any) => e.kind === 'held' && e.reason === 'entering')).toBe(true)
+  // a text-only turn: no tool boundary is needed, its first request reads the appended rows
   h.core.onTurnStart({ turnId: 'u1', text: COMPOSER.text })
   h.core.onPromptOut(COMPOSER, { text: COMPOSER.text, origin: COMPOSER.origin })
   await h.advance(1000)
-  expect(h.submits.length).toBe(0)
-  // the user's turn carries the item; nothing is left to wake for
-  const out = await h.core.onToolCall({}, answered)
-  expect(out.context[0]).toContain('body of m1')
   h.core.onTurnComplete({ turnId: 'u1' })
   await h.advance(1000)
   expect(h.submits.length).toBe(0)
+  expect(h.appends.length).toBe(1)
+  expect(h.core.snapshot().turns.wake).toBeNull()
   expect(h.core.snapshot().queue).toEqual([])
+  expect(h.ackRuns()[0].slice(5)).toEqual(['--via', 'append', 'm1'])
+})
+
+test('an item that arrives while a prompt is entering is appended at once, and no wake follows its turn', async () => {
+  const h = await harness({ state: IDLE }).boot()
+  h.core.onPromptIn(COMPOSER)
+  h.line(msg('m1'))
+  await flush()
+  expect(h.appends.length).toBe(1)
+  expect(h.submits.length).toBe(0)
+  h.core.onTurnStart({ turnId: 'u1', text: COMPOSER.text })
+  h.core.onPromptOut(COMPOSER, { text: COMPOSER.text, origin: COMPOSER.origin })
+  h.core.onTurnComplete({ turnId: 'u1' })
+  await h.advance(1000)
+  expect(h.submits.length).toBe(0)
+})
+
+test('a prompt dispatch the engine abandons releases the wake after the idle hold', async () => {
+  const h = await harness({ state: IDLE }).boot()
+  h.core.onPromptIn(COMPOSER)
+  h.line(msg('m1'))
+  await flush()
+  expect(h.appends.length).toBe(1)
+  // Esc during a slow hook, or a hung hook: the dispatch never settles
+  await h.advance(119_000)
+  expect(h.submits.length).toBe(0)
+  // a draft keeps the hold, as it does for the other holds
+  h.box = 'typing'
+  await h.advance(2000)
+  expect(h.submits.length).toBe(0)
+  h.box = ''
+  await h.advance(1000)
+  expect(h.submits).toEqual([WAKE])
+  // the late settlement of that dispatch changes nothing
+  h.core.onPromptOut(COMPOSER, { drop: 'aborted' })
+  await h.advance(1000)
+  expect(h.submits).toEqual([WAKE])
 })
 
 test('a prompt queued behind the turn starts first: the rows are appended and no wake is submitted', async () => {
-  const h = await harness({ state: IDLE, settle: 'manual' }).boot()
+  const h = await harness({ state: IDLE }).boot()
   h.core.onTurnStart({ turnId: 't1' })
   h.line(msg('m1'))
   await flush()
@@ -761,7 +815,7 @@ test('a prompt queued behind the turn starts first: the rows are appended and no
 })
 
 test('after a turn ends with nothing queued the wake is submitted once the settle elapses', async () => {
-  const h = await harness({ state: IDLE, settle: 'manual' }).boot()
+  const h = await harness({ state: IDLE }).boot()
   h.core.onTurnStart({ turnId: 't1' })
   h.line(msg('m1'))
   await flush()
@@ -776,19 +830,22 @@ test('after a turn ends with nothing queued the wake is submitted once the settl
   expect(h.appends.length).toBe(1)
 })
 
-test('a dropped prompt clears the entering state and the wake goes out', async () => {
-  const h = await harness({ state: IDLE, settle: 'manual' }).boot()
+test('a dropped prompt frees the wake, submitted from a timer and never inside the dispatch', async () => {
+  const h = await harness({ state: IDLE }).boot()
   h.core.onPromptIn(COMPOSER)
   h.line(msg('m1'))
   await flush()
+  expect(h.appends.length).toBe(1)
   expect(h.submits.length).toBe(0)
   h.core.onPromptOut(COMPOSER, { drop: 'UserPromptSubmit operation blocked by hook' })
   await flush()
+  expect(h.submits.length).toBe(0)
+  await h.elapse(1)
   expect(h.submits).toEqual([WAKE])
 })
 
 test('a prompt that enters without starting a turn releases the wake after the settle', async () => {
-  const h = await harness({ state: IDLE, settle: 'manual' }).boot()
+  const h = await harness({ state: IDLE }).boot()
   h.core.onPromptIn(COMPOSER)
   h.line(msg('m1'))
   await flush()
@@ -801,7 +858,7 @@ test('a prompt that enters without starting a turn releases the wake after the s
 })
 
 test("the mod's own wake prompt entering is not a rival prompt", async () => {
-  const h = await harness({ state: IDLE, settle: 'manual' }).boot()
+  const h = await harness({ state: IDLE }).boot()
   h.core.onPromptIn({ origin: { kind: 'plugin', name: 'herdr-threads' }, text: WAKE })
   h.line(msg('m1'))
   await flush()
@@ -1075,7 +1132,7 @@ test('attention is delivered like a message, never acked, once per version and o
   // idle attention submits
   h.core.onTurnComplete({ turnId: 't1' })
   h.line(attention(5))
-  await flush()
+  await h.elapse(500)
   expect(h.appends.length).toBe(1)
   expect(h.appends[0]).toContain('attention marker 5')
   expect(h.submits).toEqual([WAKE])
@@ -1086,7 +1143,7 @@ test('attention is delivered like a message, never acked, once per version and o
   expect(h.spawns.length).toBe(2)
   await h.connect()
   h.line(attention(5))
-  await flush()
+  await h.elapse(500)
   expect(h.appends.length).toBe(2)
   expect(h.submits).toEqual([WAKE, WAKE])
   expect(h.ackRuns().length).toBe(0)
@@ -1113,7 +1170,7 @@ test('a retraction keeps queued messages', async () => {
   h.line(msg('m1'))
   h.line(cleared(2))
   h.core.onTurnComplete({ turnId: 't1' })
-  await flush()
+  await h.elapse(500)
   expect(h.appends.length).toBe(1)
   expect(h.appends[0]).toContain('message m1 in ')
   expect(h.appends[0]).not.toContain('attention marker 1')
@@ -2302,9 +2359,9 @@ test('a successor sees the predecessor turn start: the ids are delivered at that
   expect(h.ackRuns().length).toBe(1)
   expect(h.ackRuns()[0].slice(5)).toEqual(['--via', 'submit', 'm1'])
   h.core.onTurnComplete({ turnId: 't9', isAborted: false })
-  await flush()
+  await h.elapse(500)
   h.line(msg('m2'))
-  await flush()
+  await h.elapse(500)
   expect(h.appends.length).toBe(1)
   expect(h.appends[0]).toContain('message m2 in ')
   expect(h.appends[0]).not.toContain('message m1 in ')

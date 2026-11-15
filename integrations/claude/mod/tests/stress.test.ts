@@ -66,7 +66,7 @@ function runSchedule(seed: number) {
   }
   // model of what the engine told the mod
   // provisional: `${sid}|${id}` keys attached to an errored main result, confirmed by the next main step
-  const m: Any = { mainOpen: null as string | null, lingering: [] as string[], hold: false, holdSince: 0, rejected: false, provisional: [] as string[], entering: 0, settleUntil: 0 }
+  const m: Any = { mainOpen: null as string | null, lingering: [] as string[], hold: false, holdSince: 0, rejected: false, provisional: [] as string[], entering: 0, enteringSince: 0, settleUntil: 0 }
   const items = new Map<string, Any>() // streamed items by id
   const deliveredVia = new Map<string, string>() // `${sid}|${id}` -> via
   const settled = new Set<string>()
@@ -229,6 +229,8 @@ function runSchedule(seed: number) {
 
   const mirrorTick = () => {
     if (m.hold && m.mainOpen === null && world.t - m.holdSince >= HOLD_MS && world.box === '') m.hold = false
+    // an abandoned prompt dispatch is released like the other holds
+    if (m.entering > 0 && m.mainOpen === null && world.t - m.enteringSince >= HOLD_MS && world.box === '') m.entering = 0
   }
   const advance = async (ms: number) => {
     world.t += ms
@@ -310,7 +312,7 @@ function runSchedule(seed: number) {
     }],
     [4, 'prompt.in', async () => {
       if (m.entering >= 2) return
-      m.entering++
+      if (m.entering++ === 0) m.enteringSince = world.t
       core.onPromptIn({ origin: { kind: 'composer' }, text: 'typed' })
     }],
     [5, 'prompt.out', async () => {
@@ -517,6 +519,44 @@ function runSchedule(seed: number) {
     settleAll()
     await advance(31_000)
     await flush()
+    // Liveness: once nothing holds the session (no prompt entering, no open turn, no hold, an empty composer and
+    // a healthy engine), every waking item must have been appended and its wake submitted.
+    world.box = ''
+    world.slowReads = false
+    world.slowState = false
+    world.manualSubmit = false
+    world.dropRate = 0
+    world.denyRate = 0
+    while (m.entering > 0) {
+      m.entering--
+      core.onPromptOut({ origin: { kind: 'composer' }, text: 'typed' }, { drop: 'blocked by hook' })
+    }
+    m.mainOpen = 'final'
+    m.lingering = []
+    core.onTurnStart({ turnId: 'final' })
+    m.mainOpen = null
+    m.hold = false
+    m.settleUntil = world.t + SETTLE_MS
+    core.onTurnComplete({ turnId: 'final', isAborted: false })
+    for (let i = 0; i < 4; i++) {
+      await advance(HOLD_MS + 1000)
+      settleAll()
+      await flush()
+    }
+    const end = core.snapshot()
+    if (end.live && !end.inert) {
+      try {
+        if (end.turns.wake) fail('liveness: a wake is still pending with nothing holding it')
+        const waking = end.queue.filter((id: string) => {
+          const it = items.get(id)
+          return it && !it.truncated && (it.kind === 'message' || it.kind === 'lazy') && (it.wakes || it.ack_required === true)
+        })
+        if (waking.length) fail(`liveness: waking items never delivered: ${waking.join(',')}`)
+        if (violations.length) throw new Error(violations[0])
+      } catch (err) {
+        throw new Error(`seed=${seed} end: ${String(err).replace(/^Error: /, '')}`)
+      }
+    }
     core.dispose()
     totals.schedules++
   })()

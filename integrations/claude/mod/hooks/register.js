@@ -159,6 +159,7 @@ export function createCore(io) {
     submitBackoffUntil: 0,
     // prompt.submit dispatches of other origins in flight (Enter to turn.start: the turn hooks run here)
     entering: 0,
+    enteringSince: null,
     settleUntil: 0,
     appendBackoffUntil: 0,
     pred: null,
@@ -188,7 +189,7 @@ export function createCore(io) {
 
   const cmd = (...rest) => [...(io.argv || [io.bin || 'herdr-threads']), ...rest]
   const key = (sid) => `delivered:${sid}`
-  const busy = () => S.turns.open.length > 0 || S.turns.assumedBusy || S.pred != null || S.entering > 0
+  const busy = () => S.turns.open.length > 0 || S.turns.assumedBusy || S.pred != null
   const predHas = (id) => (S.pred != null && S.pred.ids.includes(id)) || S.heldProv.some((h) => h.ids.includes(id))
 
   function ledger(kind, fields = {}) {
@@ -603,6 +604,13 @@ export function createCore(io) {
     }
   }
 
+  /** Re-runs the pump from a timer, outside any hook dispatch; without the timer API the 1 s tick does it. */
+  function pumpLater(ms) {
+    try {
+      io.after?.(ms, () => void pump())
+    } catch {}
+  }
+
   /** Whether the idle gates still hold after an await; a bail leaves the wake (if any) pending for the next pump. */
   const idleOpen = (gen) => !S.disposed && gen === S.gen && S.live && !busy() && S.turns.abortHoldSince == null
 
@@ -651,13 +659,16 @@ export function createCore(io) {
       return
     }
     // The rows are in the session; only the wake waits. A turn that starts meanwhile reads them and clears it.
+    if (S.entering > 0) {
+      S.submitInflight = false
+      held('entering', bids)
+      return
+    }
     const settle = S.settleUntil - io.now()
     if (settle > 0) {
       S.submitInflight = false
       held('settle', bids)
-      try {
-        io.after?.(settle, () => void pump())
-      } catch {}
+      pumpLater(settle)
       return
     }
     const wake = S.turns.wake
@@ -958,19 +969,24 @@ export function createCore(io) {
 
   const ownPrompt = (e) => e?.origin?.kind === 'plugin' && e.origin.name === PLUGIN_NAME
 
-  /** A prompt of another origin entered the engine: until its turn starts the session is not idle. */
+  /**
+   * A prompt of another origin entered the engine. Until its dispatch settles (the turn hooks run in it) no wake
+   * is submitted; rows are still appended, ahead of the turn's first request, so that turn reads them.
+   */
   function onPromptIn(e) {
     if (S.inert || !e || ownPrompt(e)) return
-    S.entering++
+    if (S.entering++ === 0) S.enteringSince = io.now()
+    pumpLater(1)
   }
 
-  /** Its dispatch settled: a started turn is in turns.open by now; a drop frees the wake at once. */
+  /** Its dispatch settled: a started turn has cleared the wake; a drop frees it; otherwise it waits out the settle. */
   function onPromptOut(e, result) {
     if (S.inert || !e || ownPrompt(e)) return
-    if (S.entering > 0) S.entering--
+    if (S.entering > 0 && --S.entering === 0) S.enteringSince = null
     const dropped = !result || result.drop !== undefined
     if (!dropped && S.turns.open.length === 0) S.settleUntil = Math.max(S.settleUntil, io.now() + TURN_SETTLE_MS)
-    void pump()
+    // never from inside the dispatch: the engine rejects a $.prompt.submit attributed to a prompt.submit hook
+    pumpLater(1)
   }
 
   // ctx.foreign: another plugin's own $.tool.call, whose result the engine gives no context;
@@ -1004,6 +1020,7 @@ export function createCore(io) {
     S.submitInflight = false
     S.appendInflight = false
     S.entering = 0
+    S.enteringSince = null
     S.settleUntil = 0
     S.provisional = []
     S.heldProv = []
@@ -1067,6 +1084,16 @@ export function createCore(io) {
         try {
           const box = await io.promptRead()
           if (box.text === '' && S.pred && S.turns.open.length === 0 && io.now() - S.pred.since >= HOLD_IDLE_MS) releasePred()
+        } catch {}
+      }
+      // A dispatch the engine abandoned (Esc or a hung hook) never settles: it must not hold the wake for ever.
+      if (S.entering > 0 && S.turns.open.length === 0 && now - S.enteringSince >= HOLD_IDLE_MS) {
+        try {
+          const box = await io.promptRead()
+          if (box.text === '' && S.entering > 0 && S.turns.open.length === 0) {
+            S.entering = 0
+            S.enteringSince = null
+          }
         } catch {}
       }
       if (S.connectedAt != null && now - S.lastAckRetry >= ACK_RETRY_MS) {
@@ -1264,7 +1291,7 @@ export const register = (on) => {
     return r
   })
 
-  // Observes only: the engine rejects a $.prompt.submit made from this dispatch, and busy() keeps pump out of it.
+  // Observes only: the engine rejects a $.prompt.submit made from this dispatch, so the core defers its pump.
   on('prompt.submit', async ($, e, next) => {
     try {
       if (core) core.onPromptIn(e)
