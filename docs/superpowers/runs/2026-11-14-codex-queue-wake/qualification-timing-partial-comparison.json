@@ -1,0 +1,218 @@
+{
+  "schema": 1,
+  "main_runtime_source_reported": "91ce0cdeb8e87dcc16c79f4a556fabffb7946967 plus six text-only wording lines; no Rust logic changes, main-owner18",
+  "candidate_sample": "4ef23027-9625-4caf-9245-a1716d43928b",
+  "main_profile": "default",
+  "candidate_profile": "ci",
+  "explicit_test_threads_both": 4,
+  "existing_main_log_complete": false,
+  "existing_main_log_last_test_counter": "2100/9590",
+  "matched_count": 32,
+  "selected_count": 41,
+  "strata": {
+    "integration_lanes": {
+      "matched": 9,
+      "missing": [
+        "lane_wiring::injected_lane_failure_logs_and_degrades_then_clears"
+      ],
+      "main_sum_seconds": 53.635,
+      "candidate_sum_seconds": 54.543,
+      "sum_ratio": 1.0169,
+      "tests": [
+        {
+          "test": "lanes_latency::deadline_commit_creating_a_warning_starts_a_kicked_wake_pass_within_100ms",
+          "main_seconds": 3.893,
+          "candidate_seconds": 4.161
+        },
+        {
+          "test": "lanes_latency::send_is_attempted_within_100ms_without_a_tick_wait",
+          "main_seconds": 3.163,
+          "candidate_seconds": 3.404
+        },
+        {
+          "test": "lane_wiring::committed_wake_work_insert_kicks_the_wake_pacer",
+          "main_seconds": 5.324,
+          "candidate_seconds": 6.0
+        },
+        {
+          "test": "lanes_latency::idle_daemon_commits_nothing_from_deadline_wake_request_for_30s",
+          "main_seconds": 6.926,
+          "candidate_seconds": 7.026
+        },
+        {
+          "test": "lane_wiring::every_lane_registers",
+          "main_seconds": 2.943,
+          "candidate_seconds": 3.189
+        },
+        {
+          "test": "lane_wiring::spawn_blocking_revoke_counts_as_request_origin",
+          "main_seconds": 4.203,
+          "candidate_seconds": 4.408
+        },
+        {
+          "test": "lanes_latency::commit_latency_excludes_delayed_observation",
+          "main_seconds": 0.005,
+          "candidate_seconds": 0.005
+        },
+        {
+          "test": "lanes_latency::settled_setup_invitations_do_not_require_a_sender_wake",
+          "main_seconds": 3.205,
+          "candidate_seconds": 3.716
+        },
+        {
+          "test": "lanes_latency::herdr_stopped_freezes_wake_lane",
+          "main_seconds": 23.973,
+          "candidate_seconds": 22.634
+        }
+      ]
+    },
+    "service_composition": {
+      "matched": 23,
+      "missing": [],
+      "main_sum_seconds": 17.378,
+      "candidate_sum_seconds": 18.426,
+      "sum_ratio": 1.0603,
+      "tests": [
+        {
+          "test": "composition::elected_wake_hang_allows_health_deadlines_and_retains_owner_until_joined",
+          "main_seconds": 0.695,
+          "candidate_seconds": 0.807
+        },
+        {
+          "test": "composition::actual_native_daemon_restart_keeps_same_terminal_seat_resolvable",
+          "main_seconds": 0.537,
+          "candidate_seconds": 0.905
+        },
+        {
+          "test": "composition::actual_native_health_reports_observed_verified_host_evidence",
+          "main_seconds": 0.422,
+          "candidate_seconds": 0.676
+        },
+        {
+          "test": "composition::actual_native_private_host_survives_cancellation_before_request_write",
+          "main_seconds": 0.511,
+          "candidate_seconds": 0.556
+        },
+        {
+          "test": "composition::actual_native_snapshot_cancellation_closes_peer_before_elected_worker_join_and_owner_release",
+          "main_seconds": 0.571,
+          "candidate_seconds": 0.57
+        },
+        {
+          "test": "composition::actual_native_verified_baseline_holds_targets_and_cannot_retire_proofless_seats",
+          "main_seconds": 0.56,
+          "candidate_seconds": 0.581
+        },
+        {
+          "test": "composition::actual_native_verified_snapshot_resolves_live_pane_and_retires_it_after_close",
+          "main_seconds": 0.748,
+          "candidate_seconds": 0.572
+        },
+        {
+          "test": "composition::configured_timing_reaches_store_and_rejects_unsafe_wake_spacing",
+          "main_seconds": 0.006,
+          "candidate_seconds": 0.005
+        },
+        {
+          "test": "composition::daemon_rejects_invalid_instance_settings_before_endpoint_publication",
+          "main_seconds": 0.026,
+          "candidate_seconds": 0.02
+        },
+        {
+          "test": "composition::daemon_restart_keeps_joined_cooperative_seat_available_without_warning",
+          "main_seconds": 0.787,
+          "candidate_seconds": 0.829
+        },
+        {
+          "test": "composition::daemon_restart_keeps_joined_human_seat_available",
+          "main_seconds": 0.734,
+          "candidate_seconds": 0.866
+        },
+        {
+          "test": "composition::elected_daemon_reports_startup_binding_evidence_counts_in_health_and_log",
+          "main_seconds": 0.586,
+          "candidate_seconds": 0.683
+        },
+        {
+          "test": "composition::elected_service_opens_real_sqlite_and_routes_health_and_public_query_over_ipc",
+          "main_seconds": 0.983,
+          "candidate_seconds": 1.308
+        },
+        {
+          "test": "composition::elected_service_reports_actual_private_settings_over_ipc",
+          "main_seconds": 6.07,
+          "candidate_seconds": 6.082
+        },
+        {
+          "test": "composition::elected_shutdown_joins_idle_monitor_before_releasing_native_host",
+          "main_seconds": 1.818,
+          "candidate_seconds": 1.704
+        },
+        {
+          "test": "composition::explicit_cooperative_cli_check_in_reaches_elected_service_over_socket",
+          "main_seconds": 1.053,
+          "candidate_seconds": 0.885
+        },
+        {
+          "test": "composition::health_unknown_settings_stay_absent_and_resolved_settings_are_forwarded",
+          "main_seconds": 0.008,
+          "candidate_seconds": 0.006
+        },
+        {
+          "test": "composition::pending_ops_cli_keeps_explicit_context_in_its_local_journal_route",
+          "main_seconds": 0.008,
+          "candidate_seconds": 0.009
+        },
+        {
+          "test": "composition::private_instance_settings_load_overrides_and_reject_unsafe_files",
+          "main_seconds": 0.006,
+          "candidate_seconds": 0.006
+        },
+        {
+          "test": "composition::request_with_previous_boot_after_restart_is_daemon_boot_changed",
+          "main_seconds": 0.64,
+          "candidate_seconds": 0.755
+        },
+        {
+          "test": "composition::selected_wire_output_is_optional_bounded_and_never_an_authority_field",
+          "main_seconds": 0.006,
+          "candidate_seconds": 0.006
+        },
+        {
+          "test": "composition::store_only_daemon_serves_without_host_workers",
+          "main_seconds": 0.596,
+          "candidate_seconds": 0.588
+        },
+        {
+          "test": "composition::summary_settings_load_from_the_instance_settings_file",
+          "main_seconds": 0.007,
+          "candidate_seconds": 0.007
+        }
+      ]
+    },
+    "query_work_q4": {
+      "matched": 0,
+      "missing": [
+        "store::queries::tests::query_work_q4::q4_actual_continued_tail_checks_scope_once_and_charges_retirement",
+        "store::queries::tests::query_work_q4::q4_episode_private_and_reconciliation_points_have_constant_sqlite_work",
+        "store::queries::tests::query_work_q4::q4_private_fresh_excludes_warning_history",
+        "store::queries::tests::query_work_q4::q4_private_resumed_excludes_warning_history",
+        "store::queries::tests::query_work_q4::q4_public_and_origin_warning_sources_remain_enabled",
+        "store::queries::tests::query_work_q4::q4_scalar_agreement_and_strict_retirement_use_exact_scope",
+        "store::queries::tests::query_work_q4::q4_raw_hundred_scope_charge_and_lazy_due_fourteen_use_actual_helpers",
+        "store::queries::tests::query_work_q4::q4_three_event_keys_and_actual_floor_have_constant_sqlite_work"
+      ],
+      "main_sum_seconds": 0,
+      "candidate_sum_seconds": 0,
+      "sum_ratio": null,
+      "tests": []
+    }
+  },
+  "limits": [
+    "Existing log is partial, with no final Summary; no main total or clean suite outcome inferred.",
+    "Profiles differ and host activity was not matched. Per-test comparisons do not establish total-runtime equivalence.",
+    "Missing query stratum and one integration case prevent complete41-test comparison.",
+    "These samples cannot attribute or waive the full-suite slowdown or five-minute gate."
+  ],
+  "full_suite_timing_gate_cleared": false
+}

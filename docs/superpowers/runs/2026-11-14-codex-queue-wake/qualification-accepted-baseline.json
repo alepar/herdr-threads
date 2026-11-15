@@ -1,0 +1,224 @@
+{
+  "schema": 1,
+  "source_sha": "17f88564ca5ddf9cab29b335b513210285c7e566",
+  "exit": 0,
+  "expected": 3,
+  "collected": 3,
+  "passed": 3,
+  "rows": [
+    {
+      "recipient": "co-t0",
+      "threshold": 0,
+      "case": "send-p0/group",
+      "result": "PASS",
+      "t_wake_s": 6.57,
+      "wake_windows": [
+        {
+          "seconds": 15.0,
+          "queue_eligible": true,
+          "expect_wake": true
+        }
+      ],
+      "actual_transport": "queue",
+      "checks": {
+        "delivered": true,
+        "inbox_calls": 0,
+        "no_extra_inbox": true,
+        "trailing_wake_s": null,
+        "queue_transport_ok": true
+      },
+      "accepted_attempts": [
+        {
+          "attempt": "c67089f9-dfd3-4c02-89d9-ccfb91117fdc",
+          "ordinal": 4,
+          "phase": "accepted",
+          "owner_boot": "89f8a394-78c6-4c42-a1bd-093be9116bcc",
+          "arm_nonce": "f4ec1722-7a29-4bb5-a048-fc870158675e",
+          "baseline": {
+            "turn_id": "01a1e0d3-8cb2-7932-9782-ccbc93ff9174",
+            "ordinal": 4
+          },
+          "owned_id_count": 1,
+          "owned_ids": [
+            "01a1e0d4-3906-7260-870e-c94a57f282bc"
+          ],
+          "add_helper": {
+            "id": "72c1f4c8-c535-48a8-ae0d-530ac9d4902c",
+            "purpose": "add",
+            "subject": null,
+            "owner_boot": "89f8a394-78c6-4c42-a1bd-093be9116bcc",
+            "kernel_boot": "6d757418-e8a4-456d-a680-21953e8fa0a3",
+            "witness": {
+              "process": {
+                "pid": 3886967,
+                "start": 40108507
+              },
+              "pgid": 3886967,
+              "kernel_boot": "6d757418-e8a4-456d-a680-21953e8fa0a3"
+            }
+          },
+          "logical_status": "fulfilled",
+          "fulfillment": {
+            "turn_id": "01a1e0d4-5002-7332-945c-0a2bc8d6e263",
+            "ordinal": 5
+          },
+          "cleanup_quarantined": false,
+          "cleanup_list_attempted": true
+        }
+      ],
+      "lifecycle_attempts": [
+        "c67089f9-dfd3-4c02-89d9-ccfb91117fdc"
+      ],
+      "sample_count": 12,
+      "host_observation_count": 109,
+      "evidence_bytes": 37447
+    },
+    {
+      "recipient": "co-t-1",
+      "threshold": -1,
+      "case": "send-p0/group",
+      "result": "PASS",
+      "t_wake_s": 8.32,
+      "wake_windows": [
+        {
+          "seconds": 15.0,
+          "queue_eligible": true,
+          "expect_wake": true
+        }
+      ],
+      "actual_transport": "queue",
+      "checks": {
+        "delivered": true,
+        "inbox_calls": 0,
+        "no_extra_inbox": true,
+        "trailing_wake_s": null,
+        "queue_transport_ok": true
+      },
+      "accepted_attempts": [
+        {
+          "attempt": "f5d3326b-5c62-4cf2-be6d-b518e35bf1d0",
+          "ordinal": 5,
+          "phase": "accepted",
+          "owner_boot": "89f8a394-78c6-4c42-a1bd-093be9116bcc",
+          "arm_nonce": "1eb98459-ffea-4c0d-97c0-c23a8e5e6fa7",
+          "baseline": {
+            "turn_id": "01a1e0d3-9c49-7a13-ae79-44a30ff93065",
+            "ordinal": 4
+          },
+          "owned_id_count": 1,
+          "owned_ids": [
+            "01a1e0d4-42bc-7de1-817a-be3039ce9479"
+          ],
+          "add_helper": {
+            "id": "8518b9de-0745-41db-9a51-a4655cbf4eac",
+            "purpose": "add",
+            "subject": null,
+            "owner_boot": "89f8a394-78c6-4c42-a1bd-093be9116bcc",
+            "kernel_boot": "6d757418-e8a4-456d-a680-21953e8fa0a3",
+            "witness": {
+              "process": {
+                "pid": 3888397,
+                "start": 40108755
+              },
+              "pgid": 3888397,
+              "kernel_boot": "6d757418-e8a4-456d-a680-21953e8fa0a3"
+            }
+          },
+          "logical_status": "fulfilled",
+          "fulfillment": {
+            "turn_id": "01a1e0d4-5f98-7631-b5bc-4f93d860a1c7",
+            "ordinal": 5
+          },
+          "cleanup_quarantined": false,
+          "cleanup_list_attempted": true
+        }
+      ],
+      "lifecycle_attempts": [
+        "f5d3326b-5c62-4cf2-be6d-b518e35bf1d0"
+      ],
+      "sample_count": 10,
+      "host_observation_count": 112,
+      "evidence_bytes": 31700
+    },
+    {
+      "recipient": "co-t3",
+      "threshold": 3,
+      "case": "send-p0/group",
+      "result": "PASS",
+      "t_wake_s": 7.83,
+      "wake_windows": [
+        {
+          "seconds": 15.0,
+          "queue_eligible": true,
+          "expect_wake": true
+        }
+      ],
+      "actual_transport": "queue",
+      "checks": {
+        "delivered": true,
+        "inbox_calls": 0,
+        "no_extra_inbox": true,
+        "trailing_wake_s": null,
+        "queue_transport_ok": true
+      },
+      "accepted_attempts": [
+        {
+          "attempt": "5f6cc6e8-5da1-4c51-92b7-96f1c4ddfea2",
+          "ordinal": 6,
+          "phase": "accepted",
+          "owner_boot": "89f8a394-78c6-4c42-a1bd-093be9116bcc",
+          "arm_nonce": "8565dcf7-e4aa-43c9-9bea-ae4ccaf45fa6",
+          "baseline": {
+            "turn_id": "01a1e0d3-abfa-7d30-a8ad-35120ce2668a",
+            "ordinal": 4
+          },
+          "owned_id_count": 1,
+          "owned_ids": [
+            "01a1e0d4-53fd-7851-983f-affac51a4cb4"
+          ],
+          "add_helper": {
+            "id": "c166dc62-11cc-4334-94aa-bd84212ee711",
+            "purpose": "add",
+            "subject": null,
+            "owner_boot": "89f8a394-78c6-4c42-a1bd-093be9116bcc",
+            "kernel_boot": "6d757418-e8a4-456d-a680-21953e8fa0a3",
+            "witness": {
+              "process": {
+                "pid": 3889839,
+                "start": 40109207
+              },
+              "pgid": 3889839,
+              "kernel_boot": "6d757418-e8a4-456d-a680-21953e8fa0a3"
+            }
+          },
+          "logical_status": "fulfilled",
+          "fulfillment": {
+            "turn_id": "01a1e0d4-6f4a-7883-80ab-2176578e733f",
+            "ordinal": 5
+          },
+          "cleanup_quarantined": false,
+          "cleanup_list_attempted": true
+        }
+      ],
+      "lifecycle_attempts": [
+        "5f6cc6e8-5da1-4c51-92b7-96f1c4ddfea2"
+      ],
+      "sample_count": 10,
+      "host_observation_count": 110,
+      "evidence_bytes": 31811
+    }
+  ],
+  "cleanup": {
+    "problems": [],
+    "owned_workspace_closed": true,
+    "owned_daemon_stopped": true,
+    "scratch_root_removed": true,
+    "auth_copy": "deleted unchanged",
+    "scoped_leak_exit": 0,
+    "scoped_temp_check": "no ledger for this run"
+  },
+  "raw_sha256": {
+    "results.json": "78ec69cbeee007cdb7e5bcb3e242d37cd5efcfab0ffcb6708b9c2ca907f22a40",
+    "commands.jsonl": "2aa3c556bc9822161fefd420d19bf4a87fff8cec0b1c55871dcd157e4ad9f9c6"
+  }
+}

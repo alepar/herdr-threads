@@ -213,7 +213,12 @@ runtime event timestamps. Cleanup completed without reported residual resources.
 Apply the new window only to queue-eligible positive cases in opt-in queue proof.
 Native fallback/excluded cases retain six seconds; silent/busy/UI safety assertions
 and all sampling bounds stay intact. Re-run the three-threshold baseline under the
-new contract, then complete the remaining 69 rows. Record which window and actual
+new contract, then complete the remaining 69 rows. Existing UI-release/resume 90-second gate/retry allowances and side spacing remain
+unchanged. UI queue cases must satisfy both release-to-activity within that gate
+and a separate conservative same-attempt Accepted-to-native-activity bound of
+15 seconds; ambiguous bounds do not pass. Generic queue positives use publication
+to activity within 15 seconds. Resume remains native/ineligible under its existing
+90-second gate and does not prove queue latency. Record which window and actual
 transport each row used; no blanket default release-window increase, version gate,
 post-Accepted native poke, or retry enqueue is authorized. A new failure must be
 diagnosed under the new bound, not silently granted additional time. Full-suite
