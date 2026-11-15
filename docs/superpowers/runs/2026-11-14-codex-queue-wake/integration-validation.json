@@ -1,0 +1,150 @@
+{
+  "base_main": "1cf51f9a4",
+  "source_evidence_commits": [
+    "8625c066e",
+    "455b2c919"
+  ],
+  "source_design_commits": [
+    "151c10e98",
+    "20caa72ba"
+  ],
+  "integration_changes": "Relocated evidence under this run; updated report reproduction paths and crosslinks; added navigation links. All other evidence files byte-identical. Design changes only evidence paths and navigation links.",
+  "production_changes": false,
+  "checks": {
+    "relative_links": 21,
+    "json_python_parse": "passed",
+    "public_sensitive_pattern_scan": "no matches",
+    "docs_test": "DOCS_TEST_PASS",
+    "fmt": "passed",
+    "harness_neutral": "passed",
+    "wire_compat": "passed",
+    "diff_check": "passed"
+  },
+  "preserved_evidence": [
+    {
+      "path": "evidence/cleanup-check.json",
+      "sha256": "3532fa6537ac4310487099d19bb2f232d346dc56e599c0fffb48d63bccc2415d"
+    },
+    {
+      "path": "evidence/lifecycle_spike.py",
+      "sha256": "03488f6707fd01e56db0955dda9298526e0d60a1985d4b2132b5351d927505c9"
+    },
+    {
+      "path": "evidence/protocol-schema.json",
+      "sha256": "f282765c1a574c7fb262a114374cd89ea9a132eededb706e4e0ee0015594e98a"
+    },
+    {
+      "path": "evidence/rpc_spike.py",
+      "sha256": "c0d1467b77b88b361cca9cf4f4f689fcefe52ab2866359d2e2ce4ff124c93961"
+    },
+    {
+      "path": "evidence/spike.py",
+      "sha256": "08546ad159e54468472edb0ac201c3e7c3c7e9ff3b94f1af0d44bbef26d5b9c9"
+    },
+    {
+      "path": "evidence/validation.json",
+      "sha256": "e7e6883baa3b10f0b534ff575ad8b37bede0b8ec633e3109c7ee1f8b47bebbc0"
+    },
+    {
+      "path": "evidence/admission-cleanup-check.json",
+      "sha256": "f65bb60e252cb4be8d26a9f1270d208939e51f3fcb6ed72e63d541bb2d131609"
+    },
+    {
+      "path": "evidence/admission-qualification.md",
+      "sha256": "50c37e595dcf11e9ab1ac9bc744d9362b648ec18f1deecebcf4d94483ec6e040"
+    },
+    {
+      "path": "evidence/admission-source-inspection.json",
+      "sha256": "9e4276d25602524b9038c2a4918589918dd5536ba890ca21ee1df3f73d4e4a37"
+    },
+    {
+      "path": "evidence/admission_spike.py",
+      "sha256": "33a9534a85f03f2089d203e8b95857ffcb9916bb763e202698de42e7f6b4ba62"
+    },
+    {
+      "path": "evidence/receiver_spike.py",
+      "sha256": "d485294f904f2984f2b7fa44acc50ae2088a750c9b357ddc75dba9444986594a"
+    },
+    {
+      "path": "evidence/run-1/results.json",
+      "sha256": "7c2700838a0ded1c9534a9a2114fecda05c0c2e862ea5375a0c49579aa607004"
+    },
+    {
+      "path": "evidence/run-1/terminal.txt",
+      "sha256": "19e7809ef3dabb5bed041e70b8805b63fbb7eae0a4a761f22213f3f7880bf95c"
+    },
+    {
+      "path": "evidence/run-2/results.json",
+      "sha256": "6911d91da7168a7514e95b4102ce98f3e2e90cbcce388e5b86dc0ad417ba79da"
+    },
+    {
+      "path": "evidence/run-2/terminal.txt",
+      "sha256": "5af98a4325f9fceb54868bbad84e4d1c2dba03aa172ff06f3e1a1bc353e82bc5"
+    },
+    {
+      "path": "evidence/run-3/results.json",
+      "sha256": "dca01195cde69589720246a5905c8bd5bd8efec5399a05097d95f56468170c58"
+    },
+    {
+      "path": "evidence/run-3/terminal.txt",
+      "sha256": "ae16d12ce3ff24eaf13ccff155ccd528f2a4cbfaf7fc409142f28297c15d104c"
+    },
+    {
+      "path": "evidence/run-4-rpc/results.json",
+      "sha256": "a7398585c1402bd947c6c259cc91e3e8eda9b0eeb3908d6a377377c3a4bcb288"
+    },
+    {
+      "path": "evidence/run-4-rpc/rpc-calls.json",
+      "sha256": "f26eada2c6d9926f33280119853eb57d97cafecce9cfa21a9011a7ad74a20389"
+    },
+    {
+      "path": "evidence/run-4-rpc/terminal.txt",
+      "sha256": "3a3fcd97bc038be9ab762b7971eda09d7a848ab1133bdb0c720b3297a5c57ec4"
+    },
+    {
+      "path": "evidence/run-5-reconciled/results.json",
+      "sha256": "ec399323703bbe70e8ab2f096bb23b268d6a40aea3ffb490590ac669e526e40b"
+    },
+    {
+      "path": "evidence/run-5-reconciled/rpc-calls.json",
+      "sha256": "800d47a7ab4ba40142f3f563d90ad0f4add92ae2397bfa6987d24bddc9d03848"
+    },
+    {
+      "path": "evidence/run-5-reconciled/terminal.txt",
+      "sha256": "2a7ce6e779e7e7a054bfcd265221ff03eb5cb6224a58b95a2e0da70c29abba06"
+    },
+    {
+      "path": "evidence/run-6-lifecycle/results.json",
+      "sha256": "746b31617123097c4c1f82ea5a182925f6e8331ef981cdc9106ec841b6a4aeaa"
+    },
+    {
+      "path": "evidence/run-6-lifecycle/terminal.txt",
+      "sha256": "c3d256da603ec0a9bc632815a8a731c8777c83611a9ea65126b8a2b0c50a7cd5"
+    },
+    {
+      "path": "evidence/run-7-admission/results.json",
+      "sha256": "661743cb4d0996c6365b673c7df5b3d7aa4e61661be88551f88c6d16a27e2bff"
+    },
+    {
+      "path": "evidence/run-7-admission/rpc-calls.json",
+      "sha256": "e24d0d1ad465e77aec61431517631e2974c620e854fcba055f06841a2c86b3f9"
+    },
+    {
+      "path": "evidence/run-7-admission/terminal.txt",
+      "sha256": "e7b0dc509f74364c83cb5cb44c81c87219985806589cc962dca2864cf36b6b78"
+    },
+    {
+      "path": "evidence/run-8-receivers/results.json",
+      "sha256": "7300c8d0f4f969c3c67e6383e6c9765406d1b5bb7d86a7059c319a612297e021"
+    },
+    {
+      "path": "evidence/run-8-receivers/runtime-events.json",
+      "sha256": "0d978043dbb453807f5c58f50eb6dc1150d799d6fffb4a4ecf1d6e51bd6cab34"
+    },
+    {
+      "path": "evidence/run-8-receivers/terminal.txt",
+      "sha256": "657fce78a0a199b6e0b2dd996007221d64f7cd7cef891d6501a16f98b10355ba"
+    }
+  ],
+  "cleanup": "No new live experiments, processes or build directory. Earlier cleanup records preserved. Worktree removal awaits main integration confirmation."
+}

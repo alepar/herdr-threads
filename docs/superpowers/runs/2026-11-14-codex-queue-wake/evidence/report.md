@@ -82,11 +82,11 @@ The remaining qualification gaps are an actual herdr-threads adapter, canonical 
 Run only with a user-authorized live credential copy source. Set `SPIKE_AUTH_FILE` to an aisw profile's `auth.json`, not a real Codex home. The scripts create their own private copies and remove them during cleanup.
 
 ```sh
-python3 docs/validation/codex-queue-spike-2026-11-14/spike.py \
+python3 docs/superpowers/runs/2026-11-14-codex-queue-wake/evidence/spike.py \
   --auth-file "$SPIKE_AUTH_FILE" --output "$SPIKE_OUTPUT" --matrix
-python3 docs/validation/codex-queue-spike-2026-11-14/rpc_spike.py \
+python3 docs/superpowers/runs/2026-11-14-codex-queue-wake/evidence/rpc_spike.py \
   --auth-file "$SPIKE_AUTH_FILE" --output "$SPIKE_RPC_OUTPUT" --reconcile-duplicates
-python3 docs/validation/codex-queue-spike-2026-11-14/lifecycle_spike.py \
+python3 docs/superpowers/runs/2026-11-14-codex-queue-wake/evidence/lifecycle_spike.py \
   --auth-file "$SPIKE_AUTH_FILE" --output "$SPIKE_LIFECYCLE_OUTPUT"
 ```
 
@@ -99,3 +99,5 @@ One startup attempt, [run 2](run-2/results.json), failed because a scratch-only 
 [Cleanup verification](cleanup-check.json) found no remaining tagged spike processes or scratch roots. The lifecycle run had one detached descendant, which cleanup stopped; the follow-up check confirmed its PID no longer existed. Every recorded source credential hash remained unchanged and no private copy refreshed credentials.
 
 Validation: Python drivers and JSON evidence checked; `cargo fmt --check`, locked all-target/all-feature Clippy with warnings denied, harness-neutral and wire-compat guards passed. The cold worktree crate lint took 1m42s; this was not an incremental edit benchmark. Default-feature guard status is recorded in `validation.json`. No full Rust suite or release wake matrix was run for this evidence-only change.
+
+Follow-up: [admission qualification](admission-qualification.md) records why the tested route remains disabled; [design and final ruling](../design.md) preserves the conditional architecture and review decision.
