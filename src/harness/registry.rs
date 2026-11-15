@@ -309,6 +309,7 @@ trait ErasedAdapter: Send + Sync {
     fn hook_step(&self) -> Option<&dyn HookStep>;
     fn turn_state_edge(&self, event: &DecodedEvent) -> Option<TurnEdge>;
     fn delivery_policy(&self) -> Option<&dyn DeliveryPolicy>;
+    fn wake_control(&self) -> Option<&dyn super::wake::WakeControl>;
     fn binding_wake_text(&self, provenance: Option<&str>) -> &'static str;
     fn binding_turn_delivery(&self, provenance: Option<&str>) -> bool;
     fn canary_strategy(&self) -> Option<&dyn CanaryStrategy>;
@@ -546,6 +547,9 @@ impl<A: HarnessAdapter> ErasedAdapter for TypedAdapter<A> {
     }
     fn delivery_policy(&self) -> Option<&dyn DeliveryPolicy> {
         self.0.delivery_policy()
+    }
+    fn wake_control(&self) -> Option<&dyn super::wake::WakeControl> {
+        self.0.wake_control()
     }
     fn binding_wake_text(&self, provenance: Option<&str>) -> &'static str {
         self.0.binding_wake_text(provenance)
@@ -1198,6 +1202,9 @@ impl Registration {
     }
     pub fn delivery_policy(&self) -> Option<&dyn DeliveryPolicy> {
         self.adapter.delivery_policy()
+    }
+    pub fn wake_control(&self) -> Option<&dyn super::wake::WakeControl> {
+        self.adapter.wake_control()
     }
     pub fn canary_strategy(&self) -> Option<&dyn CanaryStrategy> {
         self.adapter.canary_strategy()

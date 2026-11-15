@@ -735,3 +735,5 @@ pub mod bridge;
 #[path = "../../tests/harness/bridge.rs"]
 mod bridge_tests;
 pub mod cache;
+
+pub mod wake;

@@ -1,0 +1,11 @@
+{
+  "runs": 38,
+  "failures": [
+    {
+      "run": 38,
+      "exit": 101,
+      "output": "\nrunning 1 test\ntest harness::codex::wake::control::tests::hung_add_is_bounded_and_uncertain ... FAILED\n\nfailures:\n\nfailures:\n    harness::codex::wake::control::tests::hung_add_is_bounded_and_uncertain\n\ntest result: FAILED. 0 passed; 1 failed; 0 ignored; 0 measured; 7533 filtered out; finished in 0.03s\n\n\nthread 'harness::codex::wake::control::tests::hung_add_is_bounded_and_uncertain' (2142977) panicked at src/harness/codex/wake/../../../../tests/harness/codex_wake_control.rs:153:5:\nRefusedBeforeEffect(ApiError { code: TargetUnsafe, detail: \"queue helper files changed\", restart_argv: None, required_minimum_bytes: None, class_override: None })\nnote: run with `RUST_BACKTRACE=1` environment variable to display a backtrace\n"
+    }
+  ],
+  "seconds": 29.274
+}

@@ -1509,6 +1509,16 @@ impl HarnessAdapter for CodexAdapter {
     fn receipt_admission_summary(&self) -> Option<String> {
         Some("declared".into())
     }
+    fn wake_control(&self) -> Option<&dyn super::wake::WakeControl> {
+        #[cfg(target_os = "linux")]
+        {
+            Some(&wake::CONTROL)
+        }
+        #[cfg(not(target_os = "linux"))]
+        {
+            None
+        }
+    }
     fn observation_fingerprint(&self, env: &InstallEnvironment) -> Option<String> {
         super::adapter::executable_observation_fingerprint(env, "codex")
     }
@@ -2555,3 +2565,5 @@ impl InstallerPolicy for CodexAdapter {
         })
     }
 }
+
+pub mod wake;

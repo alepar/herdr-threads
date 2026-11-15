@@ -1,0 +1,90 @@
+{
+  "checked_at_utc": "2026-11-15T05:26:45.147712+00:00",
+  "scope": "ht-d2jq.3; inactive target/control adapter, no scheduler/store activation",
+  "base_code": "f21d8d4d3",
+  "authoritative_design": [
+    "2ad143cbe",
+    "c79a39159",
+    "aa90bbd58"
+  ],
+  "tests": {
+    "adapter_unit": {
+      "passed": 28,
+      "failed": 0,
+      "execution_seconds": 0.85,
+      "build_seconds": 81
+    },
+    "combined_registry_proc": {
+      "passed": 1,
+      "failed": 0,
+      "build_seconds": 24.49
+    },
+    "final_timeout_repetitions": {
+      "passed": 60,
+      "failed": 0,
+      "artifact": "control-timeout-final.json"
+    }
+  },
+  "checks": {
+    "all_target_all_feature_clippy_warnings_denied": "passed, 26.95s",
+    "default_feature_guard": "passed",
+    "harness_neutral": "passed; no new exceptions",
+    "wire_compat": "passed; baseline unchanged",
+    "cargo_fmt_check": "passed",
+    "diff_check": "passed",
+    "public_artifact_scan": {
+      "result": "passed",
+      "json_string_values_scanned": 93,
+      "private_pattern_matches": 0,
+      "relative_report_links_checked": 2,
+      "python_parse": "passed"
+    }
+  },
+  "resource_checks": {
+    "unit_run": "d5789a28-d6f4-4d3c-9e63-d971371082fd",
+    "combined_run": "6e81ab80-1a04-42d5-be46-9abbdb1db272",
+    "final_repetition_run": "3ca17864-84c5-48a3-b446-e537b1dbb128",
+    "result": "no leaked test processes or temp files"
+  },
+  "fixture_failure": "ht-d2jq.3.1 resolved; exact pre-effect FD churn preserved separately; production refusal unchanged",
+  "model_visible_text": "No new routine text; only existing 22-byte content-free wake marker. Structured port diagnostics are not surfaced by this inactive slice.",
+  "live_qualification": "One authorized isolated no-auth private-home/shared-SQLite metadata fixture; zero model-turn requests. No real receiver/model matrix.",
+  "build_environment": "Existing Fedora build toolbox with GCC 16.2.1, shared heavy-job slots, warm target seeded once and reused. Host lacks cc; no packages/config changed.",
+  "cleanup": "No test runtime resources remain. Managed implementation worktree and warm build retained for pending design-owner review; remove after integration.",
+  "changed_files": [
+    "docs/superpowers/runs/2026-11-14-codex-queue-wake/control-failure-investigation.json",
+    "docs/superpowers/runs/2026-11-14-codex-queue-wake/control-implementation.md",
+    "docs/superpowers/runs/2026-11-14-codex-queue-wake/control-source-inspection.json",
+    "docs/superpowers/runs/2026-11-14-codex-queue-wake/control-timeout-final.json",
+    "docs/superpowers/runs/2026-11-14-codex-queue-wake/control-timeout-postfix.json",
+    "docs/superpowers/runs/2026-11-14-codex-queue-wake/control-timeout-reproduction.json",
+    "src/harness/adapter.rs",
+    "src/harness/codex.rs",
+    "src/harness/codex/wake/capture.rs",
+    "src/harness/codex/wake/control.rs",
+    "src/harness/codex/wake/mod.rs",
+    "src/harness/mod.rs",
+    "src/harness/registry.rs",
+    "src/harness/wake.rs",
+    "tests/combined.rs",
+    "tests/fixtures/codex_queue_helper.py",
+    "tests/harness/codex_wake_capture.rs",
+    "tests/harness/codex_wake_control.rs",
+    "tests/harness/codex_wake_observation.rs"
+  ],
+  "implementation_sha256": {
+    "src/harness/adapter.rs": "cdfe66bb2cd2062a841b3f523f2c76cb1763ab925ac389bf5a5c3e7e82f5fa1b",
+    "src/harness/codex.rs": "9a43d0f1a6ea3f50d6a2c5061df69075c90648b464da439597a1b405ef95f390",
+    "src/harness/codex/wake/capture.rs": "9ba4e8edbc9ec70b622eaed994e376357a4372f6896a2419515dc82e3c659fd0",
+    "src/harness/codex/wake/control.rs": "ed3f1a3b2017f64b968c7f892cadf4eed0d9876b3d87a3308c101b1ee62481b1",
+    "src/harness/codex/wake/mod.rs": "c5b6e320ba765e52c51994311247c15471bdb21532e025b08646e378a04e9fb6",
+    "src/harness/mod.rs": "ac86e24a0f78fe2164ea35cf1a67bf2663a1ee6354b6bb96f48dfd113e46cf21",
+    "src/harness/registry.rs": "132e2922df4d0c082466a6d6a85f7695fc0face3ed61b216a1c002a790d466f0",
+    "src/harness/wake.rs": "ed94cf56071b49689b7f85d02040f1b395df55691d1c312a06b2e750119ea63e",
+    "tests/combined.rs": "e070eca04a7a11fa87349cae0da80b9b47fddc0620e125a5bce1850d8f6256b4",
+    "tests/fixtures/codex_queue_helper.py": "c2bb5435eb223abf5cbea678532837770be6572c45509f39a33ebd8c020844db",
+    "tests/harness/codex_wake_capture.rs": "9e91a0d3b3e1e65cc988e91a3581dc74ea00eab7abe8add91e8858074b463d0a",
+    "tests/harness/codex_wake_control.rs": "041375b56b62045161b267a2f5d45a71264830d99e91d14b47e3ec238d6e41e0",
+    "tests/harness/codex_wake_observation.rs": "3a5c55a567b8df35413aacb8018d414682bc5038014309d08df6027609428414"
+  }
+}

@@ -1,0 +1,154 @@
+{
+  "revision": "rust-v0.167.0",
+  "scope": "Source contracts for the first queue control slice. Historical facts, no exact-release operational gate.",
+  "sources": [
+    {
+      "url": "https://github.com/openai/codex/blob/rust-v0.167.0/codex-rs/state/src/runtime/queued_items.rs",
+      "passages": [
+        {
+          "start_line": 10,
+          "end_line": 48,
+          "text": "/// SQLite-backed persistence for durable, thread-scoped user messages.\n#[derive(Clone)]\npub struct SqliteQueueStore {\n    pool: Arc<SqlitePool>,\n    change_version_connection: Arc<Mutex<Option<SqliteConnection>>>,\n}\n\nimpl SqliteQueueStore {\n    pub(crate) fn new(pool: Arc<SqlitePool>) -> Self {\n        Self {\n            pool,\n            change_version_connection: Arc::new(Mutex::new(None)),\n        }\n    }\n\n    pub(crate) async fn close(&self) {\n        let connection = self.change_version_connection.lock().await.take();\n        if let Some(connection) = connection\n            && let Err(error) = connection.close().await\n        {\n            tracing::warn!(%error, \"failed to close queue change-version connection\");\n        }\n        self.pool.close().await;\n    }\n\n    /// Observe queue-database commits through one stable SQLite connection.\n    pub async fn change_version(&self) -> anyhow::Result<i64> {\n        let mut connection = Arc::clone(&self.change_version_connection)\n            .lock_owned()\n            .await;\n        if connection.is_none() {\n            *connection = Some(self.pool.acquire().await?.detach());\n        }\n        let Some(connection) = connection.as_mut() else {\n            unreachable!(\"queue change-version connection was initialized\");\n        };\n        Ok(sqlx::query_scalar(\"PRAGMA data_version\")\n            .fetch_one(connection)\n            .await?)"
+        }
+      ]
+    },
+    {
+      "url": "https://github.com/openai/codex/blob/rust-v0.167.0/codex-rs/state/src/sqlite/connection.rs",
+      "passages": [
+        {
+          "start_line": 22,
+          "end_line": 32,
+          "text": "pub(super) async fn connect_once(\n    options: &SqliteConnectOptions,\n    journal_mode_policy: JournalModePolicy,\n) -> Result<SqlitePool, Error> {\n    // SQLx retries after_connect errors, eventually replacing them with PoolTimedOut.\n    // Return the first initialization error directly while opening this pool.\n    let (init_error_tx, mut init_error_rx) = tokio::sync::mpsc::channel(/*buffer*/ 1);\n    let pool_options =\n        SqlitePoolOptions::new()\n            .max_connections(5)\n            .after_connect(move |connection, _metadata| {"
+        },
+        {
+          "start_line": 109,
+          "end_line": 121,
+          "text": "                .await?;\n        }\n        // Wait for the connection to return to the pool before startup requests it again.\n        // An asynchronous drop can otherwise cause the pool to open a second connection.\n        connection.return_to_pool().await;\n        Ok(())\n    }\n    .await;\n    if let Err(error) = initialized {\n        pool.close().await;\n        return Err(error);\n    }\n    Ok(pool)"
+        }
+      ]
+    },
+    {
+      "url": "https://github.com/openai/codex/blob/rust-v0.167.0/codex-rs/state/src/sqlite.rs",
+      "passages": [
+        {
+          "start_line": 45,
+          "end_line": 53,
+          "text": "\nconst DEFAULT_BUSY_TIMEOUT: Duration = Duration::from_secs(5);\n\nconst LOGS_DB_FILENAME: &str = \"logs_2.sqlite\";\nconst GOALS_DB_FILENAME: &str = \"goals_1.sqlite\";\nconst MEMORIES_DB_FILENAME: &str = \"memories_1.sqlite\";\nconst QUEUE_DB_FILENAME: &str = \"queue_1.sqlite\";\nconst STATE_DB_FILENAME: &str = \"state_5.sqlite\";\nconst THREAD_HISTORY_DB_FILENAME: &str = \"thread_history_1.sqlite\";"
+        },
+        {
+          "start_line": 372,
+          "end_line": 432,
+          "text": "    pub(super) async fn open_queue_db(\n        &self,\n        migrator: &Migrator,\n        telemetry_override: Option<&dyn DbTelemetry>,\n    ) -> anyhow::Result<SqlitePool> {\n        self.open_runtime_db(QUEUE_DB, migrator, telemetry_override)\n            .await\n    }\n\n    pub(super) async fn open_thread_history_db(\n        &self,\n        migrator: &Migrator,\n        telemetry_override: Option<&dyn DbTelemetry>,\n    ) -> anyhow::Result<SqlitePool> {\n        self.open_runtime_db(THREAD_HISTORY_DB, migrator, telemetry_override)\n            .await\n    }\n\n    async fn open_runtime_db(\n        &self,\n        spec: RuntimeDbSpec,\n        migrator: &Migrator,\n        telemetry_override: Option<&dyn DbTelemetry>,\n    ) -> anyhow::Result<SqlitePool> {\n        let path = spec.path(self);\n        let started = Instant::now();\n        let pool_result = self\n            .open_read_write_pool_with_spec(path.as_path(), Some(spec), telemetry_override)\n            .await;\n        telemetry::record_init_result(\n            telemetry_override,\n            spec.kind,\n            spec.open_phase,\n            started.elapsed(),\n            &pool_result,\n        );\n        let pool = pool_result.map_err(|source| {\n            RuntimeDbInitError::new(spec.label, \"open\", path.as_path(), source)\n        })?;\n        let started = Instant::now();\n        let migrate_result = async {\n            if matches!(spec.kind, DbKind::State) {\n                repair_legacy_recency_migration_version(&pool, migrator).await?;\n            }\n            migrator.run(&pool).await.map_err(anyhow::Error::from)\n        }\n        .await;\n        telemetry::record_init_result(\n            telemetry_override,\n            spec.kind,\n            spec.migrate_phase,\n            started.elapsed(),\n            &migrate_result,\n        );\n        if let Err(source) = migrate_result {\n            pool.close().await;\n            return Err(\n                RuntimeDbInitError::new(spec.label, \"migrate\", path.as_path(), source).into(),\n            );\n        }\n        Ok(pool)"
+        }
+      ]
+    },
+    {
+      "url": "https://github.com/openai/codex/blob/rust-v0.167.0/codex-rs/thread-store/src/local/mod.rs",
+      "passages": [
+        {
+          "start_line": 147,
+          "end_line": 174,
+          "text": "pub struct LocalThreadStore {\n    pub(super) config: LocalThreadStoreConfig,\n    live_recorders: Arc<Mutex<HashMap<ThreadId, LiveRecorderEntry>>>,\n    pending_thread_metadata: pending_thread_metadata::PendingThreadMetadataRegistry,\n    live_writer_locks: Arc<LiveWriterLocks>,\n    writer_lock_coordinator: Arc<WriterLockCoordinator>,\n    state_db: Option<StateDbHandle>,\n    thread_history_db: Arc<OnceCell<sqlx::SqlitePool>>,\n    thread_data_cleanup: Option<Arc<ThreadDataCleanup>>,\n    #[cfg(test)]\n    startup_migration_retry_gate: Option<Arc<StartupMigrationRetryGate>>,\n}\n\ntype ThreadDataCleanup = dyn Fn(Vec<ThreadId>) -> ThreadStoreFuture<'static, ()> + Send + Sync;\n\ntype WriterLockGuard = Arc<codex_rollout::WriterLockGuard>;\n\nstruct LiveRecorderEntry {\n    recorder: RolloutRecorder,\n    // Rollout projection rows are keyed by immutable rollout ID, not the stable thread ID used\n    // to find this live writer.\n    rollout_id: ThreadId,\n    // Local rollout files are materialized lazily, but metadata updates can arrive before the\n    // canonical SessionMeta is durable. Retain the mode captured when live persistence was opened\n    // so missing SQLite rows can still be seeded.\n    history_mode: ThreadHistoryMode,\n    writer_lock: WriterLockGuard,\n}"
+        }
+      ]
+    },
+    {
+      "url": "https://github.com/openai/codex/blob/rust-v0.167.0/codex-rs/thread-store/src/local/live_writer.rs",
+      "passages": [
+        {
+          "start_line": 204,
+          "end_line": 246,
+          "text": "pub(super) async fn shutdown_thread(\n    store: &LocalThreadStore,\n    thread_id: ThreadId,\n) -> ThreadStoreResult<()> {\n    let mut pending_metadata = store.pending_thread_metadata.lock(thread_id).await;\n    let _live_writer_guard = store.live_writer_locks.lock(thread_id).await;\n    let (recorder, rollout_id, history_mode) = live_writer_parts(store, thread_id).await?;\n    let rollout_path = recorder.rollout_path().to_path_buf();\n    if matches!(history_mode, ThreadHistoryMode::Legacy) {\n        recorder.shutdown().await.map_err(thread_store_io_error)?;\n    } else {\n        recorder.shutdown().await.map_err(thread_store_io_error)?;\n        if let Err(err) = super::thread_history_materialization::materialize_to_sqlite(\n            store,\n            rollout_id,\n            rollout_path.as_path(),\n        )\n        .await\n        {\n            warn!(\"failed to project durable rollout during shutdown for {thread_id}: {err}\");\n        }\n    }\n    sync_materialized_rollout_path(store, thread_id, rollout_path.as_path()).await?;\n    if let Some(metrics) = codex_otel::global()\n        && let Ok(metadata) = tokio::fs::metadata(&rollout_path).await\n    {\n        let size_bytes = i64::try_from(metadata.len()).unwrap_or(i64::MAX);\n        let _ = metrics.histogram(ROLLOUT_SIZE_BYTES_METRIC, size_bytes, &[]);\n    }\n    let rollout_exists = match tokio::fs::try_exists(&rollout_path).await {\n        Ok(rollout_exists) => rollout_exists,\n        Err(err) => {\n            warn!(\n                \"failed to check rollout path after shutdown for {thread_id}; preserving pending metadata: {err}\"\n            );\n            true\n        }\n    };\n    store.live_recorders.lock().await.remove(&thread_id);\n    drop(_live_writer_guard);\n    if !rollout_exists && pending_metadata.take().is_some() {\n        store.pending_thread_metadata.remove(thread_id).await;\n    }"
+        }
+      ]
+    },
+    {
+      "url": "https://github.com/openai/codex/blob/rust-v0.167.0/codex-rs/app-server/src/request_processors/thread_queue_processor.rs",
+      "passages": [
+        {
+          "start_line": 77,
+          "end_line": 94,
+          "text": "    pub(crate) async fn add(\n        &self,\n        params: ThreadQueueAddParams,\n    ) -> Result<ThreadQueueAddResponse, JSONRPCErrorError> {\n        validate_user_input_image_urls(&params.input)?;\n        let (thread_id, loaded_thread, source) = self.require_thread(&params.thread_id).await?;\n        ensure_direct_input_allowed(loaded_thread.as_deref(), &source)?;\n        let queued_item = self\n            .service()?\n            .enqueue(\n                thread_id,\n                submission_into_turn_input(params.input, Some(params.client_user_message_id)),\n            )\n            .await\n            .map_err(queue_error)?;\n        Ok(ThreadQueueAddResponse {\n            queued_submission: api_queued_submission(queued_item)?,\n        })"
+        },
+        {
+          "start_line": 253,
+          "end_line": 292,
+          "text": "    async fn require_thread(\n        &self,\n        raw_thread_id: &str,\n    ) -> Result<(ThreadId, Option<Arc<CodexThread>>, SessionSource), JSONRPCErrorError> {\n        let thread_id = ThreadId::from_string(raw_thread_id)\n            .map_err(|error| invalid_request(format!(\"invalid thread id: {error}\")))?;\n        let (loaded_thread, source) = if let Ok(thread) =\n            self.thread_manager.get_thread(thread_id).await\n        {\n            let snapshot = thread.config_snapshot().await;\n            if snapshot.ephemeral {\n                return Err(invalid_request(format!(\n                    \"ephemeral thread does not support queued submissions: {thread_id}\"\n                )));\n            }\n            (Some(thread), snapshot.session_source)\n        } else {\n            let stored = self\n                .thread_store\n                .read_thread(ReadThreadParams {\n                    thread_id,\n                    include_archived: true,\n                    include_history: false,\n                })\n                .await\n                .map_err(|error| match error {\n                    ThreadStoreError::ThreadNotFound { .. } => {\n                        invalid_request(format!(\"thread not found: {thread_id}\"))\n                    }\n                    error => internal_error(format!(\"failed to read thread: {error}\")),\n                })?;\n            if stored.archived_at.is_some() {\n                return Err(invalid_request(format!(\n                    \"session {thread_id} is archived. Run `codex unarchive {thread_id}` to unarchive it first.\"\n                )));\n            }\n            (None, stored.source)\n        };\n\n        Ok((thread_id, loaded_thread, source))"
+        }
+      ]
+    },
+    {
+      "url": "https://github.com/openai/codex/blob/rust-v0.167.0/codex-rs/thread-store/src/local/read_thread.rs",
+      "passages": [
+        {
+          "start_line": 32,
+          "end_line": 74,
+          "text": "pub(super) async fn read_thread(\n    store: &LocalThreadStore,\n    params: ReadThreadParams,\n) -> ThreadStoreResult<StoredThread> {\n    let thread_id = params.thread_id;\n    let sqlite_metadata = read_sqlite_metadata(store, thread_id).await;\n    if !params.include_history\n        && let Some((path, meta)) =\n            super::live_writer::unpersisted_session_meta(store, thread_id).await\n        && sqlite_metadata\n            .as_ref()\n            .is_none_or(|metadata| metadata.rollout_path == path && metadata.archived_at.is_none())\n    {\n        // A new writer already owns its metadata. Missing JSONL is intentional, so neither\n        // filesystem discovery nor compression-race retries can find anything more authoritative.\n        return match sqlite_metadata {\n            Some(metadata) => Ok(stored_thread_from_metadata(store, metadata, Some(meta)).await),\n            // Preserve the saved-thread contract used by fork/resume. A live but untouched\n            // thread has no stored record yet; its absence is known without searching history.\n            None => Err(ThreadStoreError::InvalidRequest {\n                message: format!(\"no rollout found for thread id {thread_id}\"),\n            }),\n        };\n    }\n    let persisted_model_settings = sqlite_metadata\n        .as_ref()\n        .map(|metadata| (metadata.model.clone(), metadata.reasoning_effort.clone()));\n    let daybreak_enabled = sqlite_metadata\n        .as_ref()\n        .and_then(|metadata| metadata.daybreak_enabled);\n    if let Some(metadata) = sqlite_metadata\n        && (params.include_archived\n            || (metadata.archived_at.is_none()\n                && !rollout_path_is_archived(\n                    store.config.codex_home.as_path(),\n                    metadata.rollout_path.as_path(),\n                )))\n        && (!params.include_history\n            || sqlite_rollout_path_can_load_history_for_thread(&metadata.rollout_path, thread_id)\n                .await)\n    {\n        let metadata_sandbox_policy = metadata.sandbox_policy.clone();\n        let mut thread = stored_thread_from_sqlite_metadata(store, metadata).await?;"
+        },
+        {
+          "start_line": 104,
+          "end_line": 108,
+          "text": "            thread = rollout_thread;\n        }\n        reject_paginated_history(&thread, params.include_history)?;\n        attach_history_if_requested(&mut thread, params.include_history).await?;\n        return Ok(thread);"
+        }
+      ]
+    },
+    {
+      "url": "https://github.com/openai/codex/blob/rust-v0.167.0/codex-rs/app-server/src/request_processors/thread_lifecycle.rs",
+      "passages": [
+        {
+          "start_line": 857,
+          "end_line": 902,
+          "text": "pub(super) async fn unload_thread_without_subscribers(\n    thread_manager: Arc<ThreadManager>,\n    outgoing: Arc<OutgoingMessageSender>,\n    pending_thread_unloads: PendingThreadUnloads,\n    thread_state_manager: ThreadStateManager,\n    thread_watch_manager: ThreadWatchManager,\n    thread_id: ThreadId,\n    thread: Arc<CodexThread>,\n) {\n    info!(\"thread {thread_id} has no subscribers and is idle; shutting down\");\n\n    // Any pending app-server -> client requests for this thread can no longer be\n    // answered; cancel their callbacks before shutdown/unload.\n    outgoing\n        .cancel_requests_for_thread(thread_id, /*error*/ None)\n        .await;\n    thread_state_manager.remove_thread_state(thread_id).await;\n\n    tokio::spawn(async move {\n        // The deadline bounds our warning, not background cleanup. Keep polling the\n        // same future so even delayed shutdown submission can eventually finish.\n        let shutdown = thread.shutdown_and_wait();\n        tokio::pin!(shutdown);\n        let result = match tokio::time::timeout(Duration::from_secs(/*secs*/ 10), &mut shutdown)\n            .await\n        {\n            Ok(result) => result,\n            Err(_) => {\n                warn!(\n                    event.name = \"codex.app_server.thread_shutdown_slow\",\n                    \"thread {thread_id} shutdown is taking longer than expected; continuing to wait\"\n                );\n                shutdown.await\n            }\n        };\n        match result {\n            Ok(()) => {\n                // A delayed unload can finish after thread/revert replaces this runtime under\n                // the same thread ID. Only the runtime that scheduled this unload may remove it.\n                if thread_manager\n                    .remove_thread_if_matches(&thread_id, &thread)\n                    .await\n                    .is_none()\n                {\n                    info!(\"thread {thread_id} was replaced or removed before teardown finalized\");\n                    pending_thread_unloads.lock().await.remove(&thread_id);"
+        }
+      ]
+    },
+    {
+      "url": "https://github.com/openai/codex/blob/rust-v0.167.0/codex-rs/core/src/session/handlers.rs",
+      "passages": [
+        {
+          "start_line": 309,
+          "end_line": 410,
+          "text": "pub(super) async fn shutdown_session_runtime(sess: &Arc<Session>) {\n    let startup_prewarm = {\n        let mut state = sess.state.lock().await;\n        // Stop admission and take the current warmup together so resume cannot replace it.\n        state.shutting_down = true;\n        state.take_session_startup_prewarm()\n    };\n    if let Some(startup_prewarm) = startup_prewarm {\n        startup_prewarm.abort().await;\n    }\n    let _ = sess.conversation.shutdown().await;\n    sess.abort_all_tasks(TurnAbortReason::Interrupted).await;\n    super::async_compaction::shutdown(sess).await;\n    let shell_snapshot_prewarm = sess.state.lock().await.shell_snapshot_prewarm.take();\n    if let Some(shell_snapshot_prewarm) = shell_snapshot_prewarm {\n        shell_snapshot_prewarm.abort();\n        let _ = shell_snapshot_prewarm.await;\n    }\n    sess.hooks().shutdown().await;\n    sess.async_hook_results.close();\n    while sess.async_hook_results.try_recv().is_ok() {}\n    sess.services\n        .unified_exec_manager\n        .terminate_all_processes()\n        .await;\n    if let Err(err) = sess.services.code_mode_service.shutdown().await {\n        sess.services.local_agent_runtime.record_shutdown_failure(\n            AgentTreeShutdownFailure::operation_failed(\n                \"session_shutdown\",\n                \"code_mode\",\n                Some(sess.thread_id),\n                \"code_mode_error\",\n            ),\n        );\n        warn!(\"failed to shutdown code mode session: {err}\");\n    }\n    sess.stop_mcp_prewarm_worker().await;\n    {\n        let _refresh = sess.mcp_refresh.acquire().await;\n        sess.mcp_refresh.close();\n        sess.services.mcp_runtime.shutdown().await;\n    }\n\n    sess.drain_code_mode_messages().await;\n\n    crate::hook_runtime::run_session_end_hooks(sess).await;\n    emit_thread_stop_lifecycle(sess).await;\n}\n\nasync fn emit_thread_stop_lifecycle(sess: &Session) {\n    for contributor in sess.services.extensions.thread_lifecycle_contributors() {\n        contributor\n            .on_thread_stop(codex_extension_api::ThreadStopInput {\n                session_store: &sess.services.session_extension_data,\n                thread_store: &sess.services.thread_extension_data,\n            })\n            .await;\n    }\n}\n\npub async fn shutdown(sess: &Arc<Session>, sub_id: String) -> bool {\n    shutdown_session_runtime(sess).await;\n    info!(\"Shutting down Codex instance\");\n    let history = sess.clone_history().await;\n    let turn_count = history\n        .raw_items()\n        .filter(|item| is_user_turn_boundary(item))\n        .count();\n    sess.services.session_telemetry.counter(\n        \"codex.conversation.turn.count\",\n        i64::try_from(turn_count).unwrap_or(0),\n        &[],\n    );\n\n    // Gracefully flush and shutdown thread persistence on session end so tests\n    // that inspect durable state do not race with the background writer.\n    if let Some(live_thread) = sess.live_thread()\n        && let Err(e) = live_thread.shutdown().await\n    {\n        sess.services.local_agent_runtime.record_shutdown_failure(\n            AgentTreeShutdownFailure::operation_failed(\n                \"session_shutdown\",\n                \"close_persistence\",\n                Some(sess.thread_id),\n                thread_store_error_kind(&e),\n            ),\n        );\n        warn!(\"failed to shutdown thread persistence: {e}\");\n        let event = Event {\n            id: sub_id.clone(),\n            msg: EventMsg::Error(ErrorEvent {\n                misalignment: None,\n                message: \"Failed to shutdown thread persistence\".to_string(),\n                codex_error_info: Some(CodexErrorInfo::Other),\n            }),\n        };\n        sess.send_event_raw(event).await;\n    }\n\n    let event = Event {\n        id: sub_id,\n        msg: EventMsg::ShutdownComplete,"
+        }
+      ]
+    },
+    {
+      "url": "https://github.com/openai/codex/blob/rust-v0.167.0/codex-rs/core/src/hook_runtime.rs",
+      "passages": [
+        {
+          "start_line": 455,
+          "end_line": 496,
+          "text": "pub(crate) async fn run_session_end_hooks(sess: &Arc<Session>) {\n    // Building a turn can read plugins and skills from a remote executor. Check\n    // the captured hook declarations before spending any of the shutdown deadline.\n    let environments = sess.services.turn_environments.snapshot_now();\n    let has_environment_end_hooks = environments.turn_environments().any(|environment| {\n        !environment\n            .config()\n            .environment_hooks\n            .session_end\n            .is_empty()\n    });\n    if !has_environment_end_hooks && sess.hooks().preview_session_end().is_empty() {\n        return;\n    }\n\n    let turn_context = sess.new_default_turn().await;\n    let hooks = with_environment_hooks(sess, &turn_context, &environments);\n    let preview_runs = hooks.preview_session_end();\n    if preview_runs.is_empty() {\n        return;\n    }\n\n    // SessionEnd is root-only; ThreadSpawn uses SubagentStart/SubagentStop and other subagents\n    // are internal implementation details.\n    if matches!(&turn_context.session_source, SessionSource::SubAgent(_)) {\n        return;\n    }\n\n    let request = codex_hooks::SessionEndRequest {\n        session_id: sess.session_id().into(),\n        turn_id: turn_context.sub_id.clone(),\n        #[allow(deprecated)]\n        cwd: turn_context.cwd.clone(),\n        transcript_path: sess.hook_transcript_path().await,\n    };\n    if let Err(err) = sess.flush_rollout().await {\n        tracing::warn!(\"failed to flush transcript before SessionEnd hook: {err}\");\n    }\n    emit_hook_started_events(sess, &turn_context, preview_runs).await;\n\n    let outcome = hooks.run_session_end(request).await;\n    emit_hook_completed_events(sess, &turn_context, outcome.hook_events).await;"
+        }
+      ]
+    }
+  ],
+  "no_auth_check": {
+    "passed": true,
+    "fixture_setup": [
+      "private server A initialized",
+      "thread/start without turn",
+      "thread/name/set to persist metadata",
+      "A stopped"
+    ],
+    "private_control_helper": {
+      "distinct_empty_home": true,
+      "distinct_empty_codex_home": true,
+      "shared_explicit_sqlite_home": true,
+      "opened_queue_identity_matches": true,
+      "loaded_before": [],
+      "loaded_after": [],
+      "pending_rows_after_add": 1,
+      "deleted": true,
+      "pending_rows_after_delete": 0,
+      "auth_copied": false,
+      "model_turn_requests": 0
+    },
+    "cleanup": {
+      "child_processes_remaining": 0,
+      "scratch_roots_remaining": 0
+    },
+    "supported_subset": "Named/persisted metadata fixture; not proof that a never-materialized live thread is helper-addressable. Add now qualifies addressability with a bounded list(limit1) preflight before final authorization."
+  },
+  "observation_limit": "A current writer-lock FD alone is not dispatchability. Use canonical connected SessionStart scope + full live foreground fingerprint/boot + matching native-session writer lock, then final canonical and host recheck. A missed SessionEnd combined with retained recorder after failed cleanup can leave stale observed loadedness; the design owner explicitly accepted this limit."
+}

@@ -253,6 +253,10 @@ pub trait HarnessAdapter: Send + Sync + 'static {
     fn delivery_policy(&self) -> Option<&dyn DeliveryPolicy> {
         None
     }
+    /// Optional programmatic wake control, independent of body delivery.
+    fn wake_control(&self) -> Option<&dyn super::wake::WakeControl> {
+        None
+    }
     /// Native wake text selected from canonical evidence for the reached binding.
     /// Missing evidence keeps the policy's conservative default. This selects text only,
     /// never delivery eligibility or receipt authority.

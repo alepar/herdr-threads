@@ -1,0 +1,31 @@
+{
+  "issue": "ht-d2jq.3.1",
+  "initial_run": {
+    "command": "cargo test --locked --all-features --lib codex::wake",
+    "passed": 23,
+    "failed": 1,
+    "failed_test": "hung_add_is_bounded_and_uncertain",
+    "observed": "Unexpected pre-effect outcome; intended hung request did not reach timeout. Exact reason being isolated.",
+    "execution_seconds": 0.15,
+    "leak_run_id": "cf355c11-4b9e-43cf-a999-5e876c5013ad",
+    "leak_check": "no leaked test processes or temp files"
+  },
+  "investigation": "Resolved fixture descriptor churn. Production readiness refusal and effect classification unchanged.",
+  "owner_discovery": "No nonretired local seat matched flakiness after complete paginated search; coordinator notified.",
+  "reproduction": {
+    "runs": 38,
+    "failure_run": 38,
+    "detail": "RefusedBeforeEffect: queue helper files changed",
+    "artifact": "control-timeout-reproduction.json",
+    "scoped_leak_check": "clean"
+  },
+  "root_cause": "The deterministic peer opened and closed its per-request trace file while the controller enumerated helper FDs after initialize. A vanished enumerated FD correctly causes conservative readiness refusal before add.",
+  "fix": "Keep fixture trace FD open before handling initialize; timeout assertion first confirms peer received add. Production refusal and effect classification are unchanged.",
+  "postfix": {
+    "runs": 60,
+    "failures": 0,
+    "artifact": "control-timeout-postfix.json",
+    "targeted_suite": "24 passed, 0 failed",
+    "scoped_leak_checks": "clean"
+  }
+}

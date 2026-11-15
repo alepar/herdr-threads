@@ -228,3 +228,7 @@ mod opencode_plugin_js;
 mod priority_sweep;
 #[path = "update/update_cli.rs"]
 mod update_cli;
+
+#[cfg(target_os = "linux")]
+#[path = "harness/codex_wake_observation.rs"]
+mod codex_wake_observation;
