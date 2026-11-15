@@ -4,7 +4,7 @@ The [round-one report](roast-pr-1/report.md) reviews `62bc385d0` against `91ce0c
 
 | Finding | Disposition | Evidence |
 | --- | --- | --- |
-| F1: notice loss before model admission | Open, tracked in `ht-jr1g.5`. The coordinator approved an opt-in neutral watch mode that defers canonical notice settlement. Design review approves implementation only; source review must precede Pi adoption. | [Independent design review](roast-pr-1/notice-design-review.md) |
+| F1: notice loss before model admission | Open, tracked in `ht-jr1g.5`. The neutral seam in `5b2713226` passed independent source review and required checks; Pi adoption and native qualification are in progress. This does not close the complete loss finding. | [Design review](roast-pr-1/notice-design-review.md), [source review](roast-pr-1/notice-source-review.md) |
 | F2: negative probe may miss its target | Addressed in `5f8fbcd34`. The fixture must observe the exact target before replacement and the replacement in actual context before asserting the receipt remains pending. | [Scoped review](roast-pr-1/f2-review.md) |
 | F3: failed watch test leaks its child | Addressed in `d108f38dc`. Bounded first-row waits and guaranteed awaited teardown cover assertion, no-row and early-exit failures. | [Scoped review](roast-pr-1/f3-f4-review.md) |
 | F4: missing mode fails silently | Addressed in `d108f38dc`. Only missing mode warns through native UI; explicit non-TUI modes remain inert. | [Scoped review](roast-pr-1/f3-f4-review.md) |
