@@ -1410,9 +1410,10 @@ impl DomainService {
         let top_level = request.claim.role == crate::protocol::authority::CallerRole::TopLevel
             && !request.claim.is_subagent();
         let due = top_level && self.store.turn_end_due(&request.claim, budget)?;
-        if top_level {
-            // The daemon's own answer decides whether this `Stop` ended the turn: a continuation
-            // keeps the binding busy (no turn-start hook follows it), anything else ends it.
+        if top_level && due {
+            // Continuation may conservatively establish Busy when its start was missed.
+            // A negative answer cannot assert Idle: the later canonical TurnState checks
+            // which native turn ended, and a delayed Stop may name an older turn.
             self.turn_state.answered_turn_end(
                 &Self::turn_key(&request.claim),
                 due,

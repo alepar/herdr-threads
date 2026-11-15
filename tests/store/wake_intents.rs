@@ -1343,3 +1343,195 @@ fn native_turn_cancelled_recording_changes_no_observation() {
             .is_none()
     );
 }
+
+#[test]
+fn native_turn_stop_question_cannot_idle_a_different_active_turn() {
+    use herdr_threads::{
+        harness::adapter::TurnEdge,
+        ports::{LocalService, NativeTurnPhase},
+        protocol::{
+            commands::{Command, TurnEndDue},
+            results::CommandResult,
+        },
+        service::{
+            dispatch::DomainService,
+            fair_writer::FairWriter,
+            turn_state::{TurnKey, TurnState},
+        },
+    };
+    for due in [false, true] {
+        let (store, _path, r, p) = fixture();
+        if !due {
+            store
+                .context()
+                .open_writer()
+                .unwrap()
+                .execute("DELETE FROM invitations", [])
+                .unwrap();
+        }
+        let stale = native_report(&store, &r, &p, "a", TurnEdge::Idle);
+        let start = native_report(&store, &r, &p, "b", TurnEdge::Busy);
+        let store = Arc::new(store);
+        let service = DomainService::new(INSTANCE.into(), store.clone(), Arc::new(IntentClock))
+            .with_cooperative_owner(501, Arc::new(FairWriter::new(32)));
+        let key = TurnKey {
+            seat: r.seat.clone(),
+            generation: 1,
+            harness: "codex".into(),
+            native_session: p.target.scope.native_session.clone(),
+        };
+        let peer = || herdr_threads::test_support::peer_identity(501);
+        service
+            .handle(Command::TurnState(start.clone()), peer(), &budget())
+            .unwrap();
+        // The real Stop path asks this first. A quiet answer is not an identity-checked End.
+        assert_eq!(
+            service
+                .handle(
+                    Command::TurnEndDue(TurnEndDue {
+                        claim: stale.claim.clone()
+                    }),
+                    peer(),
+                    &budget()
+                )
+                .unwrap(),
+            CommandResult::TurnEndDue { due }
+        );
+        assert_eq!(
+            service.turn_state().state(&key),
+            TurnState::Busy,
+            "question due={due} must not idle b"
+        );
+        if !due {
+            service
+                .handle(Command::TurnState(stale), peer(), &budget())
+                .unwrap();
+            assert_eq!(service.turn_state().state(&key), TurnState::Busy);
+        }
+        let state =
+            StorePort::native_turn_state(store.as_ref(), &p.target.scope.binding, &budget())
+                .unwrap()
+                .unwrap();
+        assert_eq!(state.id.as_str(), "b");
+        assert_eq!(state.phase, NativeTurnPhase::Started);
+        assert_eq!(
+            state.ordinal, 1,
+            "continuation question is not a native End"
+        );
+        if due {
+            store
+                .context()
+                .open_writer()
+                .unwrap()
+                .execute("DELETE FROM invitations", [])
+                .unwrap();
+        }
+        // A later, quiet Stop for b ends it only in the identity-bearing second command.
+        assert_eq!(
+            service
+                .handle(
+                    Command::TurnEndDue(TurnEndDue {
+                        claim: start.claim.clone()
+                    }),
+                    peer(),
+                    &budget()
+                )
+                .unwrap(),
+            CommandResult::TurnEndDue { due: false }
+        );
+        assert_eq!(service.turn_state().state(&key), TurnState::Busy);
+        let mut matching = start;
+        matching.edge = TurnEdge::Idle;
+        service
+            .handle(Command::TurnState(matching), peer(), &budget())
+            .unwrap();
+        assert_eq!(service.turn_state().state(&key), TurnState::Idle);
+        assert_eq!(
+            StorePort::native_turn_state(store.as_ref(), &p.target.scope.binding, &budget())
+                .unwrap()
+                .unwrap()
+                .phase,
+            NativeTurnPhase::Ended
+        );
+    }
+}
+
+#[test]
+fn native_turn_stop_continuation_recovers_missed_start_and_legacy_end_still_works() {
+    use herdr_threads::{
+        harness::adapter::TurnEdge,
+        ports::LocalService,
+        protocol::{
+            commands::{Command, TurnEndDue},
+            results::CommandResult,
+        },
+        service::{
+            dispatch::DomainService,
+            fair_writer::FairWriter,
+            turn_state::{TurnKey, TurnState},
+        },
+    };
+    let (store, _path, r, p) = fixture();
+    let mut legacy = native_report(&store, &r, &p, "legacy", TurnEdge::Idle);
+    legacy.native_turn_id = None;
+    let store = Arc::new(store);
+    let service = DomainService::new(INSTANCE.into(), store.clone(), Arc::new(IntentClock))
+        .with_cooperative_owner(501, Arc::new(FairWriter::new(32)));
+    let key = TurnKey {
+        seat: r.seat.clone(),
+        generation: 1,
+        harness: "codex".into(),
+        native_session: p.target.scope.native_session.clone(),
+    };
+    let peer = || herdr_threads::test_support::peer_identity(501);
+    assert_eq!(service.turn_state().state(&key), TurnState::Unknown);
+    assert_eq!(
+        service
+            .handle(
+                Command::TurnEndDue(TurnEndDue {
+                    claim: legacy.claim.clone()
+                }),
+                peer(),
+                &budget()
+            )
+            .unwrap(),
+        CommandResult::TurnEndDue { due: true }
+    );
+    assert_eq!(
+        service.turn_state().state(&key),
+        TurnState::Busy,
+        "continuation with a missed Start is Busy"
+    );
+    assert!(
+        StorePort::native_turn_state(store.as_ref(), &p.target.scope.binding, &budget())
+            .unwrap()
+            .is_none()
+    );
+    store
+        .context()
+        .open_writer()
+        .unwrap()
+        .execute("DELETE FROM invitations", [])
+        .unwrap();
+    assert_eq!(
+        service
+            .handle(
+                Command::TurnEndDue(TurnEndDue {
+                    claim: legacy.claim.clone()
+                }),
+                peer(),
+                &budget()
+            )
+            .unwrap(),
+        CommandResult::TurnEndDue { due: false }
+    );
+    assert_eq!(
+        service.turn_state().state(&key),
+        TurnState::Busy,
+        "a lost final edge conservatively delays waking"
+    );
+    service
+        .handle(Command::TurnState(legacy), peer(), &budget())
+        .unwrap();
+    assert_eq!(service.turn_state().state(&key), TurnState::Idle);
+}

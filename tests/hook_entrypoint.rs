@@ -310,6 +310,7 @@ impl Drop for HookHandlerPhase<'_> {
 }
 
 struct Counting {
+    turn_reports: Arc<std::sync::Mutex<Vec<herdr_threads::protocol::commands::TurnStateReport>>>,
     inner: Arc<dyn herdr_threads::ports::LocalService>,
     completions:
         Arc<std::sync::Mutex<Vec<herdr_threads::protocol::commands::CompleteInboxDelivery>>>,
@@ -330,6 +331,9 @@ impl Counting {
         &self,
         command: &Command,
     ) -> Result<(), herdr_threads::protocol::results::ApiError> {
+        if let Command::TurnState(report) = command {
+            self.turn_reports.lock().unwrap().push(report.clone());
+        }
         if let Command::CompleteInboxDelivery(request) = command {
             self.completions.lock().unwrap().push(request.clone());
             if self.mode.load(Ordering::SeqCst) == SLOW_COMPLETION {
@@ -912,6 +916,7 @@ fn publish_fixture_snapshot(
 }
 
 struct Fixture {
+    turn_reports: Arc<std::sync::Mutex<Vec<herdr_threads::protocol::commands::TurnStateReport>>>,
     root: PathBuf,
     completions:
         Arc<std::sync::Mutex<Vec<herdr_threads::protocol::commands::CompleteInboxDelivery>>>,
@@ -1016,6 +1021,8 @@ impl Fixture {
         let (ready_tx, ready_rx) = std::sync::mpsc::channel();
         let completions = Arc::new(std::sync::Mutex::new(Vec::new()));
         let captured_completions = Arc::clone(&completions);
+        let turn_reports = Arc::new(std::sync::Mutex::new(Vec::new()));
+        let captured_turn_reports = Arc::clone(&turn_reports);
         let worker = std::thread::spawn(move || {
             let clock: Arc<dyn Clock> = Arc::new(SystemClock::new());
             let service_clock = Arc::clone(&clock);
@@ -1098,6 +1105,7 @@ impl Fixture {
                             .with_harness_evidence(evidence),
                         ) as Arc<dyn LocalService>;
                         Ok(Arc::new(Counting {
+                            turn_reports: captured_turn_reports,
                             inner,
                             completions: captured_completions,
                             check_ins: counted,
@@ -1128,6 +1136,7 @@ impl Fixture {
         let codex_argv = installed_argv(BIN, Some(state.to_str().unwrap()), None, Harness::Codex);
         let codex = herdr_threads::harness::setup::shell_command(&codex_argv).unwrap();
         Self {
+            turn_reports,
             root,
             completions,
             state,
@@ -3403,7 +3412,13 @@ fn codex_stop_continues_once_for_a_waking_item_and_stays_quiet_otherwise() {
             [],
         )
         .unwrap();
+    let before_continuation = fx.turn_reports.lock().unwrap().len();
     let continued = codex_stop(3, false);
+    assert_eq!(
+        fx.turn_reports.lock().unwrap().len(),
+        before_continuation,
+        "a real Stop continuation must suppress the Idle command"
+    );
     let decision: serde_json::Value = serde_json::from_slice(&continued.stdout).unwrap();
     assert_eq!(decision["decision"], "block", "{decision}");
     let reason = decision["reason"].as_str().unwrap();
@@ -3436,6 +3451,26 @@ fn codex_stop_continues_once_for_a_waking_item_and_stays_quiet_otherwise() {
         String::from_utf8_lossy(&bounded.stdout)
     );
     assert_eq!(displayed(), 2);
+    let reports = fx.turn_reports.lock().unwrap();
+    assert_eq!(
+        reports.len(),
+        before_continuation + 1,
+        "a quiet bounded Stop sends its final edge"
+    );
+    assert_eq!(
+        reports.last().unwrap().edge,
+        herdr_threads::harness::adapter::TurnEdge::Idle
+    );
+    assert_eq!(
+        reports
+            .last()
+            .unwrap()
+            .native_turn_id
+            .as_ref()
+            .map(|id| id.as_str()),
+        Some("t3")
+    );
+    drop(reports);
     let next: serde_json::Value = serde_json::from_slice(&codex_stop(4, false).stdout).unwrap();
     assert!(next["reason"].as_str().unwrap().contains(&later), "{next}");
     assert_eq!(displayed(), 3);

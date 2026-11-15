@@ -1,0 +1,13 @@
+# Stop continuation review correction
+
+This corrects the Important review finding `mnSGhDW3Nk3M` in frozen prerequisite commit `3c04e7500`, under the design-owner disposition `mnSG9M0rt4ff`. The earlier prerequisite artifacts remain historical evidence for that frozen commit; their source hashes are not claims about this correction. The feature remains inactive on its branch.
+
+The actual Stop path first asks `TurnEndDue`, then sends its identity-bearing `TurnState` only when no continuation context was produced. Previously, a negative continuation answer marked the binding idle before native identity validation. Start(B), delayed Stop(A), TurnEndDue(false), rejected End(A) therefore left the active B idle. The new two-command service regression reproduced that exact failure: observed Idle versus expected Busy.
+
+A negative continuation answer now leaves activity unchanged. The later canonical TurnState decides whether the matching native turn ended. A positive continuation answer may still conservatively establish or retain Busy, including a missed Start. It does not record a native End or qualify a matched cycle. A missing final edge conservatively delays waking; it cannot manufacture Idle. No new wire fields, store APIs, scheduler selection, arm or fulfillment mutations are introduced.
+
+Two service regressions exercise the actual command order: stale versus matching Stop, both continuation answers, no manufactured End after a successful continuation, a later quiet matching End, missing-native legacy final edge, and missed-start continuation. The installed-hook integration captures the actual TurnState commands. Its nonempty Stop continuation emits no Idle command; its later bounded quiet Stop emits an Idle report with native ID t3. The existing delivery assertions remain intact, including priority gating, bounded continuation and message presentation.
+
+Final verification passes 31 ledger/current-turn tests, 12 existing service turn-state tests and one installed-hook test. All-target/all-feature Clippy, default-feature, format, neutral/wire compatibility and diff checks pass. Run-scoped process and temp checks are clean. These are scoped checks, not a full-suite qualification or timing result. Source hashes and exact results are in [stop-review-validation.json](stop-review-validation.json).
+
+New routine model-visible text: 0 bytes. Hooks retain their existing continuation/output policy. Tests use isolated fixture state, an owned in-process service and owned CLI children; no real harness/model turn or real user configuration is involved. The warm target remains for the continuing epic.

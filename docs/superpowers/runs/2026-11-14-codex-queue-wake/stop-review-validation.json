@@ -1,0 +1,85 @@
+{
+  "schema": 1,
+  "task": "ht-d2jq.5.1",
+  "review_base": "3c04e75008427e0618a9b3a6e851591b44f319c9",
+  "finding": "mnSGhDW3Nk3M",
+  "owner_disposition": "mnSG9M0rt4ff",
+  "scope": "negative TurnEndDue does not change activity; final canonical TurnState owns Idle; no scheduler activation",
+  "red": {
+    "command": "cargo test --locked --all-features --test combined native_turn_stop_question -- --nocapture",
+    "passed": 0,
+    "failed": 1,
+    "compile_seconds": 2.72,
+    "execution_seconds": 0.69,
+    "observed": "question due=false must not idle b: Idle versus Busy"
+  },
+  "tests": [
+    {
+      "target": "combined",
+      "filter": "native_turn_stop",
+      "passed": 2,
+      "failed": 0,
+      "compile_seconds": 13.25,
+      "execution_seconds": 0.88
+    },
+    {
+      "target": "hook_entrypoint",
+      "filter": "codex_stop_continues_once",
+      "passed": 1,
+      "failed": 0,
+      "compile_seconds": 5.76,
+      "execution_seconds": 0.66
+    },
+    {
+      "target": "combined",
+      "filter": "wake_intents",
+      "passed": 31,
+      "failed": 0,
+      "execution_seconds": 0.64
+    },
+    {
+      "target": "service",
+      "filter": "turn_state",
+      "passed": 12,
+      "failed": 0,
+      "compile_seconds": 0.86,
+      "execution_seconds": 0.0
+    }
+  ],
+  "unique_final_scoped_tests": 44,
+  "checks": {
+    "all_target_all_feature_clippy": {
+      "exit": 0,
+      "compiler_seconds": 16.86
+    },
+    "default_feature_guard": {
+      "exit": 0
+    },
+    "format": {
+      "exit": 0
+    },
+    "harness_neutral": {
+      "exit": 0,
+      "new_exceptions": 0
+    },
+    "wire_compat": {
+      "exit": 0,
+      "baseline_changed": false
+    },
+    "diff": {
+      "exit": 0
+    }
+  },
+  "cleanup": {
+    "run_id": "99629587-0074-4b2a-bb9a-7afde96b91ca",
+    "processes_exit": 0,
+    "temp_files_exit": 0
+  },
+  "routine_model_visible_bytes_added": 0,
+  "source_sha256": {
+    "src/service/dispatch.rs": "e6bb0aa165cef195ddb467a543903a8fb3f111f59daea19cc3feeb32084e9bbf",
+    "tests/store/wake_intents.rs": "79348315fc55259645d15ddf7c96d2dfc91439b1382b88f957fd5eec83735095",
+    "tests/hook_entrypoint.rs": "4745de7f35c28e89d360c09c779d4867c619a1d556833845a6d56e99800c6f07"
+  },
+  "report_sha256": "a7843aac6b0617a71b19df09263a384916a0c15a893c9047827e007e5c2e96d1"
+}
