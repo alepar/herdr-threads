@@ -1,6 +1,7 @@
 import fs from 'node:fs'
 import { pathToFileURL } from 'node:url'
 import path from 'node:path'
+import { randomUUID } from 'node:crypto'
 
 const root = process.env.HT_PI_QUALIFY_ROOT
 const modules = process.env.HT_PI_QUALIFY_MODULES
@@ -9,8 +10,11 @@ const { matchesKey } = await import(pathToFileURL(path.join(modules, '@earendil-
 export const log = data => fs.appendFileSync(path.join(root, 'native.jsonl'), JSON.stringify({ at: Date.now(), ...data }) + '\n')
 const hold = async (file, signal) => { while (!signal?.aborted && !fs.existsSync(path.join(root, file))) await new Promise(resolve => setTimeout(resolve, 100)) }
 export default function fixture(pi) {
+  const probeInstance = randomUUID(), causeNonces = new Set()
+  let probeEpoch = 0, causeFlight = false, rejectedBudgetNonce
   log({ event: 'fixture_loaded', pid: process.pid, named: process.env.HERDR_THREADS_SEAT_NAME, tmux: process.env.TMUX, tmuxPane: process.env.TMUX_PANE })
-  const snapshot = ctx => ({ sid: ctx.sessionManager.getSessionId(), idle: ctx.isIdle(), editor: ctx.ui.getEditorText(), model: ctx.model?.id, provider: ctx.model?.provider })
+  const snapshot = ctx => ({ sid: ctx.sessionManager.getSessionId(), idle: ctx.isIdle(), editor: ctx.ui.getEditorText(), model: ctx.model?.id, provider: ctx.model?.provider,
+    probe_instance: probeInstance, probe_epoch: probeEpoch })
   for (const event of ['session_start', 'session_tree', 'session_compact', 'session_compact_failed', 'before_agent_start', 'context', 'agent_start', 'turn_end', 'agent_before_settle', 'agent_settled', 'ui_prompt_start', 'ui_prompt_end', 'model_select', 'tool_execution_start', 'tool_execution_end', 'session_shutdown', 'before_provider_request', 'after_provider_response']) {
     pi.on(event, (data, ctx) => {
       log({ event, state: snapshot(ctx), data: event === 'after_provider_response' ? { status: data.status } : event === 'before_provider_request' ? { model: ctx.model?.id, provider: ctx.model?.provider } : data, branch: ctx.sessionManager.getBranch().filter(e => e.type === 'custom_message') })
@@ -18,6 +22,7 @@ export default function fixture(pi) {
   }
   let timer
   pi.on('session_start', (_event, ctx) => {
+    probeEpoch++
     clearInterval(timer)
     const reloadFile = path.join(root, 'reload-hold.json')
     if (_event.reason === 'reload' && fs.existsSync(reloadFile)) {
@@ -39,6 +44,7 @@ export default function fixture(pi) {
           if (accepted) ctx.ui.setEditorText(command.command)
           log({ event: 'command_prepared', nonce: command.nonce, accepted, state: snapshot(ctx) })
         }
+        processCauseRequest(ctx)
         const state = snapshot(ctx), encoded = JSON.stringify(state)
         const file = path.join(root, 'observe-state.json')
         const request = fs.existsSync(file) ? JSON.parse(fs.readFileSync(file, 'utf8')) : null
@@ -50,15 +56,45 @@ export default function fixture(pi) {
       } catch {}
     }, 100)
     timer.unref()
-    ctx.ui.onTerminalInput(data => { log({ event: 'terminal_input', data }); return undefined })
+    ctx.ui.onTerminalInput(data => { log({ event: 'terminal_input', data, key: matchesKey(data, 'ctrl+c') ? 'ctrl+c' : undefined }); return undefined })
   })
-  pi.on('session_shutdown', () => clearInterval(timer))
+  pi.on('session_shutdown', () => { probeEpoch++; clearInterval(timer) })
   const command = async (pi, args) => {
     const [program, ...prefix] = JSON.parse(process.env.HT_PI_QUALIFY_CLI)
     const result = await pi.exec(program, [...prefix, ...args], { timeout: 15000 })
     log({ event: 'command', args, code: result.code, stdout: result.stdout, stderr: result.stderr })
     if (result.code !== 0) throw new Error('qualification command refused')
     return result
+  }
+  function processCauseRequest(ctx) {
+    const file = path.join(root, 'notice-cause-request.json')
+    if (causeFlight || !fs.existsSync(file) || fs.statSync(file).size > 4096) return
+    const data = JSON.parse(fs.readFileSync(file, 'utf8'))
+    if (typeof data.nonce !== 'string' || !data.nonce || data.nonce.length > 128 || causeNonces.has(data.nonce)) return
+    const refuse = message => log({ event: 'notice_cause_error', request_nonce: data.nonce, state: snapshot(ctx), message })
+    if (causeNonces.size >= 16) {
+      if (rejectedBudgetNonce !== data.nonce) { rejectedBudgetNonce = data.nonce; refuse('owned cause request budget exceeded') }
+      return
+    }
+    // Consume before any async work: a repeated/reinterpreted file never sends twice.
+    causeNonces.add(data.nonce)
+    const state = snapshot(ctx), epoch = probeEpoch
+    if (data.sid !== state.sid || data.probe_instance !== probeInstance || data.probe_epoch !== epoch
+      || ctx.mode !== 'tui' || state.idle !== true || state.editor !== 'OWNED NOTICE QUALIFICATION DRAFT'
+      || data.expected_editor !== state.editor || typeof data.target !== 'string' || !data.target || data.target.length > 128
+      || typeof data.body !== 'string' || !data.body || Buffer.byteLength(data.body) > 2048 || data.deadline !== 8) {
+      refuse('stale or invalid owned cause request'); return
+    }
+    causeFlight = true
+    void (async () => {
+      try {
+        const result = await command(pi, ['send', '--seat', data.target, '--body', data.body, '--require-ack', data.target, '--deadline', String(data.deadline)])
+        if (probeEpoch !== epoch || snapshot(ctx).sid !== data.sid) { refuse('owned cause context changed during send'); return }
+        log({ event: 'notice_cause', state: snapshot(ctx), request_nonce: data.nonce, cause_source: 'owned_timer_request',
+          body: data.body, target: data.target, result: JSON.parse(result.stdout) })
+      } catch (error) { refuse(error.message) }
+      finally { causeFlight = false }
+    })()
   }
   pi.registerCommand('probe-notice-cause', { description: 'private genuine agent receipt cause', handler: async (value, ctx) => {
     const data = JSON.parse(value)

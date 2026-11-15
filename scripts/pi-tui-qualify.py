@@ -4,6 +4,9 @@
 The default uses the retained official runtime and a scripted provider. --live
 uses only OPENROUTER_API_KEY from the explicitly selected env file; no real
 profile is copied or modified. Run through the repository's heavy/toolbox wrapper.
+The original14 cases remain the default. Each opt-in notice case requires its
+own fresh run: --cases notice_reload, --cases notice_page, --cases notice_wake,
+or --cases notice_hol. Notice cases cannot be combined with another case.
 """
 import argparse
 import hashlib
@@ -28,13 +31,16 @@ REPO = Path(__file__).resolve().parent.parent
 FIXTURE = REPO / "scripts/pi_tui_fixtures/provider.mjs"
 MODULES = REPO / "docs/superpowers/runs/2026-11-14-pi-harness/research/candidates/probe/node_modules"
 WAKE = "herdr-threads: wake up"
-CASES = ("setup", "safety", "threshold", "busy", "receipts", "ordering", "invitations", "negative", "failures", "lifecycle", "compaction", "handoff", "channel", "named", "notice_reload", "notice_page", "notice_wake")
+DEFAULT_CASES = ("setup", "safety", "threshold", "busy", "receipts", "ordering", "invitations", "negative", "failures", "lifecycle", "compaction", "handoff", "channel", "named")
+NOTICE_CASES = ("notice_reload", "notice_page", "notice_wake", "notice_hol")
+CASES = (*DEFAULT_CASES, *NOTICE_CASES)
 HELPER_GRACE_TIMEOUT = 30
 HELPER_TERM_TIMEOUT = 8
 HELPER_KILL_TIMEOUT = 5
 ROOT_CLEANUP_TIMEOUT = 35
 SINK_DRAFT = "OWNED UNREAD NOTICE SINK DRAFT"
 NOTICE_DRAFT = "OWNED NOTICE QUALIFICATION DRAFT"
+HOL_PROGRESS_SECONDS = 120  # Existing 30+60s ladder, 5s tick and 25s local IPC safety.
 
 
 def require_agent_sink(inspection, seat, sid):
@@ -76,6 +82,27 @@ def require_visible_notice_draft(observation, capture, sid, draft=NOTICE_DRAFT):
     body, styled = fixture_editor_row(capture)
     assert body == draft, "owned draft is not rendered in the fixture composer"
     assert re.match(re.escape(draft) + r"(?:\x1b\[0m)?\x1b\[7m \x1b\[0m *$", styled), "unknown fixture draft cursor/style"
+
+
+def notice_marker_reference(body, old, new, root):
+    # Assertion oracle only. Never emitted as a message or returned as proof.
+    lead, suffix = 'informational, no ACK; read: ', ' body ' + old
+    assert all(re.fullmatch(r'[A-Za-z0-9]{1,64}', value) for value in (old, new)), 'invalid canonical warning id'
+    assert body.startswith(lead) and body.endswith(suffix), 'unknown informational marker shape'
+    try:
+        route = shlex.split(body[len(lead):-len(suffix)])
+    except ValueError as error:
+        raise AssertionError('unknown informational marker route') from error
+    assert route == ['herdr-threads', '--state-dir', str(root / 'state')], 'unknown informational marker route'
+    return body[:-len(old)] + new
+
+
+def hol_delivery_path(wakes, new_context_at, release_at):
+    assert wakes and all(row['at'] >= release_at * 1000 for row in wakes), 'HOL wake preceded owned release'
+    delivery_wakes = [row for row in wakes if row['at'] <= new_context_at]
+    assert delivery_wakes, 'HOL successor context preceded automatic wake'
+    return {'outer_wakes': len(wakes), 'delivery_wake_ordinal': len(delivery_wakes),
+            'path': 'same_outer_run' if len(delivery_wakes) == 1 else 'later_automatic_wake'}
 
 
 def contains_frame(text, kind, identity, body):
@@ -381,19 +408,49 @@ class Run:
                                for r in self.probe_rows(sink["probe"])), "unread sink received the cause in native model context"
         return state
 
-    def new_notice_cause(self, label, hold=True):
+    def new_notice_cause(self, label, hold=True, *, timer=False):
         self.start_notice_sink()
         self.verify_notice_sink()  # Must precede the actual public send.
         body = "NOTICE CAUSE " + label + " " + str(uuid.uuid4())
         data = {"sid": self.main_sid, "target": self.sink["seat"], "body": body, "deadline": 8,
                 "hold": NOTICE_DRAFT if hold else ""}
-        self.observe_state(data["hold"], sid=self.main_sid)
+        admitted = self.observe_state(data["hold"], sid=self.main_sid)
         before = self.capture("notice-cause-" + label + "-before")
         since, starts = len(self.rows()), self.count("before_agent_start")
-        self.probe_command("/probe-notice-cause " + json.dumps(data), NOTICE_DRAFT if hold else "")
-        row = self.wait("actual agent-authored notice cause", lambda: next((r for r in self.rows()[since:]
-                        if r["event"] == "notice_cause" and r["state"]["sid"] == self.main_sid
-                        and r["body"] == body and r["target"] == self.sink["seat"]), None))
+        request, temporary, nonce = None, None, None
+        owns_request = owns_temporary = False
+        try:
+            if timer:
+                assert hold, 'owned timer cause requires the physical fixture guard'
+                require_visible_notice_draft(admitted, before, self.main_sid)
+                nonce = str(uuid.uuid4())
+                request = self.root / 'notice-cause-request.json'
+                temporary = self.root / 'notice-cause-request.tmp'
+                assert not request.exists() and not temporary.exists(), 'another owned cause request exists'
+                payload = {key: data[key] for key in ('sid', 'target', 'body', 'deadline')}
+                payload.update(nonce=nonce, expected_editor=NOTICE_DRAFT,
+                               probe_instance=admitted['state']['probe_instance'], probe_epoch=admitted['state']['probe_epoch'])
+                with temporary.open('x') as output:
+                    owns_temporary = True
+                    output.write(json.dumps(payload))
+                temporary.chmod(0o600); temporary.replace(request)
+                owns_request, owns_temporary = True, False
+            else:
+                self.probe_command("/probe-notice-cause " + json.dumps(data), NOTICE_DRAFT if hold else "")
+            def actual():
+                for observed in self.rows()[since:]:
+                    if observed.get('state', {}).get('sid') != self.main_sid:
+                        continue
+                    if timer and observed.get('request_nonce') == nonce and observed['event'] == 'notice_cause_error':
+                        raise AssertionError('owned timer cause refused: ' + observed.get('message', 'unknown'))
+                    if (observed['event'] == 'notice_cause' and observed['body'] == body and observed['target'] == self.sink['seat']
+                            and (not timer or observed.get('request_nonce') == nonce)):
+                        return observed
+                return None
+            row = self.wait("actual agent-authored notice cause", actual)
+        finally:
+            if owns_request: request.unlink(missing_ok=True)
+            if owns_temporary: temporary.unlink(missing_ok=True)
         post_command = self.observe_state(sid=self.main_sid)
         post_capture = self.capture("notice-cause-" + label + "-after-command")
         post_capture["native_observation"] = post_command
@@ -404,9 +461,17 @@ class Run:
         terminal_guard = None
         if hold:
             assert row["state"]["editor"] == NOTICE_DRAFT, "source command did not retain its owned draft"
-            terminal_guard = self.restore_fixture_draft(label, NOTICE_DRAFT, starts, post_capture, deadline=deadline)
+            if timer:
+                require_visible_notice_draft(post_command, post_capture, self.main_sid)
+                self.quiet(starts, 0)
+                assert int(time.time() * 1000) < deadline, 'owned timer cause deadline expired'
+                terminal_guard = {'capture': post_capture, 'observation': post_command,
+                                  'verified_at': time.time(), 'deadline': deadline, 'input': 'unchanged by timer request'}
+            else:
+                terminal_guard = self.restore_fixture_draft(label, NOTICE_DRAFT, starts, post_capture, deadline=deadline)
         cause = {"message": mid, "cause_body": body, "initial_receipt": receipt, "deadline": deadline, "event": row,
-                 "run_starts_before_send": starts, "before_send": before, "terminal_guard": terminal_guard}
+                 "run_starts_before_send": starts, "before_send": before, "terminal_guard": terminal_guard,
+                 "request_nonce": nonce}
         self.notice_causes.append(cause)
         return cause
 
@@ -554,7 +619,7 @@ class Run:
         self.verify_notice_sink()
         return {"native_context": proof, "canonical_settlement": state, "sink_receipt_still_pending": True}
 
-    def finish_notice_cause(self, cause):
+    def recover_notice_sink(self, cause):
         # Only after all notice assertions: let the real sink process the body,
         # so the next case cannot reuse this coalesced warning condition.
         sink = self.sink
@@ -569,6 +634,9 @@ class Run:
         sink["starts"] = sum(r["event"] == "before_agent_start" for r in self.probe_rows(sink["probe"]))
         self.herdr("pane", "send-text", sink["pane"], SINK_DRAFT)
         self.verify_notice_sink()
+
+    def finish_notice_cause(self, cause):
+        self.recover_notice_sink(cause)
         self.turn("Owned notice cleanup boundary. Reply READY without tools.")
 
     def case_notice_reload(self):
@@ -679,6 +747,101 @@ class Run:
         self.facts["notice_wake"] = {"cause": cause, "page": page, "owned_clear": clear,
                                      "post_clear_observation": after_clear, "actual_wake": wake, **proof}
         self.finish_notice_cause(cause)
+
+    def parked_clear_notice(self, cause):
+        rows = self.canonical_read("""SELECT c.clear_warning_id warning,d.ordinal,d.thread_id,d.event_seq,m.sequence
+            FROM warning_conditions c JOIN digest_programmatic_warnings d ON d.warning_id=c.clear_warning_id AND d.seat_id=?1
+            JOIN messages m ON m.id=d.warning_id WHERE c.open_warning_id=?2 AND c.condition_kind='receipt'""",
+            (self.seat, cause['warning']))
+        assert len(rows) <= 1, 'ambiguous canonical clear warning'
+        if not rows:
+            return None
+        clear, page = rows[0], self.notice_snapshot(cause)
+        if not page or not page['outbox_token'] or page['frontier'] >= clear['ordinal']:
+            return None
+        key = f"dn1:{clear['sequence']}:{clear['event_seq']}:{clear['ordinal']}"
+        for index, descriptor in enumerate(page['descriptors']):
+            item = descriptor['item']
+            if (item.get('kind') == 'notice' and item.get('warning') == clear['warning'] and item.get('thread') == clear['thread_id']
+                    and descriptor.get('context_key') == key and isinstance(item.get('body'), str) and item['body']
+                    and not (page['outbox_retired_mask'] or 0) & (1 << index)):
+                return {**clear, 'body': item['body'], 'descriptor': descriptor, 'page': page}
+        return None
+
+    def case_notice_hol(self):
+        # Fresh scenario: create a real resolution Notice while the source is
+        # physically held, then a newer actionable warning behind that page.
+        assert not self.results and not self.notice_causes, 'notice_hol requires a fresh standalone run'
+        self.hold_notice_editor()
+        seed = self.new_notice_cause('hol-seed', timer=True)
+        self.pending_notice(seed)
+        seed_since = len(self.rows())
+        self.keys('enter')
+        seed_proof = self.assert_notice_settled(seed, seed_since)
+        self.wait('HOL seed native settlement', lambda: any(r['event'] == 'agent_settled'
+                  and r['state']['sid'] == self.main_sid for r in self.rows()[seed_since:]))
+        self.hold_notice_editor()
+        self.recover_notice_sink(seed)  # No source cleanup turn: preserve the clear page.
+        clear = self.wait('actual old protected clear Notice', lambda: self.parked_clear_notice(seed), 35)
+        assert not self.notice_context(clear['warning'], clear['body']), 'old clear was already presented'
+        cause = self.new_notice_cause('hol-newer', timer=True)
+        def blocked():
+            state = self.notice_snapshot(cause)
+            if not state or not state['pending'] or state['ordinal'] <= clear['ordinal']:
+                return None
+            assert state['outbox_token'] == clear['page']['outbox_token'], 'old protected episode changed before release'
+            return state if any(d == clear['descriptor'] and not (state['outbox_retired_mask'] or 0) & (1 << i)
+                                for i, d in enumerate(state['descriptors'])) else None
+        pending = self.wait('new actionable projection behind old clear page', blocked, 35)
+        expected = notice_marker_reference(clear['body'], clear['warning'], pending['warning_id'], self.root)
+        starts = cause['run_starts_before_send']
+        self.quiet(starts, 0)
+        held = self.observe_state(sid=self.main_sid)
+        screen = self.capture('notice-hol-before-release')
+        require_visible_notice_draft(held, screen, self.main_sid)
+        agent = screen['agent']['result']['agent']
+        assert agent.get('focused') is False and agent.get('agent_status') in ('idle', 'done') and agent.get('interactive_ready') is True, 'HOL requires healthy idle unfocused host'
+        since = len(self.rows())
+        report = {'seed': seed, 'seed_proof': seed_proof, 'old_clear': clear, 'new_cause': cause,
+                  'blocked_snapshot': pending, 'new_body_reference': {'source': 'renderer-derived assertion reference; not an observed packet', 'body': expected},
+                  'release_at': time.time(), 'progress_bound_seconds': HOL_PROGRESS_SECONDS, 'held': held, 'screen': screen}
+        self.facts['notice_hol'] = report
+        self.keys('ctrl+c')
+        # No controller prompt, editor operation, provider hold or confirmation
+        # after this release. Only actual host wake(s) may create model turns.
+        def progressed():
+            trace = self.rows()[since:]
+            wakes = [r for r in trace if r['event'] == 'before_agent_start' and r['state']['sid'] == self.main_sid]
+            assert all(r['data'].get('prompt') == WAKE for r in wakes), 'HOL received a non-wake outer prompt'
+            state = self.notice_snapshot(cause)
+            report['last_snapshot'] = state
+            report['automatic_wakes'] = [{'at': r['at'], 'prompt': r['data']['prompt']} for r in wakes]
+            inputs = [r for r in trace if r['event'] == 'terminal_input' and r['at'] >= report['release_at'] * 1000]
+            report['terminal_inputs_after_release'] = inputs[:16]
+            release = next((r for r in inputs if r.get('key') == 'ctrl+c'), None)
+            if state and state['notice_descriptor']:
+                assert state['notice_descriptor']['item']['body'] == expected, 'actual successor marker differs from renderer reference'
+                report['observed_new_descriptor'] = {'sampled_at': time.time(), 'descriptor': state['notice_descriptor']}
+            old_proof = self.notice_context(clear['warning'], clear['body'], since)
+            new_proof = self.notice_context(pending['warning_id'], expected, since)
+            settled = [r['at'] for r in trace if r['event'] == 'agent_settled' and r['state']['sid'] == self.main_sid]
+            if release and wakes and old_proof and new_proof and state and state['frontier'] >= pending['ordinal'] and settled and settled[-1] >= max(new_proof['at'], wakes[-1]['at']):
+                assert old_proof['at'] <= new_proof['at'], 'successor appeared before the parked old body'
+                return {'old_context': old_proof, 'new_context': new_proof, 'canonical_settlement': state,
+                        **hol_delivery_path(wakes, new_proof['at'], report['release_at']),
+                        'release_input': release, 'settled_events': settled}
+            return None
+        try:
+            report['progress'] = self.wait('automatic old then new HOL progress', progressed, HOL_PROGRESS_SECONDS)
+            report['proved_at'] = time.time()
+            assert self.recipient_receipt(cause['message'], self.sink['seat'])['effective_status'] == 'pending', 'notice progress ACKed the distinct unread sink receipt'
+            self.verify_notice_sink()
+        except BaseException:
+            try:
+                report['failure_snapshot'] = self.notice_failure_diagnostics(cause)
+            except Exception as diagnostic:
+                report['diagnostic_error'] = type(diagnostic).__name__ + ': ' + str(diagnostic)
+            raise
 
     def quiet(self, starts, seconds=1):
         time.sleep(seconds)
@@ -1387,6 +1550,123 @@ read -r _ || true
 
 
 class DriverTests(unittest.TestCase):
+    def test_notice_cases_are_opt_in_and_reject_mixed_selection_before_resources(self):
+        class Parsed(Exception):
+            pass
+        captured = []
+        def constructor(args):
+            captured.append(args.cases.split(',')); raise Parsed()
+        with mock.patch.dict(main.__globals__, {'Run': constructor}), mock.patch.object(os, 'umask'), self.assertRaises(Parsed):
+            main([])
+        self.assertEqual(captured, [['setup', 'safety', 'threshold', 'busy', 'receipts', 'ordering', 'invitations',
+                                     'negative', 'failures', 'lifecycle', 'compaction', 'handoff', 'channel', 'named']])
+        for case in ('notice_reload', 'notice_page', 'notice_wake', 'notice_hol'):
+            with mock.patch.dict(main.__globals__, {'Run': constructor}), mock.patch.object(os, 'umask'), self.assertRaises(Parsed):
+                main(['--cases', case])
+            self.assertEqual(captured[-1], [case])
+            for selection in (case + ',setup', 'setup,' + case, case + ',notice_hol'):
+                with mock.patch.dict(main.__globals__, {'Run': lambda _args: self.fail('invalid mix constructed resources')}), mock.patch.object(sys, 'stderr'), self.assertRaises(SystemExit) as refused:
+                    main(['--cases', selection])
+                self.assertEqual(refused.exception.code, 2)
+
+    def test_hol_path_uses_wake_preceding_delivery_not_later_controller_sample(self):
+        wakes = [{'at': 2000}, {'at': 4000}]
+        self.assertEqual(hol_delivery_path(wakes, 3000, 1),
+                         {'outer_wakes': 2, 'delivery_wake_ordinal': 1, 'path': 'same_outer_run'})
+        self.assertEqual(hol_delivery_path(wakes, 5000, 1),
+                         {'outer_wakes': 2, 'delivery_wake_ordinal': 2, 'path': 'later_automatic_wake'})
+        with self.assertRaisesRegex(AssertionError, 'preceded owned release'):
+            hol_delivery_path(wakes, 5000, 3)
+        with self.assertRaisesRegex(AssertionError, 'context preceded automatic wake'):
+            hol_delivery_path(wakes, 1500, 1)
+
+    def test_driver_timer_request_uses_fresh_owner_and_never_types_or_leaves_request(self):
+        for refuse in (False, True):
+            with tempfile.TemporaryDirectory(prefix='ht-pi-controller-request-') as root:
+                run = Run.__new__(Run); run.root = Path(root); run.main_sid = 'main'; run.recipient = 'owned'; run.sink = {'seat': 'sink'}
+                run.facts = {}; run.notice_causes = []; events = []
+                run.start_notice_sink = run.verify_notice_sink = lambda: None
+                run.rows = lambda: events; run.count = lambda _event: 0
+                observed = {'state': {'sid': 'main', 'idle': True, 'editor': NOTICE_DRAFT, 'probe_instance': 'instance', 'probe_epoch': 2}}
+                run.observe_state = lambda *_args, **_kwargs: observed
+                border = '─' * 80
+                run.capture = lambda *_args: {'styled': {'raw': '\n'.join([border, NOTICE_DRAFT + '\x1b[0m\x1b[7m \x1b[0m', border, '/owned/project', '2.0%/100k scripted'])}}
+                run.keys = run.herdr = run.probe_command = lambda *_args: self.fail('timer cause must not type or submit')
+                def wait(_label, predicate, *_args):
+                    payload = json.loads((run.root / 'notice-cause-request.json').read_text())
+                    self.assertEqual((payload['probe_instance'], payload['probe_epoch'], payload['sid']), ('instance', 2, 'main'))
+                    self.assertNotIn('hold', payload, 'timer protocol must not request an editor setter')
+                    if refuse:
+                        events.append({'event': 'notice_cause_error', 'state': observed['state'], 'request_nonce': payload['nonce'], 'message': 'stale'})
+                    else:
+                        events.append({'event': 'notice_cause', 'state': observed['state'], 'request_nonce': payload['nonce'],
+                                       'body': payload['body'], 'target': 'sink', 'result': {'result': {'data': 'cause'}}})
+                    return predicate()
+                run.wait = wait
+                run.recipient_receipt = lambda *_args: {'seat': 'sink', 'effective_status': 'pending', 'deadline': 4000}
+                with mock.patch.object(time, 'time', return_value=1):
+                    if refuse:
+                        with self.assertRaisesRegex(AssertionError, 'stale'): run.new_notice_cause('timer', timer=True)
+                    else:
+                        cause = run.new_notice_cause('timer', timer=True)
+                        self.assertEqual(cause['request_nonce'], events[0]['request_nonce'])
+                self.assertFalse((run.root / 'notice-cause-request.json').exists())
+                self.assertFalse((run.root / 'notice-cause-request.tmp').exists())
+
+    def test_hol_marker_reference_preserves_route_and_rejects_unknown_shapes(self):
+        root = Path('/owned/eOLD/state-root')
+        old = 'informational, no ACK; read: herdr-threads --state-dir ' + str(root / 'state') + ' body eOLD'
+        self.assertEqual(notice_marker_reference(old, 'eOLD', 'eNEW', root), old[:-4] + 'eNEW')
+        for malformed in (old + ' trailing', old.replace(' body ', ' inbox '), old.replace('informational, no ACK;', 'notice;'),
+                          old.replace('herdr-threads ', 'other-cli '), old.replace(str(root / 'state'), '/foreign/state'),
+                          old.replace(' body eOLD', ' --unknown body eOLD')):
+            with self.assertRaises(AssertionError): notice_marker_reference(malformed, 'eOLD', 'eNEW', root)
+        with self.assertRaises(AssertionError): notice_marker_reference(old, 'eOLD', 'eNEW extra', root)
+
+    def test_timer_cause_never_changes_editor_and_fences_nonce_owner_and_replay(self):
+        with tempfile.TemporaryDirectory(prefix='ht-pi-timer-cause-') as root:
+            code = r'''
+import assert from 'node:assert/strict'
+import fs from 'node:fs'
+import { pathToFileURL } from 'node:url'
+let tick,editor='OWNED NOTICE QUALIFICATION DRAFT',idle=true
+const callbacks=new Map(),calls=[]
+globalThis.setInterval=fn=>{tick=fn;return {unref(){}}};globalThis.clearInterval=()=>{}
+const ctx={mode:'tui',isIdle:()=>idle,model:{id:'scripted',provider:'ht-fixture'},sessionManager:{getSessionId:()=> 'main',getSessionFile:()=>null,getBranch:()=>[]},
+ ui:{getEditorText:()=>editor,setEditorText:()=>assert.fail('timer must not set editor'),onTerminalInput:()=>{}}}
+const pi={on:(event,fn)=>callbacks.set(event,[...(callbacks.get(event)||[]),fn]),registerCommand:()=>{},registerTool:()=>{},
+ exec:async(program,args)=>{calls.push({program,args});return {code:0,stdout:JSON.stringify({result:{data:'actual-mock-cli-result'}}),stderr:''}}}
+const fixture=(await import(pathToFileURL(process.env.HT_PI_FIXTURE))).default;fixture(pi)
+const emit=async event=>{for(const fn of callbacks.get(event))await fn({reason:'startup'},ctx)}
+await emit('session_start');tick()
+const rows=()=>fs.readFileSync(process.env.HT_PI_QUALIFY_ROOT+'/native.jsonl','utf8').trim().split('\n').map(JSON.parse)
+const state=rows().filter(r=>r.event==='state').at(-1).state
+const base={sid:'main',probe_instance:state.probe_instance,probe_epoch:state.probe_epoch,target:'sink',body:'REAL CLI INPUT',deadline:8,expected_editor:editor}
+const request=(nonce,change={})=>{fs.writeFileSync(process.env.HT_PI_QUALIFY_ROOT+'/notice-cause-request.json',JSON.stringify({...base,nonce,...change}));tick()}
+const flush=()=>new Promise(resolve=>setImmediate(resolve))
+request('first');tick();await flush();tick();await flush()
+assert.equal(calls.length,1,'one public send per nonce')
+assert.deepEqual(calls[0].args,['--json','send','--seat','sink','--body','REAL CLI INPUT','--require-ack','sink','--deadline','8'])
+request('stale-sid',{sid:'foreign'});await flush();request('stale-sid');await flush();assert.equal(calls.length,1)
+request('stale-epoch',{probe_epoch:state.probe_epoch-1});await flush();assert.equal(calls.length,1)
+request('foreign-owner',{probe_instance:'foreign'});await flush();assert.equal(calls.length,1)
+editor='UNRELATED';request('wrong-editor');await flush();assert.equal(calls.length,1);editor=base.expected_editor
+idle=false;request('busy');await flush();assert.equal(calls.length,1);idle=true
+request('second');await flush();assert.equal(calls.length,2)
+request('first');await flush();assert.equal(calls.length,2,'old nonce cannot replay after a newer nonce')
+await emit('session_start');request('old-context');await flush();assert.equal(calls.length,2)
+assert.equal(editor,base.expected_editor)
+assert.equal(rows().filter(r=>r.event==='notice_cause'&&r.request_nonce).length,2)
+assert.ok(!rows().some(r=>r.event==='before_agent_start'||r.event==='context'))
+'''
+            env = {'PATH': os.environ['PATH'], 'HOME': root, 'HT_PI_QUALIFY_ROOT': root,
+                   'HT_PI_QUALIFY_MODULES': str(MODULES), 'HT_PI_FIXTURE': str(FIXTURE),
+                   'HT_PI_QUALIFY_CLI': '["owned-cli","--json"]', 'HT_PI_QUALIFY_LIVE': '1',
+                   'HT_TEST_OWNER': str(os.getpid()), 'HT_LEAK_RUN_ID': os.environ.get('HT_LEAK_RUN_ID', str(uuid.uuid4()))}
+            result = subprocess.run(['node', '--input-type=module', '-e', code], env=env, cwd=REPO,
+                                    capture_output=True, text=True, timeout=5)
+            self.assertEqual(result.returncode, 0, result.stderr)
+
     def test_notice_timeout_retains_bounded_null_stages_before_cleanup(self):
         run = Run.__new__(Run); run.facts = {}; run.sink = {'seat': 'sink'}
         samples = [None, {'pending': True, 'notice_descriptor': None, 'ordinal': 1},
@@ -2233,7 +2513,7 @@ def main(argv=None):
     parser.add_argument("--pi")
     parser.add_argument("--modules", default=str(MODULES))
     parser.add_argument("--evidence-dir", default=str(REPO / ".superpowers/sdd/implementation-plan/task-3-tui"))
-    parser.add_argument("--cases", default=",".join(CASES))
+    parser.add_argument("--cases", default=",".join(DEFAULT_CASES), help="comma-separated standard cases, or one standalone notice case")
     parser.add_argument("--live", action="store_true")
     parser.add_argument("--openrouter-env-file")
     parser.add_argument("--model")
@@ -2246,6 +2526,8 @@ def main(argv=None):
     cases = ["live"] if args.live else args.cases.split(",")
     if not cases or any(case not in (*CASES, "live") for case in cases):
         parser.error("unknown qualification case")
+    if len(cases) != 1 and any(case in NOTICE_CASES for case in cases):
+        parser.error("notice cases require one standalone case in a fresh run")
     os.umask(0o077)
     run = Run(args)
     ok = True
