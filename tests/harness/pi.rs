@@ -333,6 +333,12 @@ fn pi_setup_owns_only_extension_and_skill_preserving_settings_and_edits() {
     };
     let first = row.setup(&request, &budget()).unwrap();
     assert_eq!(first.projection["action"], "installed");
+    let manifest_path = crate::harness::pi::setup::manifest_file(&agent, &env).unwrap();
+    let manifest_bytes = std::fs::read(&manifest_path).unwrap();
+    let manifest: serde_json::Value = serde_json::from_slice(&manifest_bytes).unwrap();
+    assert_eq!(manifest.as_object().unwrap().len(), 5);
+    assert_eq!(manifest["version"], 1);
+    assert_eq!(manifest["files"].as_array().unwrap().len(), 2);
     let extension = agent.join("extensions/herdr-threads/index.js");
     let source = std::fs::read_to_string(&extension).unwrap();
     let launch_line = source
@@ -372,6 +378,7 @@ fn pi_setup_owns_only_extension_and_skill_preserving_settings_and_edits() {
         row.setup(&request, &budget()).unwrap().projection["action"],
         "already_installed"
     );
+    assert_eq!(std::fs::read(&manifest_path).unwrap(), manifest_bytes);
     let status = StatusRequest {
         scope: scope.clone(),
         environment: env.clone(),
