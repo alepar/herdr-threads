@@ -57,14 +57,29 @@ fn budget() -> CallBudget {
 /// The names the host enumerates: refreshed from the store before each capture, as the daemon's
 /// store read does.
 #[derive(Default)]
-struct Names(Mutex<Vec<(SeatId, SeatName)>>);
+struct Names(
+    Mutex<Vec<(SeatId, SeatName)>>,
+    Mutex<
+        Option<(
+            std::sync::mpsc::SyncSender<()>,
+            std::sync::mpsc::Receiver<()>,
+        )>,
+    >,
+);
 impl NamedSeatSource for Names {
     fn live_named(
         &self,
         _: &HostId,
         _: &CallBudget,
     ) -> Result<Vec<(SeatId, SeatName)>, crate::protocol::results::ApiError> {
-        Ok(self.0.lock().unwrap().clone())
+        let captured = self.0.lock().unwrap().clone();
+        if let Some((ready, release)) = self.1.lock().unwrap().take() {
+            ready.send(()).unwrap();
+            release
+                .recv_timeout(std::time::Duration::from_secs(5))
+                .unwrap();
+        }
+        Ok(captured)
     }
 }
 
@@ -152,6 +167,10 @@ impl Fx {
             expected_epoch: None,
         };
         let snapshot = stamp_fixed_structure(self.named.enumerate_targets(&context).unwrap());
+        self.publish_capture(snapshot)
+    }
+
+    fn publish_capture(&mut self, snapshot: crate::ports::HostSnapshot) -> PublishedSnapshot {
         let admission = begin_host_observation(
             &self.context,
             &mut self.conn,
@@ -272,6 +291,116 @@ impl Fx {
             self.scalar("SELECT count(*) FROM recovery_holds WHERE released_at IS NULL"),
         )
     }
+}
+
+// An enumeration begun before allocation must not hide a newer explicit target
+// observation merely because its store read completes later (ht-bbe2).
+#[test]
+fn delayed_empty_named_capture_preserves_newer_current_mapping_for_admission() {
+    let mut f = fixture();
+    f.publish();
+    let (ready_tx, ready_rx) = std::sync::mpsc::sync_channel(1);
+    let (release_tx, release_rx) = std::sync::mpsc::sync_channel(1);
+    *f.names.1.lock().unwrap() = Some((ready_tx, release_rx));
+    let named = &f.named;
+    let (snapshot, seat) = std::thread::scope(|scope| {
+        let old = scope.spawn(|| {
+            named
+                .enumerate_targets(&HostCallContext {
+                    budget: budget(),
+                    expected_boot: None,
+                    expected_epoch: None,
+                })
+                .unwrap()
+        });
+        ready_rx
+            .recv_timeout(std::time::Duration::from_secs(5))
+            .unwrap();
+        let CommandResult::NamedSeatResolved { seat, .. } = resolve_named_seat(
+            &f.context,
+            &mut f.conn,
+            INSTANCE,
+            f.host,
+            &ResolveSeat {
+                target: HostTargetId::new("new-owner"),
+                host: HostLocator::parse(NAMED_HOST_LOCATOR).unwrap(),
+                operation: OperationId::new("resolve-new-owner"),
+                locator_hint: None,
+                tmux_hint: None,
+                continuity_key: None,
+            },
+            &budget(),
+        )
+        .unwrap() else {
+            panic!("named allocation")
+        };
+        let current = named
+            .observe_current_target(
+                &HostTargetId::new("new-owner"),
+                &HostCallContext {
+                    budget: budget(),
+                    expected_boot: None,
+                    expected_epoch: None,
+                },
+            )
+            .unwrap();
+        let admission =
+            begin_host_observation(&f.context, &mut f.conn, INSTANCE, f.host, &budget()).unwrap();
+        assert!(
+            publish_current_target_observation(
+                &f.context,
+                &mut f.conn,
+                &admission,
+                &current,
+                &budget()
+            )
+            .unwrap()
+        );
+        assert!(
+            crate::store::effective::effective_observation(&f.conn, f.host, "new-owner")
+                .unwrap()
+                .is_some()
+        );
+        release_tx.send(()).unwrap();
+        (old.join().unwrap(), seat)
+    });
+    assert!(snapshot.targets.is_empty());
+    assert_eq!(
+        snapshot.enumeration,
+        crate::ports::EnumerationEvidence::CompleteUnverified
+    );
+    assert_eq!(
+        snapshot.incarnation,
+        crate::ports::IncarnationEvidence::Unknown
+    );
+    f.publish_capture(stamp_fixed_structure(snapshot));
+    let claim = CallerClaim {
+        host: HostLocator::parse(NAMED_HOST_LOCATOR).unwrap(),
+        instance: INSTANCE.into(),
+        seat,
+        binding_generation: 1,
+        role: CallerRole::TopLevel,
+        harness: Harness::Codex,
+        native_session: NativeSessionId::new("new-native-owner"),
+        execution: ExecutionId::new("00000000-0000-4000-8000-0000000000aa"),
+        target: HostTargetId::new("new-owner"),
+        agent_id: None,
+        liveness: Some(crate::protocol::authority::LivenessFingerprint::TEST),
+    };
+    let effective =
+        crate::store::effective::effective_observation(&f.conn, f.host, "new-owner").unwrap();
+    let registration = crate::store::seats::cooperative::cooperative_mapping(
+        &f.conn,
+        f.host,
+        &claim,
+        Some(crate::protocol::commands::CheckInMode::Lifecycle {
+            expected_binding_generation: 1,
+        }),
+    );
+    assert!(
+        effective.is_some() && registration.is_ok(),
+        "old empty capture hid current admission evidence: effective={effective:?}, registration={registration:?}"
+    );
 }
 
 // Kills: an unresolved named row that arms `baseline_hold_unclaimed` (or a recovery hold) for the

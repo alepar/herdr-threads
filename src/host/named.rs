@@ -498,7 +498,7 @@ impl NamedHost {
         Some(read)
     }
 
-    fn observation(&self, name: &SeatName, focused: bool) -> HostObservation {
+    fn observation(&self, name: &SeatName, focused: bool, sequence: u64) -> HostObservation {
         let now = self.clock.monotonic_now();
         let epoch = self.epoch.load(Ordering::SeqCst);
         HostObservation {
@@ -524,7 +524,7 @@ impl NamedHost {
                 self.calls.fetch_add(1, Ordering::Relaxed)
             )),
             connection_epoch: epoch,
-            observation_sequence: self.sequence.fetch_add(1, Ordering::SeqCst) + 1,
+            observation_sequence: sequence,
             started_at_mono: now,
             completed_at_mono: now,
         }
@@ -662,7 +662,8 @@ impl HostPort for NamedHost {
     ) -> Result<HostObservation, ApiError> {
         let name = SeatName::parse(target.as_str())
             .map_err(|_| ApiError::new(ErrorCode::NotFound, "not a seat name"))?;
-        Ok(self.observation(&name, self.pane_focused(target)))
+        let sequence = self.sequence.fetch_add(1, Ordering::SeqCst) + 1;
+        Ok(self.observation(&name, self.pane_focused(target), sequence))
     }
     fn seat_labels(&self, budget: &CallBudget) -> Result<Vec<SeatHostLabels>, ApiError> {
         Ok(self
@@ -699,16 +700,19 @@ impl HostPort for NamedHost {
     /// observation (`cooperative_named_seat`), never `CoherentVerified`, so it
     /// authorizes no absence closure.
     fn enumerate_targets(&self, context: &HostCallContext) -> Result<HostSnapshot, ApiError> {
+        // Reserve before reading names: an older capture must remain older
+        // than a current-target read that completes while the capture waits.
+        let sequence = self.sequence.fetch_add(1, Ordering::SeqCst) + 1;
         let targets = self
             .live(&context.budget)?
             .iter()
             // A store read must not spawn a tmux per seat, and nothing reads `focused` from a snapshot.
-            .map(|(_, name)| self.observation(name, false))
+            .map(|(_, name)| self.observation(name, false, sequence))
             .collect();
         Ok(HostSnapshot {
             boot: HostBootId::new(self.boot_id.clone()),
             epoch: self.epoch.load(Ordering::SeqCst),
-            observation_sequence: self.sequence.fetch_add(1, Ordering::SeqCst) + 1,
+            observation_sequence: sequence,
             complete: true,
             enumeration: EnumerationEvidence::CompleteUnverified,
             incarnation: IncarnationEvidence::Unknown,

@@ -160,6 +160,23 @@ fn enumeration_is_the_store_read_and_not_coherent_verified() {
     assert_eq!(*source.asked.lock().unwrap(), [HostId::from_row(9)]);
 }
 
+#[test]
+fn every_target_in_one_named_capture_has_the_same_reserved_order() {
+    let (host, _) = host_with(&[("sAAA00000001", "a"), ("sAAA00000002", "b")]);
+    let snapshot = host.enumerate_targets(&context()).unwrap();
+    assert!(
+        snapshot
+            .targets
+            .iter()
+            .all(|target| target.observation_sequence == snapshot.observation_sequence)
+    );
+    assert_eq!(
+        snapshot.enumeration,
+        EnumerationEvidence::CompleteUnverified
+    );
+    assert_eq!(snapshot.incarnation, IncarnationEvidence::Unknown);
+}
+
 // Kills: a pane label that is not the name (displays would need a name branch).
 #[test]
 fn seat_labels_pane_is_the_name() {
