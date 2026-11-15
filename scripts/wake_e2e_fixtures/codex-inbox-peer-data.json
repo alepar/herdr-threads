@@ -1,0 +1,12 @@
+{
+  "provenance": "Actual inbox_peer_data developer envelope retained during the bcabf82d8 focused UI rerun; extracted from the initial bounded observation after a later full-rollout read raced cleanup.",
+  "timestamp": "2026-11-15T21:23:19.254Z",
+  "source_sha": "bcabf82d8411f4c9ae94a8ef694191232cfe4497",
+  "original_capture_sha256": "6525ee2f805477b471d25522937071a5f50cffa22abf1091a3ec783bf3d14706",
+  "redactions": "Message, thread and sender identifiers replaced consistently with stable tokens. Test bodies, wrapper escaping, indentation and body byte ranges unchanged.",
+  "text": "inbox_peer_data: \"message mCAPTURE0 tCAPTURE#4 from sCAPTURE [p0] [human] bytes 0..31/31: wake-e2e test thread for co-t0\\n  modal-hold/group 132107-09be #0\\nmessage mCAPTURE1 tCAPTURE#5 from sCAPTURE [p0] [human] bytes 0..31/31: wake-e2e test thread for co-t0\\n  modal-hold/group 132107-09be #1\"",
+  "expected_bodies": {
+    "mCAPTURE0": "modal-hold/group 132107-09be #0",
+    "mCAPTURE1": "modal-hold/group 132107-09be #1"
+  }
+}

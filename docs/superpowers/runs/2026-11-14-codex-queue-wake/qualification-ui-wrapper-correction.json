@@ -1,0 +1,146 @@
+{
+  "schema": 1,
+  "task": "ht-d2jq.6.4",
+  "authorization": "mnSGKi67ACnm",
+  "scope": "One explicit inbox_peer_data wrapper key added; message frame/turn/body parsing otherwise unchanged.",
+  "failed_live_source": "bcabf82d8411f4c9ae94a8ef694191232cfe4497",
+  "failed_live_rows": [
+    {
+      "case": "modal-hold/group",
+      "original_result": "FAIL",
+      "woke": true,
+      "release_to_activity_s": 31.925,
+      "actual_transport": "queue",
+      "queue_proof_passed": true,
+      "activity_evidence": {
+        "attempt": "975ac345-0da5-4fa2-b522-200696aa6be0",
+        "native_session": "01a1e115-e197-7050-8b25-863098af0818",
+        "turn_id": "01a1e117-da04-77e2-87c0-f6a5ee8923cb",
+        "observed_at_ms": 64341
+      },
+      "delivery_evidence": {
+        "passed": false,
+        "complete": true,
+        "input_ids": [],
+        "output_ids": [
+          "m28wI16htHyQ",
+          "m28wPSZN4Ax8"
+        ],
+        "started_utc": "2026-11-15T21:23:19.175Z",
+        "completed_utc": "2026-11-15T21:23:23.879Z",
+        "bytes_read": 312677,
+        "files_examined": 1,
+        "session": "01a1e115-e197-7050-8b25-863098af0818",
+        "turn_id": "01a1e117-da04-77e2-87c0-f6a5ee8923cb"
+      },
+      "footer_unchanged": true,
+      "wakes_while_open": 0,
+      "draft_intact": null,
+      "queue_activity_intervals": [
+        {
+          "attempt": "975ac345-0da5-4fa2-b522-200696aa6be0",
+          "status": "passed",
+          "accepted_row_updated_unix_ms": 1794777793024,
+          "first_accepted_observation_ms": [
+            58099,
+            58106
+          ],
+          "first_activity_observation_ms": [
+            64331,
+            64341
+          ],
+          "accepted_to_activity_lower_ms": 0,
+          "accepted_to_activity_upper_ms": 6457
+        }
+      ]
+    },
+    {
+      "case": "draft-hold/group",
+      "original_result": "FAIL",
+      "woke": true,
+      "release_to_activity_s": 24.028,
+      "actual_transport": "queue",
+      "queue_proof_passed": true,
+      "activity_evidence": {
+        "attempt": "23af43b0-1243-4607-a0bb-3c65fb3145c0",
+        "native_session": "01a1e115-e197-7050-8b25-863098af0818",
+        "turn_id": "01a1e119-60a8-7590-a4ac-a8c623449983",
+        "observed_at_ms": 56526
+      },
+      "delivery_evidence": {
+        "passed": false,
+        "complete": true,
+        "input_ids": [],
+        "output_ids": [
+          "m28w6dzcCrcP",
+          "m28wHF7yDLPe"
+        ],
+        "started_utc": "2026-11-15T21:24:59.180Z",
+        "completed_utc": "2026-11-15T21:25:03.137Z",
+        "bytes_read": 324024,
+        "files_examined": 1,
+        "session": "01a1e115-e197-7050-8b25-863098af0818",
+        "turn_id": "01a1e119-60a8-7590-a4ac-a8c623449983"
+      },
+      "footer_unchanged": true,
+      "wakes_while_open": 0,
+      "draft_intact": true,
+      "queue_activity_intervals": [
+        {
+          "attempt": "23af43b0-1243-4607-a0bb-3c65fb3145c0",
+          "status": "passed",
+          "accepted_row_updated_unix_ms": 1794777893248,
+          "first_accepted_observation_ms": [
+            50542,
+            50548
+          ],
+          "first_activity_observation_ms": [
+            56519,
+            56526
+          ],
+          "accepted_to_activity_lower_ms": 0,
+          "accepted_to_activity_upper_ms": 6314
+        }
+      ]
+    }
+  ],
+  "failed_live_cleanup": {
+    "problems": [],
+    "owned_workspace_closed": true,
+    "owned_daemon_stopped": true,
+    "scratch_root_removed": true,
+    "auth_copy": "deleted unchanged",
+    "scoped_leak_exit": 0,
+    "temp_check": "no ledger for this run"
+  },
+  "captured_fixture": {
+    "path": "scripts/wake_e2e_fixtures/codex-inbox-peer-data.json",
+    "sha256": "2dff2f36a7a779b6e1ec7b817b0b73e909c1396e70a5a21d564db2da2b41c0e6",
+    "provenance": "Actual intact section in initial bounded live developer-context observation. A later full-rollout read raced completed cleanup; extracted existing text, no reconstruction. Identifiers consistently redacted; bodies/escaping/indentation/byte bounds unchanged."
+  },
+  "regression": {
+    "captured_positive_red": 1,
+    "reader_green": 27,
+    "driver_queue_green": 21
+  },
+  "checks": {
+    "clippy": {
+      "exit": 0,
+      "seconds": 0.11
+    },
+    "default_features": 0,
+    "fmt": 0,
+    "harness_neutral": 0,
+    "wire_compat": 0,
+    "python39_syntax": 0,
+    "diff": 0
+  },
+  "source_sha256": {
+    "scripts/wake-e2e.py": "b38073ce53a6f2bfba40dc06b6c81ecc57d969af6516e602c60c4ef73fff0934",
+    "scripts/wake_e2e_selftest.py": "a5a722365204f5d8321579c29e7a2adf7d442f257b7b1b1ddd17006ec73591b9",
+    "scripts/wake_e2e_queue.py": "045e0711ac7669e3e2960e8ef82cefaf48de000c37ad341f401f5bcbbe4187b3",
+    "scripts/wake_e2e_queue_selftest.py": "c97684a7ac1339ba6999fc6be87b7b6520dd22a8b9da0328b6eed28ccc5424b9"
+  },
+  "routine_production_model_visible_bytes_added": 0,
+  "prior_full_selftest": "286 passed at accepted bcabf82d8; this narrow authorized addition is verified by focused captured/source-derived/association/negative tests, not falsely reported as another full run."
+}

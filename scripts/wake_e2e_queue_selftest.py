@@ -383,6 +383,18 @@ class TargetTurnDelivery(unittest.TestCase):
         wrapped = "Hook context\npeer_data: " + json.dumps(text) + "\nMore inbox context."
         self.assertEqual(Q.message_bodies(wrapped), expected)
 
+    def test_captured_inbox_peer_data_wrapper_preserves_exact_associations(self):
+        path = Path(__file__).with_name("wake_e2e_fixtures") / "codex-inbox-peer-data.json"
+        captured = json.loads(path.read_text())
+        self.bodies = captured["expected_bodies"]
+        output = "\n".join(f"RECEIVED {mid}: {body}" for mid, body in self.bodies.items())
+        self.write(developer_text=captured["text"], output=output)
+        self.assertTrue(self.read()["passed"])
+        one, two = self.bodies.values()
+        swapped = captured["text"].replace(one, "BODY_SWAP_SENTINEL").replace(two, one).replace("BODY_SWAP_SENTINEL", two)
+        self.write(developer_text=swapped, output=output)
+        self.assertFalse(self.read()["passed"])
+
     def test_file_and_byte_bounds_fail_closed(self):
         self.write()
         (self.path.parent / "other.jsonl").write_text("{}\n")

@@ -312,7 +312,7 @@ def message_bodies(text: str, received: bool = False) -> dict[str, str]:
     """Read message-bounded formatter spans, including JSON-quoted hook peer data."""
     candidates = [text]
     if not received:
-        for match in re.finditer(r"(?m)^(?:peer_data|untrusted_peer_data):[ \t]*", text):
+        for match in re.finditer(r"(?m)^(?:peer_data|untrusted_peer_data|inbox_peer_data):[ \t]*", text):
             try:
                 value, _ = json.JSONDecoder().raw_decode(text[match.end():])
             except ValueError:
