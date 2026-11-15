@@ -1,6 +1,6 @@
 # Historical Task 3 qualification record
 
-This record preserves the pre-F1 attempts and their exact evidence anchors. Subsequent [F1 native attempts](f1-native-attempts.md), [native HOL progression](f1-native-hol.md), [notice liveness](notice-liveness.md), and [final compatibility](f1-final-compatibility.md) have separate evidence. At this reconciliation, corrected full-suite attempt 2 is underway; live qualification and PR review 2 have not started. The earlier approval rejection below is historical; the user subsequently authorized the scoped live test.
+This record preserves the pre-F1 attempts and their exact evidence anchors. Subsequent [F1 native attempts](f1-native-attempts.md), [native HOL progression](f1-native-hol.md), [notice liveness](notice-liveness.md), and [final compatibility](f1-final-compatibility.md) have separate evidence. Current gate results and remaining review and budget tracking are maintained in the [qualification index](README.md). The earlier approval rejection below is historical; the user subsequently authorized the scoped live test.
 
 Qualification at this historical boundary was bounded. The scripted native cases below have passing evidence,
 and the required static/SDK/driver checks passed before the final test-only

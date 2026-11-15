@@ -1,6 +1,6 @@
 # Pi harness adapter
 
-Status: implementation approved; native-wake amendment follows real-TUI qualification findings and coordinator ruling. Epic: `ht-jr1g`. Earlier design-review evidence covers the historical channel-wake proposal, not this amendment. F1 is implemented and closed; [native attempts](qualification/f1-native-attempts.md), [HOL progression](qualification/f1-native-hol.md), [liveness](qualification/notice-liveness.md) and [final compatibility](qualification/f1-final-compatibility.md) record later evidence. Corrected full-suite attempt 2 is underway; live qualification and PR review 2 have not started.
+Status: implementation approved; native-wake amendment follows real-TUI qualification findings and coordinator ruling. Epic: `ht-jr1g`. Earlier design-review evidence covers the historical channel-wake proposal, not this amendment. F1 is implemented and closed; [native attempts](qualification/f1-native-attempts.md), [HOL progression](qualification/f1-native-hol.md), [liveness](qualification/notice-liveness.md) and [final compatibility](qualification/f1-final-compatibility.md) record later evidence. Current gate results and remaining review and budget tracking are maintained in the [qualification index](qualification/README.md).
 
 ## Goal and requirements
 

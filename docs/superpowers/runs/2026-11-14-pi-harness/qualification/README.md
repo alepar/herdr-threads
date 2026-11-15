@@ -1,6 +1,10 @@
 # Pi qualification evidence
 
-Current source-accounting anchor: `cd0bcac30c40ff360f61178b3a0ac5a32c0309d0` on held main `91ce0cdeb`. The source inventory is unchanged at the latest qualification boundary. F1 is closed with scoped source, canonical/SDK and native evidence below. Corrected full-suite attempt 2 is underway; live qualification and PR review 2 have not started. No whole-branch merge readiness is claimed.
+Current source-accounting anchor: `cd0bcac30c40ff360f61178b3a0ac5a32c0309d0` on held main `91ce0cdeb`. The source inventory is unchanged at the latest qualification boundary. F1 is closed with scoped source, canonical/SDK and native evidence below. Current gate results and remaining disposition are summarized below. PR review 2 remains pending; no whole-branch merge readiness is claimed.
+
+[Corrected full-suite attempt 2](full-suite-attempt-2.md) passed functionally: **9,645 passed, zero failed, 66 skipped**, 993.332 seconds, with clean same-run process/temp checks. The absolute 300-second budget was missed and `ht-n4xh` remains open. Main accepted the miss as nonblocking for merge/release in this epic under the standing host-wide four-thread cap used for training; no suite tuning or cap increase is authorized here. This disposition does not turn the budget into a pass or establish causation through a paired benchmark.
+
+[Scoped live qualification](final-live.md) passed in **39.501 seconds** on the exact `a8aef2df…` candidate at source `d55f7e984`, using `deepseek-v4-pro`. The run recorded exact native context/branch receipt evidence, provider/model continuity, zero extraneous inbox calls and clean owned cleanup. This is the single authorized scoped live run, not a full live matrix. [Exact live identities and evidence](final-live-evidence.json) remain separate from the full-suite test-profile artifacts.
 
 - [Consolidated core changes](core-changes.md): all 33 changed outside-Pi source paths, neutral defaults, compatibility evidence and limitations.
 - [Commit reorder](commit-reorder.md): complete 51-entry equivalent mapping and final core-first order.
