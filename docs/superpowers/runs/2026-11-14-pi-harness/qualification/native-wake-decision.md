@@ -32,6 +32,12 @@ Custom overlays do emit UI prompt spans, but the runtime queues their emission a
 
 The coordinator accepted Native wake guarded for built-in/default selectors, with other extensions' arbitrary custom overlays explicitly documented as a limit in TRUST-POLICY and the pi README. This integration opens no overlays. Unknown composer layouts must refuse, and final tests must cover styled whitespace drafts, multiline/wrapped input and cursor movement rather than equating trimmed text with emptiness.
 
+## Spaces-only draft observation
+
+A subsequent isolated capture compared empty input with one and four spaces. With the cursor at the end, plain screens were identical but styled inverse-cursor columns differed. After Ctrl+A, the nonempty spaces-only drafts were byte-identical to empty in both plain and styled captures. Multiline, blank-newline and wrapped drafts remained distinguishable. Cleanup and scoped leaks passed.
+
+The coordinator accepted this narrow screen limit while requiring the styled column-zero cursor check. A native marker may be submitted with extra spaces in that indistinguishable state; this is not proof of universal draft preservation. No render-time widget is added in this epic. Follow-up `ht-1z1n` records investigation of a supported readiness witness that could also address the custom-overlay gap, including its UI ownership and race costs.
+
 ## Implementation decision and cleanup
 
 Use the existing PushChannel + IdleWake::Native declaration and a pi-local ComposerPolicy. The watch continues delivering bodies but does not suppress native wake under that existing policy; no fourth registration flag or protocol change is needed. Remove extension automatic self-wake and retain bounded boundary delivery, exact receipts and completed-outcome continuation.
