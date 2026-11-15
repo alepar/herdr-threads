@@ -1023,6 +1023,59 @@ pub fn resolve_named_seat(
     )
 }
 
+/// A currentness check for cooperative named ownership, without the saved structural proof
+/// required by ordinary pane resolution. The read cannot establish ownership or release holds.
+pub fn check_named_target(
+    context: &StoreContext,
+    tx: &Transaction<'_>,
+    instance: &str,
+    check: ResolvedTargetCheck,
+    budget: &CallBudget,
+) -> Result<(), ApiError> {
+    snapshot_budget(context, budget)?;
+    validate_resolution_evidence(tx, instance, &check.guard)?;
+    let proof = check.guard.structural_proof();
+    let lifecycle = checked_host_number(check.guard.admission().lifecycle_revision)?
+        .checked_add(1)
+        .ok_or_else(|| {
+            api_error(
+                ErrorCode::SequenceExhausted,
+                "resolution lifecycle revision exhausted",
+            )
+        })?;
+    let current: bool = tx
+        .query_row(
+            &format!(
+                "SELECT EXISTS(SELECT 1 FROM seats s JOIN herdr_hosts h ON h.host_id=s.host_id \
+         WHERE s.id=?1 AND s.instance_id=?2 AND s.{LOCAL_SEAT} AND s.state='resolved' \
+           AND s.retired_at IS NULL AND s.retired_seq IS NULL AND h.kind='named' \
+           AND s.host_id=?3 AND s.name=?4 AND s.target_id=?4 AND s.target_generation=?5 \
+           AND h.host_boot=?6 AND h.host_epoch=?7 AND h.lifecycle_revision=?8 \
+           AND NOT EXISTS(SELECT 1 FROM recovery_holds r WHERE r.host_id=s.host_id \
+                          AND r.target_id=s.target_id AND r.released_at IS NULL))"
+            ),
+            params![
+                check.expected_seat.as_str(),
+                instance,
+                check.guard.admission().host_id.get(),
+                proof.target().as_str(),
+                checked_host_number(proof.target_generation())?,
+                proof.host_boot().as_str(),
+                checked_host_number(proof.host_epoch())?,
+                lifecycle
+            ],
+            |row| row.get(0),
+        )
+        .map_err(store_error)?;
+    if !current {
+        return Err(api_error(
+            ErrorCode::TargetUnresolved,
+            "resolved seat is no longer the target owner",
+        ));
+    }
+    snapshot_budget(context, budget)
+}
+
 pub fn check_resolved_target(
     context: &StoreContext,
     conn: &mut Connection,

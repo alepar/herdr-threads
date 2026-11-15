@@ -361,8 +361,8 @@ impl OrdinaryIdentity {
     }
 
     /// Seat-acting resolve under a name on the built-in named host: the store allocates the live
-    /// seat of that name when none exists. No host observation: a named seat's presence is
-    /// cooperative (TRUST-POLICY A3), so there is no pane to read.
+    /// seat of that name when none exists. Presence is cooperative (TRUST-POLICY A3), but the
+    /// returned mapping still needs a canonical observation before its caller can check in.
     pub fn resolve_named(
         &self,
         request: ResolveSeat,
@@ -371,17 +371,30 @@ impl OrdinaryIdentity {
         let result = {
             let _turn = self.writer.enter_foreground(budget, self.clock.as_ref())?;
             self.store
-                .resolve_named_seat(request, self.host_id, budget)?
+                .resolve_named_seat(request.clone(), self.host_id, budget)?
         };
         if let CommandResult::NamedSeatResolved { seat, .. } = &result {
             self.note_named_seat(seat);
+            // The allocation writer is released before taking the observation lane. A stored
+            // operation result remains historical: replay needs the same currentness check.
+            self.with_observation(&request.target, budget, |admission, observation| {
+                let guard = OrdinaryResolutionGuard::try_new(&request, observation, &admission)
+                    .map_err(|detail| error(ErrorCode::StaleHostObservation, detail))?;
+                let _turn = self.writer.enter_foreground(budget, self.clock.as_ref())?;
+                self.store.check_named_target(
+                    ResolvedTargetCheck {
+                        expected_seat: seat.clone(),
+                        guard,
+                    },
+                    budget,
+                )
+            })?;
         }
         Ok(result)
     }
 
-    /// A seat the lane has not published is waited on by its own hook: capture now, not at the next
-    /// tick. After the writer turn, and never blocking: a capture holding the lane may wait for the
-    /// writer, and the next tick compares the live set anyway.
+    /// Request complete enumeration after allocation, without blocking a capture that may need
+    /// the writer. The synchronous current-target check supplies the caller's admission barrier.
     fn note_named_seat(&self, seat: &SeatId) {
         let Ok(mut lane) = self.lane.try_lock() else {
             return;

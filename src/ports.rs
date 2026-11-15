@@ -3824,6 +3824,16 @@ pub trait StorePort: ModStoreReads + Send + Sync {
         check: ResolvedTargetCheck,
         budget: &CallBudget,
     ) -> Result<(), ApiError>;
+    /// Validate a named allocation against its newly published current-target observation.
+    /// Cooperative named ownership does not require a previously saved structural proof.
+    /// Never replays, allocates, repairs or changes a mapping; unsupported stores refuse.
+    fn check_named_target(
+        &self,
+        _check: ResolvedTargetCheck,
+        _budget: &CallBudget,
+    ) -> Result<(), ApiError> {
+        Err(ApiError::unsupported("named target currentness"))
+    }
     /// Payload-bound historical operator result; a miss has no durable effects.
     fn replay_operator(
         &self,

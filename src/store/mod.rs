@@ -2304,6 +2304,17 @@ impl StorePort for SqliteStore {
         let mut writer = self.writer(budget)?;
         seats::check_resolved_target(&self.context, &mut writer, &self.instance, check, budget)
     }
+    fn check_named_target(
+        &self,
+        check: crate::ports::ResolvedTargetCheck,
+        budget: &CallBudget,
+    ) -> Result<(), ApiError> {
+        let db = self.context.open_query(budget.clone())?;
+        let tx = db.unchecked_transaction().map_err(store_error)?;
+        seats::check_named_target(&self.context, &tx, &self.instance, check, budget)?;
+        tx.rollback().map_err(store_error)?;
+        self.live_budget(budget)
+    }
     fn replay_operator(
         &self,
         command: OperatorCommand,

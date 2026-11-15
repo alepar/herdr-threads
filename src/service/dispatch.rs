@@ -2812,6 +2812,10 @@ mod operator_tests {
 mod cooperative_tests;
 
 #[cfg(test)]
+#[path = "../../tests/service/named_startup.rs"]
+mod named_startup_tests;
+
+#[cfg(test)]
 #[path = "../../tests/daemon/self_retire.rs"]
 mod self_retire_tests;
 
