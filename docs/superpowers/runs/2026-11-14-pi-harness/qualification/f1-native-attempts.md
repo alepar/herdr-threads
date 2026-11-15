@@ -75,3 +75,55 @@ their manifests. This is installation identity, not proof of model uptake.
 Scoped source/diagnostic reviews are archived under [reviews](reviews/README.md).
 Final corrected native3, compatibility delta, R2, unfiltered attempt2, scoped live
 and the full-suite budget disposition remain separate gates at this checkpoint.
+
+
+## Rendered-guard qualification and retained-page diagnosis
+
+The earlier checkpoint above is historical. Exact run IDs, source identities,
+results and cleanup summaries are preserved in [f1-native-evidence.json](f1-native-evidence.json).
+Production binary and provider fixture remained unchanged.
+
+| Driver source | Attempt | Result and evidence boundary |
+| --- | --- | --- |
+| `49524a38f` | Rendered-guard native3, 139.06s | Reload and mixed-page PASS with exact physical/API guards; wake timed out waiting for a captured new Notice. Failed canonical samples were not retained, so this run alone did not explain the timeout. |
+| `ea6729312` | Passive pending-state diagnostic native3, 79.38s | Reload PASS17.291s and mixed page PASS16.234s; wake timeout reproduced with bounded pre-cleanup canonical evidence. |
+| `ea6729312` | Fresh isolated `notice_wake`, 25.90s | PASS17.192s: physical draft guard, single public clear, actual content-free Native wake, exact branch/context and frontier advance. |
+
+The pending-state diagnostic adds one latest snapshot, at most eight stage
+transitions and bounded read-only failure rows/status before cleanup. It changes
+no delivery predicate, 35-second wait, guard, admission, pull or settlement.
+Thirty driver tests passed, including preservation of the original timeout if a
+diagnostic fails; scoped cleanup passed. Its driver hash is
+`b5e33bdc366747679a7d588860e556ab8701ef43a0872dd7c3487f47d8a320e5`.
+
+The diagnostic established a genuine new warning `e2I9M0wpynHE` at ordinal9
+above frontier5. The current consumer held only the previous condition's clear
+**Notice** `e2I9Ap976amQ`, tagged `dn1:9:39:7`, with retirement/confirmation masks0
+and more1. The binding/consumer matched, and its manual watch child was alive.
+The previous clear body was absent from the last cleanup context/branch/drafts;
+no later qualified context followed. This is a body-bearing Notice, not an
+`AttentionCleared` control: local application cannot confirm it. Canonical data
+was retained; the driver incorrectly assumed one cleanup turn drained later
+notices. The actual presentation lease was not observable and is not inferred
+from the token or execution ID. These read-only statements were sequential,
+not an atomic database snapshot.
+
+This demonstrates the accepted retained-page backpressure, **not yet automatic
+progress after release**. Main explicitly required that further liveness proof:
+a clear Notice alone intentionally does not wake and may wait until another
+turn; a newer actionable warning must still wake and deliver old then new without
+additional human typing. Canonical/scheduler tests are recorded in
+[notice-liveness.md](notice-liveness.md); the native progression case remains
+pending at this checkpoint. No core gate was relaxed to make a test pass.
+
+The selected fresh wake proof used a real rendered draft at1794745397892,
+Ctrl+C at1794745407319, exact `herdr-threads: wake up` start at1794745407973,
+observed context at1794745407979, and frontier1. Its sink's distinct receipt
+remained Pending until deliberate post-assertion cleanup. Both installed
+extensions hashed `795e277e5b8d0fc5e00b575da01527c571f19b83ec21c0ba28f610b7c50a8ab8`.
+Every run in this table cleaned its owned helper/root and passed its leak scan.
+
+Thus reload/page and isolated wake have explicit passing evidence on the same
+production binary, **not a contiguous three-case pass**. Final compatibility,
+whole-branch review, corrected unfiltered attempt2 and the authorized live test
+remain pending; no credential read or paid request is claimed here.

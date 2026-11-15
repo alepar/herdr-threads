@@ -1,0 +1,230 @@
+{
+  "production_build_source": "a19fd881e7e8dc6c1b52c9cb2ccda0abbc3a8601",
+  "scope": "Scripted native evidence; diagnostic PASS is not visible-draft proof; selected three cases span separate runs. HOL progression remains pending.",
+  "attempts": [
+    {
+      "attempt": "native",
+      "source_head": "a19fd881e7e8dc6c1b52c9cb2ccda0abbc3a8601",
+      "run_id": "63c887f8-6251-415d-b457-8530e77ef72f",
+      "candidate_sha256": "a8aef2df56e6954fe3c12b7d02841f521712ceb403d13f9b93fabdabe2224289",
+      "results": [
+        {
+          "case": "notice_reload",
+          "outcome": "fail",
+          "error": "RuntimeError: ['$CHECKOUT/target/debug/herdr-threads', '--state-dir', '$SCRATCH/state', '--host-endpoint']: rc=2 herdr-threads: error: unexpected argument '--profile-dir' found\n\n  tip: to pass '--profile-dir' as a value, use '-- --profile-dir'\n\nUsage: herdr-threads launch --kind <KIND> --pane <PANE> --harness-binary <PATH> [-- <AGENT_ARG>...]\n\nFor more information, try '--help'. (invalid_request)\n"
+        }
+      ],
+      "cleanup": {
+        "ok": true,
+        "root_removed": true,
+        "helper_reaped": true,
+        "leak_rc": 0
+      },
+      "installed_extensions": {}
+    },
+    {
+      "attempt": "native-corrected",
+      "source_head": "9b784fb729c047ff4f925ce70186735bdb3cf83b",
+      "run_id": "7a996a97-6c33-4c7d-ad3d-7d673f40ce96",
+      "candidate_sha256": "a8aef2df56e6954fe3c12b7d02841f521712ceb403d13f9b93fabdabe2224289",
+      "results": [
+        {
+          "case": "notice_reload",
+          "outcome": "fail",
+          "error": "RuntimeError: ['$CHECKOUT/target/debug/herdr-threads', '--state-dir', '$SCRATCH/state', '--host-endpoint']: rc=2 herdr-threads: admitted executable must match the native command on PATH (invalid_request)\n"
+        }
+      ],
+      "cleanup": {
+        "ok": true,
+        "root_removed": true,
+        "helper_reaped": true,
+        "leak_rc": 0
+      },
+      "installed_extensions": {
+        "primary": {
+          "path": "$SCRATCH/agent/extensions/herdr-threads/index.js",
+          "sha256": "a4eef77cbfb3f13120ce6bb246a91c01f3f7034db6e497152c67f97c0b34cb08"
+        },
+        "sink": {
+          "path": "$SCRATCH/notice-sink/agent/extensions/herdr-threads/index.js",
+          "sha256": "a4eef77cbfb3f13120ce6bb246a91c01f3f7034db6e497152c67f97c0b34cb08"
+        }
+      }
+    },
+    {
+      "attempt": "native-path-corrected",
+      "source_head": "a424ed20432d325a3f3ed8516733aa066cb4b501",
+      "run_id": "006d35a4-7fd4-43ab-9720-b72ef869d7b0",
+      "candidate_sha256": "a8aef2df56e6954fe3c12b7d02841f521712ceb403d13f9b93fabdabe2224289",
+      "results": [
+        {
+          "case": "notice_reload",
+          "outcome": "pass",
+          "elapsed_s": 17.312
+        },
+        {
+          "case": "notice_page",
+          "outcome": "pass",
+          "elapsed_s": 14.337
+        },
+        {
+          "case": "notice_wake",
+          "outcome": "fail",
+          "error": "AssertionError: unexpected native run during quiet observation"
+        }
+      ],
+      "cleanup": {
+        "ok": true,
+        "root_removed": true,
+        "helper_reaped": true,
+        "leak_rc": 0
+      },
+      "installed_extensions": {
+        "primary": {
+          "path": "$SCRATCH/agent/extensions/herdr-threads/index.js",
+          "sha256": "9776dbfb2cd0beb84b3e495ef3d36b90466199371edd30577cff3312c8a2be32"
+        },
+        "sink": {
+          "path": "$SCRATCH/notice-sink/agent/extensions/herdr-threads/index.js",
+          "sha256": "9776dbfb2cd0beb84b3e495ef3d36b90466199371edd30577cff3312c8a2be32"
+        }
+      }
+    },
+    {
+      "attempt": "notice-wake-diagnostic",
+      "source_head": "c045bdd742d1856f0d0e36cbd4d39197af6d351e",
+      "run_id": "1401d08a-2df9-4015-9c90-68795b28bc35",
+      "candidate_sha256": "a8aef2df56e6954fe3c12b7d02841f521712ceb403d13f9b93fabdabe2224289",
+      "results": [
+        {
+          "case": "notice_wake",
+          "outcome": "pass",
+          "elapsed_s": 17.306
+        }
+      ],
+      "cleanup": {
+        "ok": true,
+        "root_removed": true,
+        "helper_reaped": true,
+        "leak_rc": 0
+      },
+      "installed_extensions": {
+        "primary": {
+          "path": "$SCRATCH/agent/extensions/herdr-threads/index.js",
+          "sha256": "fc41d3132084d41a22e89c9f26e277cd2f809c8217cd023a97341583b9b4712a"
+        },
+        "sink": {
+          "path": "$SCRATCH/notice-sink/agent/extensions/herdr-threads/index.js",
+          "sha256": "fc41d3132084d41a22e89c9f26e277cd2f809c8217cd023a97341583b9b4712a"
+        }
+      }
+    },
+    {
+      "attempt": "native-rendered-guard",
+      "source_head": "49524a38f3603c4ff1fc72d8c3c3ad6f8a6dff69",
+      "run_id": "d6024c10-5321-41a7-bfe3-306f6920e385",
+      "candidate_sha256": "a8aef2df56e6954fe3c12b7d02841f521712ceb403d13f9b93fabdabe2224289",
+      "results": [
+        {
+          "case": "notice_reload",
+          "outcome": "pass",
+          "elapsed_s": 17.687
+        },
+        {
+          "case": "notice_page",
+          "outcome": "pass",
+          "elapsed_s": 45.306
+        },
+        {
+          "case": "notice_wake",
+          "outcome": "fail",
+          "error": "RuntimeError: timed out: real tagged pending canonical notice"
+        }
+      ],
+      "cleanup": {
+        "ok": true,
+        "root_removed": true,
+        "helper_reaped": true,
+        "leak_rc": 0
+      },
+      "installed_extensions": {
+        "primary": {
+          "path": "$SCRATCH/agent/extensions/herdr-threads/index.js",
+          "sha256": "4496ef204556da2f14160f89f78a19b0542c0eebe53156805e8fa17912a1016a"
+        },
+        "sink": {
+          "path": "$SCRATCH/notice-sink/agent/extensions/herdr-threads/index.js",
+          "sha256": "4496ef204556da2f14160f89f78a19b0542c0eebe53156805e8fa17912a1016a"
+        }
+      }
+    },
+    {
+      "attempt": "native-pending-diagnostic",
+      "source_head": "ea6729312498a73668c4ea0cc34d9eb03ccc3fbf",
+      "run_id": "f11f1298-d2b2-480f-a7bc-023ae8603ab4",
+      "candidate_sha256": "a8aef2df56e6954fe3c12b7d02841f521712ceb403d13f9b93fabdabe2224289",
+      "results": [
+        {
+          "case": "notice_reload",
+          "outcome": "pass",
+          "elapsed_s": 17.291
+        },
+        {
+          "case": "notice_page",
+          "outcome": "pass",
+          "elapsed_s": 16.234
+        },
+        {
+          "case": "notice_wake",
+          "outcome": "fail",
+          "error": "RuntimeError: timed out: real tagged pending canonical notice"
+        }
+      ],
+      "cleanup": {
+        "ok": true,
+        "root_removed": true,
+        "helper_reaped": true,
+        "leak_rc": 0
+      },
+      "installed_extensions": {
+        "primary": {
+          "path": "$SCRATCH/agent/extensions/herdr-threads/index.js",
+          "sha256": "0d7d786c6c8108c5fdc91c20beed403c1645d4f3f90661ff8a662376173e0c81"
+        },
+        "sink": {
+          "path": "$SCRATCH/notice-sink/agent/extensions/herdr-threads/index.js",
+          "sha256": "0d7d786c6c8108c5fdc91c20beed403c1645d4f3f90661ff8a662376173e0c81"
+        }
+      }
+    },
+    {
+      "attempt": "native-wake-isolated",
+      "source_head": "ea6729312498a73668c4ea0cc34d9eb03ccc3fbf",
+      "run_id": "8ba82905-154a-4e47-8189-32995bcd9c23",
+      "candidate_sha256": "a8aef2df56e6954fe3c12b7d02841f521712ceb403d13f9b93fabdabe2224289",
+      "results": [
+        {
+          "case": "notice_wake",
+          "outcome": "pass",
+          "elapsed_s": 17.192
+        }
+      ],
+      "cleanup": {
+        "ok": true,
+        "root_removed": true,
+        "helper_reaped": true,
+        "leak_rc": 0
+      },
+      "installed_extensions": {
+        "primary": {
+          "path": "$SCRATCH/agent/extensions/herdr-threads/index.js",
+          "sha256": "795e277e5b8d0fc5e00b575da01527c571f19b83ec21c0ba28f610b7c50a8ab8"
+        },
+        "sink": {
+          "path": "$SCRATCH/notice-sink/agent/extensions/herdr-threads/index.js",
+          "sha256": "795e277e5b8d0fc5e00b575da01527c571f19b83ec21c0ba28f610b7c50a8ab8"
+        }
+      }
+    }
+  ]
+}
