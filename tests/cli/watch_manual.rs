@@ -6,6 +6,13 @@ use crate::{
         ids::{MessageId, ThreadId},
     },
 };
+use sha2::{Digest, Sha256};
+
+// Shared with integrations/pi/extension/tests/fixtures/manual-*.jsonl and its JS hash checks.
+const MAXIMUM_FIXTURE_SHA256: &str =
+    "b38c97768e05e3e1e90bb11c031e7a848b8b4c923775e9fbd590ade175daa60e";
+const NOTICE_CLEAR_FIXTURE_SHA256: &str =
+    "718b5f490cac71a45e9bf3c2067cdd75c6ffc5b5993ac6d5c6736476339b0c6a";
 fn page(items: Vec<PresentationItemV2>) -> DeliveryPageV2 {
     let size = measure(&PresentationRenderProfile::WatchJsonLinesV1, &items)
         .unwrap()
@@ -31,8 +38,7 @@ fn notice(body: &str) -> PresentationItemV2 {
     }
 }
 const LEASE: &str = "0123456789abcdef0123456789abcdef";
-#[test]
-fn maximum_actual_serializers_preserve_64k_body_under_72k_transport_and_4k_receipt() {
+fn maximum_page() -> DeliveryPageV2 {
     let mut items = (0..32)
         .map(|i| PresentationItemV2::Attention {
             epoch: (u64::MAX - i).to_string(),
@@ -46,9 +52,17 @@ fn maximum_actual_serializers_preserve_64k_body_under_72k_transport_and_4k_recei
     if let PresentationItemV2::Attention { text, .. } = &mut items[0] {
         text.push_str(&"x".repeat(65536 - size));
     }
-    let page = page(items);
+    page(items)
+}
+#[test]
+fn maximum_actual_serializers_preserve_64k_body_under_72k_transport_and_4k_receipt() {
+    let page = maximum_page();
     assert_eq!(page.output_bytes, 65536);
     let bytes = encode_page(&page, LEASE).unwrap().unwrap();
+    assert_eq!(
+        format!("{:x}", Sha256::digest(&bytes)),
+        MAXIMUM_FIXTURE_SHA256
+    );
     assert!(bytes.len() <= 70886);
     assert!(bytes.len() <= LINE_LIMIT);
     let envelope: serde_json::Value = serde_json::from_slice(&bytes).unwrap();
@@ -66,6 +80,49 @@ fn maximum_actual_serializers_preserve_64k_body_under_72k_transport_and_4k_recei
     let decoded = read_receipt(&mut receipt.as_bytes()).unwrap();
     assert_eq!(decoded.emitted_controls, page.emitted_controls);
     assert!(receipt.contains(&u64::MAX.to_string()));
+}
+
+fn notice_clear_page() -> DeliveryPageV2 {
+    page(vec![
+        notice("canonical notice: \"quoted\" \\ escaped\nsecond line"),
+        PresentationItemV2::AttentionCleared {
+            epoch: u64::MAX.to_string(),
+            attention_version: u64::MAX,
+        },
+    ])
+}
+
+#[test]
+fn notice_clear_serializer_matches_shared_interoperability_fixture() {
+    let page = notice_clear_page();
+    let bytes = encode_page(&page, LEASE).unwrap().unwrap();
+    assert_eq!(
+        format!("{:x}", Sha256::digest(&bytes)),
+        NOTICE_CLEAR_FIXTURE_SHA256
+    );
+    let packet: serde_json::Value = serde_json::from_slice(&bytes).unwrap();
+    let receipt = read_receipt(&mut packet["receipt"].as_str().unwrap().as_bytes()).unwrap();
+    assert_eq!(receipt.emitted_nonordinary, 2);
+    assert_eq!(receipt.emitted_controls, page.emitted_controls);
+}
+
+/// Explicit interoperability fixture export through the production serializer. This writes
+/// stdout only; the invoking harness owns any artifact redirection and extraction.
+#[test]
+#[ignore = "exports bounded JSONL fixtures; select explicitly with --ignored --nocapture"]
+fn export_manual_presentation_packet_fixtures() {
+    use std::io::Write;
+    let mut stdout = std::io::stdout().lock();
+    for (name, page) in [
+        ("maximum", maximum_page()),
+        ("notice-clear", notice_clear_page()),
+    ] {
+        let bytes = encode_page(&page, LEASE).unwrap().unwrap();
+        assert!(bytes.len() <= LINE_LIMIT);
+        write!(stdout, "HT_MANUAL_PACKET {name}\t").unwrap();
+        stdout.write_all(&bytes).unwrap();
+    }
+    stdout.flush().unwrap();
 }
 #[test]
 fn receipt_rejects_oversize_unknown_fields_empty_count_and_trailing_data() {
