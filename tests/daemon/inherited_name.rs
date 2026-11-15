@@ -1,7 +1,7 @@
 //! ht-kqrt.72 (N4-inherit): a per-command seat name equal to the one the host server's own
 //! environment carries is refused with M6 and never bound; any other name is honoured, and the
 //! refused name binds once the server restarts without the variable.
-use crate::ports::{LocalService, StorePort};
+use crate::ports::LocalService;
 use crate::{
     host::named::{NamedHost, NoBootstrap},
     ports::HostKind,
@@ -58,7 +58,13 @@ struct Fixture {
     service: DomainService,
     db: Connection,
     host: Arc<EnvHost>,
+    sessions: Arc<HostSessions>,
     _directory: PrivateDirectory,
+}
+impl Drop for Fixture {
+    fn drop(&mut self) {
+        self.sessions.stop_all();
+    }
 }
 
 fn fixture(server: Option<u32>) -> Fixture {
@@ -73,36 +79,45 @@ fn fixture(server: Option<u32>) -> Fixture {
     let directory = PrivateDirectory(path.clone());
     let clock: Arc<dyn Clock> = Arc::new(FixedClock);
     let locator = HostLocator::parse(NAMED_HOST_LOCATOR).unwrap();
+    let index = Arc::new(HostIndex::new());
     let context =
-        StoreContext::new(path.join("store.db"), clock.clone()).with_attached_host(&locator);
+        StoreContext::with_host_index(path.join("store.db"), clock.clone(), index.clone());
     let db = context.open_writer().unwrap();
-    db.execute(
-        "UPDATE herdr_hosts SET host_boot='b',host_epoch=1,kind='named' WHERE endpoint=?1",
-        [locator.as_str()],
-    )
-    .unwrap();
-    let named_host: i64 = db
-        .query_row(
-            "SELECT host_id FROM herdr_hosts WHERE kind='named'",
-            [],
-            |r| r.get(0),
+    let store = Arc::new(SqliteStore::new(context, INSTANCE, StoreSettings::default()).unwrap());
+    let world = FakeHostWorld::new();
+    let sessions = Arc::new(HostSessions::new(
+        index,
+        world.plan(None).factory,
+        SessionDeps::detached(store.clone(), clock.clone(), INSTANCE.to_owned()),
+    ));
+    // Named allocation needs real cooperative observation, independently of the pane server
+    // whose environment the inheritance guard examines.
+    sessions
+        .attach_builtin(
+            HostKind::Named,
+            Arc::new(NamedHost::new(
+                INSTANCE,
+                HostId::from_row(0),
+                store.clone(),
+                clock.clone(),
+            )),
+            Arc::new(NoBootstrap),
+            &locator,
         )
         .unwrap();
-    let store: Arc<dyn StorePort> =
-        Arc::new(SqliteStore::new(context, INSTANCE, StoreSettings::default()).unwrap());
     let host = EnvHost::new(PANE, server);
-    let service = DomainService::with_host(
-        INSTANCE.into(),
-        HostId::from_row(named_host),
-        store,
-        clock,
-        host.clone(),
-        Arc::new(FairWriter::new(32)),
-    );
+    let pane_host = HostLocator::parse(path.join("pane.sock").to_string_lossy()).unwrap();
+    world.add(&pane_host, host.clone());
+    sessions.resolve(&pane_host, &budget()).unwrap();
+    let service = DomainService::new(INSTANCE.into(), store, clock)
+        .with_sessions(sessions.clone())
+        .with_operator_owner(501)
+        .with_cooperative_owner(501, Arc::new(FairWriter::new(32)));
     Fixture {
         service,
         db,
         host,
+        sessions,
         _directory: directory,
     }
 }
