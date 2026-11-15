@@ -748,15 +748,19 @@ class Run:
                                      "post_clear_observation": after_clear, "actual_wake": wake, **proof}
         self.finish_notice_cause(cause)
 
-    def parked_clear_notice(self, cause):
+    def clear_notice_projection(self, cause):
         rows = self.canonical_read("""SELECT c.clear_warning_id warning,d.ordinal,d.thread_id,d.event_seq,m.sequence
             FROM warning_conditions c JOIN digest_programmatic_warnings d ON d.warning_id=c.clear_warning_id AND d.seat_id=?1
             JOIN messages m ON m.id=d.warning_id WHERE c.open_warning_id=?2 AND c.condition_kind='receipt' LIMIT 2""",
             (self.seat, cause['warning']))
-        observation = {'at': time.time(), 'rows': rows}
-        self.facts['notice_hol']['old_clear_observation'] = observation
         assert len(rows) <= 1, 'ambiguous canonical clear warning'
-        if not rows:
+        return rows[0] if rows else None
+
+    def parked_clear_notice(self, cause):
+        clear = self.clear_notice_projection(cause)
+        observation = {'at': time.time(), 'rows': [clear] if clear else []}
+        self.facts['notice_hol']['old_clear_observation'] = observation
+        if not clear:
             try:
                 observation['seed_snapshot'] = self.notice_snapshot(cause)
             except Exception as diagnostic:
@@ -764,7 +768,6 @@ class Run:
             return None
         page = self.notice_snapshot(cause)
         observation['seed_snapshot'] = page
-        clear = rows[0]
         if not page or not page['outbox_token'] or page['frontier'] >= clear['ordinal']:
             return None
         key = f"dn1:{clear['sequence']}:{clear['event_seq']}:{clear['ordinal']}"
@@ -775,6 +778,28 @@ class Run:
                     and not (page['outbox_retired_mask'] or 0) & (1 << index)):
                 return {**clear, 'body': item['body'], 'descriptor': descriptor, 'page': page}
         return None
+
+    def stage_notice_hol_clear(self, seed):
+        projection = self.wait('actual canonical clear Notice projection', lambda: self.clear_notice_projection(seed), 35)
+        starts = self.count('before_agent_start')
+        held = self.observe_state(sid=self.main_sid)
+        screen = self.capture('notice-hol-before-nonwaking-trigger')
+        require_visible_notice_draft(held, screen, self.main_sid)
+        body = 'OWNED NONWAKING HOL PULL TRIGGER ' + str(uuid.uuid4())
+        result = self.ht('send', '--seat', self.seat, '--body', body, '-p', '1', pane=self.sender, human=True)['result']
+        trigger = {'at': time.time(), 'clear_projection_before_send': projection, 'send': result, 'held': held, 'screen': screen}
+        self.facts['notice_hol']['nonwaking_trigger'] = trigger
+        assert result['selection']['invitation'] is None, 'HOL trigger created an invitation'
+        rows = self.canonical_read("SELECT m.body,m.priority,pr.ack_required,s.nudge_threshold threshold,EXISTS(SELECT 1 FROM invitations i WHERE i.seat_id=s.id AND i.state='pending') pending_invitations FROM messages m JOIN send_manifests sm ON sm.message_id=m.id JOIN prepared_recipients pr ON pr.preparation_id=sm.preparation_id JOIN seats s ON s.id=pr.seat_id WHERE m.id=?1 AND pr.seat_id=?2 LIMIT 2", (result['data'], self.seat))
+        assert len(rows) == 1, 'HOL trigger lacks one actual canonical recipient'
+        trigger['canonical'] = row = rows[0]
+        assert row['body'] == body and row['priority'] == 1 and row['ack_required'] == 0 and row['threshold'] == 0 and row['pending_invitations'] == 0, 'HOL pull trigger is not exclusively nonwaking p1/noACK at T0'
+        self.quiet(starts, 0)
+        clear = self.wait('actual old protected clear Notice', lambda: self.parked_clear_notice(seed), 35)
+        assert not self.canonical_read("SELECT open_warning_id FROM warning_conditions WHERE condition_kind='receipt' AND affected_seat_id=? AND clear_warning_id IS NULL LIMIT 2", (self.sink['seat'],)), 'new actionable warning existed before the new cause'
+        self.quiet(starts, 0)
+        trigger['protected_at'] = time.time()
+        return clear
 
     def case_notice_hol(self):
         report = {'phase': 'start', 'current_cause': {'message': None}, 'progress_bound_seconds': HOL_PROGRESS_SECONDS}
@@ -799,7 +824,7 @@ class Run:
             report['phase'] = 'recover_sink'
             self.recover_notice_sink(seed)  # No source cleanup turn: preserve the clear page.
             report['phase'] = 'park_old_clear'
-            clear = self.wait('actual old protected clear Notice', lambda: self.parked_clear_notice(seed), 35)
+            clear = self.stage_notice_hol_clear(seed)
             assert not self.notice_context(clear['warning'], clear['body']), 'old clear was already presented'
             report['phase'] = 'create_successor'
             cause = self.new_notice_cause('hol-newer', timer=True)
@@ -809,6 +834,7 @@ class Run:
                 if not state or not state['pending'] or state['ordinal'] <= clear['ordinal']:
                     return None
                 assert state['outbox_token'] == clear['page']['outbox_token'], 'old protected episode changed before release'
+                assert state['notice_descriptor'] is None, 'successor was allocated in the old page; not a distinct HOL successor'
                 return state if any(d == clear['descriptor'] and not (state['outbox_retired_mask'] or 0) & (1 << i)
                                     for i, d in enumerate(state['descriptors'])) else None
             pending = self.wait('new actionable projection behind old clear page', blocked, 35)
@@ -1580,6 +1606,47 @@ read -r _ || true
 
 
 class DriverTests(unittest.TestCase):
+    def test_hol_clear_requires_nonwaking_public_trigger_before_protected_page(self):
+        for bad in (None, 'priority', 'ack_required', 'threshold', 'pending_invitations', 'invitation', 'native_run'):
+            run = Run.__new__(Run); run.facts = {'notice_hol': {}}; run.main_sid = 'main'; run.seat = 'primary'; run.sender = 'sender'; run.sink = {'seat': 'sink'}
+            actions = []; state = {'sent': False, 'starts': 2}
+            clear = {'warning': 'clear', 'ordinal': 3}
+            run.clear_notice_projection = lambda _cause: clear
+            run.parked_clear_notice = lambda _cause: ({**clear, 'page': {'outbox_token': 'old'}} if state['sent'] else None)
+            self.assertIsNone(run.parked_clear_notice({'warning': 'open'}), 'clear projection alone must not invent a page')
+            run.count = lambda _event: state['starts']
+            run.observe_state = lambda **_kwargs: {'state': {'sid': 'main', 'idle': True, 'editor': NOTICE_DRAFT}}
+            border = '─' * 80
+            run.capture = lambda *_args: {'styled': {'raw': '\n'.join([border, NOTICE_DRAFT + '\x1b[0m\x1b[7m \x1b[0m', border, '/owned/project', '2.0%/100k scripted'])}}
+            def send(*args, **kwargs):
+                self.assertEqual(args[:3], ('send', '--seat', 'primary')); self.assertEqual(args[-2:], ('-p', '1'))
+                self.assertEqual(kwargs, {'pane': 'sender', 'human': True})
+                self.assertNotIn('--require-ack', args)
+                state.update(sent=True, body=args[4]); actions.append('public-p1')
+                if bad == 'native_run': state['starts'] += 1
+                return {'result': {'data': 'trigger', 'selection': {'invitation': 'unexpected' if bad == 'invitation' else None}}}
+            run.ht = send
+            def read(sql, args):
+                self.assertTrue(sql.startswith('SELECT '))
+                if 'FROM messages m' in sql:
+                    self.assertEqual(args, ('trigger', 'primary'))
+                    row = {'priority': 1, 'ack_required': 0, 'threshold': 0, 'pending_invitations': 0, 'body': state['body']}
+                    if bad in row: row[bad] = 0 if bad == 'priority' else 1
+                    return [row]
+                self.assertIn('warning_conditions', sql)
+                return []
+            run.canonical_read = read
+            run.keys = run.prompt = lambda *_args: self.fail('staging must not type or submit a model turn')
+            def wait(label, predicate, *_args):
+                value = predicate(); self.assertTrue(value, label); actions.append(label); return value
+            run.wait = wait
+            if bad is None:
+                self.assertEqual(run.stage_notice_hol_clear({'warning': 'open'})['warning'], 'clear')
+                self.assertEqual(actions, ['actual canonical clear Notice projection', 'public-p1', 'actual old protected clear Notice'])
+                self.assertEqual(run.facts['notice_hol']['nonwaking_trigger']['canonical']['priority'], 1)
+            else:
+                with self.assertRaises(AssertionError): run.stage_notice_hol_clear({'warning': 'open'})
+
     def test_hol_pre_release_failure_retains_phase_cause_and_canonical_rows(self):
         run = Run.__new__(Run); run.facts = {}; run.results = []; run.notice_causes = []; run.main_sid = 'main'; run.seat = 'source'
         cause = {'message': 'seed', 'warning': 'open', 'body': 'actual old body', 'ordinal': 1}
@@ -1602,6 +1669,7 @@ class DriverTests(unittest.TestCase):
                 raise RuntimeError('synthetic old clear timeout')
             return True
         run.wait = wait
+        run.stage_notice_hol_clear = lambda seed: run.wait('actual old protected clear Notice', lambda: run.parked_clear_notice(seed), 35)
         calls = []
         run.notice_failure_diagnostics = lambda current: calls.append(current['message']) or {'conditions': [{'clear_warning_id': 'clear'}]}
         def readonly(sql, args):
