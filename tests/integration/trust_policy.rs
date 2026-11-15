@@ -1938,11 +1938,23 @@ fn idle_mod_session_reattaches_through_its_watch_and_is_woken() {
     world.stop();
 
     // Another session in the pane claims nothing: its watch stays refused and the seat
-    // unresolved (it starts the daemon, D1b).
-    let other = world.watch("w1:p1", "S2");
-    let first = other
-        .next(Duration::from_secs(20))
-        .expect("the S2 watch reports");
+    // unresolved (it starts the daemon, D1b). The watch waits a bounded 2 s for the daemon it
+    // ensures and reports `daemon_unavailable` when that runs out, as on a loaded machine; the
+    // mod then runs it again after its backoff, so only that refusal is retried here (ht-lmwi).
+    let mut unavailable = 0;
+    let (other, first) = loop {
+        let other = world.watch("w1:p1", "S2");
+        let first = other
+            .next(Duration::from_secs(20))
+            .expect("the S2 watch reports");
+        if first["reason"] == "daemon_unavailable" && unavailable < 5 {
+            unavailable += 1;
+            drop(other);
+            std::thread::sleep(Duration::from_secs(1));
+            continue;
+        }
+        break (other, first);
+    };
     assert_eq!(
         (first["state"].as_str(), first["reason"].as_str()),
         (Some("refused"), Some("no_binding")),
