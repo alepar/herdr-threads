@@ -9,8 +9,11 @@ Each payload has `event`, `session_id` (native pi session), `role: "top_level"`,
 | Event | Fields and meaning |
 |---|---|
 | SessionStart | `source`: startup, reload, new, resume, fork, compact, tree. Rust maps startup/reload to Startup, new to Clear, resume to Resume, fork to Fork, compact/tree to Compact (tree refreshes guidance without inventing a successor session). |
-| TurnStart | Current check-in/liveness only, no mail or repeated fixed guidance. Used before a native run after any necessary lifecycle admission. |
+| TurnStart | Current check-in/liveness, no mail or repeated fixed guidance; report Busy through the existing turn-state seam before the native run, after lifecycle admission. |
+| TurnEnd | Observer-only, no mail/guidance; `source` is `settled` for an actual agent_settled callback or `startup` for explicit post-admission idle initialization. Requires `idle: true` from a fresh current-owner ctx.isIdle() check at emission. Report Idle through the existing seam; missing/false/unknown witness never reports Idle. |
 | SessionEnd | Observer event with existing SessionEnd binding-liveness report; no retirement. Captured old owner fields survive until this best-effort child call is formed; stale cleanup must not delete successor env. |
+
+Lifecycle and turn-edge calls are serialized per current owner. Recheck identity and native idle state when executing a queued Idle report, so an old callback cannot overtake a newer Busy edge or report for a successor. Startup Idle uses the separate Observer-only TurnEnd after successful SessionStart because the existing shared runner suppresses an Idle edge on nonempty output; do not change that shared continuation rule or omit lifecycle guidance. agent_end, turn_end, error and cancellation alone never authorize Idle.
 
 Hook output is plain UTF-8 guidance/routing/diagnostics, maximum the existing hook context bound (4096 bytes), encoded ObserverOnly. Successful empty stdout is valid; nonzero exit, timeout or existing check-in-unavailable sentinel is failure. Shared output policy omits mail offers before composition; extension only stages successful guidance for an admitted native boundary. Mail is exclusively the watch path.
 
