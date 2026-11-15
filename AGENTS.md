@@ -115,8 +115,8 @@ The wake e2e is a release prerequisite: before every release (tagging a `v*` ver
 ```sh
 nice scripts/build.sh                         # the candidate: bin/herdr-threads
 python3 scripts/wake-e2e.py --self-test       # the driver's own credential/cleanup/completeness paths, no agents
-python3 scripts/wake-e2e.py                   # native qualification: both harnesses, all cases (~10 min)
-python3 scripts/wake-e2e.py --queue-proof     # supported Linux Codex queue proof; both harnesses
+python3 scripts/wake-e2e.py                   # existing/default qualification: both harnesses (~10 min)
+python3 scripts/wake-e2e.py --queue-proof     # required for supported Linux Codex queue proof; both harnesses
 #   --codex-auth-home DIR   Codex home whose auth.json is copied (default $CODEX_HOME or ~/.codex)
 #   --harness claude|codex  --cases CASE,...  --keep (leave the workspace up)  --evidence-dir DIR
 #   opt-in, not in the default matrix: --harness codex --cases side-nudge/group,side-draft/group,modal-hold/group,wake-unreceived/group
@@ -129,7 +129,7 @@ python3 scripts/wake-e2e.py --queue-proof     # supported Linux Codex queue proo
 scripts/wake-e2e-herdr 0.9.5 [ARGS...]        # the same run inside a private server of one listed Herdr release
 ```
 
-- Select `--queue-proof` explicitly for supported Linux Codex queue-wake qualification (also forwarded by `scripts/wake-e2e-herdr` and `scripts/release-qualify --queue-proof`). It requires actual Accepted transport evidence; only eligible positive queue rows use 15 s. Native/Claude windows and existing UI/resume gates stay unchanged. Non-Linux and queue-unsupported qualification use the native command without this flag.
+- Require `--queue-proof` explicitly for supported Linux Codex queue-wake qualification (also forwarded by `scripts/wake-e2e-herdr` and `scripts/release-qualify --queue-proof`). It requires actual Accepted transport evidence; only eligible positive queue rows use 15 s. Native/Claude windows and existing UI/resume gates stay unchanged. Non-Linux and queue-unsupported qualification use the existing command without this flag. The unflagged command retains its six-second oracle and does not force native transport; eligible Linux Codex still selects queue wake automatically.
 
 - Run it once per release, against the newest Herdr release in `tests/herdr-releases.tsv`: directly when the local Herdr is that release, else through `scripts/wake-e2e-herdr` (checksum-verified binary from the release-smoke cache, private socket, config and state, the user's HOME kept for harness credentials, removed at the end). The Herdr release matrix (`scripts/herdr-release-smoke`, a hook-running stand-in Codex) covers every listed release: core features, launch and every handoff target, wake and threshold, busy agent (`docs/validation/herdr-release-matrix.md`).
 

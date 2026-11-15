@@ -1,6 +1,6 @@
 # Scoped release qualification routing
 
-`scripts/release-qualify --queue-proof` now forwards the explicit flag to authenticated `wake-e2e-herdr` qualification on Linux. Unflagged wake argv is unchanged. Explicit queue proof on a non-Linux platform is refused by argument preflight before evidence/scratch creation, builds, credential copying or agents. No version probe is added. RELEASE.md and the direct AGENTS.md recipe select proof for supported Linux Codex; native/queue-unsupported platforms retain their original command.
+`scripts/release-qualify --queue-proof` now forwards the explicit flag to authenticated `wake-e2e-herdr` qualification on Linux. Unflagged wake argv is unchanged. Explicit queue proof on a non-Linux platform is refused by argument preflight before evidence/scratch creation, builds, credential copying or agents. No version probe is added. RELEASE.md and the direct AGENTS.md recipe select proof for supported Linux Codex; non-Linux/queue-ineligible paths retain their existing command. The unflagged command does not force native transport; automatic eligible Linux queue selection retains the old six-second oracle, so supported Linux release checks require explicit proof.
 
 The flag selects the existing reviewed proof contract: eligible positive Codex rows require actual Accepted submission and use 15 seconds. Native/Claude windows, silent/busy behavior and UI/resume gates stay unchanged. It does not silently downgrade requested proof or replace hook message delivery.
 

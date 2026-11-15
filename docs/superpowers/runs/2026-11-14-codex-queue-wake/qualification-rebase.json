@@ -1,0 +1,273 @@
+{
+  "main_target": "4dabf06ef",
+  "main_readiness": "Main owner direct message23 confirms v3.2.2 landed and integration-ready",
+  "before_rebase": "a97ddad59",
+  "rebased_head": "de1c8ab897b60e28b3f909acd3566a6465dfe319",
+  "patch_mapping": [
+    {
+      "old": "2ad143cbe",
+      "relation": "=",
+      "new": "b79f94ca8",
+      "subject": "docs: accept observed-idle queue wake races"
+    },
+    {
+      "old": "c79a39159",
+      "relation": "=",
+      "new": "179b2ad40",
+      "subject": "docs: specify initial queue wake control adapter"
+    },
+    {
+      "old": "f21d8d4d3",
+      "relation": "=",
+      "new": "cc90d5c10",
+      "subject": "docs: settle queue target observation contract"
+    },
+    {
+      "old": "7005f0478",
+      "relation": "=",
+      "new": "01c7741a8",
+      "subject": "feat(codex): add inactive programmatic wake control"
+    },
+    {
+      "old": "b3c3f79a9",
+      "relation": "=",
+      "new": "6de580e63",
+      "subject": "docs: specify durable queue wake attempt ledger"
+    },
+    {
+      "old": "2c31c0692",
+      "relation": "=",
+      "new": "19ca65ca1",
+      "subject": "feat(wake): retain programmatic wake attempt ledger"
+    },
+    {
+      "old": "df3e017a0",
+      "relation": "=",
+      "new": "17203b6f1",
+      "subject": "docs: define bounded queue wake activity observations"
+    },
+    {
+      "old": "3c04e7500",
+      "relation": "=",
+      "new": "43f8c10db",
+      "subject": "feat(wake): record canonical turns and typed cleanup evidence"
+    },
+    {
+      "old": "b82386b6b",
+      "relation": "=",
+      "new": "8f67ad6a9",
+      "subject": "fix(wake): defer idle state to the checked turn end"
+    },
+    {
+      "old": "3ad42dc36",
+      "relation": "=",
+      "new": "c8aa00a40",
+      "subject": "docs: settle queue wake activation recovery contract"
+    },
+    {
+      "old": "23171ba07",
+      "relation": "=",
+      "new": "7311e16a4",
+      "subject": "docs: cover uninitialized cleanup helper recovery"
+    },
+    {
+      "old": "a4e00d77e",
+      "relation": "=",
+      "new": "3c124cbd1",
+      "subject": "feat(wake): persist helper ownership and logical retirement"
+    },
+    {
+      "old": "16d176853",
+      "relation": "=",
+      "new": "cf468c4a6",
+      "subject": "feat(wake): activate observed-idle queue transport and node cleanup"
+    },
+    {
+      "old": "5d2092dc3",
+      "relation": "=",
+      "new": "0d979b935",
+      "subject": "docs(wake): record activation invariants and verification evidence"
+    },
+    {
+      "old": "17e24a04c",
+      "relation": "=",
+      "new": "0a1963a46",
+      "subject": "fix(wake): preserve positive helper cleanup across recovery"
+    },
+    {
+      "old": "903038a38",
+      "relation": "=",
+      "new": "111c78581",
+      "subject": "docs: define integrated queue wake qualification"
+    },
+    {
+      "old": "96064953d",
+      "relation": "=",
+      "new": "23eb3a8db",
+      "subject": "fix(wake): pace node cleanup and complete qualification guards"
+    },
+    {
+      "old": "d98cfb312",
+      "relation": "!",
+      "new": "944f8a86e",
+      "subject": "test(wake): qualify queue transport with bounded canonical evidence"
+    },
+    {
+      "old": "58a2e2fcb",
+      "relation": "=",
+      "new": "2938bbe70",
+      "subject": "Isolate Codex qualification SQLite home"
+    },
+    {
+      "old": "04387c7ba",
+      "relation": "=",
+      "new": "3e3f71c8d",
+      "subject": "Tighten queue qualification scope and lifecycle assertions"
+    },
+    {
+      "old": "78259bc0c",
+      "relation": "=",
+      "new": "ca849bff6",
+      "subject": "Measure queue wake qualification latency"
+    },
+    {
+      "old": "f2f86a548",
+      "relation": "=",
+      "new": "2013500f2",
+      "subject": "Record failed queue wake latency qualification"
+    },
+    {
+      "old": "08cc43ed3",
+      "relation": "=",
+      "new": "498cb246d",
+      "subject": "docs: record accepted queue polling latency"
+    },
+    {
+      "old": "17f88564c",
+      "relation": "=",
+      "new": "022e1c105",
+      "subject": "Apply accepted queue wake qualification latency"
+    },
+    {
+      "old": "285ced0bc",
+      "relation": "=",
+      "new": "6202c5db9",
+      "subject": "Record accepted queue baseline and timing boundaries"
+    },
+    {
+      "old": "da2f796f7",
+      "relation": "=",
+      "new": "7b08a445e",
+      "subject": "Preserve first complete queue qualification matrix"
+    },
+    {
+      "old": "e53729721",
+      "relation": "=",
+      "new": "dcb3f88a7",
+      "subject": "Correct UI queue-wake evidence for stale viewports"
+    },
+    {
+      "old": "bcabf82d8",
+      "relation": "=",
+      "new": "1b6837b6e",
+      "subject": "Bind UI evidence to individual message frames"
+    },
+    {
+      "old": "23211c8db",
+      "relation": "=",
+      "new": "da8462b99",
+      "subject": "Decode captured inbox peer data in UI evidence"
+    },
+    {
+      "old": "9e9a2db86",
+      "relation": "=",
+      "new": "837c822c6",
+      "subject": "Record all72 live queue wake qualification passes"
+    },
+    {
+      "old": "81ac8210d",
+      "relation": "=",
+      "new": "f6cfe70da",
+      "subject": "Record corrected full-suite qualification and timing limits"
+    },
+    {
+      "old": "a97ddad59",
+      "relation": "=",
+      "new": "de1c8ab89",
+      "subject": "Route explicit Linux release qualification through queue proof"
+    }
+  ],
+  "conflict": {
+    "path": "scripts/wake-e2e.py",
+    "resolution": "Allowed-case list retains both PROMPT_RACE_CASES and QUEUE_NATIVE_CASES; other released prompt-race behavior retained",
+    "feature_rust_conflicts": 0
+  },
+  "migration": {
+    "number": "0018",
+    "main_collision": false,
+    "note": "Still next free at confirmed integration target; check again at actual merge"
+  },
+  "files_sha256": {
+    "scripts/wake-e2e.py": "e08e5290b6b4fdcea5c058a97b315e4b63f83c18b95958c033305d72ca220982",
+    "scripts/wake_e2e_selftest.py": "d5ecd7eb652d68b83eb982e9bfc0d58774be351053b450c200e76c8c8cbc7fc3",
+    "scripts/wake_e2e_queue.py": "045e0711ac7669e3e2960e8ef82cefaf48de000c37ad341f401f5bcbbe4187b3",
+    "scripts/wake_e2e_queue_selftest.py": "c97684a7ac1339ba6999fc6be87b7b6520dd22a8b9da0328b6eed28ccc5424b9",
+    "scripts/release-qualify": "8466a5ad074201fcec7416e8b723e91437137bb9ea0389c850d17c1827897259",
+    "tests/release/release_qualify_test.py": "522a4b9fe9f4338c86200d4417bc0cf57351d2de93e4e8ac171af94905c16ff9",
+    "AGENTS.md": "316516b51624855865b1b58067f5bcce9c001fbc2cc87c494643c204039eb8f3",
+    "RELEASE.md": "34c8a448e9ca529bba3100717c44a81ecfbc48e4ac0fd33eaec9f12e927b85d8"
+  },
+  "verification": {
+    "real_cli_person_guard_tests": {
+      "passed": 4,
+      "execution_seconds": 1.411,
+      "compile": "5m30s after main/crate-version rebase",
+      "cleanup": "owned-worktree process check clean"
+    },
+    "marker_guard_tests": {
+      "passed": 3,
+      "execution_seconds": 0.055,
+      "run_id": "6e178702-37b4-4955-9c73-c917e0d1bd6a",
+      "cleanup": "scoped clean; no temporary-file ledger"
+    },
+    "coordinator_environment_tests": {
+      "passed": 4,
+      "seconds": 0.063,
+      "note": "Human namespace, own pane, registered marker stripping and guard-kept layout, no operator bypass"
+    },
+    "combined_driver_selftest": {
+      "passed": 288,
+      "seconds": 102.526,
+      "run_id": "7c32a8eb-5189-4f8b-b43f-c964dbcbf41b",
+      "cleanup": "scoped processes clean; no temporary-file ledger"
+    },
+    "release_routing_tests": {
+      "passed": 4,
+      "seconds": 0.011,
+      "subprocesses": "mocked"
+    },
+    "clippy": "PASS, all targets/all features,72s after rebase",
+    "default_features": "PASS",
+    "format": "PASS",
+    "harness_neutral": "PASS",
+    "wire_compat": "PASS",
+    "release_docs": "DOCS_TEST_PASS",
+    "python39": "six sources parse",
+    "diff": "PASS"
+  },
+  "review": {
+    "routing": "Astra185 accepted a97ddad59; requested default-mode wording clarified without functional change",
+    "wording": "Unflagged/default does not force native; supported Linux release qualification requires explicit queue proof"
+  },
+  "historical_evidence": {
+    "accepted_manifests": "Retained with original SHAs/hashes; current hashes above do not rewrite their provenance",
+    "full_suite": "9732PASS/64skip at9e9a2db86; not rerun after rebase",
+    "live": "72uniquePASS under original source SHAs; no new live run",
+    "performance": "1187.080s execution atcap4 remains over300s; explicit task disposition still pending"
+  },
+  "limits": [
+    "No merge, push, release, real user-config update or shared server change",
+    "No second corrected full suite or extra authenticated agents",
+    "Post-rebase compile/Clippy are not the prior warm one-file incremental measurement"
+  ]
+}
