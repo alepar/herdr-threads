@@ -4128,3 +4128,39 @@ observation ordinal may fulfill logical wake purpose when its Start was lost.
 It is completed activity evidence, not a receipt and not a matched Start/End
 queue-admission baseline. Existing current-Started/mismatched-End protection and
 the accepted delayed-ID observation limit remain.
+## Deferred canonical notice presentation (2026-11-15, ht-jr1g.5)
+
+An explicitly elected manual Watch consumer (`delivery.presentation_deferred_notice_v1`) may buffer
+an emitted page without declaring its notices presented. The daemon freezes each Notice's complete
+canonical WarningRef and positive projection ordinal in the existing private context_key string,
+versioned `dn1:<sequence>:<event_seq>:<ordinal>` (at most 65 ASCII bytes). Malformed or unknown tags,
+including retired descriptors, are corruption and reject before effects. Historical wrappers accept
+the string; their old confirmation can retire an outbox but cannot advance the deferred frontier,
+so a subsequent default pull reoffers it at least once. No peer wire, caller authority or receipt
+provenance changes. Default Watch and Hook consumers retain allocation-time notice settlement.
+
+Manual allocation validates but does not advance the binding's notice frontier. Existing current
+binding and presentation-lease admission governs confirmation, even if another reader already covered
+all captures. The daemon removes already-covered ordinals, compares the remaining full references
+AND ordinals to its exact oldest pending prefix, then advances that frontier and retires the emitted
+non-control descriptors in one transaction. A prefix mismatch retires nothing and acknowledges no
+controls. Client counts, keys and IDs are never frontier authority. A default pull cannot automatically
+consume an unretired tagged Notice; execution reset preserves the unadvanced canonical frontier.
+
+The bounded local envelope carries raw existing Watch items, opaque same-token item keys and an opaque
+confirmation receipt. Limits are 32 items / 64 KiB model content, 72 KiB framed transport, 8 KiB metadata and
+4 KiB confirmation stdin. Confirmation declares every currently emitted Notice, Invitation and Attention
+accepted unchanged into the exact current branch AND model-bound context, under the same owner and
+revision. AttentionCleared has no model body: its exception is the exact owner-scoped local clear
+actually applied, never fabricated context evidence. Ordinary ACK, lazy completion and invitation
+acceptance keep their existing independent predicates and provenance. A success result proves only
+emitted-page confirmation, never that all retained token slots retired.
+
+Hidden Attention under Unknown supplies no receipt or proof. Its empty page continues the existing
+bounded cancellable pull scan, because canonical relevance may progress without another event. An
+actually emitted nonordinary page parks until explicit confirmation or owner teardown; no automatic
+flush confirmation occurs in this opt-in mode. Lost output, reload, overflow or ambiguous confirmation
+leaves canonical replay available. One unaccepted page may block fresh canonical ordinary allocation;
+this is accepted bounded backpressure. Local protected storage cannot promote content ahead of the
+existing priority/deadline/stable-tie order. Pending notice wake evidence remains above the unadvanced
+frontier; threshold, idle, busy, process, host and native composer gates are unchanged.

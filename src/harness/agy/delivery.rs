@@ -1087,6 +1087,7 @@ impl Step<'_> {
         let mut emitted_controls = Vec::new();
         let (reply, presentation_token) = if modern {
             match daemon.call(Command::DeliveryPullV2(DeliveryPullV2 {
+                defer_notice_settlement: false,
                 claim: claim.clone(),
                 consumer: PresentationConsumer::Hook,
                 render: PresentationRenderRequest::Hook {

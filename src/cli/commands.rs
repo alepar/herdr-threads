@@ -455,6 +455,10 @@ pub enum CliAction {
     Watch(super::watch::WatchRequest),
     /// Hidden `watch ack --session ID --via VIA IDS...`.
     WatchAck(super::watch::WatchAckRequest),
+    /// Confirm one completely accepted manual presentation page from bounded stdin.
+    WatchPresentationConfirm {
+        session: String,
+    },
     /// `harness-version normalize HARNESS RAW`: the canonical bare semver of a
     /// raw `--version` string; local only.
     HarnessVersionNormalize {
@@ -686,6 +690,7 @@ pub fn dispatch<B: CliBackend>(
         | CliAction::ContractId { .. }
         | CliAction::Watch(_)
         | CliAction::WatchAck(_)
+        | CliAction::WatchPresentationConfirm { .. }
         | CliAction::HarnessVersionNormalize { .. }
         | CliAction::InstallerIntegrations { .. }
         | CliAction::InternalJsonField { .. }
@@ -1328,6 +1333,8 @@ struct WatchArgs {
     )]
     mod_harness: Option<String>,
     #[arg(long)]
+    manual_presentation: bool,
+    #[arg(long)]
     session: Option<String>,
     #[command(subcommand)]
     command: Option<WatchSub>,
@@ -1335,6 +1342,11 @@ struct WatchArgs {
 
 #[derive(Subcommand)]
 enum WatchSub {
+    /// Confirm an emitted manual page; reads its opaque receipt from bounded stdin.
+    PresentationConfirm {
+        #[arg(long)]
+        session: String,
+    },
     /// Report items the mod delivered; one JSON line per id.
     Ack {
         #[arg(long)]
@@ -4202,6 +4214,12 @@ fn parse_cli_in_registry(
             })
         }
         Top::Watch(args) => match (args.command, args.mod_harness, args.session) {
+            (Some(WatchSub::PresentationConfirm { session }), _, _) => {
+                if args.manual_presentation {
+                    return Err(invalid("--manual-presentation belongs to watch streaming"));
+                }
+                CliAction::WatchPresentationConfirm { session }
+            }
             (
                 Some(WatchSub::Ack {
                     session,
@@ -4223,6 +4241,9 @@ fn parse_cli_in_registry(
                         crate::protocol::commands::MAX_MOD_ACK_ROW_BYTES
                     )));
                 }
+                if args.manual_presentation {
+                    return Err(invalid("--manual-presentation belongs to watch streaming"));
+                }
                 CliAction::WatchAck(super::watch::WatchAckRequest {
                     session,
                     via,
@@ -4234,6 +4255,7 @@ fn parse_cli_in_registry(
                 })
             }
             (None, Some(harness), Some(session)) => CliAction::Watch(super::watch::WatchRequest {
+                manual_presentation: args.manual_presentation,
                 harness: harness_arg(&harness, registry)?,
                 session,
             }),

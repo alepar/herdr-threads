@@ -279,6 +279,7 @@ mod binding_presentation {
                 frozen_render,
                 render_profile: PresentationRenderProfile::WatchJsonLinesV1,
                 pull: DeliveryPullV2 {
+                    defer_notice_settlement: false,
                     claim,
                     consumer: PresentationConsumer::Watch,
                     render: PresentationRenderRequest::WatchJsonLinesV1,
@@ -346,6 +347,278 @@ mod binding_presentation {
                 INSERT INTO receipt_state(message_id,seat_id,state,acked_at,ack_binding_id,ack_actor_seat_id,ack_generation,ack_observation) VALUES('m','s','acked',7,'a','s',1,json_object('harness','claude','session','a','execution','a','host_boot','boot','binding_generation',1,'target_generation',0,'provenance','cooperative_env_session','observed_at',0,'decided_at',7));
                 UPDATE binding_cursors SET seq=1 WHERE binding_id='a';").unwrap();
         }
+    }
+    fn deferred_input(f: &Fixture, name: &str) -> PresentationInput {
+        let mut input = f.input(name);
+        let mut wire = serde_json::to_value(&input.pull).unwrap();
+        wire["defer_notice_settlement"] = true.into();
+        input.pull = serde_json::from_value(wire).expect("deferred notice pull is supported");
+        input
+    }
+    #[test]
+    fn deferred_notice_manual_watch_cli_is_explicit() {
+        use herdr_threads::cli::commands::parse_argv;
+        assert!(
+            parse_argv([
+                "herdr-threads",
+                "watch",
+                "--harness",
+                "claude",
+                "--session",
+                "a",
+                "--manual-presentation"
+            ])
+            .is_ok()
+        );
+        assert!(
+            parse_argv([
+                "herdr-threads",
+                "watch",
+                "presentation-confirm",
+                "--session",
+                "a"
+            ])
+            .is_ok()
+        );
+    }
+    fn deferred_page(f: &Fixture, name: &str) -> DeliveryPageV2 {
+        let DeliveryPullReplyV2::Page(page) = f
+            .store
+            .presentation_pull(deferred_input(f, name), &budget())
+            .unwrap()
+            .reply
+        else {
+            panic!("notice page")
+        };
+        page
+    }
+    fn notice_frontier(f: &Fixture, name: &str) -> i64 {
+        f.db.query_row("SELECT COALESCE((SELECT offered_ordinal FROM digest_notice_offer WHERE binding_id=?1),0)", [name], |r|r.get(0)).unwrap()
+    }
+    #[test]
+    fn deferred_notice_stays_pending_until_canonical_token_confirmation() {
+        let f = Fixture::new();
+        f.notice();
+        let page = deferred_page(&f, "a");
+        assert!(
+            page.items
+                .iter()
+                .any(|i| matches!(i, PresentationItemV2::Notice { .. }))
+        );
+        assert_eq!(notice_frontier(&f, "a"), 0, "buffering is not presentation");
+        let encoded:String=f.db.query_row("SELECT outbox_descriptors FROM invitation_presentation_consumers WHERE binding_id='a' AND consumer='watch'",[],|r|r.get(0)).unwrap();
+        assert!(encoded.contains("dn1:50:50:"));
+        assert_eq!(
+            f.confirm("a", &page),
+            DeliveryPresentationConfirmationV2::Confirmed
+        );
+        assert!(notice_frontier(&f, "a") > 0);
+        assert_eq!(notice_frontier(&f, "b"), 0);
+        assert_eq!(
+            f.confirm("a", &page),
+            DeliveryPresentationConfirmationV2::AlreadyConfirmed
+        );
+    }
+    #[test]
+    fn default_pull_cannot_auto_confirm_a_deferred_notice_page() {
+        let f = Fixture::new();
+        f.notice();
+        let page = deferred_page(&f, "a");
+        let reply = f
+            .store
+            .presentation_pull(f.input("a"), &budget())
+            .unwrap()
+            .reply;
+        assert!(matches!(
+            reply,
+            DeliveryPullReplyV2::Refused {
+                reason: herdr_threads::protocol::delivery::DeliveryRefusalReason::Busy
+            }
+        ));
+        assert_eq!(notice_frontier(&f, "a"), 0);
+        assert_eq!(
+            f.confirm("a", &page),
+            DeliveryPresentationConfirmationV2::Confirmed
+        );
+        assert!(!matches!(
+            f.store
+                .presentation_pull(f.input("a"), &budget())
+                .unwrap()
+                .reply,
+            DeliveryPullReplyV2::Refused { .. }
+        ));
+    }
+    fn outbox(f: &Fixture) -> String {
+        f.db.query_row("SELECT outbox_descriptors FROM invitation_presentation_consumers WHERE binding_id='a' AND consumer='watch'", [], |r|r.get(0)).unwrap()
+    }
+    fn replace_capture(f: &Fixture, value: &str) {
+        let mut descriptors: serde_json::Value = serde_json::from_str(&outbox(f)).unwrap();
+        for descriptor in descriptors.as_array_mut().unwrap() {
+            if descriptor["item"]["kind"] == "notice" {
+                descriptor["context_key"] = value.into();
+            }
+        }
+        f.db.execute("UPDATE invitation_presentation_consumers SET outbox_descriptors=?1 WHERE binding_id='a' AND consumer='watch'",[descriptors.to_string()]).unwrap();
+    }
+    #[test]
+    fn deferred_notice_gap_or_full_reference_change_retires_nothing() {
+        for key in ["dn1:51:50:1", "dn1:50:51:1", "dn1:50:50:2"] {
+            let f = Fixture::new();
+            f.notice();
+            let page = deferred_page(&f, "a");
+            replace_capture(&f, key);
+            let before = outbox(&f);
+            assert_eq!(
+                f.confirm("a", &page),
+                DeliveryPresentationConfirmationV2::NotCurrentPage
+            );
+            assert_eq!(notice_frontier(&f, "a"), 0);
+            assert_eq!(outbox(&f), before);
+        }
+    }
+    #[test]
+    fn deferred_notice_already_covered_prefix_still_requires_current_owner() {
+        let f = Fixture::new();
+        f.notice();
+        let page = deferred_page(&f, "a");
+        f.db.execute("INSERT INTO digest_notice_offer(binding_id,seat_id,offered_ordinal) VALUES('a','s',1) ON CONFLICT(binding_id) DO UPDATE SET offered_ordinal=1",[]).unwrap();
+        f.db.execute(
+            "UPDATE occupant_bindings SET liveness='disconnected',disconnected_at=1,disconnect_reason='liveness_process_exit' WHERE binding_id='a'",
+            [],
+        )
+        .unwrap();
+        let before = outbox(&f);
+        assert_eq!(
+            f.confirm("a", &page),
+            DeliveryPresentationConfirmationV2::StaleBinding
+        );
+        assert_eq!(outbox(&f), before);
+        f.db.execute(
+            "UPDATE occupant_bindings SET liveness='connected',disconnected_at=NULL,disconnect_reason=NULL WHERE binding_id='a'",
+            [],
+        )
+        .unwrap();
+        assert_eq!(
+            f.confirm("a", &page),
+            DeliveryPresentationConfirmationV2::Confirmed
+        );
+    }
+    #[test]
+    fn deferred_notice_malformed_tags_fail_before_effects_even_when_retired() {
+        for key in [
+            "dn2:50:50:1",
+            "dn1:050:50:1",
+            "dn1:+50:50:1",
+            "dn1:50:50:0",
+            "dn1:18446744073709551616:50:1",
+            "dn1:50:50:9223372036854775808",
+            "dn1:50:50:1:extra",
+            "",
+        ] {
+            for retired in [false, true] {
+                let f = Fixture::new();
+                f.notice();
+                let page = deferred_page(&f, "a");
+                let input = deferred_input(&f, "a");
+                replace_capture(&f, key);
+                if retired {
+                    f.db.execute("UPDATE invitation_presentation_consumers SET outbox_retired_mask=1 WHERE binding_id='a' AND consumer='watch'",[]).unwrap();
+                }
+                let before = outbox(&f);
+                let error = f.store.presentation_pull(input, &budget()).unwrap_err();
+                assert_eq!(
+                    error.code,
+                    herdr_threads::protocol::results::ErrorCode::StoreCorrupt,
+                    "{key}"
+                );
+                let error = f
+                    .store
+                    .presentation_confirm(
+                        &DeliveryPresentationConfirmV2 {
+                            claim: f.claim("a"),
+                            consumer: PresentationConsumer::Watch,
+                            presentation_lease: Some("0123456789abcdef0123456789abcdef".into()),
+                            token: page.presentation_token.unwrap(),
+                            emitted_controls: page.emitted_controls,
+                        },
+                        &budget(),
+                    )
+                    .unwrap_err();
+                assert_eq!(
+                    error.code,
+                    herdr_threads::protocol::results::ErrorCode::StoreCorrupt
+                );
+                assert_eq!(notice_frontier(&f, "a"), 0);
+                assert_eq!(outbox(&f), before);
+            }
+        }
+    }
+    #[test]
+    fn deferred_notice_scope_reset_reoffers_unconfirmed_notice() {
+        let f = Fixture::new();
+        f.notice();
+        let first = deferred_page(&f, "a");
+        let replay = deferred_page(&f, "a");
+        assert_eq!(first.presentation_token, replay.presentation_token);
+        assert_eq!(first.items, replay.items);
+        f.db.execute(
+            "UPDATE occupant_bindings SET execution_id='new' WHERE binding_id='a'",
+            [],
+        )
+        .unwrap();
+        let mut claim = f.claim("a");
+        claim.execution = ExecutionId::new("new");
+        let DeliveryPullReplyV2::Page(fresh) = f
+            .store
+            .presentation_pull(f.input_for_claim("a", claim), &budget())
+            .unwrap()
+            .reply
+        else {
+            panic!("fresh default page")
+        };
+        assert!(
+            fresh
+                .items
+                .iter()
+                .any(|i| matches!(i, PresentationItemV2::Notice { .. }))
+        );
+        assert_ne!(fresh.presentation_token, first.presentation_token);
+        assert!(notice_frontier(&f, "a") > 0);
+    }
+    #[test]
+    fn deferred_notice_partial_covered_prefix_confirms_remaining_exact_ordinals() {
+        let f = Fixture::new();
+        f.notice();
+        f.db.execute_batch("INSERT INTO messages(id,instance_id,thread_id,sequence,kind,event_json,decision_at,decision_seq,event_offset) VALUES('notice-2','34750f98bd59fcfc946da45aaabe933b','t',51,'warn','{}',0,51,1); INSERT INTO digest_programmatic_warnings(seat_id,warning_id,thread_id,event_seq,event_offset) VALUES('s','notice-2','t',51,1);").unwrap();
+        let page = deferred_page(&f, "a");
+        assert_eq!(
+            page.items
+                .iter()
+                .filter(|i| matches!(i, PresentationItemV2::Notice { .. }))
+                .count(),
+            2
+        );
+        f.db.execute("INSERT INTO digest_notice_offer(binding_id,seat_id,offered_ordinal) VALUES('a','s',1) ON CONFLICT(binding_id) DO UPDATE SET offered_ordinal=1",[]).unwrap();
+        assert_eq!(
+            f.confirm("a", &page),
+            DeliveryPresentationConfirmationV2::Confirmed
+        );
+        assert_eq!(notice_frontier(&f, "a"), 2);
+        assert_eq!(notice_frontier(&f, "b"), 0);
+    }
+    #[test]
+    fn deferred_notice_retired_tag_does_not_fence_default_forever() {
+        let f = Fixture::new();
+        f.notice();
+        let _page = deferred_page(&f, "a");
+        f.db.execute("UPDATE invitation_presentation_consumers SET outbox_retired_mask=1,outbox_confirmed_mask=1 WHERE binding_id='a' AND consumer='watch'",[]).unwrap();
+        assert!(!matches!(
+            f.store
+                .presentation_pull(f.input("a"), &budget())
+                .unwrap()
+                .reply,
+            DeliveryPullReplyV2::Refused { .. }
+        ));
     }
     // A notice's complete body makes an inbox hint redundant in this and later pages.
     #[test]

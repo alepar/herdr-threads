@@ -280,6 +280,7 @@ impl Fixture {
         let owner = channels.presentation_owner(&claim.seat).unwrap().unwrap();
         let service = Arc::new(service.with_mod_channels(channels.clone()));
         let pull = DeliveryPullV2 {
+            defer_notice_settlement: false,
             claim: claim.clone(),
             consumer,
             presentation_lease: lease.clone(),
@@ -526,4 +527,54 @@ fn presentation_poisoned_owner_recovers_for_pull_and_confirm() {
         };
         assert_eq!(reply.status, DeliveryPresentationConfirmationV2::Confirmed);
     }
+}
+
+#[test]
+fn deferred_notice_watch_uses_existing_current_owner_lease_admission() {
+    let f = Fixture::new(PresentationConsumer::Watch);
+    let mut pull = f.pull.clone();
+    pull.defer_notice_settlement = true;
+    assert!(matches!(
+        f.service
+            .handle(Command::DeliveryPullV2(pull.clone()), peer(), &budget())
+            .unwrap(),
+        CommandResult::DeliveryPulledV2(DeliveryPullReplyV2::Page(_))
+    ));
+    pull.presentation_lease = Some("ffffffffffffffffffffffffffffffff".into());
+    let before = f.bookend();
+    assert!(matches!(
+        f.service
+            .handle(Command::DeliveryPullV2(pull), peer(), &budget())
+            .unwrap(),
+        CommandResult::DeliveryPulledV2(DeliveryPullReplyV2::Refused { .. })
+    ));
+    assert_eq!(f.bookend(), before);
+    let mut confirm = f.confirm.clone();
+    confirm.presentation_lease = Some("ffffffffffffffffffffffffffffffff".into());
+    let CommandResult::DeliveryPresentationConfirmedV2(reply) = f
+        .service
+        .handle(
+            Command::DeliveryPresentationConfirmV2(confirm),
+            peer(),
+            &budget(),
+        )
+        .unwrap()
+    else {
+        panic!("confirmation refusal")
+    };
+    assert_eq!(
+        reply.status,
+        DeliveryPresentationConfirmationV2::StaleBinding
+    );
+    assert_eq!(f.bookend(), before);
+    let hook = Fixture::new(PresentationConsumer::Hook);
+    let mut invalid = hook.pull.clone();
+    invalid.defer_notice_settlement = true;
+    assert_eq!(
+        hook.service
+            .handle(Command::DeliveryPullV2(invalid), peer(), &budget())
+            .unwrap_err()
+            .code,
+        ErrorCode::InvalidRequest
+    );
 }

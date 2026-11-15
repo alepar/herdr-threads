@@ -1083,6 +1083,7 @@ mod domain {
             rig.domain
                 .handle(
                     Command::DeliveryPullV2(DeliveryPullV2 {
+                        defer_notice_settlement: false,
                         claim: req.claim.clone(),
                         consumer: PresentationConsumer::Watch,
                         render:
@@ -1462,6 +1463,7 @@ mod domain {
             .domain
             .handle(
                 Command::DeliveryPullV2(DeliveryPullV2 {
+                    defer_notice_settlement: false,
                     claim: claim.clone(),
                     consumer: PresentationConsumer::Watch,
                     render: PresentationRenderRequest::WatchJsonLinesV1,

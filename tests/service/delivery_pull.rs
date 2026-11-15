@@ -373,6 +373,7 @@ fn presentation_q3_quiet_ordinary_sibling_ack_before_materialization_drains_pass
         .service
         .handle(
             Command::DeliveryPullV2(crate::protocol::delivery::DeliveryPullV2 {
+                defer_notice_settlement: false,
                 claim: a,
                 consumer: crate::protocol::delivery::PresentationConsumer::Watch,
                 render: crate::protocol::delivery::PresentationRenderRequest::WatchJsonLinesV1,
@@ -3041,6 +3042,7 @@ fn presentation_two_live_bindings_keep_offer_stamps_replay_and_carry_independent
             .service
             .handle(
                 Command::DeliveryPullV2(DeliveryPullV2 {
+                    defer_notice_settlement: false,
                     claim: claim.clone(),
                     consumer: PresentationConsumer::Hook,
                     render: PresentationRenderRequest::Hook {
@@ -4300,6 +4302,7 @@ fn presentation_test_pull(
         .service
         .handle(
             Command::DeliveryPullV2(crate::protocol::delivery::DeliveryPullV2 {
+                defer_notice_settlement: false,
                 claim: claim.clone(),
                 consumer: crate::protocol::delivery::PresentationConsumer::Hook,
                 render: crate::protocol::delivery::PresentationRenderRequest::Hook {
@@ -5511,6 +5514,7 @@ fn presentation_refresh_preserves_live_presentation_header_and_outbox_across_reb
                     render_profile:
                         crate::delivery::presentation::PresentationRenderProfile::WatchJsonLinesV1,
                     pull: DeliveryPullV2 {
+                    defer_notice_settlement: false,
                         claim,
                         consumer: PresentationConsumer::Watch,
                         render:
@@ -5659,6 +5663,7 @@ fn presentation_refresh_stub_allows_actual_watch_full_offer_and_replaced_owner_r
         .service
         .handle(
             Command::DeliveryPullV2(DeliveryPullV2 {
+                defer_notice_settlement: false,
                 claim: recipient.clone(),
                 consumer: PresentationConsumer::Watch,
                 render: crate::protocol::delivery::PresentationRenderRequest::WatchJsonLinesV1,
@@ -5811,6 +5816,7 @@ fn presentation_final_watch_codec_counts_escaped_canonical_invitation_batch() {
                     render_profile:
                         crate::delivery::presentation::PresentationRenderProfile::WatchJsonLinesV1,
                     pull: DeliveryPullV2 {
+                        defer_notice_settlement: false,
                         claim: recipient.clone(),
                         consumer: PresentationConsumer::Watch,
                         render:
@@ -5944,6 +5950,7 @@ fn presentation_final_cleanup_preserves_passive_removal_observation() {
                 render_profile:
                     crate::delivery::presentation::PresentationRenderProfile::WatchJsonLinesV1,
                 pull: DeliveryPullV2 {
+                    defer_notice_settlement: false,
                     claim: recipient.clone(),
                     consumer: PresentationConsumer::Watch,
                     render: crate::protocol::delivery::PresentationRenderRequest::WatchJsonLinesV1,
@@ -6053,6 +6060,7 @@ fn presentation_registry_pass_drives_bounded_passive_refresh_before_full_pull() 
         .service
         .handle(
             Command::DeliveryPullV2(DeliveryPullV2 {
+                defer_notice_settlement: false,
                 claim: recipient,
                 consumer: PresentationConsumer::Watch,
                 render: crate::protocol::delivery::PresentationRenderRequest::WatchJsonLinesV1,
@@ -6110,6 +6118,7 @@ fn presentation_private_partial_guards_reject_corrupt_supported_shapes() {
             .service
             .handle(
                 Command::DeliveryPullV2(crate::protocol::delivery::DeliveryPullV2 {
+                    defer_notice_settlement: false,
                     claim: recipient,
                     consumer: crate::protocol::delivery::PresentationConsumer::Hook,
                     render: crate::protocol::delivery::PresentationRenderRequest::Hook {
@@ -6139,6 +6148,7 @@ fn presentation_private_skipped_body_requires_exact_retained_cursor() {
         .service
         .handle(
             Command::DeliveryPullV2(crate::protocol::delivery::DeliveryPullV2 {
+                defer_notice_settlement: false,
                 claim: recipient,
                 consumer: crate::protocol::delivery::PresentationConsumer::Hook,
                 render: crate::protocol::delivery::PresentationRenderRequest::Hook {
@@ -6187,7 +6197,7 @@ fn presentation_ordinary_carry_survives_completed_control_partial_and_invitation
     let prefix = vec!["p".repeat(4096)];
     let mut seen = std::collections::HashSet::new();
     for _ in 0..24 {
-        let result=f.service.handle(Command::DeliveryPullV2(DeliveryPullV2{claim:recipient.clone(),consumer:PresentationConsumer::Hook,render:crate::protocol::delivery::PresentationRenderRequest::Hook{confirmable_selector:0,passive_selector:0},presentation_lease:None,marker_prefix:prefix.clone()}),peer(),&budget()).expect("valid bounded ordinary query plus prior partial must persist withheld ordinary items");
+        let result=f.service.handle(Command::DeliveryPullV2(DeliveryPullV2{defer_notice_settlement: false,claim:recipient.clone(),consumer:PresentationConsumer::Hook,render:crate::protocol::delivery::PresentationRenderRequest::Hook{confirmable_selector:0,passive_selector:0},presentation_lease:None,marker_prefix:prefix.clone()}),peer(),&budget()).expect("valid bounded ordinary query plus prior partial must persist withheld ordinary items");
         let CommandResult::DeliveryPulledV2(reply) = result else {
             panic!("pull result")
         };
@@ -6393,6 +6403,7 @@ fn presentation_promoted_lazy_raw_carry_survives_restart_with_frozen_prefix() {
         .service
         .handle(
             Command::DeliveryPullV2(DeliveryPullV2 {
+                defer_notice_settlement: false,
                 claim: recipient.clone(),
                 consumer: PresentationConsumer::Hook,
                 render: PresentationRenderRequest::Hook {
@@ -6611,6 +6622,7 @@ fn presentation_actual_candidate_sizing_and_rpc_wrapper_work_remain_bounded() {
                     frozen_render,
                     render_profile: profile.clone(),
                     pull: DeliveryPullV2 {
+                        defer_notice_settlement: false,
                         claim: recipient.clone(),
                         consumer: PresentationConsumer::Hook,
                         render: PresentationRenderRequest::Hook {
@@ -7639,6 +7651,7 @@ fn presentation_watch_fresh_confirmation_records_exact_owner_publication_cutoff_
         .service
         .handle(
             Command::DeliveryPullV2(DeliveryPullV2 {
+                defer_notice_settlement: false,
                 claim: recipient.clone(),
                 consumer: PresentationConsumer::Watch,
                 render: PresentationRenderRequest::WatchJsonLinesV1,
@@ -7994,7 +8007,7 @@ fn presentation_publication_refresh_and_pull_rebind_preserve_each_others_progres
                 .unwrap();
         }
         let pull = |claim: &CallerClaim| {
-            f.store.presentation_pull(PresentationInput { binding_id: binding_for_claim(&f, claim), owner_replay:None,ordinary_due_snapshot:None,frozen_render:presentation_watch_frozen(&f,claim),render_profile:crate::delivery::presentation::PresentationRenderProfile::WatchJsonLinesV1,pull:DeliveryPullV2{claim:claim.clone(),consumer:PresentationConsumer::Watch,render:crate::protocol::delivery::PresentationRenderRequest::WatchJsonLinesV1,presentation_lease:Some("0123456789abcdef0123456789abcdef".into()),marker_prefix:vec![]},attention_version:0,ordinary_version:0,with_attention:false,retry_messages:false,blocked_messages:vec![],known_messages:vec![],new_message_slots:256},&budget()).unwrap()
+            f.store.presentation_pull(PresentationInput { binding_id: binding_for_claim(&f, claim), owner_replay:None,ordinary_due_snapshot:None,frozen_render:presentation_watch_frozen(&f,claim),render_profile:crate::delivery::presentation::PresentationRenderProfile::WatchJsonLinesV1,pull:DeliveryPullV2{defer_notice_settlement: false,claim:claim.clone(),consumer:PresentationConsumer::Watch,render:crate::protocol::delivery::PresentationRenderRequest::WatchJsonLinesV1,presentation_lease:Some("0123456789abcdef0123456789abcdef".into()),marker_prefix:vec![]},attention_version:0,ordinary_version:0,with_attention:false,retry_messages:false,blocked_messages:vec![],known_messages:vec![],new_message_slots:256},&budget()).unwrap()
         };
         let refresh = |claim: &CallerClaim| {
             f.store
@@ -8476,6 +8489,7 @@ fn presentation_registered_channel_materializes_each_published_warn_before_drain
             .service
             .handle(
                 Command::DeliveryPullV2(DeliveryPullV2 {
+                    defer_notice_settlement: false,
                     claim: recipient.clone(),
                     consumer: PresentationConsumer::Watch,
                     render: PresentationRenderRequest::WatchJsonLinesV1,
@@ -9037,6 +9051,7 @@ impl OfferWindowFixture {
             .service
             .handle(
                 Command::DeliveryPullV2(DeliveryPullV2 {
+                    defer_notice_settlement: false,
                     claim: self.recipient.clone(),
                     consumer: PresentationConsumer::Watch,
                     render: PresentationRenderRequest::WatchJsonLinesV1,
@@ -9089,6 +9104,7 @@ impl OfferWindowFixture {
             DeliveryPullV2, PresentationConsumer, PresentationRenderRequest,
         };
         DeliveryPullV2 {
+            defer_notice_settlement: false,
             claim: self.recipient.clone(),
             consumer: PresentationConsumer::Watch,
             render: PresentationRenderRequest::WatchJsonLinesV1,
@@ -9634,6 +9650,7 @@ fn presentation_reclamation_preserves_pending_truncated_and_reoffer_history() {
         .service
         .handle(
             Command::DeliveryPullV2(DeliveryPullV2 {
+                defer_notice_settlement: false,
                 claim: window.recipient.clone(),
                 consumer: PresentationConsumer::Watch,
                 render: PresentationRenderRequest::WatchJsonLinesV1,
@@ -9966,6 +9983,7 @@ fn offer_reconciliation_input(
         frozen_render: presentation_watch_frozen(f, claim),
         render_profile: crate::delivery::presentation::PresentationRenderProfile::WatchJsonLinesV1,
         pull: DeliveryPullV2 {
+            defer_notice_settlement: false,
             claim: claim.clone(),
             consumer: PresentationConsumer::Watch,
             render: PresentationRenderRequest::WatchJsonLinesV1,
@@ -10788,6 +10806,7 @@ fn presentation_quiet_channel_observes_new_ordinary_ack_message() {
         f.service
             .handle(
                 Command::DeliveryPullV2(crate::protocol::delivery::DeliveryPullV2 {
+                    defer_notice_settlement: false,
                     claim: recipient.clone(),
                     consumer: crate::protocol::delivery::PresentationConsumer::Watch,
                     render: crate::protocol::delivery::PresentationRenderRequest::WatchJsonLinesV1,
@@ -11008,6 +11027,7 @@ fn pull_private_invitation_id(
                 passive: codec,
             },
             pull: DeliveryPullV2 {
+                defer_notice_settlement: false,
                 claim: recipient.clone(),
                 consumer: PresentationConsumer::Hook,
                 render: PresentationRenderRequest::Hook {

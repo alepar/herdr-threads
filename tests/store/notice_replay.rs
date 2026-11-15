@@ -30,13 +30,13 @@ impl Clock for TestClock {
     }
 }
 
-struct Fixture {
+pub(super) struct Fixture {
     service: DomainService,
-    store: Arc<dyn StorePort>,
+    pub(super) store: Arc<dyn StorePort>,
     /// The offered ledger the service and (in production) the wake lane share.
     state: Arc<DeliveryPullState>,
     clock: Arc<TestClock>,
-    db: Connection,
+    pub(super) db: Connection,
     directory: std::path::PathBuf,
 }
 impl Drop for Fixture {
@@ -195,7 +195,7 @@ fn check_in(f: &Fixture, claim: CallerClaim, operation: &str) -> CallerClaim {
     }
 }
 
-fn binding_for_claim(f: &Fixture, claim: &CallerClaim) -> BindingId {
+pub(super) fn binding_for_claim(f: &Fixture, claim: &CallerClaim) -> BindingId {
     BindingId::new(f.db.query_row::<String, _, _>(
         "SELECT binding_id FROM occupant_bindings WHERE seat_id=?1 AND harness=?2 AND native_session=?3 AND agent_id=?4 AND ended_at IS NULL",
         params![claim.seat.as_str(), claim.harness.as_str(), claim.native_session.as_str(), claim.agent_id.as_ref().map_or("", |agent| agent.as_str())],
@@ -211,6 +211,7 @@ fn presentation_test_pull(
         .service
         .handle(
             Command::DeliveryPullV2(crate::protocol::delivery::DeliveryPullV2 {
+                defer_notice_settlement: false,
                 claim: claim.clone(),
                 consumer: crate::protocol::delivery::PresentationConsumer::Hook,
                 render: crate::protocol::delivery::PresentationRenderRequest::Hook {
@@ -249,7 +250,7 @@ fn finish_presentation_attention_job(f: &Fixture, job: &str) {
     panic!("fixture attention job did not finish within its finite recipient bound");
 }
 
-fn published_notice() -> (Fixture, CallerClaim, InvitationId, MessageId, String) {
+pub(super) fn published_notice() -> (Fixture, CallerClaim, InvitationId, MessageId, String) {
     let f = fixture();
     let recipient = check_in(
         &f,

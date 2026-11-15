@@ -1357,8 +1357,20 @@ pub fn settle_carried_notices(
     binding: &BindingId,
     carried: &[WarningRef],
 ) -> Result<usize, ApiError> {
+    let page = carried_notice_prefix(tx, seat_id, binding, carried)?;
+    settle_offered_notices(tx, seat_id, binding, &page)
+}
+
+/// Validate allocation without declaring presentation. The returned canonical ordinals may be
+/// frozen in an outbox whose eventual confirmation owns the frontier update.
+pub(super) fn carried_notice_prefix(
+    tx: &Connection,
+    seat_id: &str,
+    binding: &BindingId,
+    carried: &[WarningRef],
+) -> Result<Vec<OfferedNotice>, ApiError> {
     if carried.is_empty() {
-        return Ok(0);
+        return Ok(Vec::new());
     }
     let page = notice_offer_page_for(tx, seat_id, binding, carried.len())?;
     if page.len() != carried.len()
@@ -1372,7 +1384,7 @@ pub fn settle_carried_notices(
             "offered notices differ from the unoffered notice page",
         ));
     }
-    settle_offered_notices(tx, seat_id, binding, &page)
+    Ok(page)
 }
 
 /// The seat's pending warnings still in the projection backlog, read once

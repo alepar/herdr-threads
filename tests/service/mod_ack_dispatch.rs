@@ -1001,6 +1001,7 @@ fn q3_completion_hint_successful_presentation_confirm_is_inert() {
         .service
         .handle(
             Command::DeliveryPullV2(DeliveryPullV2 {
+                defer_notice_settlement: false,
                 claim: context.clone(),
                 consumer: PresentationConsumer::Hook,
                 render: PresentationRenderRequest::Hook {

@@ -412,6 +412,10 @@ fn load_raw(
         return Err(corrupt("negative presentation state counter"));
     }
     checked_publication_state(&state)?;
+    let descriptors: Vec<FrozenPresentation> = decode(&state.outbox_descriptors)?;
+    for descriptor in &descriptors {
+        deferred_notice(descriptor)?;
+    }
     Ok(state)
 }
 fn load(
@@ -953,6 +957,35 @@ pub(super) fn confirm(
         {
             return Err(ApiError::invalid_request("foreign presentation control"));
         }
+    }
+    // Ownership was checked above even when another presentation covered every capture.
+    // Validate the entire remaining canonical prefix before retiring any body or control.
+    let mut captured = Vec::new();
+    for (slot, descriptor) in descriptors.iter().enumerate() {
+        if let Some(notice) = deferred_notice(descriptor)?
+            && retired & (1u32 << slot) == 0
+        {
+            captured.push(notice);
+        }
+    }
+    if !captured.is_empty() {
+        let frontier = super::attention::binding_notice_frontier(db, binding.as_str())?;
+        captured.retain(|notice| notice.ordinal > frontier);
+        let prefix = super::attention::notice_offer_page_for(
+            db,
+            request.claim.seat.as_str(),
+            &binding,
+            captured.len(),
+        )?;
+        if captured != prefix {
+            return Ok(Reply::empty(Confirmation::NotCurrentPage));
+        }
+        super::attention::settle_offered_notices(
+            db,
+            request.claim.seat.as_str(),
+            &binding,
+            &captured,
+        )?;
     }
     let mut acknowledged_controls = Vec::new();
     let mut changed = false;
@@ -1586,7 +1619,64 @@ fn new_token(db: &Connection) -> Result<String, ApiError> {
 #[serde(deny_unknown_fields)]
 struct FrozenPresentation {
     item: crate::protocol::delivery::PresentationItemV2,
+    // Notice-only deferred settlement capture: dn1:<sequence>:<event_seq>:<ordinal>.
+    // The existing optional string keeps historical decoders compatible: they ignore Notice
+    // context keys, and an old confirmation leaves its unadvanced frontier safely reofferable.
+    // Invitation context keys keep their independent, existing meaning.
     context_key: Option<String>,
+}
+
+fn deferred_notice(
+    descriptor: &FrozenPresentation,
+) -> Result<Option<super::attention::OfferedNotice>, ApiError> {
+    use crate::protocol::delivery::PresentationItemV2;
+    let PresentationItemV2::Notice {
+        warning, thread, ..
+    } = &descriptor.item
+    else {
+        return Ok(None);
+    };
+    let Some(key) = &descriptor.context_key else {
+        return Ok(None);
+    };
+    let invalid = || corrupt("invalid deferred notice capture");
+    if key.len() > 65 {
+        return Err(invalid());
+    }
+    let mut fields = key.split(':');
+    if fields.next() != Some("dn1") {
+        return Err(invalid());
+    }
+    let decimal = |s: Option<&str>| -> Result<u64, ApiError> {
+        let s = s.ok_or_else(invalid)?;
+        let n = s.parse::<u64>().map_err(|_| invalid())?;
+        if n.to_string() != s {
+            return Err(invalid());
+        }
+        Ok(n)
+    };
+    let sequence = decimal(fields.next())?;
+    let event_seq = decimal(fields.next())?;
+    let ordinal = i64::try_from(decimal(fields.next())?).map_err(|_| invalid())?;
+    if ordinal == 0 || fields.next().is_some() {
+        return Err(invalid());
+    }
+    Ok(Some(super::attention::OfferedNotice {
+        notice: crate::protocol::results::WarningRef {
+            warning: warning.clone(),
+            thread: thread.clone(),
+            sequence,
+            event_seq,
+        },
+        ordinal,
+    }))
+}
+
+fn deferred_notice_key(notice: &super::attention::OfferedNotice) -> String {
+    format!(
+        "dn1:{}:{}:{}",
+        notice.notice.sequence, notice.notice.event_seq, notice.ordinal
+    )
 }
 fn frozen_profile(
     input: &PresentationInput,
@@ -2210,6 +2300,27 @@ pub(super) fn pull(
         .is_some_and(|v| !v.remaining.is_empty());
     let claim = &input.pull.claim;
     let mut state = load(db, claim, &binding, consumer)?;
+    if !input.pull.defer_notice_settlement {
+        let descriptors: Vec<FrozenPresentation> = decode(&state.outbox_descriptors)?;
+        let (retired, _) = checked_masks(
+            &descriptors,
+            state.outbox_retired_mask,
+            state.outbox_confirmed_mask,
+        )?;
+        for (slot, descriptor) in descriptors.iter().enumerate() {
+            if deferred_notice(descriptor)?.is_some() && retired & (1u32 << slot) == 0 {
+                return Ok(PresentationOutput {
+                    reply: DeliveryPullReplyV2::Refused {
+                        reason: crate::protocol::delivery::DeliveryRefusalReason::Busy,
+                    },
+                    work: PresentationWork::default(),
+                    reclaimed_messages: Vec::new(),
+                    ordinary_due_update: None,
+                    owner_replay: Default::default(),
+                });
+            }
+        }
+    }
     let mut sizer = presentation::Sizer::new();
     let publications = advance_ordinary_publications(db, claim, &mut state)?;
     work.ordinary_publication_visits = publications.visits;
@@ -2714,7 +2825,10 @@ pub(super) fn pull(
                 outputs.push(output.clone());
                 descriptors.push(FrozenPresentation {
                     item: output.clone(),
-                    context_key: None,
+                    context_key: input
+                        .pull
+                        .defer_notice_settlement
+                        .then(|| deferred_notice_key(notice)),
                 });
                 carried_notices.push(notice.notice.clone());
             }
@@ -2754,12 +2868,15 @@ pub(super) fn pull(
     }
     if !carried_notices.is_empty() {
         work.notice_validations = carried_notices.len();
-        super::attention::settle_carried_notices(
+        let prefix = super::attention::carried_notice_prefix(
             db,
             claim.seat.as_str(),
             &binding,
             &carried_notices,
         )?;
+        if !input.pull.defer_notice_settlement {
+            super::attention::settle_offered_notices(db, claim.seat.as_str(), &binding, &prefix)?;
+        }
     }
     // Carrying notices can invalidate the witness that opened this episode.
     // Recheck only that cached witness, never start a second discovery sweep.
@@ -2843,6 +2960,11 @@ pub(super) fn pull(
         state.outbox_token = Some(new_token(db)?);
         state.outbox_text = presentation::presentation_hook_text(&frozen_items);
         state.outbox_descriptors = encode(&descriptors)?;
+        // Deferred captures share the historical private-state ceiling. Check the actual
+        // encoding before committing, rather than writing a page its next load would reject.
+        if state.outbox_descriptors.len() > 262144 {
+            return Err(corrupt("presentation descriptor storage bound"));
+        }
         state.outbox_selection = encode(&selection)?;
         state.outbox_render_key = render_key;
         state.outbox_prefix = encode(&input.pull.marker_prefix)?;
@@ -3163,3 +3285,7 @@ pub(super) fn refresh(
 #[cfg(all(test, feature = "test-support"))]
 #[path = "../../tests/store/notice_replay.rs"]
 mod notice_replay_tests;
+
+#[cfg(all(test, feature = "test-support"))]
+#[path = "../../tests/store/deferred_notice_legacy_confirm.rs"]
+mod legacy_confirm_tests;

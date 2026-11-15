@@ -31,6 +31,7 @@ fn parses_watch_argv() {
         ])
         .unwrap(),
         CliAction::Watch(WatchRequest {
+            manual_presentation: false,
             harness: Harness::Claude,
             session: "sess-1".into()
         })
@@ -126,6 +127,7 @@ struct FakeClient {
     cursors_capability: bool,
     /// Explicit Watch-mode agreement, independent of generic presentation support.
     watch_presentation_capability: bool,
+    deferred_notice_capability: bool,
     /// The daemon records append rows (`mod.ack_row_v1`).
     ack_row_capability: bool,
     /// Makes the capability probe fail: `Err` is an outer (transport) failure,
@@ -144,6 +146,7 @@ impl FakeClient {
             presentation_capability: false,
             cursors_capability: false,
             watch_presentation_capability: false,
+            deferred_notice_capability: false,
             ack_row_capability: false,
             probe: None,
         }
@@ -191,6 +194,9 @@ impl LocalClient for FakeClient {
                         }
                         if self.watch_presentation_capability {
                             list.push("mod.watch_presentation_v2".to_owned());
+                        }
+                        if self.deferred_notice_capability {
+                            list.push(crate::protocol::capabilities::DELIVERY_PRESENTATION_DEFERRED_NOTICE_V1.to_owned());
                         }
                         if self.ack_row_capability {
                             list.push(crate::protocol::capabilities::MOD_ACK_ROW_V1.to_owned());
@@ -643,6 +649,7 @@ fn unlocated_caller_exits_2_no_binding() {
     ])
     .unwrap();
     let request = WatchRequest {
+        manual_presentation: false,
         harness: Harness::Claude,
         session: "s1".into(),
     };
@@ -725,6 +732,7 @@ fn unreachable_daemon_exits_1_daemon_unavailable() {
     ])
     .unwrap();
     let request = WatchRequest {
+        manual_presentation: false,
         harness: Harness::Claude,
         session: "s1".into(),
     };
@@ -3279,4 +3287,325 @@ fn presentation_watch_lifecycle_close_wins_over_inflight_refusal() {
             );
         }
     }
+}
+
+#[test]
+fn manual_presentation_refuses_old_daemon_before_registration_or_pull() {
+    let mut client = FakeClient::new(|c| panic!("unexpected operation {c:?}"));
+    client.presentation_capability = true;
+    client.cursors_capability = true;
+    client.watch_presentation_capability = true;
+    let clock = clock();
+    let mut out = Vec::new();
+    let socket = std::path::Path::new("/not-contacted");
+    assert_eq!(
+        run_session_marked(
+            session(&client, &clock, socket),
+            vec![],
+            true,
+            &mut out,
+            || true
+        ),
+        crate::protocol::watch::WATCH_EXIT_STOP
+    );
+    assert!(client.calls().is_empty());
+    assert_eq!(
+        status_of(lines(&out).last().unwrap()).reason,
+        Some(WatchStatusReason::Unsupported)
+    );
+}
+
+#[test]
+fn manual_presentation_parks_exactly_one_page_without_auto_confirmation() {
+    use crate::protocol::delivery::*;
+    let client = FakeClient::new(|c| match c {
+        Command::DeliveryPullV2(pull) => {
+            assert!(pull.defer_notice_settlement);
+            Ok(CommandResult::DeliveryPulledV2(DeliveryPullReplyV2::Page(
+                presentation_notice_page(true),
+            )))
+        }
+        other => panic!("must not automatically settle {other:?}"),
+    });
+    let mut conn = PresentationTestConn(std::collections::VecDeque::from([
+        WatchFrame::Attention { version: 99 },
+        WatchFrame::Close {
+            reason: WatchCloseReason::Replaced,
+        },
+    ]));
+    let mut out = Vec::new();
+    let mut state = EmitState::default();
+    let code = watch_presentation_loop_mode(
+        &mut conn,
+        &client,
+        &clock(),
+        &claim(),
+        "0123456789abcdef0123456789abcdef",
+        &mut state,
+        &mut out,
+        &mut || true,
+        true,
+    );
+    assert_eq!(code, WatchCloseReason::Replaced.exit_code());
+    assert_eq!(client.calls().len(), 1);
+    let values = String::from_utf8(out)
+        .unwrap()
+        .lines()
+        .map(|l| serde_json::from_str::<serde_json::Value>(l).unwrap())
+        .collect::<Vec<_>>();
+    assert_eq!(values.len(), 3);
+    assert_eq!(values[1]["kind"], "presentation_page");
+    assert_eq!(values[1]["items"].as_array().unwrap().len(), 1);
+    assert_eq!(values[1]["keys"][0].as_str().unwrap().len(), 64);
+    let receipt = values[1]["receipt"].as_str().unwrap();
+    manual::read_receipt(&mut receipt.as_bytes()).unwrap();
+}
+
+#[test]
+fn manual_presentation_hidden_unknown_makes_finite_pull_progress_without_confirmation() {
+    use crate::protocol::delivery::*;
+    use std::sync::atomic::{AtomicUsize, Ordering};
+    let pulls = std::sync::Arc::new(AtomicUsize::new(0));
+    let seen = pulls.clone();
+    let client = FakeClient::new(move |c| match c {
+        Command::DeliveryPullV2(_) => {
+            let n = seen.fetch_add(1, Ordering::SeqCst);
+            let mut page = presentation_notice_page(true);
+            if n < 3 {
+                page.items.clear();
+                page.output_bytes = 0;
+            }
+            Ok(CommandResult::DeliveryPulledV2(DeliveryPullReplyV2::Page(
+                page,
+            )))
+        }
+        other => panic!("no empty or automatic confirmation {other:?}"),
+    });
+    struct ProgressConn(std::sync::Arc<AtomicUsize>);
+    impl WatchConn for ProgressConn {
+        fn next_frame(&mut self, _: Duration) -> io::Result<Option<WatchFrame>> {
+            if self.0.load(Ordering::SeqCst) < 4 {
+                Err(io::ErrorKind::TimedOut.into())
+            } else {
+                Ok(Some(WatchFrame::Close {
+                    reason: WatchCloseReason::Replaced,
+                }))
+            }
+        }
+    }
+    let mut conn = ProgressConn(pulls.clone());
+    let mut out = Vec::new();
+    watch_presentation_loop_mode(
+        &mut conn,
+        &client,
+        &clock(),
+        &claim(),
+        "0123456789abcdef0123456789abcdef",
+        &mut EmitState::default(),
+        &mut out,
+        &mut || true,
+        true,
+    );
+    assert_eq!(pulls.load(Ordering::SeqCst), 4);
+    assert_eq!(
+        String::from_utf8(out)
+            .unwrap()
+            .lines()
+            .filter(|l| l.contains("presentation_page"))
+            .count(),
+        1
+    );
+}
+
+#[test]
+fn manual_confirmation_reprobes_capability_and_validates_reply_before_success() {
+    use crate::protocol::delivery::*;
+    for status in [
+        DeliveryPresentationConfirmationV2::Confirmed,
+        DeliveryPresentationConfirmationV2::AlreadyConfirmed,
+        DeliveryPresentationConfirmationV2::NotCurrentPage,
+        DeliveryPresentationConfirmationV2::StaleBinding,
+    ] {
+        let mut client = FakeClient::new(move |c| match c {
+            Command::DeliveryPresentationConfirmV2(request) => {
+                assert_eq!(request.claim, claim());
+                assert_eq!(request.consumer, PresentationConsumer::Watch);
+                assert_eq!(
+                    request.presentation_lease.as_deref(),
+                    Some("0123456789abcdef0123456789abcdef")
+                );
+                Ok(CommandResult::DeliveryPresentationConfirmedV2(
+                    DeliveryPresentationConfirmationReplyV2::empty(status),
+                ))
+            }
+            other => panic!("unexpected {other:?}"),
+        });
+        client.presentation_capability = true;
+        client.cursors_capability = true;
+        client.watch_presentation_capability = true;
+        client.deferred_notice_capability = true;
+        let make_receipt = || {
+            let bytes = manual::encode_page(
+                &presentation_notice_page(false),
+                "0123456789abcdef0123456789abcdef",
+            )
+            .unwrap()
+            .unwrap();
+            let packet: serde_json::Value = serde_json::from_slice(&bytes).unwrap();
+            manual::read_receipt(&mut packet["receipt"].as_str().unwrap().as_bytes()).unwrap()
+        };
+        let mut out = Vec::new();
+        let result = manual::confirm(&client, &clock(), claim(), make_receipt(), &mut out);
+        let success = matches!(
+            status,
+            DeliveryPresentationConfirmationV2::Confirmed
+                | DeliveryPresentationConfirmationV2::AlreadyConfirmed
+        );
+        assert_eq!(result.is_ok(), success);
+        if success {
+            let value: serde_json::Value = serde_json::from_slice(&out).unwrap();
+            assert_eq!(value["emitted_page_confirmed"], true);
+            assert!(value.get("token_retired").is_none());
+        } else {
+            assert!(out.is_empty());
+        }
+        client.deferred_notice_capability = false;
+        let before = client.calls().len();
+        assert!(
+            manual::confirm(&client, &clock(), claim(), make_receipt(), &mut Vec::new()).is_err()
+        );
+        assert_eq!(
+            client.calls().len(),
+            before,
+            "replacement daemon refusal occurs before confirm"
+        );
+    }
+}
+
+#[test]
+fn default_channel_harnesses_keep_exact_lines_and_flush_before_confirmation() {
+    use crate::protocol::delivery::*;
+    for harness in [
+        crate::protocol::authority::Harness::Claude,
+        crate::protocol::authority::Harness::Agent(
+            crate::harness::registry::builtins()
+                .agent("opencode")
+                .unwrap(),
+        ),
+    ] {
+        let mut owner = claim();
+        owner.harness = harness;
+        let flushed = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false));
+        let observed = flushed.clone();
+        let client = FakeClient::new(move |command| match command {
+            Command::DeliveryPullV2(pull) => {
+                assert!(!pull.defer_notice_settlement);
+                assert!(
+                    serde_json::to_value(pull)
+                        .unwrap()
+                        .get("defer_notice_settlement")
+                        .is_none()
+                );
+                Ok(CommandResult::DeliveryPulledV2(DeliveryPullReplyV2::Page(
+                    presentation_notice_page(false),
+                )))
+            }
+            Command::DeliveryPresentationConfirmV2(_) => {
+                assert!(observed.load(std::sync::atomic::Ordering::SeqCst));
+                Ok(CommandResult::DeliveryPresentationConfirmedV2(
+                    DeliveryPresentationConfirmationReplyV2::empty(
+                        DeliveryPresentationConfirmationV2::Confirmed,
+                    ),
+                ))
+            }
+            other => panic!("unexpected {other:?}"),
+        });
+        struct Output {
+            bytes: Vec<u8>,
+            flushed: std::sync::Arc<std::sync::atomic::AtomicBool>,
+        }
+        impl Write for Output {
+            fn write(&mut self, b: &[u8]) -> io::Result<usize> {
+                self.bytes.extend_from_slice(b);
+                Ok(b.len())
+            }
+            fn flush(&mut self) -> io::Result<()> {
+                if self
+                    .bytes
+                    .windows(b"canonical notice".len())
+                    .any(|v| v == b"canonical notice")
+                {
+                    self.flushed
+                        .store(true, std::sync::atomic::Ordering::SeqCst);
+                }
+                Ok(())
+            }
+        }
+        let mut out = Output {
+            bytes: Vec::new(),
+            flushed,
+        };
+        let mut conn =
+            PresentationTestConn(std::collections::VecDeque::from([WatchFrame::Close {
+                reason: WatchCloseReason::Replaced,
+            }]));
+        watch_presentation_loop(
+            &mut conn,
+            &client,
+            &clock(),
+            &owner,
+            "0123456789abcdef0123456789abcdef",
+            &mut EmitState::default(),
+            &mut out,
+            &mut || true,
+        );
+        let rendered = String::from_utf8(out.bytes).unwrap();
+        let expected = serde_json::to_string(
+            &crate::delivery::presentation::presentation_watch_lines(
+                &presentation_notice_page(false).items,
+            )[0],
+        )
+        .unwrap();
+        assert_eq!(rendered.lines().nth(1), Some(expected.as_str()));
+        assert!(!rendered.contains("presentation_page"));
+        assert!(!rendered.contains("receipt"));
+        assert_eq!(client.calls().len(), 2);
+    }
+}
+
+#[test]
+fn manual_hidden_continuation_observes_close_before_another_pull() {
+    use crate::protocol::delivery::*;
+    let client = FakeClient::new(|c| match c {
+        Command::DeliveryPullV2(_) => {
+            let mut page = presentation_notice_page(true);
+            page.items.clear();
+            page.output_bytes = 0;
+            Ok(CommandResult::DeliveryPulledV2(DeliveryPullReplyV2::Page(
+                page,
+            )))
+        }
+        other => panic!("unexpected {other:?}"),
+    });
+    let mut conn = PresentationTestConn(std::collections::VecDeque::from([WatchFrame::Close {
+        reason: WatchCloseReason::Replaced,
+    }]));
+    let mut out = Vec::new();
+    watch_presentation_loop_mode(
+        &mut conn,
+        &client,
+        &clock(),
+        &claim(),
+        "0123456789abcdef0123456789abcdef",
+        &mut EmitState::default(),
+        &mut out,
+        &mut || true,
+        true,
+    );
+    assert_eq!(client.calls().len(), 1);
+    assert!(
+        !String::from_utf8(out)
+            .unwrap()
+            .contains("presentation_page")
+    );
 }

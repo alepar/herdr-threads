@@ -237,6 +237,7 @@ pub const ADVERTISED: &[&str] = &[
     LAZY_HOOK_DELIVERY,
     HOOK_CONTEXT_RECEIPTS_V1,
     DELIVERY_PRESENTATION_V2,
+    DELIVERY_PRESENTATION_DEFERRED_NOTICE_V1,
     BINDING_CURSORS,
     BINDING_DIGEST,
     IN_TURN_OFFER,
@@ -293,3 +294,8 @@ mod tests;
 /// Bounded ordered delivery through registered codecs and explicit presentation confirmation.
 /// Consumers retain historical delivery when capability discovery omits this name.
 pub const DELIVERY_PRESENTATION_V2: &str = "delivery.presentation_v2";
+
+/// Watch may defer canonical notice frontiers until explicit whole emitted-page presentation.
+/// Local RPC only; automatic Watch and Hook consumers retain their historical behavior.
+pub const DELIVERY_PRESENTATION_DEFERRED_NOTICE_V1: &str =
+    "delivery.presentation_deferred_notice_v1";

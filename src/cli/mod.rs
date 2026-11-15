@@ -710,7 +710,10 @@ fn run_parsed_in_pane<W: Write>(
         writer.flush()?;
         return Ok(());
     }
-    if matches!(&parsed.action, CliAction::Watch(_) | CliAction::WatchAck(_)) {
+    if matches!(
+        &parsed.action,
+        CliAction::Watch(_) | CliAction::WatchAck(_) | CliAction::WatchPresentationConfirm { .. }
+    ) {
         // Before any context read or connection: the env switch and, for
         // `watch`, a missing pane.
         watch::precheck(
@@ -1083,6 +1086,18 @@ fn run_parsed_in_pane<W: Write>(
         return watch::run_ack(
             &mut parsed,
             &request,
+            caller_pane,
+            &context,
+            &paths,
+            &connection,
+            &clock,
+            writer,
+        );
+    }
+    if let CliAction::WatchPresentationConfirm { session } = parsed.action.clone() {
+        return watch::run_presentation_confirm(
+            &mut parsed,
+            &session,
             caller_pane,
             &context,
             &paths,
@@ -1476,7 +1491,9 @@ fn run_parsed_in_pane<W: Write>(
         | CliAction::HarnessVersionNormalize { .. } => {
             unreachable!("contract-id and harness-version are handled before context resolution")
         }
-        CliAction::Watch(_) | CliAction::WatchAck(_) => {
+        CliAction::Watch(_)
+        | CliAction::WatchAck(_)
+        | CliAction::WatchPresentationConfirm { .. } => {
             unreachable!("watch is handled before context resolution")
         }
         CliAction::InstallerIntegrations { .. }
@@ -4201,7 +4218,8 @@ fn caller_need(parsed: &commands::ParsedCli, paths: &NodePaths) -> Result<Caller
         | CliAction::Handoff(_)
         | CliAction::TopologyHandoff(_)
         | CliAction::Watch(_)
-        | CliAction::WatchAck(_) => CallerNeed::Selection,
+        | CliAction::WatchAck(_)
+        | CliAction::WatchPresentationConfirm { .. } => CallerNeed::Selection,
         // A remote handoff needs the top-level caller before it launches there.
         CliAction::RemoteLaunch(remote) if remote.then.is_some() || remote.is_handoff() => {
             CallerNeed::Selection

@@ -343,6 +343,7 @@ fn capability_constants_are_stable() {
             "hook.lazy_delivery_v1",
             "hook.context_receipts_v1",
             "delivery.presentation_v2",
+            "delivery.presentation_deferred_notice_v1",
             "inbox.binding_cursors_v1",
             "attention.binding_digest_v1",
             "inbox.in_turn_offer_v1",
@@ -766,6 +767,9 @@ fn every_advertised_capability_has_a_handler() {
             }
             MOD_WATCH => probe_mod_watch(false),
             MOD_WATCH_PRESENTATION_V2 => probe_mod_watch(true),
+            DELIVERY_PRESENTATION_DEFERRED_NOTICE_V1 => {
+                presentation_capability_routes_use_configured_domain()
+            }
             MOD_ACK_ROW_V1 => {
                 // The row decodes into `AckModDelivered` and is validated; the store records it
                 // in the ACK observation (`tests/store/mod_ack.rs`).
@@ -1493,6 +1497,7 @@ fn bare_daemon_advertises_legacy_capabilities_without_v2_recorder() {
             "hook.lazy_delivery_v1",
             "hook.context_receipts_v1",
             "delivery.presentation_v2",
+            "delivery.presentation_deferred_notice_v1",
             "inbox.binding_cursors_v1",
             "attention.binding_digest_v1",
             "inbox.in_turn_offer_v1",
@@ -3138,6 +3143,7 @@ fn presentation_capability_routes_use_configured_domain() {
     }));
     let CommandResult::DeliveryPulledV2(DeliveryPullReplyV2::Page(page)) =
         call(Command::DeliveryPullV2(DeliveryPullV2 {
+            defer_notice_settlement: false,
             claim: recipient.clone(),
             consumer: PresentationConsumer::Hook,
             render: PresentationRenderRequest::Hook {

@@ -158,6 +158,9 @@ pub fn valid_presentation_token(token: &str) -> bool {
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct DeliveryPullV2 {
+    /// Explicit Watch-only deferred notice presentation; historical consumers omit false.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub defer_notice_settlement: bool,
     pub render: PresentationRenderRequest,
     pub claim: CallerClaim,
     pub consumer: PresentationConsumer,
@@ -168,6 +171,9 @@ pub struct DeliveryPullV2 {
 }
 impl DeliveryPullV2 {
     pub fn validate(&self) -> Result<(), &'static str> {
+        if self.defer_notice_settlement && self.consumer != PresentationConsumer::Watch {
+            return Err("deferred notice settlement requires Watch");
+        }
         validate_presentation_scope(self.consumer, self.presentation_lease.as_deref())?;
         if !matches!(
             (self.consumer, &self.render),

@@ -45,6 +45,8 @@ use std::{
     time::{Duration, Instant},
 };
 
+mod manual;
+
 /// Read timeout of the stream; each expiry is one parent-liveness check.
 const STREAM_READ_TIMEOUT: Duration = Duration::from_secs(1);
 /// Budget for the registration round trip.
@@ -52,6 +54,7 @@ const HANDSHAKE_TIMEOUT: Duration = Duration::from_secs(5);
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct WatchRequest {
+    pub manual_presentation: bool,
     pub harness: Harness,
     pub session: String,
 }
@@ -357,6 +360,7 @@ pub(crate) struct WatchSession<'a> {
 enum Probe {
     Supported {
         presentation: bool,
+        deferred_notices: bool,
         /// The daemon serves per-binding unread streams (`inbox.binding_cursors_v1`).
         cursors: bool,
     },
@@ -399,6 +403,9 @@ fn probe_mod_watch(client: &dyn LocalClient, budget: &CallBudget) -> Probe {
                     presentation: supports(DELIVERY_PRESENTATION_V2)
                         && supports(MOD_WATCH_PRESENTATION_V2)
                         && cursors,
+                    deferred_notices: supports(
+                        crate::protocol::capabilities::DELIVERY_PRESENTATION_DEFERRED_NOTICE_V1,
+                    ),
                     cursors,
                 }
             } else {
@@ -422,13 +429,14 @@ fn probe_mod_watch(client: &dyn LocalClient, budget: &CallBudget) -> Probe {
 /// Test entry: the bare marker prefix.
 #[cfg(test)]
 fn run_session(session: WatchSession<'_>, out: &mut dyn Write, alive: impl FnMut() -> bool) -> i32 {
-    run_session_marked(session, Vec::new(), out, alive)
+    run_session_marked(session, Vec::new(), false, out, alive)
 }
 
 /// Capability check, registration, then the stream loop. Returns the exit code.
 fn run_session_marked(
     session: WatchSession<'_>,
     command_prefix: Vec<String>,
+    manual_presentation: bool,
     out: &mut dyn Write,
     mut alive: impl FnMut() -> bool,
 ) -> i32 {
@@ -440,7 +448,13 @@ fn run_session_marked(
             Probe::Supported {
                 presentation,
                 cursors,
-            } => (presentation, cursors),
+                deferred_notices,
+            } => {
+                if manual_presentation && !(presentation && deferred_notices) {
+                    return refuse(&mut state, out, WatchStatusReason::Unsupported);
+                }
+                (presentation, cursors)
+            }
             Probe::Unsupported => return refuse(&mut state, out, WatchStatusReason::Unsupported),
             Probe::Failed => return refuse(&mut state, out, WatchStatusReason::DaemonUnavailable),
         };
@@ -473,7 +487,7 @@ fn run_session_marked(
                     .as_deref()
                     .is_some_and(crate::protocol::delivery::valid_presentation_token) =>
         {
-            watch_presentation_loop(
+            watch_presentation_loop_mode(
                 &mut conn,
                 session.client,
                 session.clock,
@@ -485,7 +499,11 @@ fn run_session_marked(
                 &mut state,
                 out,
                 &mut alive,
+                manual_presentation,
             )
+        }
+        WatchOutcome::Accepted(_) if manual_presentation => {
+            refuse(&mut state, out, WatchStatusReason::Unsupported)
         }
         WatchOutcome::Accepted(accepted) => watch_loop(
             &mut conn,
@@ -607,8 +625,7 @@ fn lifecycle_close(conn: &mut dyn WatchConn) -> Option<crate::protocol::watch::W
     }
 }
 
-/// Capability-and-owner admitted V2 stream. Canonical outbox state owns retry;
-/// only a successfully flushed captured page may be explicitly confirmed.
+#[cfg(test)]
 #[allow(clippy::too_many_arguments)]
 fn watch_presentation_loop(
     conn: &mut dyn WatchConn,
@@ -619,6 +636,23 @@ fn watch_presentation_loop(
     state: &mut EmitState,
     out: &mut dyn Write,
     alive: &mut dyn FnMut() -> bool,
+) -> i32 {
+    watch_presentation_loop_mode(conn, client, clock, claim, lease, state, out, alive, false)
+}
+
+/// Capability-and-owner admitted V2 stream. Canonical outbox state owns retry;
+/// only a successfully flushed captured page may be explicitly confirmed.
+#[allow(clippy::too_many_arguments)]
+fn watch_presentation_loop_mode(
+    conn: &mut dyn WatchConn,
+    client: &dyn LocalClient,
+    clock: &dyn Clock,
+    claim: &CallerClaim,
+    lease: &str,
+    state: &mut EmitState,
+    out: &mut dyn Write,
+    alive: &mut dyn FnMut() -> bool,
+    manual_presentation: bool,
 ) -> i32 {
     use crate::{
         delivery::presentation::{self, PresentationRenderProfile},
@@ -660,6 +694,7 @@ fn watch_presentation_loop(
         return 0;
     }
     let mut continuation = false;
+    let mut parked = false;
     loop {
         if !alive() {
             return 0;
@@ -697,6 +732,7 @@ fn watch_presentation_loop(
         }
         let result = client.call(
             Command::DeliveryPullV2(DeliveryPullV2 {
+                defer_notice_settlement: manual_presentation,
                 claim: claim.clone(),
                 consumer: PresentationConsumer::Watch,
                 render: PresentationRenderRequest::WatchJsonLinesV1,
@@ -732,19 +768,33 @@ fn watch_presentation_loop(
                     return closing(state, out, WatchStatusReason::Error, WATCH_EXIT_ERROR);
                 }
                 let mut bytes = Vec::with_capacity(size);
-                for line in presentation::presentation_watch_lines(&page.items) {
-                    if serde_json::to_writer(&mut bytes, &line).is_err() {
-                        return closing(state, out, WatchStatusReason::Error, WATCH_EXIT_ERROR);
+                if manual_presentation {
+                    match manual::encode_page(&page, lease) {
+                        Ok(Some(envelope)) => {
+                            bytes = envelope;
+                            parked = true;
+                        }
+                        Ok(None) => {}
+                        Err(_) => {
+                            return closing(state, out, WatchStatusReason::Error, WATCH_EXIT_ERROR);
+                        }
                     }
-                    bytes.push(b'\n');
                 }
-                if bytes.len() != size {
+                if !parked {
+                    for line in presentation::presentation_watch_lines(&page.items) {
+                        if serde_json::to_writer(&mut bytes, &line).is_err() {
+                            return closing(state, out, WatchStatusReason::Error, WATCH_EXIT_ERROR);
+                        }
+                        bytes.push(b'\n');
+                    }
+                }
+                if !parked && bytes.len() != size {
                     return closing(state, out, WatchStatusReason::Error, WATCH_EXIT_ERROR);
                 }
                 if !bytes.is_empty() && (out.write_all(&bytes).is_err() || out.flush().is_err()) {
                     return 0;
                 }
-                if let Some(token) = page.presentation_token {
+                if let Some(token) = page.presentation_token.filter(|_| !manual_presentation) {
                     let result = client.call(
                         Command::DeliveryPresentationConfirmV2(DeliveryPresentationConfirmV2 {
                             claim: claim.clone(),
@@ -791,7 +841,7 @@ fn watch_presentation_loop(
             }
             _ => return closing(state, out, WatchStatusReason::Error, WATCH_EXIT_ERROR),
         };
-        if more {
+        if more && !parked {
             continuation = true;
             continue;
         }
@@ -801,7 +851,8 @@ fn watch_presentation_loop(
                 return 0;
             }
             match conn.next_frame(STREAM_READ_TIMEOUT) {
-                Ok(Some(WatchFrame::Attention { .. })) => break,
+                Ok(Some(WatchFrame::Attention { .. })) if !parked => break,
+                Ok(Some(WatchFrame::Attention { .. })) => {}
                 Ok(Some(WatchFrame::Close { reason })) => {
                     return closing(state, out, reason.into(), reason.exit_code());
                 }
@@ -1422,6 +1473,7 @@ where
             hint_path: Some(hint_path(paths, &seat)),
         },
         command_prefix,
+        request.manual_presentation,
         writer,
         || parent_alive(start_ppid, system_ppid),
     );
@@ -1468,6 +1520,37 @@ where
         Some(&hint),
         writer,
     ))
+}
+
+#[allow(clippy::too_many_arguments)]
+pub(super) fn run_presentation_confirm<C, F, W>(
+    parsed: &mut super::commands::ParsedCli,
+    session: &str,
+    caller_pane: Option<&str>,
+    context: &crate::daemon::paths::RuntimeContext,
+    paths: &crate::daemon::paths::NodePaths,
+    connection: &LazyConnection<C, F>,
+    clock: &Arc<dyn Clock>,
+    writer: &mut W,
+) -> Result<(), RunError>
+where
+    C: LocalClient,
+    F: Fn() -> Result<(crate::node::NodeUuid, C), RunError>,
+    W: Write,
+{
+    let receipt = manual::read_receipt(&mut io::stdin().lock()).map_err(RunError::Api)?;
+    let (claim, _, _) = locate_claim(
+        parsed,
+        session,
+        caller_pane,
+        context,
+        paths,
+        connection,
+        clock,
+    )
+    .map_err(|_| RunError::Exit(1))?;
+    let (_, client) = connection.get()?;
+    manual::confirm(client, clock.as_ref(), claim, receipt, writer)
 }
 
 #[cfg(test)]
