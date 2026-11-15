@@ -316,10 +316,11 @@ class Run:
         extension = profile / "extensions/herdr-threads/index.js"
         options = ["--provider", "ht-fixture", "--model", "scripted", "--extension", str(extension), "--extension", str(fixture)]
         extra = {"HT_PI_QUALIFY_ROOT": str(probe), "PI_CODING_AGENT_DIR": str(profile),
-                 "HOME": str(probe / "home"), "HT_PI_QUALIFY_OPTS": shlex.join(options)}
+                 "HOME": str(probe / "home"), "HT_PI_QUALIFY_OPTS": shlex.join(options),
+                 "PATH": str(probe / "bin") + ":" + self.env["PATH"]}
         env = {**self.env, **extra}
         shim = probe / "bin/pi"
-        exports = {k: env[k] for k in ("HT_PI_QUALIFY_ROOT", "HT_PI_QUALIFY_MODULES", "HT_PI_QUALIFY_CLI", "PI_CODING_AGENT_DIR", "PI_OFFLINE", "HT_PI_QUALIFY_OPTS", "HOME")}
+        exports = {k: env[k] for k in ("HT_PI_QUALIFY_ROOT", "HT_PI_QUALIFY_MODULES", "HT_PI_QUALIFY_CLI", "PI_CODING_AGENT_DIR", "PI_OFFLINE", "HT_PI_QUALIFY_OPTS", "HOME", "PATH")}
         shim.write_text("#!/bin/sh\n" + "".join("export " + k + "=" + shlex.quote(v) + "\n" for k, v in exports.items())
                         + "exec " + ("node " if self.pi.suffix == ".js" else "") + shlex.quote(str(self.pi)) + ' "$@"\n')
         shim.chmod(0o700)
@@ -1262,10 +1263,12 @@ class DriverTests(unittest.TestCase):
             run.modules = MODULES; run.bin = REPO / "target/debug/herdr-threads"
             run.pi = MODULES / "@earendil-works/pi-coding-agent/dist/bundle/cli.js"
             run.workspace = "owned-workspace"; run.facts = {}
-            run.env = {"PATH": os.environ["PATH"], "HT_PI_QUALIFY_MODULES": str(MODULES),
+            primary_bin = run.root / "bin"; primary_bin.mkdir()
+            primary_pi = primary_bin / "pi"; primary_pi.write_text('#!/bin/sh\nexit 93\n'); primary_pi.chmod(0o700)
+            run.env = {"PATH": str(primary_bin) + ":" + os.environ["PATH"], "HT_PI_QUALIFY_MODULES": str(MODULES),
                        "HT_PI_QUALIFY_CLI": '["owned-cli","--json"]', "PI_OFFLINE": "1"}
             (run.root / "agent").mkdir(); (run.root / "agent/settings.json").write_text('{}')
-            setup_env = []
+            setup_env, pane_env = [], {}
             def ht(*args, **kwargs):
                 if args[0] == "setup":
                     setup_env.append(kwargs["extra_env"])
@@ -1273,6 +1276,13 @@ class DriverTests(unittest.TestCase):
                     installed.parent.mkdir(parents=True); installed.write_text('synthetic installed artifact for selftest only')
                     return {}
                 self.assertEqual(args[0], "launch")
+                requested = args[args.index("--harness-binary") + 1]
+                for label, env in (("launch caller", {**run.env, **kwargs["extra_env"]}), ("native pane", pane_env)):
+                    selected = subprocess.run(['/bin/sh', '-c', 'command -v pi'],
+                        env={**env, "HT_TEST_OWNER": str(os.getpid()), "HT_LEAK_RUN_ID": os.environ.get("HT_LEAK_RUN_ID", str(uuid.uuid4()))},
+                        capture_output=True, text=True, timeout=5)
+                    self.assertEqual(selected.returncode, 0, label + " cannot select native pi")
+                    self.assertEqual(Path(selected.stdout.strip()).resolve(), Path(requested).resolve(), label + " PATH selects a different native executable")
                 # --help invokes the real public parser without allocating a
                 # host, launch plan, seat or process. Unknown flags still fail.
                 result = subprocess.run([str(run.bin), *args[:args.index("--")], "--help"],
@@ -1282,7 +1292,12 @@ class DriverTests(unittest.TestCase):
                 self.assertEqual(result.returncode, 0, result.stderr)
                 raise ParserChecked()
             run.ht = ht
-            run.herdr = lambda *_args: {"result": {"root_pane": {"pane_id": "owned-sink"}}}
+            def tab(*args):
+                for index, arg in enumerate(args):
+                    if arg == "--env":
+                        key, value = args[index + 1].split("=", 1); pane_env[key] = value
+                return {"result": {"root_pane": {"pane_id": "owned-sink"}}}
+            run.herdr = tab
             with self.assertRaises(ParserChecked): run.start_notice_sink()
             profile = run.root / "notice-sink/agent"
             self.assertEqual(setup_env[0]["PI_CODING_AGENT_DIR"], str(profile))
@@ -1290,6 +1305,8 @@ class DriverTests(unittest.TestCase):
             shim = (run.root / "notice-sink/bin/pi").read_text()
             self.assertIn("export PI_CODING_AGENT_DIR=" + shlex.quote(str(profile)), shim)
             self.assertIn("export HOME=" + shlex.quote(str(run.root / "notice-sink/home")), shim)
+            self.assertEqual(setup_env[0]["PATH"].split(":"), [str(run.root / "notice-sink/bin"), *run.env["PATH"].split(":")])
+            self.assertIn("export PATH=" + shlex.quote(setup_env[0]["PATH"]), shim)
             installed = profile / "extensions/herdr-threads/index.js"
             original = 'synthetic installed artifact for selftest only'
             self.assertEqual(installed.read_text(), original, "identity capture changed the installation")

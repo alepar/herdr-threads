@@ -115,6 +115,31 @@ Corrected driver SHA256:
 The provider fixture hash is unchanged. These source checks do not turn the
 failed native attempt into a pass or qualify the unexecuted cases.
 
+The next native attempt used driver source `9b784fb72` with the same frozen
+production binary. It stopped after 9.01 seconds at the sink's launch executable
+witness: the requested sink shim differed from `pi` selected on PATH. No sink
+admission or notice cause occurred, and the other two cases remained unexecuted.
+Cleanup again reaped the helper, removed the root and reported no process/temp
+leaks. Both actual setup installations were captured before failure with SHA256
+`a4eef77cbfb3f13120ce6bb246a91c01f3f7034db6e497152c67f97c0b34cb08`.
+
+The subsequent driver-only correction prepends the sink's bin directory before
+merging its setup/launch and pane environments, and exports that PATH in its
+shim. The primary bin directory remains later on PATH for the private threads
+CLI. A real shell `command -v pi` regression checks both captured launch-caller
+and pane environments against the requested executable: RED selected the primary
+shim; GREEN selected the sink shim. The full startup audit also checked native
+arguments, profile resolution, exact binding JSON, readiness/trace separation
+and public command grammar. Final selftests passed 26/26 in 2.445 seconds and
+the same-run process/temp scan exited 0. This remains source evidence; no new
+notice-delivery pass is claimed.
+
+PATH patch SHA256:
+`b3b6be277ffccfc5f501c98bc2743d07eacaa4421e8c3adaa8712895ae3e3886`.
+Driver SHA256:
+`ce7567bb9bbba0b6f56a0eee2e883a64955c9590dfba111734eca0241d83b5f2`.
+Production binary, embedded integration and provider fixture are unchanged.
+
 Earlier fourteen-case and pre-F1 native results remain historical evidence with
 their original source/binary identities. These selftests do not replace final
 native delta, corrected unfiltered attempt2, scoped live qualification, or the
