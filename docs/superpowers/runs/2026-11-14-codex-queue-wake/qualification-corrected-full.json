@@ -1,0 +1,366 @@
+{
+  "source_sha": "9e9a2db8602a9adecd0a060e45a24119a4ccdd02",
+  "run_id": "a42e9957-403f-4342-a37d-b7b56f5fa04c",
+  "nextest_run_uuid": "7e123658-19ff-4b3f-9f10-0baa4b379153",
+  "tests": 9732,
+  "passed": 9732,
+  "skipped": 64,
+  "exit_code": 0,
+  "resources": {
+    "nice": 19,
+    "build_jobs": 4,
+    "test_threads": 4,
+    "rust_test_threads": 4,
+    "profile": "ci",
+    "group_config_sha256": "f5be54ee4a75cd2aa33d80d7ea321a262545226b76c6f25b3948a534f80742dd"
+  },
+  "execution_seconds": 1187.08,
+  "compile_seconds": 39.67,
+  "command_wall_seconds": 1228.425,
+  "wrapper_and_launch_overhead_seconds": 1.675,
+  "timing_gate": {
+    "limit_seconds": 300,
+    "satisfied": false
+  },
+  "initial_execution_seconds": 1226.88,
+  "execution_change_seconds": -39.8,
+  "execution_change_percent": -3.24,
+  "total_test_seconds": 4584.406,
+  "groups": [
+    {
+      "name": "@global",
+      "count": 9304,
+      "sum_seconds": 3379.016,
+      "max_seconds": 71.225
+    },
+    {
+      "name": "sync-daemons",
+      "count": 99,
+      "sum_seconds": 487.601,
+      "max_seconds": 47.55
+    },
+    {
+      "name": "mod-delivery",
+      "count": 64,
+      "sum_seconds": 142.849,
+      "max_seconds": 10.392
+    },
+    {
+      "name": "hook-budget",
+      "count": 91,
+      "sum_seconds": 133.346,
+      "max_seconds": 6.198
+    },
+    {
+      "name": "integration-daemon",
+      "count": 31,
+      "sum_seconds": 95.285,
+      "max_seconds": 9.821
+    },
+    {
+      "name": "clone-identity-sweep",
+      "count": 10,
+      "sum_seconds": 89.806,
+      "max_seconds": 27.829
+    },
+    {
+      "name": "session-bindings-smoke",
+      "count": 16,
+      "sum_seconds": 86.714,
+      "max_seconds": 21.327
+    },
+    {
+      "name": "service-daemon",
+      "count": 71,
+      "sum_seconds": 60.672,
+      "max_seconds": 6.631
+    },
+    {
+      "name": "hermes-smoke",
+      "count": 22,
+      "sum_seconds": 34.341,
+      "max_seconds": 16.878
+    },
+    {
+      "name": "named-seats",
+      "count": 13,
+      "sum_seconds": 28.34,
+      "max_seconds": 7.372
+    },
+    {
+      "name": "config-smoke",
+      "count": 8,
+      "sum_seconds": 25.602,
+      "max_seconds": 5.572
+    },
+    {
+      "name": "automatic-envelope",
+      "count": 2,
+      "sum_seconds": 12.794,
+      "max_seconds": 8.697
+    },
+    {
+      "name": "integration-sweep",
+      "count": 1,
+      "sum_seconds": 8.04,
+      "max_seconds": 8.04
+    }
+  ],
+  "binaries": [
+    {
+      "name": "herdr-threads",
+      "count": 7538,
+      "sum_seconds": 1835.836,
+      "max_seconds": 15.294
+    },
+    {
+      "name": "herdr-threads::integration",
+      "count": 346,
+      "sum_seconds": 942.192,
+      "max_seconds": 34.859
+    },
+    {
+      "name": "herdr-threads::combined",
+      "count": 1431,
+      "sum_seconds": 826.054,
+      "max_seconds": 15.026
+    },
+    {
+      "name": "herdr-threads::multinode",
+      "count": 75,
+      "sum_seconds": 452.626,
+      "max_seconds": 47.55
+    },
+    {
+      "name": "herdr-threads::hook_entrypoint",
+      "count": 89,
+      "sum_seconds": 132.965,
+      "max_seconds": 6.198
+    },
+    {
+      "name": "herdr-threads::service",
+      "count": 125,
+      "sum_seconds": 102.411,
+      "max_seconds": 11.108
+    },
+    {
+      "name": "herdr-threads::clone_identity_sweep",
+      "count": 10,
+      "sum_seconds": 89.806,
+      "max_seconds": 27.829
+    },
+    {
+      "name": "herdr-threads::package",
+      "count": 12,
+      "sum_seconds": 71.419,
+      "max_seconds": 71.225
+    },
+    {
+      "name": "herdr-threads::hc_messaging",
+      "count": 25,
+      "sum_seconds": 33.504,
+      "max_seconds": 10.243
+    },
+    {
+      "name": "herdr-threads::named_seats",
+      "count": 12,
+      "sum_seconds": 28.336,
+      "max_seconds": 7.372
+    },
+    {
+      "name": "herdr-threads::config_smoke",
+      "count": 8,
+      "sum_seconds": 25.602,
+      "max_seconds": 5.572
+    },
+    {
+      "name": "herdr-threads::hc_handoff",
+      "count": 45,
+      "sum_seconds": 23.393,
+      "max_seconds": 1.08
+    },
+    {
+      "name": "herdr-threads::integration_sweep",
+      "count": 1,
+      "sum_seconds": 8.04,
+      "max_seconds": 8.04
+    },
+    {
+      "name": "herdr-threads::opaque_promotion",
+      "count": 2,
+      "sum_seconds": 7.838,
+      "max_seconds": 4.401
+    },
+    {
+      "name": "herdr-threads::sync_resync",
+      "count": 5,
+      "sum_seconds": 3.862,
+      "max_seconds": 2.644
+    },
+    {
+      "name": "herdr-threads::hc_inherited_name",
+      "count": 7,
+      "sum_seconds": 0.518,
+      "max_seconds": 0.124
+    },
+    {
+      "name": "herdr-threads::opencode_native",
+      "count": 1,
+      "sum_seconds": 0.004,
+      "max_seconds": 0.004
+    }
+  ],
+  "top_tests": [
+    {
+      "binary": "herdr-threads::package",
+      "name": "manifest::failpoints_are_compiled_out_of_release_builds",
+      "seconds": 71.225,
+      "group": "@global"
+    },
+    {
+      "binary": "herdr-threads::multinode",
+      "name": "remote_addresses::remote_launch_runs_on_the_target_machine_once",
+      "seconds": 47.55,
+      "group": "sync-daemons"
+    },
+    {
+      "binary": "herdr-threads::integration",
+      "name": "trust_policy::a_wake_with_no_session_contact_before_its_retry_is_unreceived_and_not_retyped",
+      "seconds": 34.859,
+      "group": "@global"
+    },
+    {
+      "binary": "herdr-threads::multinode",
+      "name": "config_wipe::cold_start_after_the_deadline_holds_overdue_until_a_round_completes",
+      "seconds": 31.994,
+      "group": "sync-daemons"
+    },
+    {
+      "binary": "herdr-threads::clone_identity_sweep",
+      "name": "agent_exit_with_pane_open_keeps_the_seat",
+      "seconds": 27.829,
+      "group": "clone-identity-sweep"
+    },
+    {
+      "binary": "herdr-threads::multinode",
+      "name": "handoff_atomic::overdue_while_partitioned",
+      "seconds": 24.751,
+      "group": "sync-daemons"
+    },
+    {
+      "binary": "herdr-threads::integration",
+      "name": "lanes_latency::herdr_stopped_freezes_wake_lane",
+      "seconds": 21.979,
+      "group": "@global"
+    },
+    {
+      "binary": "herdr-threads::integration",
+      "name": "session_bindings_e2e::a_one_shot_adds_sends_exits_and_a_later_call_reconnects_until_its_process_exits",
+      "seconds": 21.327,
+      "group": "session-bindings-smoke"
+    },
+    {
+      "binary": "herdr-threads::integration",
+      "name": "herdr_states::herdr_stopped_health_says_degraded_see_log",
+      "seconds": 19.006,
+      "group": "@global"
+    },
+    {
+      "binary": "herdr-threads::integration",
+      "name": "lane_wiring::injected_lane_failure_logs_and_degrades_then_clears",
+      "seconds": 16.955,
+      "group": "@global"
+    },
+    {
+      "binary": "herdr-threads::integration",
+      "name": "hermes_enrollment_smoke::p0_to_hermes_seat_warns_no_sender_and_doctor_lists_no_block",
+      "seconds": 16.878,
+      "group": "hermes-smoke"
+    },
+    {
+      "binary": "herdr-threads",
+      "name": "store::seats::reversible::tests::reversible_reads::shift_of_1000_pending_rows_finishes_inside_the_call_budget",
+      "seconds": 15.294,
+      "group": "@global"
+    },
+    {
+      "binary": "herdr-threads",
+      "name": "cli::topology_handoff::tests::live::automatic_live::hc_pipeline::v3_outcome_unknown_is_recorded",
+      "seconds": 15.283,
+      "group": "@global"
+    },
+    {
+      "binary": "herdr-threads::combined",
+      "name": "sync_dialer::preamble_then_silence_times_out_and_group_reaped",
+      "seconds": 15.026,
+      "group": "@global"
+    },
+    {
+      "binary": "herdr-threads",
+      "name": "store::attention::tests::pending_receipts_past_the_count_cap_cost_the_same",
+      "seconds": 14.94,
+      "group": "@global"
+    },
+    {
+      "binary": "herdr-threads",
+      "name": "store::attention::tests::pending_invitations_past_the_count_cap_cost_the_same",
+      "seconds": 14.804,
+      "group": "@global"
+    },
+    {
+      "binary": "herdr-threads::integration",
+      "name": "latency::history_and_health_stay_fast_under_a_party_with_a_slow_host",
+      "seconds": 14.755,
+      "group": "@global"
+    },
+    {
+      "binary": "herdr-threads::combined",
+      "name": "update_cli::update_replaces_a_running_owned_daemon_and_leaves_it_stoppable",
+      "seconds": 14.39,
+      "group": "@global"
+    },
+    {
+      "binary": "herdr-threads::multinode",
+      "name": "handoff_atomic::linked_then_overdue_on_the_sender_only",
+      "seconds": 13.926,
+      "group": "sync-daemons"
+    },
+    {
+      "binary": "herdr-threads::multinode",
+      "name": "peer_hygiene::prune_forgets_a_dead_island_and_keeps_referenced_nodes",
+      "seconds": 13.898,
+      "group": "sync-daemons"
+    }
+  ],
+  "group_mapping_missing": [],
+  "group_mapping_conflicts": [],
+  "observed_max_process_counts": {
+    "cargo": 2,
+    "cargo-nextest": 1,
+    "rustc": 4,
+    "clippy-driver": 0
+  },
+  "host_sample_count": 608,
+  "host_observation_limit": "Aggregate process counts include this run; they do not prove contention or causation.",
+  "cleanup": {
+    "processes": "clean",
+    "temp_files": "clean",
+    "checked_run_id": "a42e9957-403f-4342-a37d-b7b56f5fa04c"
+  },
+  "junit_sha256": "dfc50355eb22be1a7318e739e3374697951bf833a45bdb31f9d3d8e262254be0",
+  "group_config_sha256": "f5be54ee4a75cd2aa33d80d7ea321a262545226b76c6f25b3948a534f80742dd",
+  "minimum_execution_seconds_at_four_slots": 1146.101,
+  "minimum_execution_limit": "Sum of observed per-test durations divided by four slots; an arithmetic lower bound for these measured durations, not evidence that runtime is invariant with different concurrency.",
+  "main_partial_comparison": {
+    "main_provenance": "Owner-reported main91ce0cdeb plus six text-only wording lines; no Rust changes",
+    "main_profile": "default",
+    "candidate_profile": "ci",
+    "main_test_threads": 4,
+    "candidate_test_threads": 4,
+    "main_log_complete": false,
+    "matched_test_names": 2099,
+    "main_matched_sum_seconds": 1529.445,
+    "candidate_matched_sum_seconds": 1449.674,
+    "limitation": "Partial same-name comparison, profile differs, host activity and runtime provenance unmatched; cannot attribute total suite regression or waive timing gate."
+  }
+}
