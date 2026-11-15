@@ -14,6 +14,8 @@ Each payload has `event`, `session_id` (native pi session), `role: "top_level"`,
 
 Hook output is plain UTF-8 guidance/routing/diagnostics, maximum the existing hook context bound (4096 bytes), encoded ObserverOnly. Successful empty stdout is valid; nonzero exit, timeout or existing check-in-unavailable sentinel is failure. Shared output policy omits mail offers before composition; extension only stages successful guidance for an admitted native boundary. Mail is exclusively the watch path.
 
+Channel-owned admission, decode and local-evidence refusals must carry the existing check-in-unavailable sentinel; successful empty stdout cannot represent refusal. Apply this before any binding mutation and on both hook entry paths. Existing adapters retain their quiet refusal behavior. The extension must leave enrollment pending and not start its watch after a refusal; the next valid lifecycle attempt can retry.
+
 Watch uses the existing CLI: `watch --harness pi --session SESSION`; only an admitted current TUI owner starts it. Completion uses existing `watch ack --via context` and exact eligible IDs; no invented stored-row ID. Use current protocol types as authority for all frames/controls/leases and election. Branch/execution/nonces are local proposal evidence, never new daemon authority. Generation changes fence callbacks, timers, retries and children.
 
 No API version gate. If a required native boundary/API shape is unavailable, disable that capability and expose a compact diagnostic. Changes to this contract require coordinator review before either side diverges.
