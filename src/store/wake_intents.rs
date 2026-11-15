@@ -404,7 +404,9 @@ pub(super) fn recover(
         let Some(row)=row else{return Ok(false)};
         if matches!(row.phase,WakeIntentPhase::Prepared|WakeIntentPhase::Armed) && row.owner_boot==prior_boot {
             let unarmed=row.phase==WakeIntentPhase::Prepared && row.arm_nonce.is_none();
-            let uncertain=!unarmed || row.helper.is_some();
+            // Recovery changes submission classification, not positive cleanup evidence
+            // for the retained exact helper. Helperless legacy Armed rows stay conservative.
+            let uncertain=row.cleanup_quarantined || (!unarmed && row.helper.is_none());
             tx.execute("UPDATE wake_intents SET phase=?3,revision=revision+1,cleanup_quarantined=?6,native_no_add_exception=?4,diagnostic='prior helper recovery',updated_at=?5 WHERE instance_id=?1 AND attempt=?2",params![store.instance,attempt.as_str(),if unarmed {"no_effect"} else {"unknown"},unarmed && uncertain,at.utc.0,uncertain]).map_err(store_error)?;
         } else {
             // The cleanup invocation never initialized. Its resource uncertainty is not

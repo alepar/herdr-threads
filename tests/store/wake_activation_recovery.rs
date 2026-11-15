@@ -1,5 +1,7 @@
 //! Activation recovery keeps logical purpose, helper resources and queue effects separate.
-use super::wake_intents::{budget, fixture, native_report, prepare, prepare_raw, reserve_again};
+use super::wake_intents::{
+    budget, fixture, native_report, open, prepare, prepare_raw, reserve_again,
+};
 use herdr_threads::{
     harness::{
         adapter::TurnEdge,
@@ -793,4 +795,83 @@ fn activation_recovery_new_helper_resets_prior_native_no_add_exception() {
     assert!(uncertain.cleanup_quarantined);
     assert!(!uncertain.native_no_add_exception);
     assert_blocked(&store, &r, &p);
+}
+
+#[test]
+fn activation_recovery_restart_preserves_clean_armed_helper_with_new_cohort_intent() {
+    let (store, path, r, p) = fixture();
+    let _ticket = arm(&store, &r, &p);
+    let add = row(&store, &r).helper.unwrap();
+    fulfill(&store, &r, &p);
+    complete(&store, &r, &add);
+    let next = reserve_again(&store);
+    assert!(matches!(
+        StorePort::prepare_wake_intent(&store, &next, &p, &budget()).unwrap(),
+        PrepareWakeIntent::Prepared(_)
+    ));
+    let before = row(&store, &r);
+    assert!(!before.cleanup_quarantined);
+    drop(store);
+    let reopened = open(path, uuid::Uuid::new_v4());
+    assert!(
+        StorePort::recover_wake_intent(
+            &reopened,
+            &r.attempt,
+            before.revision,
+            r.daemon_boot,
+            &budget()
+        )
+        .unwrap()
+    );
+    let recovered = row(&reopened, &r);
+    assert_eq!(recovered.phase, WakeIntentPhase::Unknown);
+    assert_eq!(recovered.logical, before.logical);
+    assert_eq!(recovered.helper.unwrap().id, add.id);
+    assert!(!recovered.cleanup_quarantined);
+    assert!(!recovered.native_no_add_exception);
+    assert_eq!(row(&reopened, &next).phase, WakeIntentPhase::Prepared);
+}
+
+#[test]
+fn activation_recovery_restart_preserves_clean_prepared_helper_without_inventing_uncertainty() {
+    for witnessed in [false, true] {
+        let (store, path, r, p) = fixture();
+        let helper = if witnessed {
+            prepare(&store, &r, &p).helper.unwrap()
+        } else {
+            prepare_raw(&store, &r, &p);
+            let operation = op(&r, &p, WakeHelperPurpose::Add, None);
+            assert!(begin(&store, &r, &operation));
+            operation
+        };
+        complete(&store, &r, &helper);
+        let before = row(&store, &r);
+        assert!(!before.cleanup_quarantined);
+        drop(store);
+        let reopened = open(path, uuid::Uuid::new_v4());
+        assert!(
+            StorePort::recover_wake_intent(
+                &reopened,
+                &r.attempt,
+                before.revision,
+                r.daemon_boot,
+                &budget()
+            )
+            .unwrap()
+        );
+        let recovered = row(&reopened, &r);
+        assert_eq!(recovered.phase, WakeIntentPhase::NoEffect);
+        assert_eq!(recovered.helper.unwrap().id, helper.id);
+        assert!(!recovered.cleanup_quarantined, "witnessed={witnessed}");
+        assert!(!recovered.native_no_add_exception);
+        let blockers = StorePort::wake_intent_blockers(
+            &reopened,
+            &r.seat,
+            p.adapter,
+            &p.replay_scope,
+            &budget(),
+        )
+        .unwrap();
+        assert!(!blockers.programmatic && !blockers.native);
+    }
 }

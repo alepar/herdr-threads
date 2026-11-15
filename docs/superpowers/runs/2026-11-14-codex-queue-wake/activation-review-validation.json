@@ -1,0 +1,78 @@
+{
+  "schema": 1,
+  "task": "ht-d2jq.5",
+  "review_base": "5d2092dc3af982583d88dda9ea818e2c265c937b",
+  "finding": "mnSGXmhJE6Rf",
+  "review_summary": "mnSGxStWFKHd",
+  "scope": "preserve positive exact-helper cleanup evidence during old-owner recovery; formerly Armed remains physical Unknown",
+  "red": {
+    "command": "cargo test --locked --all-features --test combined activation_recovery_restart_preserves -- --nocapture",
+    "passed": 0,
+    "failed": 2,
+    "compile_seconds": 5.64,
+    "execution_seconds": 1.29,
+    "observed": [
+      "Armed fulfilled clean old row plus new Prepared: UNIQUE cohort rollback",
+      "completed Prepared helper: restored quarantine despite positive completion"
+    ]
+  },
+  "tests": [
+    {
+      "command": "cargo test --locked --all-features --test combined -- wake_intents:: wake_activation_recovery:: wake_queue_selection:: wake_frontier_activation:: queue_recovery:: queue_runtime:: codex_wake_observation:: --test-threads=4",
+      "passed": 77,
+      "failed": 0,
+      "compile_seconds": 29.71,
+      "execution_seconds": 4.03
+    }
+  ],
+  "checks": {
+    "all_target_all_feature_clippy": {
+      "command": "cargo clippy --locked --all-targets --all-features -- -D warnings",
+      "exit": 0,
+      "compiler_seconds": 44.98
+    },
+    "default_feature_guard": {
+      "command": "scripts/check-default-features",
+      "exit": 0
+    },
+    "format": {
+      "command": "cargo fmt -- --check",
+      "exit": 0
+    },
+    "harness_neutral": {
+      "command": "scripts/check-harness-neutral",
+      "exit": 0,
+      "new_exceptions": 0
+    },
+    "wire_compat": {
+      "command": "scripts/check-wire-compat",
+      "exit": 0,
+      "baseline_changed": false
+    },
+    "diff": {
+      "command": "git diff --check",
+      "exit": 0
+    }
+  },
+  "cleanup": {
+    "run_id": "43aa80b8-4600-4940-963e-d3df885b543a",
+    "processes_exit": 0,
+    "temp_files_exit": 0
+  },
+  "routine_model_visible_bytes_added": 0,
+  "full_suite_run": false,
+  "live_model_qualification_run": false,
+  "historical_source_manifest": "activation-validation.json",
+  "historical_manifest_sha256": "841fb4ad00e9db3aee8ca730e9b47b9ac5156bcee827b470986bd3c8218e4b99",
+  "inherited_source_hashes_unchanged": 40,
+  "source_sha256": {
+    "src/store/wake_intents.rs": "636565088f7d5ed2d801274648fa874069e45d45c46ab7e73a669fe178e32032",
+    "tests/store/wake_activation_recovery.rs": "4a9203d640dc6a78969382eb5c36958f027a9ca2745a12fb33181c468baf0a7c"
+  },
+  "report_sha256": "e9a2fe87bafdf8002fc92a21c3bd8e1553c25917899b4423e7aa5f4927292f35",
+  "privacy": {
+    "json_string_values_checked": 21,
+    "private_strings_found": 0,
+    "relative_links_checked": 2
+  }
+}
