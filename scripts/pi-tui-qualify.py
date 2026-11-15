@@ -751,12 +751,20 @@ class Run:
     def parked_clear_notice(self, cause):
         rows = self.canonical_read("""SELECT c.clear_warning_id warning,d.ordinal,d.thread_id,d.event_seq,m.sequence
             FROM warning_conditions c JOIN digest_programmatic_warnings d ON d.warning_id=c.clear_warning_id AND d.seat_id=?1
-            JOIN messages m ON m.id=d.warning_id WHERE c.open_warning_id=?2 AND c.condition_kind='receipt'""",
+            JOIN messages m ON m.id=d.warning_id WHERE c.open_warning_id=?2 AND c.condition_kind='receipt' LIMIT 2""",
             (self.seat, cause['warning']))
+        observation = {'at': time.time(), 'rows': rows}
+        self.facts['notice_hol']['old_clear_observation'] = observation
         assert len(rows) <= 1, 'ambiguous canonical clear warning'
         if not rows:
+            try:
+                observation['seed_snapshot'] = self.notice_snapshot(cause)
+            except Exception as diagnostic:
+                observation['diagnostic_error'] = type(diagnostic).__name__ + ': ' + str(diagnostic)
             return None
-        clear, page = rows[0], self.notice_snapshot(cause)
+        page = self.notice_snapshot(cause)
+        observation['seed_snapshot'] = page
+        clear = rows[0]
         if not page or not page['outbox_token'] or page['frontier'] >= clear['ordinal']:
             return None
         key = f"dn1:{clear['sequence']}:{clear['event_seq']}:{clear['ordinal']}"
@@ -769,78 +777,100 @@ class Run:
         return None
 
     def case_notice_hol(self):
-        # Fresh scenario: create a real resolution Notice while the source is
-        # physically held, then a newer actionable warning behind that page.
-        assert not self.results and not self.notice_causes, 'notice_hol requires a fresh standalone run'
-        self.hold_notice_editor()
-        seed = self.new_notice_cause('hol-seed', timer=True)
-        self.pending_notice(seed)
-        seed_since = len(self.rows())
-        self.keys('enter')
-        seed_proof = self.assert_notice_settled(seed, seed_since)
-        self.wait('HOL seed native settlement', lambda: any(r['event'] == 'agent_settled'
-                  and r['state']['sid'] == self.main_sid for r in self.rows()[seed_since:]))
-        self.hold_notice_editor()
-        self.recover_notice_sink(seed)  # No source cleanup turn: preserve the clear page.
-        clear = self.wait('actual old protected clear Notice', lambda: self.parked_clear_notice(seed), 35)
-        assert not self.notice_context(clear['warning'], clear['body']), 'old clear was already presented'
-        cause = self.new_notice_cause('hol-newer', timer=True)
-        def blocked():
-            state = self.notice_snapshot(cause)
-            if not state or not state['pending'] or state['ordinal'] <= clear['ordinal']:
-                return None
-            assert state['outbox_token'] == clear['page']['outbox_token'], 'old protected episode changed before release'
-            return state if any(d == clear['descriptor'] and not (state['outbox_retired_mask'] or 0) & (1 << i)
-                                for i, d in enumerate(state['descriptors'])) else None
-        pending = self.wait('new actionable projection behind old clear page', blocked, 35)
-        expected = notice_marker_reference(clear['body'], clear['warning'], pending['warning_id'], self.root)
-        starts = cause['run_starts_before_send']
-        self.quiet(starts, 0)
-        held = self.observe_state(sid=self.main_sid)
-        screen = self.capture('notice-hol-before-release')
-        require_visible_notice_draft(held, screen, self.main_sid)
-        agent = screen['agent']['result']['agent']
-        assert agent.get('focused') is False and agent.get('agent_status') in ('idle', 'done') and agent.get('interactive_ready') is True, 'HOL requires healthy idle unfocused host'
-        since = len(self.rows())
-        report = {'seed': seed, 'seed_proof': seed_proof, 'old_clear': clear, 'new_cause': cause,
-                  'blocked_snapshot': pending, 'new_body_reference': {'source': 'renderer-derived assertion reference; not an observed packet', 'body': expected},
-                  'release_at': time.time(), 'progress_bound_seconds': HOL_PROGRESS_SECONDS, 'held': held, 'screen': screen}
+        report = {'phase': 'start', 'current_cause': {'message': None}, 'progress_bound_seconds': HOL_PROGRESS_SECONDS}
         self.facts['notice_hol'] = report
-        self.keys('ctrl+c')
-        # No controller prompt, editor operation, provider hold or confirmation
-        # after this release. Only actual host wake(s) may create model turns.
-        def progressed():
-            trace = self.rows()[since:]
-            wakes = [r for r in trace if r['event'] == 'before_agent_start' and r['state']['sid'] == self.main_sid]
-            assert all(r['data'].get('prompt') == WAKE for r in wakes), 'HOL received a non-wake outer prompt'
-            state = self.notice_snapshot(cause)
-            report['last_snapshot'] = state
-            report['automatic_wakes'] = [{'at': r['at'], 'prompt': r['data']['prompt']} for r in wakes]
-            inputs = [r for r in trace if r['event'] == 'terminal_input' and r['at'] >= report['release_at'] * 1000]
-            report['terminal_inputs_after_release'] = inputs[:16]
-            release = next((r for r in inputs if r.get('key') == 'ctrl+c'), None)
-            if state and state['notice_descriptor']:
-                assert state['notice_descriptor']['item']['body'] == expected, 'actual successor marker differs from renderer reference'
-                report['observed_new_descriptor'] = {'sampled_at': time.time(), 'descriptor': state['notice_descriptor']}
-            old_proof = self.notice_context(clear['warning'], clear['body'], since)
-            new_proof = self.notice_context(pending['warning_id'], expected, since)
-            settled = [r['at'] for r in trace if r['event'] == 'agent_settled' and r['state']['sid'] == self.main_sid]
-            if release and wakes and old_proof and new_proof and state and state['frontier'] >= pending['ordinal'] and settled and settled[-1] >= max(new_proof['at'], wakes[-1]['at']):
-                assert old_proof['at'] <= new_proof['at'], 'successor appeared before the parked old body'
-                return {'old_context': old_proof, 'new_context': new_proof, 'canonical_settlement': state,
-                        **hol_delivery_path(wakes, new_proof['at'], report['release_at']),
-                        'release_input': release, 'settled_events': settled}
-            return None
         try:
+            # Fresh scenario: create a real resolution Notice while the source is
+            # physically held, then a newer actionable warning behind that page.
+            assert not self.results and not self.notice_causes, 'notice_hol requires a fresh standalone run'
+            self.hold_notice_editor()
+            report['phase'] = 'create_seed'
+            seed = self.new_notice_cause('hol-seed', timer=True)
+            report.update(seed=seed, current_cause=seed, phase='pending_seed')
+            self.pending_notice(seed)
+            seed_since = len(self.rows())
+            self.keys('enter')
+            report['phase'] = 'present_seed'
+            seed_proof = self.assert_notice_settled(seed, seed_since)
+            report['phase'] = 'settle_seed'
+            self.wait('HOL seed native settlement', lambda: any(r['event'] == 'agent_settled'
+                      and r['state']['sid'] == self.main_sid for r in self.rows()[seed_since:]))
+            self.hold_notice_editor()
+            report['phase'] = 'recover_sink'
+            self.recover_notice_sink(seed)  # No source cleanup turn: preserve the clear page.
+            report['phase'] = 'park_old_clear'
+            clear = self.wait('actual old protected clear Notice', lambda: self.parked_clear_notice(seed), 35)
+            assert not self.notice_context(clear['warning'], clear['body']), 'old clear was already presented'
+            report['phase'] = 'create_successor'
+            cause = self.new_notice_cause('hol-newer', timer=True)
+            report.update(current_cause=cause, phase='pending_successor')
+            def blocked():
+                state = self.notice_snapshot(cause)
+                if not state or not state['pending'] or state['ordinal'] <= clear['ordinal']:
+                    return None
+                assert state['outbox_token'] == clear['page']['outbox_token'], 'old protected episode changed before release'
+                return state if any(d == clear['descriptor'] and not (state['outbox_retired_mask'] or 0) & (1 << i)
+                                    for i, d in enumerate(state['descriptors'])) else None
+            pending = self.wait('new actionable projection behind old clear page', blocked, 35)
+            expected = notice_marker_reference(clear['body'], clear['warning'], pending['warning_id'], self.root)
+            starts = cause['run_starts_before_send']
+            self.quiet(starts, 0)
+            held = self.observe_state(sid=self.main_sid)
+            screen = self.capture('notice-hol-before-release')
+            require_visible_notice_draft(held, screen, self.main_sid)
+            agent = screen['agent']['result']['agent']
+            assert agent.get('focused') is False and agent.get('agent_status') in ('idle', 'done') and agent.get('interactive_ready') is True, 'HOL requires healthy idle unfocused host'
+            since = len(self.rows())
+            report.update({'seed': seed, 'seed_proof': seed_proof, 'old_clear': clear, 'new_cause': cause,
+                      'blocked_snapshot': pending, 'new_body_reference': {'source': 'renderer-derived assertion reference; not an observed packet', 'body': expected},
+                      'release_at': time.time(), 'held': held, 'screen': screen})
+            report['phase'] = 'automatic_progress'
+            self.keys('ctrl+c')
+            # No controller prompt, editor operation, provider hold or confirmation
+            # after this release. Only actual host wake(s) may create model turns.
+            def progressed():
+                trace = self.rows()[since:]
+                wakes = [r for r in trace if r['event'] == 'before_agent_start' and r['state']['sid'] == self.main_sid]
+                assert all(r['data'].get('prompt') == WAKE for r in wakes), 'HOL received a non-wake outer prompt'
+                state = self.notice_snapshot(cause)
+                report['last_snapshot'] = state
+                report['automatic_wakes'] = [{'at': r['at'], 'prompt': r['data']['prompt']} for r in wakes]
+                inputs = [r for r in trace if r['event'] == 'terminal_input' and r['at'] >= report['release_at'] * 1000]
+                report['terminal_inputs_after_release'] = inputs[:16]
+                release = next((r for r in inputs if r.get('key') == 'ctrl+c'), None)
+                if state and state['notice_descriptor']:
+                    assert state['notice_descriptor']['item']['body'] == expected, 'actual successor marker differs from renderer reference'
+                    report['observed_new_descriptor'] = {'sampled_at': time.time(), 'descriptor': state['notice_descriptor']}
+                old_proof = self.notice_context(clear['warning'], clear['body'], since)
+                new_proof = self.notice_context(pending['warning_id'], expected, since)
+                settled = [r['at'] for r in trace if r['event'] == 'agent_settled' and r['state']['sid'] == self.main_sid]
+                if release and wakes and old_proof and new_proof and state and state['frontier'] >= pending['ordinal'] and settled and settled[-1] >= max(new_proof['at'], wakes[-1]['at']):
+                    assert old_proof['at'] <= new_proof['at'], 'successor appeared before the parked old body'
+                    return {'old_context': old_proof, 'new_context': new_proof, 'canonical_settlement': state,
+                            **hol_delivery_path(wakes, new_proof['at'], report['release_at']),
+                            'release_input': release, 'settled_events': settled}
+                return None
             report['progress'] = self.wait('automatic old then new HOL progress', progressed, HOL_PROGRESS_SECONDS)
             report['proved_at'] = time.time()
             assert self.recipient_receipt(cause['message'], self.sink['seat'])['effective_status'] == 'pending', 'notice progress ACKed the distinct unread sink receipt'
             self.verify_notice_sink()
-        except BaseException:
+        except BaseException as failure:
+            report['error'] = type(failure).__name__ + ': ' + str(failure)
             try:
-                report['failure_snapshot'] = self.notice_failure_diagnostics(cause)
+                report['failure_snapshot'] = self.notice_failure_diagnostics(report['current_cause'])
             except Exception as diagnostic:
                 report['diagnostic_error'] = type(diagnostic).__name__ + ': ' + str(diagnostic)
+            seed = report.get('seed', {})
+            if seed.get('warning'):
+                queries = {
+                    'clear_condition_projection': ("SELECT c.ordinal condition_ordinal,c.open_warning_id,c.clear_warning_id,c.cleared_seq,d.seat_id projection_seat,d.ordinal projection_ordinal,d.event_seq,m.sequence FROM warning_conditions c LEFT JOIN digest_programmatic_warnings d ON d.warning_id=c.clear_warning_id AND d.seat_id=?1 LEFT JOIN messages m ON m.id=c.clear_warning_id WHERE c.open_warning_id=?2 AND c.condition_kind='receipt' LIMIT 2", (self.seat, seed['warning'])),
+                    'clear_warning_jobs': ("SELECT * FROM warning_jobs WHERE warning_id IN (SELECT clear_warning_id FROM warning_conditions WHERE open_warning_id=? AND condition_kind='receipt') LIMIT 2", (seed['warning'],)),
+                    'clear_work_jobs': ("SELECT * FROM work_jobs WHERE subject_id IN (SELECT clear_warning_id FROM warning_conditions WHERE open_warning_id=? AND condition_kind='receipt') LIMIT 2", (seed['warning'],))}
+                for name, (sql, args) in queries.items():
+                    try:
+                        report[name] = self.canonical_read(sql, args)
+                    except Exception as diagnostic:
+                        report[name] = {'error': type(diagnostic).__name__ + ': ' + str(diagnostic)}
             raise
 
     def quiet(self, starts, seconds=1):
@@ -1550,6 +1580,76 @@ read -r _ || true
 
 
 class DriverTests(unittest.TestCase):
+    def test_hol_pre_release_failure_retains_phase_cause_and_canonical_rows(self):
+        run = Run.__new__(Run); run.facts = {}; run.results = []; run.notice_causes = []; run.main_sid = 'main'; run.seat = 'source'
+        cause = {'message': 'seed', 'warning': 'open', 'body': 'actual old body', 'ordinal': 1}
+        actions = []
+        run.hold_notice_editor = lambda: None
+        run.new_notice_cause = lambda *_args, **_kwargs: cause
+        run.pending_notice = lambda _cause: None
+        run.rows = lambda: [{'event': 'agent_settled', 'state': {'sid': 'main'}}]
+        run.keys = lambda key: actions.append(key)
+        run.assert_notice_settled = lambda *_args: {'actual_seed_context': True}
+        run.recover_notice_sink = lambda _cause: None
+        def parked(_cause):
+            if 'notice_hol' in run.facts:
+                run.facts['notice_hol']['old_clear_observation'] = {'rows': [{'warning': 'clear'}], 'seed_snapshot': None}
+            return None
+        run.parked_clear_notice = parked
+        def wait(label, predicate, *_args):
+            if label == 'actual old protected clear Notice':
+                self.assertIsNone(predicate())
+                raise RuntimeError('synthetic old clear timeout')
+            return True
+        run.wait = wait
+        calls = []
+        run.notice_failure_diagnostics = lambda current: calls.append(current['message']) or {'conditions': [{'clear_warning_id': 'clear'}]}
+        def readonly(sql, args):
+            self.assertTrue(sql.startswith('SELECT '))
+            self.assertIn('LIMIT 2', sql)
+            self.assertIn('open', args)
+            return [{'canonical_read': True}]
+        run.canonical_read = readonly
+        with self.assertRaisesRegex(RuntimeError, 'synthetic old clear timeout'):
+            run.case_notice_hol()
+        self.assertIn('notice_hol', run.facts, 'setup failure lost all HOL diagnostics')
+        evidence = run.facts['notice_hol']
+        self.assertEqual(evidence['phase'], 'park_old_clear')
+        self.assertEqual(evidence['current_cause'], cause)
+        self.assertEqual(evidence['old_clear_observation']['rows'], [{'warning': 'clear'}])
+        self.assertEqual(evidence['failure_snapshot']['conditions'][0]['clear_warning_id'], 'clear')
+        self.assertEqual(evidence['clear_work_jobs'], [{'canonical_read': True}])
+        self.assertEqual(calls, ['seed'])
+        self.assertEqual(actions, ['enter'], 'diagnostic path performed additional terminal actions')
+        def broken(_cause):
+            raise RuntimeError('diagnostic unavailable')
+        run.notice_failure_diagnostics = broken
+        with self.assertRaisesRegex(RuntimeError, 'synthetic old clear timeout'):
+            run.case_notice_hol()
+        self.assertIn('diagnostic unavailable', run.facts['notice_hol']['diagnostic_error'])
+
+    def test_parked_clear_retains_last_projection_and_seed_snapshot_even_when_null(self):
+        run = Run.__new__(Run); run.facts = {'notice_hol': {}}; run.seat = 'source'
+        rows = []
+        def read(sql, args):
+            self.assertTrue(sql.startswith('SELECT ')); self.assertIn('LIMIT 2', sql)
+            self.assertEqual(args, ('source', 'open'))
+            return list(rows)
+        run.canonical_read = read
+        run.notice_snapshot = lambda _cause: None
+        self.assertIsNone(run.parked_clear_notice({'warning': 'open'}))
+        self.assertEqual(run.facts['notice_hol']['old_clear_observation']['rows'], [])
+        def broken(_cause):
+            raise RuntimeError('diagnostic consumer unavailable')
+        run.notice_snapshot = broken
+        self.assertIsNone(run.parked_clear_notice({'warning': 'open'}), 'diagnostic read changed a quiet retry')
+        self.assertIn('diagnostic consumer unavailable', run.facts['notice_hol']['old_clear_observation']['diagnostic_error'])
+        run.notice_snapshot = lambda _cause: None
+        rows.append({'warning': 'clear'})
+        self.assertIsNone(run.parked_clear_notice({'warning': 'open'}))
+        self.assertEqual(run.facts['notice_hol']['old_clear_observation']['rows'], [{'warning': 'clear'}])
+        self.assertIsNone(run.facts['notice_hol']['old_clear_observation']['seed_snapshot'])
+
     def test_notice_cases_are_opt_in_and_reject_mixed_selection_before_resources(self):
         class Parsed(Exception):
             pass
