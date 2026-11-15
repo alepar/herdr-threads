@@ -87,7 +87,7 @@
       "clippy_seconds": 60,
       "clippy_pass": false,
       "issue": "ht-n4xh",
-      "disposition": "Nonblocking under the explicitly accepted cap-4 shared-training constraint; actual misses retained. No attribution of timing cause established by this run."
+      "disposition": "Main explicitly accepted the suite overrun as nonblocking under the cap-4 shared-training constraint; clippy overrun is reported separately. Actual misses retained; no attribution of timing cause established by this run."
     },
     "end_head": "9820c9ca6752ef72a3a56d06b66bf55f8bbdd4af",
     "post_scan_worktree_status": "clean (observed with binary-profile capture before report preparation)",

@@ -16,7 +16,7 @@ The single unfiltered `cargo nextest run --locked --all-targets --all-features` 
 
 The version rebuild took **7m 12s**, as rounded by Cargo. Bounded worktree-scoped observations confirmed four active compiler workers during that phase. Test execution then took **1,033.189 s**; total command wall time was **1,465.37 s**, user 5,161.84 s / system 304.51 s. These are separate rebuild and execution observations, not a one-file incremental-build benchmark. The slow release failpoint test passed in 214.970 s. All ten historical attempt-1 failure names also have exact passing rows in this integration run, retained in [the machine-readable evidence](integration-gates.json).
 
-The suite exceeded its 300-second budget and clippy exceeded 60 seconds. Both misses remain explicit under `ht-n4xh` and the accepted nonblocking cap-4 shared-training disposition. No timing pass, causal regression attribution, raised cap or additional full run is claimed.
+The suite exceeded its 300-second budget and clippy exceeded 60 seconds. Both misses remain explicit under `ht-n4xh`. Main explicitly accepted the suite overrun as nonblocking under the cap-4 shared-training constraint; the clippy overrun is reported separately. No timing pass, causal regression attribution, raised cap or additional full run is claimed.
 
 Both mandatory same-run builder and host process/temp scans returned exit 0 and found no leaks. The builder consumed the clean scratch ledger before the host's no-ledger result. Leak run ID: `23661afb-9299-4ce3-b479-62e522e48a04`. Nextest internal run ID: `64092aa3-32f1-44c8-9bdc-09bdaff61228`.
 
