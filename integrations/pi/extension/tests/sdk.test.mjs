@@ -5,6 +5,13 @@ import path from 'node:path'
 import { pathToFileURL } from 'node:url'
 import { register } from '../herdr-threads.js'
 
+const deferred = () => { let resolve; const promise = new Promise(done => { resolve = done }); return { promise, resolve } }
+async function bounded(promise) {
+  let timer
+  try { return await Promise.race([promise, new Promise((_resolve, reject) => { timer = setTimeout(() => reject(new Error('SDK fixture barrier timed out')), 3000) })]) }
+  finally { clearTimeout(timer) }
+}
+
 // Opt-in qualification against the recorded real SDK. No provider credentials,
 // network, CLI/service process or real profile participates in these tests.
 test('real SDK persists native drafts and continues only completed runs', async t => {
@@ -30,14 +37,15 @@ test('real SDK persists native drafts and continues only completed runs', async 
     // No bind/session_start: loader qualification must not execute a real ht CLI.
   })
 
-  for (const mode of ['turn', 'settle', 'error', 'aborted', 'cancel-at-settle', 'transformed', 'transformed-p0', 'native-wake', 'reload', 'reload-urgent-unobserved', 'manual-partial', 'manual-transformed', 'manual-reload']) await t.test(mode, async () => {
-    let session, watch, calls = 0, starts = 0, injected = false, nonce = 0, stopped = 0, reloaded = false
+  for (const mode of ['turn', 'settle', 'error', 'aborted', 'cancel-at-settle', 'transformed', 'transformed-p0', 'native-wake', 'reload', 'reload-urgent-unobserved', 'manual-partial', 'manual-transformed', 'manual-reload', 'manual-late-confirm']) await t.test(mode, async () => {
+    let session, watch, calls = 0, starts = 0, injected = false, nonce = 0, stopped = 0, spawned = 0, settled = 0, reloaded = false
     const commands = [], providerContexts = [], errors = [], receipts = []
+    const late = mode === 'manual-late-confirm' ? { confirm: deferred(), stopRequested: deferred(), stop: deferred(), successor: deferred(), drained: deferred(), contexts: [], order: [] } : null
     const privateRoot = path.join(root, mode); fs.mkdirSync(privateRoot, { recursive: true })
     const send = (waking = false) => {
       injected = true
       if (mode.startsWith('manual-')) {
-        const items = mode === 'manual-reload' ? [{ schema: 1, kind: 'notice', id: 'notice:first', warning: 'first', thread: 'thread', body: 'exact first notice' }]
+        const items = ['manual-reload', 'manual-late-confirm'].includes(mode) ? [{ schema: 1, kind: 'notice', id: 'notice:first', warning: 'first', thread: 'thread', body: 'exact first notice' }]
           : ['first', 'second'].map(id => ({ schema: 1, kind: 'notice', id: `notice:${id}`, warning: id, thread: 'thread', body: `exact ${id} notice\n` + 'x\n'.repeat(10000) }))
         watch.line({ schema: 1, kind: 'presentation_page', items, keys: items.map((_, i) => (i + 1).toString(16).padStart(64, '0')), receipt: 'opaque SDK receipt 18446744073709551615' })
         return
@@ -48,14 +56,29 @@ test('real SDK persists native drafts and continues only completed runs', async 
       env: {}, registry: {}, pid: process.pid, cwd: privateRoot, nonce: () => `${mode}-${++nonce}`,
       run: async (argv, request) => {
         commands.push(argv)
-        if (argv.includes('presentation-confirm')) { receipts.push(request.stdin); return { code: 0, stdout: '{"status":"confirmed","emitted_page_confirmed":true}' } }
+        if (argv.includes('presentation-confirm')) {
+          receipts.push(request.stdin)
+          if (late && receipts.length === 1) return late.confirm.promise
+          return { code: 0, stdout: '{"status":"confirmed","emitted_page_confirmed":true}' }
+        }
         if (argv.includes('ack')) return { code: 0, stdout: argv.slice(argv.indexOf('context') + 1).map(id => JSON.stringify({ id, result: 'settled' })).join('\n') }
         return { code: 0, stdout: argv.at(-1) === 'SessionStart' ? 'isolated SDK guidance' : '' }
       },
       spawn: (_argv, _options, handlers) => {
-        watch = handlers
-        queueMicrotask(() => handlers.line({ schema: 1, kind: 'status', id: 'status:0', state: 'connected' }))
-        return { stop: async () => { stopped++ } }
+        watch = handlers; const generation = ++spawned
+        queueMicrotask(() => {
+          handlers.line({ schema: 1, kind: 'status', id: 'status:0', state: 'connected' })
+          if (late && generation === 2) {
+            late.order.push('successor-page')
+            handlers.line({ schema: 1, kind: 'presentation_page', items: [{ schema: 1, kind: 'notice', id: 'notice:second', warning: 'second', thread: 'thread', body: 'exact second notice' }], keys: ['2'.padStart(64, '0')], receipt: 'opaque SDK successor receipt 18446744073709551615' })
+            late.successor.resolve()
+          }
+          if (late && generation === 3) late.drained.resolve()
+        })
+        return { stop: async () => {
+          stopped++
+          if (late && generation === 1) { late.order.push('stop-requested'); late.stopRequested.resolve(); await late.stop.promise; late.order.push('stop-completed') }
+        } }
       },
       schedule: (ms, fn) => { const timer = setTimeout(fn, ms); timer.unref(); return () => clearTimeout(timer) },
       diagnostic: text => errors.push(text),
@@ -64,6 +87,10 @@ test('real SDK persists native drafts and continues only completed runs', async 
       extensionFactories: [pi => {
         register(pi, io)
         pi.on('before_agent_start', () => { starts++ })
+        if (late) {
+          pi.on('agent_settled', () => { settled++; late.order.push('settled') })
+          pi.on('context', e => { late.contexts.push(e.messages.filter(m => m.role === 'custom').map(m => ({ customType: m.customType, content: m.content }))) })
+        }
         pi.on('turn_end', e => {
           if (['settle', 'cancel-at-settle', 'reload-urgent-unobserved', 'manual-reload'].includes(mode)) { if (!injected) send(mode === 'reload-urgent-unobserved') }
           if (mode.includes('transformed')) return { entries: e.entries.map(entry => entry.type === 'custom_message' && String(entry.content).includes('exact first') ? { ...entry, content: 'later extension replaced frame' } : entry) }
@@ -92,9 +119,12 @@ test('real SDK persists native drafts and continues only completed runs', async 
       if (mode === 'native-wake') {
         send(true)
         await session.prompt('herdr-threads: wake up')
-      } else await session.prompt('isolated boundary test')
+      } else {
+        const prompted = session.prompt('isolated boundary test')
+        await (late ? bounded(prompted) : prompted)
+      }
       const successful = ['turn', 'settle', 'native-wake', 'reload'].includes(mode)
-      assert.equal(calls, ['manual-partial', 'manual-transformed'].includes(mode) ? 3 : ['turn', 'settle', 'transformed', 'transformed-p0', 'reload'].includes(mode) ? 2 : 1)
+      assert.equal(calls, ['manual-partial', 'manual-transformed'].includes(mode) ? 3 : ['turn', 'settle', 'transformed', 'transformed-p0', 'reload', 'manual-late-confirm'].includes(mode) ? 2 : 1)
       assert.equal(starts, 1, 'native continuation stays within original outer run')
       const acks = commands.filter(argv => argv.includes('ack'))
       assert.equal(acks.length, successful ? 1 : 0)
@@ -107,7 +137,7 @@ test('real SDK persists native drafts and continues only completed runs', async 
       assert.deepEqual(errors, [])
       if (mode.startsWith('manual-')) {
         assert.equal(commands.filter(argv => argv.includes('ack')).length, 0)
-        assert.equal(receipts.length, mode === 'manual-partial' ? 1 : 0)
+        assert.equal(receipts.length, ['manual-partial', 'manual-late-confirm'].includes(mode) ? 1 : 0)
         if (mode === 'manual-partial') {
           assert.deepEqual(receipts, ['opaque SDK receipt 18446744073709551615'])
           assert.ok(providerContexts.at(-1).includes('exact first notice'))
@@ -123,6 +153,31 @@ test('real SDK persists native drafts and continues only completed runs', async 
           assert.deepEqual(receipts, ['opaque SDK receipt 18446744073709551615'])
           assert.equal(calls, 2)
         }
+      }
+      if (late) {
+        const frames = text => session.sessionManager.getBranch().filter(e => e.type === 'custom_message' && String(e.content).includes(text))
+        const observed = entry => late.contexts.some(messages => messages.some(m => m.customType === entry.customType && m.content === entry.content))
+        assert.equal(settled, 1, 'actual first native run settled while its confirmation remained held')
+        assert.equal(frames('exact first notice').length, 1); assert.ok(observed(frames('exact first notice')[0]))
+        assert.equal(spawned, 1); assert.equal(stopped, 0); assert.equal(frames('exact second notice').length, 0)
+        late.order.push('confirm-released')
+        late.confirm.resolve({ code: 0, stdout: '{"status":"confirmed","emitted_page_confirmed":true}' })
+        await bounded(late.stopRequested.promise)
+        assert.equal(spawned, 1, 'successor cannot start before its owned predecessor stop joins')
+        late.stop.resolve(); await bounded(late.successor.promise)
+        assert.deepEqual(late.order, ['settled', 'confirm-released', 'stop-requested', 'stop-completed', 'successor-page'])
+        assert.equal(starts, 1); assert.equal(calls, 2); assert.equal(settled, 1, 'late page arrival never starts another run')
+        assert.equal(receipts.length, 1); assert.equal(frames('exact second notice').length, 0)
+        // Explicit host-input stimulus only: this proves extension uptake in the
+        // next real SDK turn, NOT automatic scheduler/native-host wake liveness.
+        await bounded(session.prompt('herdr-threads: wake up'))
+        await bounded(late.drained.promise)
+        assert.equal(starts, 2); assert.equal(calls, 3); assert.equal(settled, 2)
+        assert.equal(frames('exact first notice').length, 1); assert.equal(frames('exact second notice').length, 1)
+        assert.ok(observed(frames('exact second notice')[0]))
+        assert.deepEqual(receipts, ['opaque SDK receipt 18446744073709551615', 'opaque SDK successor receipt 18446744073709551615'])
+        assert.equal(commands.filter(argv => argv.includes('ack')).length, 0)
+        assert.deepEqual(errors, [])
       }
       if (mode === 'reload') {
         await session.reload()
@@ -146,9 +201,10 @@ test('real SDK persists native drafts and continues only completed runs', async 
         assert.deepEqual(after[0].slice(after[0].indexOf('context') + 1), ['first', 'second', 'third'])
       }
     } finally {
+      late?.confirm.resolve({ code: 1, stdout: '' }); late?.stop.resolve()
       await session.extensionRunner.emit({ type: 'session_shutdown', reason: 'quit' })
       await session.dispose()
     }
-    assert.equal(stopped, mode === 'manual-reload' ? 3 : mode === 'manual-partial' || mode.startsWith('reload') ? 2 : 1, 'native shutdown reaps its watch')
+    assert.equal(stopped, ['manual-reload', 'manual-late-confirm'].includes(mode) ? 3 : mode === 'manual-partial' || mode.startsWith('reload') ? 2 : 1, 'native shutdown reaps its watch')
   })
 })
