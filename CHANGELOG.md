@@ -1,6 +1,8 @@
 # Changelog
 
-## Unreleased
+## v3.2.2
+
+Fixes only; no store schema or peer wire change.
 
 ### Fixed
 
