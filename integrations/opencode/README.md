@@ -74,7 +74,9 @@ positionals (so every subcommand: `run`, `serve`, `attach`, `acp`, ...), `--pure
 unknown flags and `--`. `HERDR_THREADS_OPENCODE_OPTS` holds default flags in the same grammar.
 
 opencode creates a session only at the first prompt, so a launch without `--prompt` starts with
-the prompt `herdr-threads: wake up` and the session enrolls at once. A handoff passes its bootstrap
+the prompt `herdr-threads: wake up` and the session enrolls at once. Until a session's first real
+prompt the plugin delivers nothing to it and never wakes it, because it sends each message and wake
+with that prompt's agent and model. A handoff passes its bootstrap
 as `--prompt`, so a caller's own `--prompt` conflicts with it. A launch with the plugin missing
 warns and starts anyway.
 
