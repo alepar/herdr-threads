@@ -1,0 +1,323 @@
+[
+  {
+    "id": "001",
+    "role": "triage",
+    "response": {
+      "lanes": [
+        "data-migrations",
+        "deploy-safety",
+        "api-contract",
+        "observability",
+        "testing",
+        "test-causality-lifecycle",
+        "test-isolation-environment",
+        "test-suite-cost",
+        "dependency",
+        "hygiene-docs"
+      ],
+      "domains": []
+    }
+  },
+  {
+    "id": "002",
+    "role": "scout:correctness",
+    "response": {
+      "findings": [
+        {
+          "claim": "Pi can permanently lose a notice before any model boundary sees it when its pending buffer evicts the notice or the extension reloads.",
+          "location": "integrations/pi/extension/herdr-threads.js:130",
+          "category": "correctness",
+          "external": false,
+          "kind": "ISSUE",
+          "evidence": "onLine accepts notice records into the same pending map as ordinary mail (lines 196-211), and trim deletes the worst pending record without distinguishing notices (126-133), relying on replayDebt and watch replacement for recovery. For example, with 256 retained p0 records, a newly arriving p0 notice sorts last and is immediately discarded. But the called canonical watch presentation path settles carried notices while constructing the page (src/store/invitation_content.rs:2755-2762); settle_offered_notices advances digest_notice_offer (src/store/attention.rs:1333-1348), and a notice whose ordinal is not above the frontier is no longer pending (attention.rs:1076-1081). Restarting watch therefore cannot recover that notice. Reload has the same loss even without saturation: close preserves only proposals in RECOVERY (extension line 293), while the new owner initializes pending to an empty Map (line 327), discarding any watched notice not yet proposed. This does not challenge the intentional watch presentation confirmation contract; the new client incorrectly treats already-carried notices as replayable durable mail. README promises displaced/omitted bodies remain pending and canonical replay recovers them, which is false for these notices. No tests were executed; evidence is the frozen source at 62bc385d0b3623243db43c2536658eec6451f9bd."
+        }
+      ]
+    }
+  },
+  {
+    "id": "003",
+    "role": "scout:security",
+    "response": {
+      "findings": []
+    }
+  },
+  {
+    "id": "004",
+    "role": "scout:premortem",
+    "response": {
+      "findings": []
+    }
+  },
+  {
+    "id": "005",
+    "role": "scout:simplicity-design",
+    "response": {
+      "findings": []
+    }
+  },
+  {
+    "id": "006",
+    "role": "scout:hot-path-perf",
+    "response": {
+      "findings": []
+    }
+  },
+  {
+    "id": "007",
+    "role": "scout:concurrency-async",
+    "response": {
+      "findings": []
+    }
+  },
+  {
+    "id": "008",
+    "role": "scout:data-migrations",
+    "response": {
+      "findings": []
+    }
+  },
+  {
+    "id": "009",
+    "role": "scout:deploy-safety",
+    "response": {
+      "findings": []
+    }
+  },
+  {
+    "id": "010",
+    "role": "scout:api-contract",
+    "response": {
+      "findings": []
+    }
+  },
+  {
+    "id": "011",
+    "role": "scout:observability",
+    "response": {
+      "findings": [
+        {
+          "claim": "A missing Pi mode witness silently disables all enrollment and delivery instead of reporting the required local capability diagnostic.",
+          "location": "integrations/pi/extension/herdr-threads.js:310",
+          "category": "observability",
+          "external": false,
+          "kind": "ISSUE",
+          "evidence": "The session_start handler returns immediately on ctx.mode !== \"tui\", including undefined, before creating an owner or calling diagnostic. Every later callback requires callbackOwner(ctx), so this session remains entirely disconnected with no integration warning. This differs from intentionally excluding explicit rpc/json/print modes: design.md D1 explicitly requires \"Missing mode or required APIs disables the integration capability with a local diagnostic\" so runtime API incompatibility is visible. The adjacent missing-sessionManager check does emit \"boundary API unavailable\", but the missing-mode case never reaches it. extension.test.mjs:423-425 explicitly exercises mode undefined and checks only that no calls occur, leaving the required diagnostic untested. No external Pi behavior is assumed: the finding is the implemented missing-witness failure path."
+        }
+      ]
+    }
+  },
+  {
+    "id": "012",
+    "role": "scout:testing",
+    "response": {
+      "findings": []
+    }
+  },
+  {
+    "id": "013",
+    "role": "scout:test-causality-lifecycle",
+    "response": {
+      "findings": [
+        {
+          "claim": "The transformed-boundary negative qualification can pass without the target frame ever reaching the transformer because it releases the held turn before observing channel delivery or an exact transformed proposal.",
+          "location": "scripts/pi-tui-qualify.py:602",
+          "category": "test-causality-lifecycle",
+          "external": false,
+          "kind": "ISSUE",
+          "evidence": "Proved missing prerequisite, not a reproduced failure. case_negative intends to prove that a returned full-frame proposal rejected before persistence cannot settle a receipt (lines 594-596). It awaits send CLI completion at line 602, touches transform and release-text immediately, waits only for agent_settled, then asserts pending (603-606). The fixture transformer in scripts/pi_tui_fixtures/provider.mjs transforms only entries already present in its turn_end event; the production extension proposals are built from asynchronously received watch rows in integrations/pi/extension/herdr-threads.js. CLI send completion does not establish receipt by that child watch. A feasible interleaving delays watch delivery until after both turn_end and agent_before_settle: neither boundary proposes the target, the run settles, and pending passes trivially. Delivery can then arrive before the explicit retry at 608, producing the expected acknowledgment at 609, so the complete case passes without exercising rejection. Unlike cancel_settle_probe, which checks the exact message ID and body in settle_abort.entries, this case never verifies that its target appeared at the transformed boundary. Preserve the pending/recovery assertions and gate release on recipient delivery readiness or assert an observer record containing the exact target proposal and its transformation."
+        }
+      ]
+    }
+  },
+  {
+    "id": "014",
+    "role": "scout:test-isolation-environment",
+    "response": {
+      "findings": [
+        {
+          "claim": "The native IO test leaves its interval-running watch child alive when the connected-status assertion fails, hanging the Node test process instead of completing failure cleanup.",
+          "location": "integrations/pi/extension/tests/extension.test.mjs:369",
+          "category": "test-isolation-environment",
+          "external": false,
+          "kind": "ISSUE",
+          "evidence": "Source risk, not reproduced: the README runs this file directly with node --test. The test creates watcher with a Node program that prints one status then runs setInterval indefinitely; it executes assert.equal((await line).state, connected) before await watcher.stop(). Its finally block only removes the scratch directory. If transport decoding regresses so the first delivered row has a different state, that assertion throws and skips stop; nodeIO child() retains referenced child-process/stdout handles and has no parent/test failure cleanup or watch deadline. The same owner therefore keeps the test worker alive after its failed assertion, retaining the child and preventing completion. Move watcher.stop() into guaranteed teardown; also bound the line wait so a missing delivery fails and reaches teardown."
+        }
+      ]
+    }
+  },
+  {
+    "id": "015",
+    "role": "scout:test-suite-cost",
+    "response": {
+      "findings": []
+    }
+  },
+  {
+    "id": "016",
+    "role": "scout:dependency",
+    "response": {
+      "findings": []
+    }
+  },
+  {
+    "id": "017",
+    "role": "scout:hygiene-docs",
+    "response": {
+      "findings": []
+    }
+  },
+  {
+    "id": "018",
+    "role": "dedupe",
+    "response": {
+      "groups": [
+        {
+          "ids": [
+            0
+          ],
+          "suggestedSeverity": "Blocking",
+          "rank": 1
+        },
+        {
+          "ids": [
+            2
+          ],
+          "suggestedSeverity": "Should-fix",
+          "rank": 2
+        },
+        {
+          "ids": [
+            3
+          ],
+          "suggestedSeverity": "Should-fix",
+          "rank": 3
+        },
+        {
+          "ids": [
+            1
+          ],
+          "suggestedSeverity": "Should-fix",
+          "rank": 4
+        }
+      ]
+    }
+  },
+  {
+    "id": "019",
+    "role": "judge:reproduce#0",
+    "response": {
+      "verdict": "CONFIRM",
+      "severity": "Should-fix",
+      "evidence": "Static end-to-end demonstration against captured head 62bc385: design D4 requires keeping bodies until a qualified boundary, discarding excess bodies without settlement, and canonical replay after capacity release; integrations/pi/README.md Delivery and wake explicitly promises displaced/omitted bodies remain pending. Start with 256 retained small p0 records with no deadlines before a model boundary. extension/herdr-threads.js:196-211 accepts a new notice, defaults its priority to 0, assigns Infinity deadline and the newest sequence. compare and trim (34,126-133) therefore remove this notice as the worst tie and set replayDebt. No proposal or context callback has seen it. In the existing canonical presentation path, invitation_content.rs:2755-2762 settles the carried notice; attention.rs:1333-1348 advances the binding notice frontier, and informational_notice_pending_for at 1076-1081 excludes ordinals at or below it. Crucially, replay is not rescued by a retained presentation outbox: cli/watch.rs:735-755 flushes the JSON line and immediately sends DeliveryPresentationConfirmV2 independently of extension/model acceptance; invitation_content.rs:975-988 retires non-control descriptors, and retire_outbox at 853-884 clears their stored body. Let this normal confirmation finish before capacity release. released/replaceWatch then reconnect (extension lines 148-160), but neither canonical pending notice selection nor the retired outbox supplies the discarded notice. Thus automatic model delivery of that notice is permanently lost, although its underlying warning may remain available through explicit historical lookup. Reload independently drops an unproposed notice after that normal flush/confirmation: close preserves only proposals (293), and session_start creates an empty pending map (327). The strongest demonstration is overflow, which needs no assumption about lifecycle binding rotation. The event-contract intentionally permits watch flush confirmation; this finding does not require changing that contract or treating notice presentation as mail ACK. It identifies the new extension buffering layer discarding already-consumed notice bodies while claiming they are replayable. The accepted downstream context-transform/provider limits do not cover loss before any boundary. Existing tests cover ordinary-mail overflow and reload of proposals, not this notice path. No execution or external API premise is required; no tests were run."
+    }
+  },
+  {
+    "id": "020",
+    "role": "judge:refute#0",
+    "response": {
+      "verdict": "CONFIRM",
+      "severity": "Should-fix",
+      "evidence": "Verified against captured head 62bc385 and base 91ce0cd. (a) No equivalent recovery mechanism covers unproposed notices: integrations/pi/extension/herdr-threads.js onLine admits notice into pending, trim deletes the worst record regardless of kind (126-133), and recovery retains only proposals (293,327). Canonical replay is insufficient: src/store/invitation_content.rs:2755-2762 settles carried notices; attention.rs:1333-1348 advances the binding frontier, and 1076-1081 excludes already-carried ordinals. The canonical outbox does provide replay until presentation confirmation, but src/cli/watch.rs:744-760 flushes and confirms before any extension model boundary; after successful confirmation this escape hatch is gone. A p0 notice arriving behind 256 retained equally urgent records is evicted immediately; replay after capacity release cannot recover it for the same binding. (b) The event contract explicitly permits CLI presentation confirmation after flush, but does not accept client-side loss after that handoff. Design D4 explicitly requires excess bodies discarded without settlement and canonical recovery, and TRUST-POLICY Pi section/README promise omitted/displaced bodies remain pending. Honoring early confirmation therefore requires preserving these nonreplayable notices locally, not treating them as ordinary replayable mail. (c) This is within the explicitly specified 256-record saturation/replay and reload support, not a demand for unlimited storage. (d) Programmatic warning/rejection notices can disappear before reaching any admitted model context, a material delivery failure even though ordinary ACK correctness is unaffected; should-fix severity reflects the narrower informational-notice impact. (e) The Pi extension does not exist at base (git ls-tree base integrations/pi is empty); existing store settlement semantics are not themselves the defect. The new buffering/recovery policy introduces the loss. (f) Behavioral delivery loss is not linter territory. Static source review only; no external API premise or runtime claim is needed."
+    }
+  },
+  {
+    "id": "021",
+    "role": "judge:ground#0",
+    "response": {
+      "verdict": "CONFIRM",
+      "severity": "Should-fix",
+      "evidence": "Verified against captured head 62bc385 and base/head diff: the Pi extension is new on this branch. onLine accepts notice into the same pending map as mail (196-211); trim (126-133) deletes the worst item irrespective of kind and only sets replayDebt. With 256 earlier p0 records of equal deadline, the new p0 notice has the largest order and is discarded. Canonical presentation constructs carried notices and calls settle_carried_notices (src/store/invitation_content.rs:2755-2762); that validates the carried prefix and calls settle_offered_notices (src/store/attention.rs:1354-1377), which advances digest_notice_offer (1333-1348). Pending requires ordinal > frontier (1076-1081). Moreover src/cli/watch.rs:735-763 flushes and confirms the presentation independently of the extension retaining or proposing it. A successful ordinary watch confirmation therefore removes the replay protection before a model boundary can see the discarded body; replacing watch does not restore pending status. close saves only proposals to RECOVERY (extension:293), while reload initializes pending empty (327), so buffered, unproposed notices are also lost locally. The event contract intentionally requires normal watch presentation confirmation, but does not accept dropping those carried notices; design D4 explicitly requires keeping bodies until a qualified boundary and canonical recovery of discarded bodies, and the Pi README promises displaced/omitted bodies remain pending. This is an internal integration mismatch, not a demand to change receipt semantics or a claim about an external Pi API. Scope is informational-notice loss, not ordinary mail receipt loss; significant enough to fix."
+    }
+  },
+  {
+    "id": "022",
+    "role": "judge:reproduce#1",
+    "response": {
+      "verdict": "CONFIRM",
+      "severity": "Should-fix",
+      "evidence": "Static causal demonstration, not an executed reproduction: case_negative at scripts/pi-tui-qualify.py:594-609 claims to test rejection of an exact full-frame draft, but its only initial prerequisite is stream_held. send() at 158-160 waits for the sender CLI and returns its message ID, with no recipient-observation predicate. The production extension receives mail independently through its watch child line callback (integrations/pi/extension/herdr-threads.js:158-163,179-210), and its boundary callbacks propose only locally retained mail (347-355). Therefore this permitted ordering satisfies every test assertion: sender finishes; transform and release-text are touched (603-604); both boundary callbacks run before the target's watch line callback, so neither proposes that target; the fixture's transformer maps event.entries only (scripts/pi_tui_fixtures/provider.mjs:93), hence never transforms the target; agent_settled advances; receipt is still pending (606); the target then arrives through watch; transform is removed and the explicit retry admits the exact frame, producing the required acknowledged receipt (608-609). The independent truncation assertions afterward do not constrain this earlier ordering. No assertion examines the target ID/body in the transformed boundary, although cancel_settle_probe explicitly performs that causal check for its different scenario (pi-tui-qualify.py:567-568). This defeats the case's own stated purpose (595-596) and materially weakens design D8's required integrated exact-receipt evidence for D4/D5's rejected/altered-draft rule. It establishes an unsound qualification, not a demonstrated production false ACK or a claim that retained historical runs used this ordering. Require an exact target proposal/transformation observer assertion, retaining pending and recovery checks. Both qualification files are new in the captured base-to-head diff."
+    }
+  },
+  {
+    "id": "023",
+    "role": "judge:refute#1",
+    "response": {
+      "verdict": "CONFIRM",
+      "severity": "Should-fix",
+      "evidence": "(a) No equivalent causal guard exists in case_negative: scripts/pi-tui-qualify.py:602-609 sends, enables transform, releases the provider, waits for settlement, checks pending, then retries. send() only returns the send CLI result. The extension receives rows separately through nodeIO stdout data -> onLine -> retain, and both completed boundaries call proposal() over that local buffer. provider.mjs transforms only entries actually present at turn_end; its event logging is not asserted for the target by this case. Unlike cancel_settle_probe, no assertion checks exact target ID/body in the boundary. Existing JS/SDK transformation tests cover the receipt predicate but do not establish that this native driver exercised it. (b) D4 explicitly requires changed/rejected drafts to remain pending; its accepted downstream-context/transport limits do not waive qualification causality. (c) D8 requires integrated real-binary fake-model evidence, and qualification/task-3-final.md credits negative with transformed-draft receipt safety, so this is in scope. (d) With watch delivery delayed until after both boundaries, pending passes without transformation; delivery before the user retry permits acknowledgment and the case passes. That false positive undermines this claimed integrated negative proof, though it does not itself demonstrate a production receipt defect. (e) git ls-tree at base 91ce0cdeb8e87dcc16c79f4a556fabffb7946967 contains no scripts/pi-tui-qualify.py; the qualification driver and fixture are additions in this diff. (f) This is missing causal test evidence, not formatting or a linter concern. An assertion that the exact target was present in the pre-transform entries and actually replaced would close the gap while preserving pending/recovery assertions. Internal structural finding; no external API premise needed."
+    }
+  },
+  {
+    "id": "024",
+    "role": "judge:ground#1",
+    "response": {
+      "verdict": "CONFIRM",
+      "severity": "Should-fix",
+      "evidence": "The new case_negative (scripts/pi-tui-qualify.py:594-609) waits for stream_held, calls send, enables transform, releases the stream, and checks only agent_settled and pending before retry. send (158-160) only returns the send CLI result; neither it nor ht waits for recipient watch processing. The production extension retains mail only in its asynchronous watch line handler (startWatch/onLine), and its turn_end/agent_before_settle callbacks propose only currently retained items. The fixture transformer (provider.mjs turn_end handler) maps event.entries and does not assert that a target entry existed. Thus delayed recipient watch processing until after both boundaries makes pending pass without any target transformation; processing before the explicit retry permits the subsequent acknowledged assertion too. This is an internal ordering gap, not a claim that a recorded run actually took that ordering. The fixture already logs boundary entries, but case_negative never checks them; cancel_settle_probe explicitly checks its exact ID and body in settle_abort.entries. Design D4 requires changed/rejected drafts to remain pending and D8 requires real-binary exact-receipt qualification, so a vacuous negative proof is material. Require exact target proposal/transformation evidence in addition to pending/recovery. The script is new in the captured base-to-head diff, so this is not pre-existing."
+    }
+  },
+  {
+    "id": "025",
+    "role": "judge:reproduce#2",
+    "response": {
+      "verdict": "CONFIRM",
+      "severity": "Should-fix",
+      "evidence": "Static failure-path demonstration, not an executed reproduction. The new native IO test (integrations/pi/extension/tests/extension.test.mjs:356-370 at 62bc385) spawns a child with an indefinite setInterval, awaits the first line, asserts its state, and only then calls watcher.stop(). A failed state assertion therefore skips the only stop; finally removes only the directory. A missing line also waits indefinitely without reaching finally. nodeIO in herdr-threads.js:396-452 creates a referenced ChildProcess with piped stdout, has no spawn deadline or test-failure cleanup, and only kills it through stop (or an oversized-output condition, which this one-line child does not trigger). The README qualification command runs this file with plain node --test. External runtime premises verified by fetching https://nodejs.org/api/child_process.html#subprocessunref (quote: \"use the subprocess.unref() method\") and https://nodejs.org/api/test.html (forceExit quote: \"Default: false.\"): child references keep the event loop alive, and test completion does not force exit by default. Thus a regression caught by this assertion leaves the interval child alive and the worker awaiting its referenced handles instead of completing qualification. This violates design D8 required owned process/temp cleanup and AGENTS.md:13 requiring test/helper processes to stop before task completion. The test and transport are new in the captured diff. Guaranteed watcher teardown plus a bounded line wait addresses both failure paths. No mutable reproduction or tests were run under the static-review restriction."
+    }
+  },
+  {
+    "id": "026",
+    "role": "judge:refute#2",
+    "response": {
+      "verdict": "CONFIRM",
+      "severity": "Should-fix",
+      "evidence": "Static review confirms failure-path cleanup defect, not a reproduced current happy-path failure. At head extension.test.mjs:370-372 creates an indefinitely running child, awaits the first row, asserts connected, and only then stops it; finally removes the directory only. (a) No test after hook, failure cleanup, deadline, or abort signal covers this watcher. nodeIO child() has explicit stop and size/abort handling, but a small decoded wrong-state row triggers none; its production owner shutdown is not involved in this direct nodeIO test. (b) Design/event-contract accepted limits concern cooperative receipts, UI observations and replay, not leaking test children; AGENTS.md requires finished tests to stop owned processes. (c) This is the newly documented direct Node qualification command, within scope. (d) A failed transport assertion skips stop and leaves the qualification process alive; a missing callback also leaves its await unbounded. That impedes failure completion and leaks an owned process, materially violating cleanup requirements. External behavior verified from fetched official documentation: https://nodejs.org/api/child_process.html#subprocessunref explains unref permits the parent to exit independently; this code never unrefs the child. https://nodejs.org/api/test.html documents forceExit as exiting despite an active event loop, with \"Default: false.\" README invokes node --test without force-exit. (e) Base 91ce0cde lacks this test file; introduced by this change. (f) Resource teardown correctness is not formatting/linter territory. Put stop in guaranteed awaited teardown and bound first-row waiting. No tests or mutable reproductions run."
+    }
+  },
+  {
+    "id": "027",
+    "role": "judge:ground#2",
+    "response": {
+      "verdict": "CONFIRM",
+      "severity": "Should-fix",
+      "evidence": "Introduced in this PR: the base-to-head diff marks extension.test.mjs and its transport as added. At head, the native IO test starts an indefinitely interval-running Node child, awaits a line without a deadline, asserts its state, and only then calls watcher.stop(); finally removes only the scratch directory. No test-level after hook or cleanup owner covers this watcher. nodeIO.spawn supplies no timeout or abort signal here, keeps stdout piped, and only stop() sends SIGTERM/SIGKILL and awaits close. Therefore an assertion failure skips child termination; a missing/invalid JSON line can also wait indefinitely. The documented README command is plain node --test without forced exit. External grounding: https://nodejs.org/api/child_process.html#subprocessunref documents that unref permits the parent to exit independently (quote: \"event loop to not include the child process in its reference count\"); this transport never calls it. https://nodejs.org/api/timers.html#class-timeout states \"the Node.js event loop will continue running as long as the timer is active.\" https://nodejs.org/api/test.html documents forceExit as default false and describes its purpose as exiting \"even if the event loop would otherwise remain active.\" Thus a failed assertion can leave both the test worker and owned child alive, contrary to the design qualification requirement for owned process/temp cleanup and repository cleanup rules. Static verification only; no failure injection was run. Guaranteed watcher teardown plus a bounded line wait addresses the actual failure paths."
+    }
+  },
+  {
+    "id": "028",
+    "role": "judge:reproduce#3",
+    "response": {
+      "verdict": "CONFIRM",
+      "severity": "Should-fix",
+      "evidence": "Static control-flow demonstration against captured head 62bc385: design.md D1 explicitly says \"Missing mode or required APIs disables the integration capability with a local diagnostic\"; event-contract.md likewise requires a compact diagnostic for an unavailable required native boundary/API shape. In a fresh register() invocation with no inherited forbidden claims and no duplicate owner, owner starts null (extension/herdr-threads.js:45). Give session_start a context with mode undefined but otherwise valid sessionManager and notification API. The guard at line 310 returns because undefined !== tui, before the diagnostic-bearing API checks, owner construction, admit(), or startWatch(). All subsequent native callbacks obtain callbackOwner(ctx), which returns null because owner was never assigned (lines 64-65); consequently no enrollment, watch, delivery, or later warning occurs. diagnostic() is never called on this path, although the module provides both native notification and an ownerless diagnostic sink. The existing extension.test.mjs:423-425 explicitly constructs this input by assigning other.ctx.mode = undefined, but checks only zero calls, not diagnostics. This completes the contradiction without requiring any claim about a particular upstream Pi release: missing mode is an explicitly specified compatibility failure input. Refusing enrollment is correct; silently losing the entire integration capability violates the required observability contract and hides runtime incompatibility. The extension is newly added in this diff, not pre-existing. No execution was performed."
+    }
+  },
+  {
+    "id": "029",
+    "role": "judge:refute#3",
+    "response": {
+      "verdict": "CONFIRM",
+      "severity": "Nit",
+      "evidence": "The internal finding survives the refutation checks. (a) The complete extension has a diagnostic helper and warnings for unavailable boundary/session/branch APIs, but session_start immediately returns for ctx.mode !== \"tui\" before any warning or owner exists (herdr-threads.js:310-311); callbackOwner then rejects all subsequent delivery/lifecycle callbacks. No equivalent missing-mode warning exists. (b) Design D1 explicitly requires \"Missing mode or required APIs disables the integration capability with a local diagnostic\"; event-contract.md likewise requires a compact diagnostic for unavailable required native API shapes. README permits omitting TUI warnings when notification is missing or throws, but this return is unconditional even with an available notification API, so that exception does not cover it. (c) Explicit RPC/JSON/print exclusion is in scope and correctly silent; absence of a required mode witness is separately covered by D1, without requiring arbitrary SDK-host support. (d) Enrollment refusal itself is correct; the missing diagnostic leaves capability degradation invisible, contrary to the stated observability requirement. Impact is low because no unsafe enrollment or false receipt occurs, hence Nit. (e) The extension file does not exist at base 91ce0cdeb8e87dcc16c79f4a556fabffb7946967; it is newly added by this change. (f) This is an omitted runtime failure-path diagnostic, not formatter/linter territory. extension.test.mjs:423-425 covers undefined mode only by asserting no commands, without asserting a warning. No external API-behavior premise is needed."
+    }
+  },
+  {
+    "id": "030",
+    "role": "judge:ground#3",
+    "response": {
+      "verdict": "CONFIRM",
+      "severity": "Should-fix",
+      "evidence": "Internal premises verified at captured head 62bc385. design.md D1 (line 17) explicitly requires: \"Missing mode or required APIs disables the integration capability with a local diagnostic\"; event-contract.md also requires a compact diagnostic for unavailable required native API shapes. integrations/pi/extension/herdr-threads.js:309-311 returns on ctx.mode !== tui before either diagnostic invocation or owner creation. With an initially undefined mode, owner remains null, and callbackOwner rejects subsequent delivery callbacks; no enrollment or watch starts. The diagnostic helper is only invoked by other failure paths, so it cannot report this early return. The adjacent missing-sessionManager path does explicitly report boundary API unavailable. extension.test.mjs:423-425 includes undefined alongside explicit nonterminal modes but asserts only zero calls, not a diagnostic. This is a material failure of the specified runtime capability-degradation observability, distinct from correctly refusing unsupported modes. The extension is a new file in the captured base/head diff, so the defect is introduced here. No premise requires external Pi behavior: this verifies the explicitly required missing-witness path."
+    }
+  },
+  {
+    "id": "031",
+    "role": "reporter",
+    "response": {
+      "verdict": "Blocking (4 confirmed) [low coverage] [review readiness incomplete]",
+      "reportMarkdown": "super-roast verdict: Blocking (4 confirmed) [low coverage] [review readiness incomplete]\nmode: pr        iteration: 1 of 3\nprofile (assumed): Internal same-user cooperative agent messaging; identity, receipt provenance, bounded delivery and priority-correct native wake are core contracts. The integrated branch includes neutral seams and qualification drivers. Current design and TRUST limits apply; the historical channel-wake design review is superseded.\ninputs: pi-harness@62bc385d0b3623243db43c2536658eec6451f9bd vs 91ce0cdeb8e87dcc16c79f4a556fabffb7946967\ncoverage: scouts 16/16 (correctness, security, premortem, simplicity-design, hot-path-perf, concurrency-async, data-migrations, deploy-safety, api-contract, observability, testing, test-causality-lifecycle, test-isolation-environment, test-suite-cost, dependency, hygiene-docs) \u00b7 raw 4 \u2192 deduped 4 \u2192 panel 4 \u00b7 spot 0 \u00b7 promoted 0 \u00b7 judge completion 100% \u00b7 remainder-capped: 0 \u00b7 review readiness: coverage bounded, provenance available \u2014 basis: \"Frozen head 62bc385d0b3623243db43c2536658eec6451f9bd; public qualification/task-3-final.md and JSON map 14 scripted cases across exact hashes plus narrow footer fix/new binary evidence. Live qualification rejected before key read; user authorization pending. Initial full suite 9606 pass/10 fail/878s/leaks0; focused test-only corrections reviewed green. Final checks/native3/fresh full attempt2 not complete at dispatch. Baseline951s@4, ht-n4xh budget open; no regression inferred. HC/runtime and live invitation gaps remain.\"\nindependence: same-family (OpenAI GPT) \u2014 seat-differentiated panel \u00b7 rung: manual fan-out\nseat-agreement: panels 4 \u00b7 rr 1.00 \u00b7 rg 1.00 \u00b7 fg 1.00 \u00b7 unanimous 1.00 \u00b7 ground-loo 1.00 (n=4) \u00b7 reproduce 4/0/0 \u00b7 refute 4/0/0 \u00b7 ground 4/0/0\n\nThe engine coverage basis above records dispatch-time status. Coordinator supplemental evidence supersedes its live-authorization and unfinished-native/check statements: the exact frozen candidate passed native receipts, compaction and channel qualification with zero cleanup leaks, and shared format, clippy, default-feature, neutral-core and wire checks passed. Live Pi-only OpenRouter qualification is authorized but unexecuted; corrected full-suite attempt2 is held. Initial full-suite evidence remains 9606 pass, 10 fail and 878s; focused corrections passed. The 951s baseline and open ht-n4xh budget issue do not establish a branch timing regression.\nSource readiness remains bounded with available provenance. Scripted/native evidence does not close hc runtime or unexecuted live invitation/provider coverage. All 16 scouts and 12 panel seats returned; stage completion does not establish source completeness. Historical design roasts are not a prior PR iteration. No convergence is claimed.\n\n## Confirmed findings\n- [Blocking] integrations/pi/extension/herdr-threads.js:130 \u2014 Buffered notices can disappear permanently before any model boundary receives them.\n  verdict: confirmed (reproduce \u2713 / refute \u2717-survived / ground \u2713)\n  evidence: All three seats trace a new p0 notice arriving behind 256 equal-priority retained records through onLine and trim, which evicts it and sets replayDebt. Canonical watch presentation settles carried notices at src/store/invitation_content.rs:2755-2762; src/store/attention.rs:1333-1348 advances the notice frontier. src/cli/watch.rs:735-763 flushes and confirms independently of model acceptance, retiring the outbox replay protection. Replacing watch cannot recover the discarded notice after confirmation. Reload also saves only proposals at extension line 293 and creates an empty pending map at line 327, dropping unproposed notices.\n  evidence: This is a static end-to-end loss demonstration, not an executed failure. It concerns informational notices, not ordinary-mail ACK corruption. Design D4 and the Pi README require retaining bodies until a qualified boundary and recovering displaced bodies; loss before any boundary violates that core delivery purpose, so the Blocking floor applies despite the panel's Should-fix ratings. The intentional watch-flush confirmation contract remains valid.\n  fix-shape hint: Give already-consumed notices retention and reload recovery that survives until qualified model admission; use bounded backpressure or a recoverable handoff rather than evicting them as replayable mail. Cover notice saturation and reload after normal watch confirmation.\n- [Should-fix] scripts/pi-tui-qualify.py:602 \u2014 The transformed-boundary negative case can pass without transforming its target frame.\n  verdict: confirmed (reproduce \u2713 / refute \u2717-survived / ground \u2713)\n  evidence: All three seats identify the same permitted ordering: sender CLI returns, transform/release markers are written, both boundaries run before asynchronous watch delivery, and the pending assertion passes without a target proposal. Watch delivery before the explicit retry then permits the expected acknowledgment. The fixture transforms only entries already present; case_negative never asserts the exact target's presence and replacement, unlike cancel_settle_probe's target checks at lines 567-568.\n  evidence: This demonstrates an unsound qualification predicate, not a reproduced production false ACK or proof that retained runs used this ordering. Passing native qualification does not supply the missing causal assertion. The production core-purpose floor is not established by this test gap alone.\n  fix-shape hint: Assert an observer record showing the exact target ID and full body in the pre-transform proposal and its actual replacement, while preserving pending and successful-retry assertions; synchronize recipient readiness where necessary.\n- [Should-fix] integrations/pi/extension/tests/extension.test.mjs:369 \u2014 A failed native IO assertion skips watch-child cleanup and can hang qualification.\n  verdict: confirmed (reproduce \u2713 / refute \u2717-survived / ground \u2713)\n  evidence: All three seats confirm that the test starts an interval-running child, waits without a deadline, asserts connected state, and only then calls watcher.stop(). Its finally block removes only the scratch directory. A wrong-state assertion skips stop; a missing row never reaches it. nodeIO retains the child and piped stdout, and the documented command is plain node --test.\n  evidence: Static failure-path risk, not an injected or observed current failure. Seats grounded the event-loop premise in [Node child-process documentation](https://nodejs.org/api/child_process.html#subprocessunref) and [Node test documentation](https://nodejs.org/api/test.html), which documents forceExit as default false. Required owned-process cleanup and bounded qualification justify Should-fix; no production delivery failure is established by this finding.\n  fix-shape hint: Await watcher.stop() in guaranteed teardown and bound the first-row wait so both assertion failure and absent delivery reach cleanup.\n- [Nit] integrations/pi/extension/herdr-threads.js:310 \u2014 A missing mode witness disables the integration without the required local diagnostic.\n  verdict: confirmed (reproduce \u2713 / refute \u2717-survived / ground \u2713)\n  evidence: All three seats confirm that ctx.mode undefined takes the early non-tui return before owner creation or diagnostic invocation; later callbacks reject the absent owner. Design D1 explicitly requires a local diagnostic for missing mode or required APIs. The adjacent missing-sessionManager path warns, but the undefined-mode test at extension.test.mjs:423-425 checks only that no commands occur.\n  evidence: Severity dissent only: reproduce and ground rate Should-fix; refute rates Nit because refusing enrollment remains correct and no unsafe enrollment or false receipt follows. The seats agree on the defect. No external Pi-version premise or executed failure is claimed.\n  demoted: The profile is an internal same-user tool, and the defect is a missing compatibility diagnostic on an intentionally disabled capability; the correct refusal preserves the core enrollment and receipt contracts.\n  fix-shape hint: Distinguish absent mode evidence from explicitly excluded modes, emit the existing compact local capability diagnostic for absence, and assert it in the undefined-mode test.\n\n## Not verified (beyond panel cap)\n- none\n\n## Not verified (dedupe failed or judge lost)\n- none\n\n## Beyond remainder cap (count only)\n- none\n\n## Rejected (with reason)\n- none\n\n## Unverified nits (spot-checked)\n- none\n\n## Escalations (need human)\n- none\n",
+      "confirmedCount": 4,
+      "escalations": []
+    }
+  }
+]
