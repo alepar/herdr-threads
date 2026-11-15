@@ -30,8 +30,8 @@ test('real SDK persists native drafts and continues only completed runs', async 
     // No bind/session_start: loader qualification must not execute a real ht CLI.
   })
 
-  for (const mode of ['turn', 'settle', 'error', 'aborted', 'cancel-at-settle', 'transformed', 'transformed-p0', 'self-wake', 'reload']) await t.test(mode, async () => {
-    let session, watch, calls = 0, starts = 0, injected = false, nonce = 0, stopped = 0
+  for (const mode of ['turn', 'settle', 'error', 'aborted', 'cancel-at-settle', 'transformed', 'transformed-p0', 'self-wake', 'reload', 'reload-urgent-unobserved']) await t.test(mode, async () => {
+    let session, watch, calls = 0, starts = 0, injected = false, nonce = 0, stopped = 0, reloaded = false
     const commands = [], providerContexts = [], errors = []
     const privateRoot = path.join(root, mode); fs.mkdirSync(privateRoot, { recursive: true })
     const send = (waking = false) => {
@@ -58,10 +58,11 @@ test('real SDK persists native drafts and continues only completed runs', async 
         register(pi, io)
         pi.on('before_agent_start', () => { starts++ })
         pi.on('turn_end', e => {
-          if (mode === 'settle' || mode === 'cancel-at-settle') { if (!injected) send() }
+          if (['settle', 'cancel-at-settle', 'reload-urgent-unobserved'].includes(mode)) { if (!injected) send(mode === 'reload-urgent-unobserved') }
           if (mode.startsWith('transformed')) return { entries: e.entries.map(entry => entry.type === 'custom_message' && String(entry.content).includes('exact first') ? { ...entry, content: 'later extension replaced frame' } : entry) }
         })
         if (mode === 'cancel-at-settle') pi.on('agent_before_settle', async (_e, ctx) => { ctx.abort() })
+        if (mode === 'reload-urgent-unobserved') pi.on('agent_before_settle', async (_e, ctx) => { if (!reloaded) ctx.abort() })
       }] })
     await loader.reload()
     ;({ session } = await createAgentSession({ cwd: privateRoot, agentDir: process.env.PI_CODING_AGENT_DIR, settingsManager: SettingsManager.inMemory({}), resourceLoader: loader, sessionManager: SessionManager.create(privateRoot, path.join(privateRoot, 'sessions')), tools: [],
@@ -72,7 +73,7 @@ test('real SDK persists native drafts and continues only completed runs', async 
       session.agent.streamFunction = (model, context) => {
         calls++; providerContexts.push(JSON.stringify(context.messages))
         assert.equal(model.id, 'selected-model'); assert.equal(model.provider, 'selected-provider')
-        if (!injected && !['settle', 'cancel-at-settle'].includes(mode)) send(mode === 'transformed-p0')
+        if (!injected && !['settle', 'cancel-at-settle', 'reload-urgent-unobserved'].includes(mode)) send(mode === 'transformed-p0')
         const stream = createAssistantMessageEventStream()
         queueMicrotask(() => {
           const reason = mode === 'error' ? 'error' : mode === 'aborted' ? 'aborted' : 'stop'
@@ -101,7 +102,7 @@ test('real SDK persists native drafts and continues only completed runs', async 
         assert.ok(received.indexOf('exact first') < received.indexOf('exact second'))
         assert.ok(received.indexOf('exact second') < received.indexOf('exact third'))
       }
-      assert.deepEqual(errors, mode === 'transformed-p0' ? ['herdr-threads: pi delivery deferred'] : [])
+      assert.deepEqual(errors, ['transformed-p0', 'reload-urgent-unobserved'].includes(mode) ? ['herdr-threads: pi delivery deferred'] : [])
       if (mode === 'reload') {
         await session.reload()
         assert.equal(stopped, 1, 'native reload closes its predecessor watch')
@@ -110,10 +111,28 @@ test('real SDK persists native drafts and continues only completed runs', async 
         assert.equal(calls, 3); assert.equal(starts, 2)
         assert.equal(commands.filter(argv => argv.includes('ack')).length, 1)
       }
+      if (mode === 'reload-urgent-unobserved') {
+        const storedFrames = () => session.sessionManager.getBranch().filter(entry => entry.type === 'custom_message' && String(entry.content).includes('exact first'))
+        assert.equal(storedFrames().length, 1, 'cancellation stored a frame without another model request')
+        reloaded = true; await session.reload()
+        assert.equal(stopped, 1); assert.equal(commands.filter(argv => argv.includes('ack')).length, 0)
+        let timer
+        const settled = new Promise((resolve, reject) => {
+          session.subscribe(event => { if (event.type === 'agent_settled') { clearTimeout(timer); resolve() } })
+          timer = setTimeout(() => reject(new Error('replayed urgent frame did not wake the reloaded owner')), 3000)
+        })
+        send(true); send(true)
+        await settled
+        assert.equal(calls, 2); assert.equal(starts, 2, 'canonical replay starts exactly one successor run')
+        assert.equal(storedFrames().length, 1, 'recovery does not duplicate native body drafts')
+        const after = commands.filter(argv => argv.includes('ack'))
+        assert.equal(after.length, 1)
+        assert.deepEqual(after[0].slice(after[0].indexOf('context') + 1), ['first', 'second', 'third'])
+      }
     } finally {
       await session.extensionRunner.emit({ type: 'session_shutdown', reason: 'quit' })
       await session.dispose()
     }
-    assert.equal(stopped, mode === 'reload' ? 2 : 1, 'native shutdown reaps its watch')
+    assert.equal(stopped, mode.startsWith('reload') ? 2 : 1, 'native shutdown reaps its watch')
   })
 })

@@ -47,6 +47,9 @@ Failed ACKs retry only exact previously evidenced IDs, fenced by owner and branc
 Tree/compaction callbacks invalidate old context evidence; reload reconciles only
 this integration's bounded known unacknowledged proposals. A void API return,
 preview, message-end event or accepted entry alone supplies no receipt evidence.
+Reload retains accepted frames but clears their old owner's waking witnesses.
+A current canonical urgent replay can then wake the successor once, without a
+duplicate body proposal or an ACK before successor context observation.
 
 An admitted waking item can submit only `herdr-threads: wake up`. The final owner,
 channel, fresh idle, UI span and editor checks run synchronously with submission.

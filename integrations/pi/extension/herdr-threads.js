@@ -360,7 +360,9 @@ export function register(pi, io) {
     if (!owner.source) { await close(owner); return }
     for (const p of owner.proposals) {
       p.evidenced = false; p.acking = false; p.retryCancel = null; p.attempt = null; p.revision = 0
-      for (const r of p.items) r.attemptedRun = 0
+      // Recovered frames remain deduplicated, but their predecessor's waking
+      // witness cannot suppress the new owner's first canonical urgent replay.
+      for (const r of p.items) { r.attemptedRun = 0; r.waking = false }
     }
     Object.assign(io.env, owner.env)
     await admit(owner)
