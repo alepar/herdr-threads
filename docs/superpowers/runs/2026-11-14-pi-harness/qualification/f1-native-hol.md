@@ -10,7 +10,7 @@ attempts are in [f1-native-hol-evidence.json](f1-native-hol-evidence.json).
 A real overdue receipt first produced an open Notice, presented in an actual
 native turn. While the source held its exact physically rendered draft, the
 genuine agent sink received and ACKed that receipt, creating clear Notice
-`exSnNbJLkTDz` at ordinal3. Informational clears intentionally do not trigger a
+`exSnNbJLkTDz` at ordinal3. Clear projection alone does not guarantee another
 settled watch pull. One owned human sender's p1 publication triggered normal
 watch intake: canonical message and lazy-recipient priorities1, no ACK-required
 obligation, actual threshold0 and no invitation. It was not wake-eligible.

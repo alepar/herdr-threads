@@ -1,0 +1,349 @@
+{
+  "run_id": "e081904d-25cd-4e96-905d-07f2fccabd23",
+  "source_head": "fb7bf028e750a12744397a39b37534d9880555f2",
+  "candidate_sha256": "a8aef2df56e6954fe3c12b7d02841f521712ceb403d13f9b93fabdabe2224289",
+  "fixture_sha256": "08174d104a0e5fdbdee5f91cfe2acb169ef49f16b980d0130fa6a846dcf7ee33",
+  "installed_extensions": {
+    "primary": {
+      "path": "$SCRATCH/agent/extensions/herdr-threads/index.js",
+      "sha256": "976353746428bb3ed20846495b2e15082a42f2ffdf3aa29edc5ae49b6bbdc6c0"
+    }
+  },
+  "results": [
+    {
+      "case": "setup",
+      "outcome": "pass",
+      "elapsed_s": 0.021
+    },
+    {
+      "case": "busy",
+      "outcome": "pass",
+      "elapsed_s": 65.135
+    },
+    {
+      "case": "receipts",
+      "outcome": "pass",
+      "elapsed_s": 1.112
+    },
+    {
+      "case": "ordering",
+      "outcome": "pass",
+      "elapsed_s": 35.219
+    },
+    {
+      "case": "invitations",
+      "outcome": "pass",
+      "elapsed_s": 33.062
+    },
+    {
+      "case": "negative",
+      "outcome": "pass",
+      "elapsed_s": 31.169
+    },
+    {
+      "case": "failures",
+      "outcome": "pass",
+      "elapsed_s": 4.681
+    },
+    {
+      "case": "lifecycle",
+      "outcome": "pass",
+      "elapsed_s": 3.329
+    },
+    {
+      "case": "compaction",
+      "outcome": "pass",
+      "elapsed_s": 0.755
+    },
+    {
+      "case": "handoff",
+      "outcome": "pass",
+      "elapsed_s": 6.582
+    },
+    {
+      "case": "channel",
+      "outcome": "pass",
+      "elapsed_s": 50.059
+    },
+    {
+      "case": "named",
+      "outcome": "pass",
+      "elapsed_s": 71.875
+    }
+  ],
+  "runtime_wall_s": 311.65,
+  "identity": {
+    "source_head": "fb7bf028e750a12744397a39b37534d9880555f2",
+    "build_source": "a19fd881e7e8dc6c1b52c9cb2ccda0abbc3a8601",
+    "sha256_before": {
+      "target/debug/herdr-threads": "a8aef2df56e6954fe3c12b7d02841f521712ceb403d13f9b93fabdabe2224289",
+      "scripts/pi-tui-qualify.py": "50a3f9fb56665889ec8c4e6af9966083d9163476167902cc733606a08fbd44ed",
+      "scripts/pi_tui_fixtures/provider.mjs": "08174d104a0e5fdbdee5f91cfe2acb169ef49f16b980d0130fa6a846dcf7ee33"
+    },
+    "cases": "setup,busy,receipts,ordering,invitations,negative,failures,lifecycle,compaction,handoff,channel,named",
+    "run_id_note": "The native driver generates and propagates a new exact run UUID; extract it from its manifest for the postrun scan.",
+    "sha256_after": {
+      "target/debug/herdr-threads": "a8aef2df56e6954fe3c12b7d02841f521712ceb403d13f9b93fabdabe2224289",
+      "scripts/pi-tui-qualify.py": "50a3f9fb56665889ec8c4e6af9966083d9163476167902cc733606a08fbd44ed",
+      "scripts/pi_tui_fixtures/provider.mjs": "08174d104a0e5fdbdee5f91cfe2acb169ef49f16b980d0130fa6a846dcf7ee33"
+    },
+    "before_after_equal": true,
+    "run_id": "e081904d-25cd-4e96-905d-07f2fccabd23"
+  },
+  "cleanup": {
+    "ok": true,
+    "leak_rc": 0,
+    "helper_reaped": true,
+    "root_removed": true
+  },
+  "receipt": {
+    "seat": "sjzsGNFvAn9A",
+    "status": "acknowledged",
+    "physical_status": "acknowledged",
+    "effective_status": "acknowledged",
+    "retirement_cutover": null,
+    "cleanup_state": null,
+    "ack_provenance": {
+      "actor": "sjzsGNFvAn9A",
+      "generation": 1,
+      "native_observation": "{\"action_provenance\":\"cooperative_mod_delivery\",\"binding_generation\":1,\"decided_at\":1794750468649,\"execution\":\"fad4eeb5-427f-5d2a-952e-cc94409ef850\",\"harness\":\"pi\",\"host_boot\":\"<private-host-boot>\",\"observed_at\":1794750468649,\"provenance\":\"cooperative_top_level\",\"session\":\"01a1df75-c270-7537-92f4-752428f62818\",\"target_generation\":1,\"via\":\"context\"}",
+      "decided_at": 1794750468649
+    }
+  },
+  "native_page_order": [
+    0,
+    1,
+    5
+  ],
+  "invitation": {
+    "native_wake": true,
+    "accepted": true
+  },
+  "transformed_negative": {
+    "message": "mjzsZhgIBFss",
+    "body": "NEGATIVE-EXACT-FRAME 51d412ab-cad1-4852-a0de-206d4a5a75da",
+    "witness": {
+      "at": 1794750537379,
+      "event": "transform_applied",
+      "state": {
+        "sid": "01a1df75-c270-7537-92f4-752428f62818",
+        "idle": false,
+        "editor": "",
+        "model": "scripted",
+        "provider": "ht-fixture",
+        "probe_instance": "df8d4c4d-bdf9-482a-a62b-4e86ffedf5c6",
+        "probe_epoch": 1
+      },
+      "target": {
+        "mid": "mjzsZhgIBFss",
+        "body": "NEGATIVE-EXACT-FRAME 51d412ab-cad1-4852-a0de-206d4a5a75da",
+        "sid": "01a1df75-c270-7537-92f4-752428f62818"
+      },
+      "before": [
+        {
+          "type": "custom_message",
+          "customType": "herdr-threads:5724f4d9-d2dc-4829-b56f-e70b0ae4ea60:30d07dfd-f8ff-49cb-a916-b230aa4d12eb",
+          "content": "[herdr-threads] new messages:\n\n[herdr-threads] message mjzsZhgIBFss in dqgokvRXk8L \"1:1 sjzsGNFvAn9A sjzso3wRG4VB\" from sjzso3wRG4VB [p0] [human]:\n  NEGATIVE-EXACT-FRAME 51d412ab-cad1-4852-a0de-206d4a5a75da",
+          "display": false
+        }
+      ],
+      "after": [
+        {
+          "type": "custom_message",
+          "customType": "herdr-threads:5724f4d9-d2dc-4829-b56f-e70b0ae4ea60:30d07dfd-f8ff-49cb-a916-b230aa4d12eb",
+          "content": "qualification replaced draft",
+          "display": false
+        }
+      ]
+    },
+    "pending": {
+      "seat": "sjzsGNFvAn9A",
+      "status": "pending",
+      "physical_status": "pending",
+      "effective_status": "pending",
+      "retirement_cutover": null,
+      "cleanup_state": null,
+      "ack_provenance": null,
+      "deadline": 1794750657203
+    },
+    "recovered": {
+      "seat": "sjzsGNFvAn9A",
+      "status": "acknowledged",
+      "physical_status": "acknowledged",
+      "effective_status": "acknowledged",
+      "retirement_cutover": null,
+      "cleanup_state": null,
+      "ack_provenance": {
+        "actor": "sjzsGNFvAn9A",
+        "generation": 1,
+        "native_observation": "{\"action_provenance\":\"cooperative_mod_delivery\",\"binding_generation\":1,\"decided_at\":1794750537561,\"execution\":\"fad4eeb5-427f-5d2a-952e-cc94409ef850\",\"harness\":\"pi\",\"host_boot\":\"<private-host-boot>\",\"observed_at\":1794750537561,\"provenance\":\"cooperative_top_level\",\"session\":\"01a1df75-c270-7537-92f4-752428f62818\",\"target_generation\":1,\"via\":\"context\"}",
+        "decided_at": 1794750537561
+      }
+    },
+    "native_replacement_observed": true
+  },
+  "truncation_pending": true,
+  "settle_cancellation": {
+    "message": "mjzsoGAXYj0e",
+    "pending": {
+      "seat": "sjzsGNFvAn9A",
+      "status": "pending",
+      "physical_status": "pending",
+      "effective_status": "pending",
+      "retirement_cutover": null,
+      "cleanup_state": null,
+      "ack_provenance": null,
+      "deadline": 1794750691568
+    },
+    "recovered": {
+      "seat": "sjzsGNFvAn9A",
+      "status": "acknowledged",
+      "physical_status": "acknowledged",
+      "effective_status": "acknowledged",
+      "retirement_cutover": null,
+      "cleanup_state": null,
+      "ack_provenance": {
+        "actor": "sjzsGNFvAn9A",
+        "generation": 1,
+        "native_observation": "{\"action_provenance\":\"cooperative_mod_delivery\",\"binding_generation\":1,\"decided_at\":1794750572730,\"execution\":\"fad4eeb5-427f-5d2a-952e-cc94409ef850\",\"harness\":\"pi\",\"host_boot\":\"<private-host-boot>\",\"observed_at\":1794750572730,\"provenance\":\"cooperative_top_level\",\"session\":\"01a1df75-c270-7537-92f4-752428f62818\",\"target_generation\":1,\"via\":\"context\"}",
+        "decided_at": 1794750572730
+      }
+    },
+    "barrier": {
+      "at": 1794750571384,
+      "event": "settle_barrier",
+      "entries": [],
+      "outcome": "completed",
+      "continue": false
+    },
+    "abort": {
+      "at": 1794750571786,
+      "event": "settle_abort",
+      "entries": [
+        {
+          "type": "custom_message",
+          "customType": "herdr-threads:5724f4d9-d2dc-4829-b56f-e70b0ae4ea60:1bcec8a9-8006-4bba-b71b-d598fda03850",
+          "content": "[herdr-threads] new messages:\n\n[herdr-threads] message mjzsoGAXYj0e in dqgokvRXk8L \"1:1 sjzsGNFvAn9A sjzso3wRG4VB\" from sjzso3wRG4VB [p0] [human]:\n  CANCELLED-SETTLE-EXACT f3f5797f-8690-4285-9b7e-726804b1a735",
+          "display": false
+        }
+      ],
+      "outcome": "completed",
+      "continue": true
+    },
+    "draft_preserved": true
+  },
+  "failed_boundaries": [
+    "provider error",
+    "native abort",
+    "cancellation at settle"
+  ],
+  "native_compaction": true,
+  "handoff": {
+    "bootstrap": {
+      "failed": false,
+      "launch": {
+        "diagnostics": "optional_local_artifact",
+        "format": "automatic_launch_summary_v1",
+        "full_report_digest": "972855f7a67547f008170e28d81b7bbec4a678fbfa3ffd3d8fbfb3dc5950dff3",
+        "harness": "pi",
+        "outcome": "started",
+        "pane": "w1:p3",
+        "seat": "sjzsGJ2ae248"
+      },
+      "local_diagnostics": {
+        "authority": "local_hint",
+        "full_report_digest": "972855f7a67547f008170e28d81b7bbec4a678fbfa3ffd3d8fbfb3dc5950dff3",
+        "path": "$SCRATCH/state/node/intents/automatic-diagnostics-e240baa6-29e1-4913-9615-120bb5a51f15.json",
+        "state": "local_file"
+      },
+      "message": {
+        "data": "mjzs3Q5O8FF7",
+        "kind": "message_sent"
+      },
+      "outcome": "started",
+      "pane": "w1:p3",
+      "recovery_ref": "local:31",
+      "seat": "sjzsGJ2ae248",
+      "selection": {
+        "invitation": null,
+        "outcome": "already_joined"
+      },
+      "state": "completed",
+      "thread": "dNewo349Us9"
+    }
+  },
+  "channel_fallback": {
+    "native_wake": true,
+    "no_false_context_receipt": true,
+    "explicit_inbox": true
+  },
+  "scope": "12 fresh scripted native compatibility cases on the F1 production candidate. Safety/threshold remain historical evidence, not fresh results. Separate notice cases are linked in f1-native-attempts.md/f1-native-hol.md; no fullsuite/live result claimed.",
+  "production_build_source": "a19fd881e7e8dc6c1b52c9cb2ccda0abbc3a8601",
+  "official_runtime_entry_sha256": "e79626f2dd6f94aa45d30f3fa63cd84319a6eefcd150b353cfaf274366926774",
+  "postrun_process_temp_scan": {
+    "run_id": "e081904d-25cd-4e96-905d-07f2fccabd23",
+    "exit": 0,
+    "processes": "none",
+    "temp_files": "none"
+  },
+  "named": {
+    "receipt": {
+      "seat": "sjzspdJMrJpn",
+      "status": "acknowledged",
+      "physical_status": "acknowledged",
+      "effective_status": "acknowledged",
+      "retirement_cutover": null,
+      "cleanup_state": null,
+      "ack_provenance": {
+        "actor": "sjzspdJMrJpn",
+        "generation": 1,
+        "native_observation": "{\"action_provenance\":\"cooperative_mod_delivery\",\"binding_generation\":1,\"decided_at\":1794750639429,\"execution\":\"fc0432f8-d26b-5018-929d-9422cffbdf7c\",\"harness\":\"pi\",\"host_boot\":\"named-host:node=fee6126585312841a33966994a13a5e3\",\"observed_at\":1794750639429,\"provenance\":\"cooperative_top_level\",\"session\":\"01a1df79-57f4-71ca-80ee-ede18381ca66\",\"target_generation\":1,\"via\":\"context\"}",
+        "decided_at": 1794750639429
+      }
+    },
+    "native_session": "01a1df79-57f4-71ca-80ee-ede18381ca66",
+    "passive_p1_next_turn": true,
+    "busy_p0_receipt": {
+      "seat": "sjzspdJMrJpn",
+      "status": "acknowledged",
+      "physical_status": "acknowledged",
+      "effective_status": "acknowledged",
+      "retirement_cutover": null,
+      "cleanup_state": null,
+      "ack_provenance": {
+        "actor": "sjzspdJMrJpn",
+        "generation": 1,
+        "native_observation": "{\"action_provenance\":\"cooperative_mod_delivery\",\"binding_generation\":1,\"decided_at\":1794750674131,\"execution\":\"fc0432f8-d26b-5018-929d-9422cffbdf7c\",\"harness\":\"pi\",\"host_boot\":\"named-host:node=fee6126585312841a33966994a13a5e3\",\"observed_at\":1794750674131,\"provenance\":\"cooperative_top_level\",\"session\":\"01a1df79-57f4-71ca-80ee-ede18381ca66\",\"target_generation\":1,\"via\":\"context\"}",
+        "decided_at": 1794750674131
+      }
+    },
+    "no_trailing_wake": true
+  },
+  "historical_safety_threshold": {
+    "source_base": "ae6626ff88b11c50dcddc47800b6201441e8e8f2",
+    "candidate_sha256": "ac61f5958bc0dea2eadb41b1c27f6aaa669ec2b8089d9d71a3f936149ad25cff",
+    "driver_sha256": "2a16e19e2cfe13ff95adf93707b60af129eb8761b5b1e9784a9ff4ac68f4cfb8",
+    "fixture_sha256": "1a818c4deb0e15ce4bea08f1cd77ecb272e0e2586a39db8537fc611132d6cf67",
+    "results": [
+      {
+        "case": "safety",
+        "outcome": "pass",
+        "elapsed_s": 182.537
+      },
+      {
+        "case": "threshold",
+        "outcome": "pass",
+        "elapsed_s": 101.877
+      }
+    ],
+    "source_delta": "Host safety and priority/threshold implementations unchanged. Only composer footer delta since those observations is the independently reviewed numeric/unknown usage recognition;15 fixtures and final native compaction/channel cover that branch. Relevant paths unchanged since a6957f160."
+  },
+  "relevant_source_hashes": {
+    "src/harness/pi/composer.rs": "56035705ddea0088a591a1d4cfbc031235f78e4fe52ee1ea1925b119c1ff4aff",
+    "src/host/native.rs": "b6cb6e07cf156ee0dd14bbc7725d093805f42c2d1fa2b8e34738147ab98d9270",
+    "src/host/named.rs": "8e806ef5f454731477e4fac2a25e778e0ea25bb7d0aeedbdf5e8bcb8a5ce140c",
+    "src/protocol/priority.rs": "0bd6efaa9c7d75468661135322159e1003edd480a329eb420dd902b2615f4fcc",
+    "src/store/seats/threshold.rs": "0271e3e03ae547179705238d576c198967cc5d9075a7a49a6d7ec61124468035",
+    "src/store/lazy_delivery/wake.rs": "0cbd69bd0c88bf71f42658868277034cb2becb48fcdb736179c81e01407d0cc7"
+  }
+}

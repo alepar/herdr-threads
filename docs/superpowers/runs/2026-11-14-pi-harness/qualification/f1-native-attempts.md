@@ -145,5 +145,7 @@ controller input before completion. All four HOL attempts cleaned their owned
 resources and passed scoped leak scans. Exact evidence and the observed later
 automatic-wake path are in [f1-native-hol.md](f1-native-hol.md) and
 [f1-native-hol-evidence.json](f1-native-hol-evidence.json). This supersedes only
-the earlier native-progression-pending status; final compatibility, R2,
-unfiltered attempt2, live and budget disposition remain separate gates.
+the earlier native-progression-pending status. The subsequent
+[final compatibility selection](f1-final-compatibility.md) passed twelve fresh
+cases on the same binary; safety/threshold remain explicitly historical.
+R2, unfiltered attempt2, live and budget disposition remain separate gates.
