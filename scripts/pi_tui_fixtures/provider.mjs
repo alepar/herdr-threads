@@ -19,9 +19,26 @@ export default function fixture(pi) {
   let timer
   pi.on('session_start', (_event, ctx) => {
     clearInterval(timer)
-    let previous = '', previousObservation
+    const reloadFile = path.join(root, 'reload-hold.json')
+    if (_event.reason === 'reload' && fs.existsSync(reloadFile)) {
+      const request = JSON.parse(fs.readFileSync(reloadFile, 'utf8'))
+      if (request.sid === snapshot(ctx).sid && typeof request.editor === 'string') {
+        ctx.ui.setEditorText(request.editor)
+        log({ event: 'reload_draft_held', state: snapshot(ctx), nonce: request.nonce })
+      }
+    }
+    let previous = '', previousObservation, preparedNonce
     timer = setInterval(() => {
       try {
+        const prepare = path.join(root, 'prepare-command.json')
+        const command = fs.existsSync(prepare) ? JSON.parse(fs.readFileSync(prepare, 'utf8')) : null
+        if (command?.sid === snapshot(ctx).sid && typeof command.nonce === 'string' && command.nonce !== preparedNonce) {
+          preparedNonce = command.nonce
+          const accepted = typeof command.expected === 'string' && typeof command.command === 'string'
+            && /^\/probe-[a-z-]+(?: |$)/.test(command.command) && ctx.ui.getEditorText() === command.expected
+          if (accepted) ctx.ui.setEditorText(command.command)
+          log({ event: 'command_prepared', nonce: command.nonce, accepted, state: snapshot(ctx) })
+        }
         const state = snapshot(ctx), encoded = JSON.stringify(state)
         const file = path.join(root, 'observe-state.json')
         const request = fs.existsSync(file) ? JSON.parse(fs.readFileSync(file, 'utf8')) : null
@@ -43,6 +60,24 @@ export default function fixture(pi) {
     if (result.code !== 0) throw new Error('qualification command refused')
     return result
   }
+  pi.registerCommand('probe-notice-cause', { description: 'private genuine agent receipt cause', handler: async (value, ctx) => {
+    const data = JSON.parse(value)
+    if (data.sid !== snapshot(ctx).sid || typeof data.target !== 'string' || typeof data.body !== 'string'
+      || data.deadline !== 8 || typeof data.hold !== 'string') throw new Error('invalid owned notice cause')
+    ctx.ui.setEditorText(data.hold)
+    const result = await command(pi, ['send', '--seat', data.target, '--body', data.body, '--require-ack', data.target, '--deadline', String(data.deadline)])
+    log({ event: 'notice_cause', state: snapshot(ctx), body: data.body, target: data.target, result: JSON.parse(result.stdout) })
+  } })
+  pi.registerCommand('probe-notice-invite', { description: 'private genuine agent invitation', handler: async (value, ctx) => {
+    const data = JSON.parse(value)
+    if (data.sid !== snapshot(ctx).sid || typeof data.target !== 'string' || typeof data.hold !== 'string') throw new Error('invalid owned invitation')
+    ctx.ui.setEditorText(data.hold)
+    const created = JSON.parse((await command(pi, ['thread', 'create', '--topic', 'Owned Pi notice page', '--goal', 'Qualification only'])).stdout)
+    const thread = created.result.data
+    const invited = JSON.parse((await command(pi, ['invite', thread, '--seat', data.target])).stdout)
+    log({ event: 'notice_invitation', state: snapshot(ctx), target: data.target, thread, result: invited })
+  } })
+  pi.registerCommand('probe-notice-reload', { description: 'private public reload with owned draft guard', handler: async (_value, ctx) => { await ctx.reload() } })
   pi.registerCommand('probe-read-ack', { description: 'private full-body explicit receipt cleanup', handler: async value => {
     const id = value.trim()
     const read = await command(pi, ['body', id])

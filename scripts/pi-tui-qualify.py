@@ -14,6 +14,7 @@ import re
 import shlex
 import shutil
 import signal
+import sqlite3
 import subprocess
 import sys
 import tempfile
@@ -27,11 +28,50 @@ REPO = Path(__file__).resolve().parent.parent
 FIXTURE = REPO / "scripts/pi_tui_fixtures/provider.mjs"
 MODULES = REPO / "docs/superpowers/runs/2026-11-14-pi-harness/research/candidates/probe/node_modules"
 WAKE = "herdr-threads: wake up"
-CASES = ("setup", "safety", "threshold", "busy", "receipts", "ordering", "invitations", "negative", "failures", "lifecycle", "compaction", "handoff", "channel", "named")
+CASES = ("setup", "safety", "threshold", "busy", "receipts", "ordering", "invitations", "negative", "failures", "lifecycle", "compaction", "handoff", "channel", "named", "notice_reload", "notice_page", "notice_wake")
 HELPER_GRACE_TIMEOUT = 30
 HELPER_TERM_TIMEOUT = 8
 HELPER_KILL_TIMEOUT = 5
 ROOT_CLEANUP_TIMEOUT = 35
+SINK_DRAFT = "OWNED UNREAD NOTICE SINK DRAFT"
+NOTICE_DRAFT = "OWNED NOTICE QUALIFICATION DRAFT"
+
+
+def require_agent_sink(inspection, seat, sid):
+    summary = inspection["summary"]
+    assert summary["seat"] == seat and summary["active"] and summary["availability"] == "available", "notice sink is not available"
+    bindings = [b for b in summary["bindings"] if b.get("native_session") == sid
+                and b.get("binding_id") and b.get("harness") == "pi" and b.get("role") == "top_level"
+                and b.get("connected") is True and not b.get("agent_id")
+                and b.get("provenance") == "cooperative_top_level"]
+    assert len(bindings) == 1, "notice sink lacks one exact connected admitted Pi session"
+    return bindings[0]
+
+
+def require_pending_cause(receipt, seat, now_ms):
+    assert receipt.get("seat") == seat and receipt.get("effective_status") == "pending", "notice cause requires a pending agent receipt"
+    deadline = receipt.get("effective_deadline")
+    if deadline is None:
+        deadline = receipt.get("deadline")
+    assert isinstance(deadline, int) and not isinstance(deadline, bool) and deadline > now_ms, "notice cause lacks a future deadline"
+    return deadline
+
+
+def contains_frame(text, kind, identity, body):
+    if not isinstance(text, str) or not isinstance(body, str) or not body:
+        return False
+    headers = list(re.finditer(r"^\[herdr-threads\] (message|notice|invitation|attention)\b[^\n]*\n", text, re.M))
+    expected = "\n".join("  " + line if line else "" for line in re.split(r"\r\n|[\n\r\v\f\x85\u2028\u2029]", body))
+    for index, header in enumerate(headers):
+        if header.group(1) != kind or not re.search(r"(?<![A-Za-z0-9])" + re.escape(identity) + r"(?![A-Za-z0-9])", header.group()):
+            continue
+        end = headers[index + 1].start() if index + 1 < len(headers) else len(text)
+        content = text[header.end():end]
+        if index + 1 < len(headers) and content.endswith("\n\n"):
+            content = content[:-2]
+        if content == expected:
+            return True
+    return False
 
 
 def redact(text, replacements, secrets=()):
@@ -67,6 +107,8 @@ class Run:
         self.env = dict(self.base)
         self.host = self.root = self.workspace = self.recipient = self.sender = self.seat = None
         self.main_sid = None
+        self.sink = None
+        self.notice_causes = []
         self.tmux_socket = None
         self.secrets = []
         self.commands, self.results, self.captures = [], [], {}
@@ -134,8 +176,8 @@ class Run:
             time.sleep(.1)
         raise RuntimeError("timed out: " + label)
 
-    def keys(self, *keys):
-        self.herdr("pane", "send-keys", self.recipient, *keys)
+    def keys(self, *keys, pane=None):
+        self.herdr("pane", "send-keys", pane or self.recipient, *keys)
 
     def prompt(self, text):
         self.herdr("pane", "send-text", self.recipient, text)
@@ -147,11 +189,12 @@ class Run:
         self.wait("native settlement", lambda: self.count("agent_settled") > settled, 90 if self.args.live else 30)
         self.wait("host idle", lambda: self.herdr("agent", "get", self.recipient)["result"]["agent"]["agent_status"] in ("idle", "done"))
 
-    def capture(self, label):
-        value = {"at": time.time(), "visible": self.herdr("pane", "read", self.recipient, "--source", "visible"),
-                 "styled": self.herdr("pane", "read", self.recipient, "--source", "visible", "--format", "ansi"),
-                 "detection": self.herdr("agent", "read", self.recipient, "--source", "detection", check=False),
-                 "agent": self.herdr("agent", "get", self.recipient, check=False)}
+    def capture(self, label, *, pane=None):
+        pane = pane or self.recipient
+        value = {"at": time.time(), "visible": self.herdr("pane", "read", pane, "--source", "visible"),
+                 "styled": self.herdr("pane", "read", pane, "--source", "visible", "--format", "ansi"),
+                 "detection": self.herdr("agent", "read", pane, "--source", "detection", check=False),
+                 "agent": self.herdr("agent", "get", pane, check=False)}
         self.captures[label] = value
         return value
 
@@ -166,6 +209,330 @@ class Run:
     def model_saw(self, body, since=0):
         return any(row["event"] in ("provider_request", "context") and body in json.dumps(row) for row in self.rows()[since:])
 
+    def notice_context(self, warning, body, since=0, kind="notice"):
+        for row in self.rows()[since:]:
+            if row["event"] != "context" or row["state"]["sid"] != self.main_sid:
+                continue
+            for message in row["data"]["messages"]:
+                text, custom_type = message.get("content"), message.get("customType")
+                if (isinstance(custom_type, str) and custom_type.startswith("herdr-threads:")
+                        and contains_frame(text, kind, warning, body)
+                        and any(e.get("type") == "custom_message" and e.get("customType") == custom_type
+                                and e.get("content") == text for e in row["branch"])):
+                    return {"at": row["at"], "sid": self.main_sid, "customType": custom_type, "content": text}
+        return None
+
+    def canonical_read(self, sql, args=()):
+        # Test observation only. Never use this connection to create/settle a notice.
+        path = self.root / "state/node/herdr-threads.db"
+        db = sqlite3.connect(path.resolve().as_uri() + "?mode=ro", uri=True, timeout=1)
+        try:
+            db.row_factory = sqlite3.Row
+            db.execute("PRAGMA query_only=ON")
+            return [dict(row) for row in db.execute(sql, args)]
+        finally:
+            db.close()
+
+    def notice_snapshot(self, cause):
+        rows = self.canonical_read("""WITH warning(id) AS (
+            SELECT warning_message_id FROM receipt_state WHERE message_id=?1 AND seat_id=?2
+            UNION SELECT warning_message_id FROM receipts WHERE message_id=?1 AND seat_id=?2)
+            SELECT b.binding_id,b.generation,b.native_session,b.execution_id,d.warning_id,d.thread_id,d.ordinal,
+                   d.event_seq,m.sequence,COALESCE(f.offered_ordinal,0) frontier,
+                   c.outbox_token,c.outbox_descriptors,c.outbox_retired_mask,
+                   c.generation consumer_generation,c.execution consumer_execution,c.instance_id consumer_instance,
+                   c.seat_id consumer_seat,s.instance_id
+            FROM warning w JOIN digest_programmatic_warnings d ON d.warning_id=w.id AND d.seat_id=?3
+            JOIN messages m ON m.id=d.warning_id
+            JOIN occupant_bindings b ON b.seat_id=d.seat_id
+            JOIN seats s ON s.id=b.seat_id AND s.generation=b.generation AND s.state='resolved'
+            LEFT JOIN digest_notice_offer f ON f.binding_id=b.binding_id
+            LEFT JOIN invitation_presentation_consumers c ON c.binding_id=b.binding_id AND c.consumer='watch'
+            WHERE w.id IS NOT NULL AND b.harness='pi' AND b.role='top_level' AND b.agent_id=''
+              AND b.native_session=?4 AND b.target_id=?5 AND b.ended_at IS NULL
+              AND b.liveness='connected' AND b.registered_at IS NOT NULL
+              AND b.observation_provenance='cooperative_top_level'
+              AND b.target_id=s.target_id AND b.target_generation=s.target_generation""",
+            (cause["message"], self.sink["seat"], self.seat, self.main_sid, self.recipient))
+        assert len(rows) <= 1, "notice observer found ambiguous current binding"
+        if not rows:
+            return None
+        state = rows[0]
+        assert (state["consumer_generation"], state["consumer_execution"], state["consumer_instance"], state["consumer_seat"]) == (
+            state["generation"], state["execution_id"], state["instance_id"], self.seat), "notice consumer is absent or stale for current binding"
+        encoded = state.pop("outbox_descriptors") or "[]"
+        assert len(encoded.encode()) <= 262144, "canonical descriptor observation exceeds bound"
+        state["descriptors"] = json.loads(encoded)
+        state["pending"] = state["ordinal"] > state["frontier"]
+        state["notice_descriptor"] = next((descriptor for index, descriptor in enumerate(state["descriptors"])
+            if descriptor["item"].get("kind") == "notice" and descriptor["item"].get("warning") == state["warning_id"]
+            and descriptor["item"].get("thread") == state["thread_id"]
+            and isinstance(descriptor["item"].get("body"), str) and descriptor["item"]["body"]
+            and ("body" not in cause or descriptor["item"]["body"] == cause["body"])
+            and descriptor.get("context_key") == f'dn1:{state["sequence"]}:{state["event_seq"]}:{state["ordinal"]}'
+            and not (state["outbox_retired_mask"] or 0) & (1 << index)), None)
+        return state
+
+    def recipient_receipt(self, mid, seat):
+        rows = self.ht("delivery", "recipients", mid, pane=self.sender, human=True)["result"]["data"]["items"]
+        return next(row for row in rows if row["seat"] == seat)
+
+    def probe_rows(self, probe):
+        path = probe / "native.jsonl"
+        return [json.loads(line) for line in path.read_text().splitlines()] if path.exists() else []
+
+    def probe_command(self, command, expected_editor="", *, pane=None, probe=None, sid=None):
+        # A public UI fixture replaces only an exact owned draft, atomically.
+        # The controller still submits the registered command through the TUI.
+        probe, pane, sid = probe or self.root, pane or self.recipient, sid or self.main_sid
+        nonce = str(uuid.uuid4())
+        request = probe / "prepare-command.json"
+        request.write_text(json.dumps({"sid": sid, "nonce": nonce, "expected": expected_editor, "command": command}))
+        try:
+            def prepared():
+                row = next((r for r in self.probe_rows(probe) if r["event"] == "command_prepared"
+                            and r.get("nonce") == nonce and r["state"]["sid"] == sid), None)
+                if row:
+                    assert row["accepted"], "fixture refused unexpected editor contents"
+                return row
+            self.wait("owned command editor preparation", prepared)
+            self.observe_state(command, probe=probe, sid=sid)
+        finally:
+            request.unlink(missing_ok=True)
+        self.keys("enter", pane=pane)
+
+    def start_notice_sink(self):
+        if self.sink:
+            return
+        assert not self.args.live and self.provider == "ht-fixture", "notice sink requires credential-free scripted provider"
+        probe = self.root / "notice-sink"
+        profile = probe / "agent"
+        (probe / "bin").mkdir(mode=0o700, parents=True)
+        profile.mkdir(mode=0o700)
+        (probe / "home").mkdir(mode=0o700)
+        shutil.copyfile(self.root / "agent/settings.json", profile / "settings.json")
+        fixture = probe / "provider.mjs"
+        shutil.copyfile(FIXTURE, fixture)
+        extension = profile / "extensions/herdr-threads/index.js"
+        options = ["--provider", "ht-fixture", "--model", "scripted", "--extension", str(extension), "--extension", str(fixture)]
+        extra = {"HT_PI_QUALIFY_ROOT": str(probe), "PI_CODING_AGENT_DIR": str(profile),
+                 "HOME": str(probe / "home"), "HT_PI_QUALIFY_OPTS": shlex.join(options)}
+        env = {**self.env, **extra}
+        shim = probe / "bin/pi"
+        exports = {k: env[k] for k in ("HT_PI_QUALIFY_ROOT", "HT_PI_QUALIFY_MODULES", "HT_PI_QUALIFY_CLI", "PI_CODING_AGENT_DIR", "PI_OFFLINE", "HT_PI_QUALIFY_OPTS", "HOME")}
+        shim.write_text("#!/bin/sh\n" + "".join("export " + k + "=" + shlex.quote(v) + "\n" for k, v in exports.items())
+                        + "exec " + ("node " if self.pi.suffix == ".js" else "") + shlex.quote(str(self.pi)) + ' "$@"\n')
+        shim.chmod(0o700)
+        self.ht("setup", "pi", "--harness-binary", str(shim), setup=True, extra_env=extra)
+        flags = sum((["--env", k + "=" + v] for k, v in env.items()), [])
+        tab = self.herdr("tab", "create", "--workspace", self.workspace, "--cwd", str(self.root / "project"),
+                         "--label", "pi-notice-sink", "--no-focus", *flags)
+        self.sink = {"probe": probe, "profile": profile, "pane": tab["result"]["root_pane"]["pane_id"]}
+        launch = self.ht("launch", "--kind", "pi", "--pane", self.sink["pane"], "--harness-binary", str(shim),
+                         "--profile-dir", str(profile), "--", *options, extra_env=extra)
+        assert launch["launch"]["outcome"] == "started", "notice sink public launch did not start"
+        self.sink["seat"] = launch["launch"]["seat"]
+        row = self.wait("notice sink native startup", lambda: next((r for r in self.probe_rows(probe) if r["event"] == "session_start"), None))
+        self.sink["sid"] = row["state"]["sid"]
+        self.herdr("pane", "send-text", self.sink["pane"], "Owned notice sink baseline; reply READY without tools.")
+        self.keys("enter", pane=self.sink["pane"])
+        self.wait("notice sink baseline settled", lambda: any(r["event"] == "agent_settled" and r["state"]["sid"] == self.sink["sid"] for r in self.probe_rows(probe)))
+        self.herdr("pane", "send-text", self.sink["pane"], SINK_DRAFT)
+        self.sink["starts"] = sum(r["event"] == "before_agent_start" for r in self.probe_rows(probe))
+        self.verify_notice_sink()
+        self.facts["notice_sink"] = {"seat": self.sink["seat"], "sid": self.sink["sid"], "launch": launch,
+                                     "binding": self.sink["binding"], "draft": SINK_DRAFT}
+
+    def verify_notice_sink(self):
+        sink = self.sink
+        inspection = self.ht("seat", "inspect", "--binding-details", sink["seat"], pane=self.sender, human=True)["result"]["data"]
+        sink["binding"] = require_agent_sink(inspection, sink["seat"], sink["sid"])
+        state = self.observe_state(SINK_DRAFT, probe=sink["probe"], sid=sink["sid"])
+        capture = self.capture("notice-sink-" + str(len(self.captures)), pane=sink["pane"])
+        assert SINK_DRAFT in capture["styled"]["raw"], "notice sink literal draft is not visible"
+        assert sum(r["event"] == "before_agent_start" for r in self.probe_rows(sink["probe"])) == sink["starts"], "notice sink unexpectedly ran"
+        for cause in self.notice_causes:
+            if not cause.get("recovered"):
+                assert not any(r["event"] in ("context", "provider_request") and cause["cause_body"] in json.dumps(r)
+                               for r in self.probe_rows(sink["probe"])), "unread sink received the cause in native model context"
+        return state
+
+    def new_notice_cause(self, label, hold=True):
+        self.start_notice_sink()
+        self.verify_notice_sink()  # Must precede the actual public send.
+        body = "NOTICE CAUSE " + label + " " + str(uuid.uuid4())
+        data = {"sid": self.main_sid, "target": self.sink["seat"], "body": body, "deadline": 8,
+                "hold": NOTICE_DRAFT if hold else ""}
+        self.observe_state(data["hold"], sid=self.main_sid)
+        before = self.capture("notice-cause-" + label + "-before")
+        since, starts = len(self.rows()), self.count("before_agent_start")
+        self.probe_command("/probe-notice-cause " + json.dumps(data), NOTICE_DRAFT if hold else "")
+        row = self.wait("actual agent-authored notice cause", lambda: next((r for r in self.rows()[since:]
+                        if r["event"] == "notice_cause" and r["state"]["sid"] == self.main_sid
+                        and r["body"] == body and r["target"] == self.sink["seat"]), None))
+        mid = row["result"]["result"]["data"]
+        receipt = self.recipient_receipt(mid, self.sink["seat"])
+        deadline = require_pending_cause(receipt, self.sink["seat"], int(time.time() * 1000))
+        self.verify_notice_sink()
+        if hold:
+            assert row["state"]["editor"] == NOTICE_DRAFT, "source command did not retain its owned draft"
+            self.observe_state(NOTICE_DRAFT, sid=self.main_sid)
+            self.quiet(starts, 0)
+        cause = {"message": mid, "cause_body": body, "initial_receipt": receipt, "deadline": deadline, "event": row,
+                 "run_starts_before_send": starts, "before_send": before}
+        self.notice_causes.append(cause)
+        return cause
+
+    def hold_notice_editor(self):
+        state = self.observe_state(sid=self.main_sid)["state"]
+        assert state["editor"] in ("", NOTICE_DRAFT), "refusing to overwrite an unrelated primary draft"
+        if not state["editor"]:
+            self.herdr("pane", "send-text", self.recipient, NOTICE_DRAFT)
+        self.observe_state(NOTICE_DRAFT, sid=self.main_sid)
+
+    def pending_notice(self, cause):
+        def pending():
+            value = self.notice_snapshot(cause)
+            return value if value and value["pending"] and value["notice_descriptor"] else None
+        state = self.wait("real tagged pending canonical notice", pending, 35)
+        cause.update(warning=state["warning_id"], ordinal=state["ordinal"], body=state["notice_descriptor"]["item"]["body"])
+        assert cause["warning"] not in {c["warning"] for c in self.notice_causes if c is not cause and "warning" in c}, "old coalesced warning cannot prove a new case"
+        return state
+
+    def reload_notice_draft(self):
+        self.observe_state(NOTICE_DRAFT, sid=self.main_sid)
+        nonce = str(uuid.uuid4())
+        path = self.root / "reload-hold.json"
+        path.write_text(json.dumps({"sid": self.main_sid, "nonce": nonce, "editor": NOTICE_DRAFT}))
+        try:
+            self.probe_command("/probe-notice-reload", NOTICE_DRAFT)
+            self.wait("public reload restored owned draft", lambda: next((r for r in self.rows()
+                      if r["event"] == "reload_draft_held" and r.get("nonce") == nonce and r["state"]["sid"] == self.main_sid), None))
+            self.wait("public reload screen restored", lambda: (lambda text: "Reloaded keybindings" in text
+                      and "Reloading keybindings, extensions" not in text)(self.herdr("pane", "read", self.recipient, "--source", "visible").get("raw", "")))
+            self.observe_state(NOTICE_DRAFT, sid=self.main_sid)
+            self.capture("notice-reload-restored-" + nonce)
+        finally:
+            path.unlink(missing_ok=True)
+
+    def assert_notice_settled(self, cause, since):
+        proof = self.wait("exact canonical Notice frame in actual native branch and context",
+                          lambda: self.notice_context(cause["warning"], cause["body"], since))
+        state = self.wait("canonical notice frontier advanced", lambda: (lambda s: s if s and s["frontier"] >= cause["ordinal"] else None)(self.notice_snapshot(cause)))
+        assert self.recipient_receipt(cause["message"], self.sink["seat"])["effective_status"] == "pending", "notice presentation unexpectedly settled the sink's distinct ACK"
+        self.verify_notice_sink()
+        return {"native_context": proof, "canonical_settlement": state, "sink_receipt_still_pending": True}
+
+    def finish_notice_cause(self, cause):
+        # Only after all notice assertions: let the real sink process the body,
+        # so the next case cannot reuse this coalesced warning condition.
+        sink = self.sink
+        self.verify_notice_sink()
+        before = sum(r["event"] == "agent_settled" for r in self.probe_rows(sink["probe"]))
+        self.keys("enter", pane=sink["pane"])
+        self.wait("intentional sink recovery settles", lambda: sum(r["event"] == "agent_settled" for r in self.probe_rows(sink["probe"])) > before)
+        self.wait("actual sink context ACK", lambda: self.recipient_receipt(cause["message"], sink["seat"])["effective_status"] == "acknowledged")
+        assert any(r["event"] == "context" and r["state"]["sid"] == sink["sid"] and cause["cause_body"] in json.dumps(r["data"])
+                   for r in self.probe_rows(sink["probe"])), "sink recovery lacked actual native body delivery"
+        cause["recovered"] = True
+        sink["starts"] = sum(r["event"] == "before_agent_start" for r in self.probe_rows(sink["probe"]))
+        self.herdr("pane", "send-text", sink["pane"], SINK_DRAFT)
+        self.verify_notice_sink()
+        self.turn("Owned notice cleanup boundary. Reply READY without tools.")
+
+    def case_notice_reload(self):
+        self.hold_notice_editor()
+        cause = self.new_notice_cause("reload")
+        before = self.pending_notice(cause)
+        starts, since = cause["run_starts_before_send"], len(self.rows())
+        self.quiet(starts, 0)
+        assert not self.notice_context(cause["warning"], cause["body"])
+        self.reload_notice_draft()
+        replay = self.pending_notice(cause)
+        self.quiet(starts, 0)
+        assert replay["frontier"] < cause["ordinal"] and replay["notice_descriptor"] == before["notice_descriptor"]
+        self.observe_state(NOTICE_DRAFT, sid=self.main_sid)
+        self.keys("enter")
+        proof = self.assert_notice_settled(cause, since)
+        self.wait("notice reload recovery settled", lambda: any(r["event"] == "agent_settled" and r["state"]["sid"] == self.main_sid for r in self.rows()[since:]))
+        self.facts["notice_reload"] = {"cause": cause, "before": before, "replay": replay, **proof}
+        self.finish_notice_cause(cause)
+
+    def set_private_channel(self, enabled):
+        self.ht("daemon", "stop")
+        settings = self.root / "state/node/settings.json"
+        settings.write_text(json.dumps({"sync": {"discover": False}, "mod_delivery": "on" if enabled else "off"}) + "\n")
+        self.ht("daemon", "ensure")
+
+    def stage_notice_invitation(self):
+        self.start_notice_sink()
+        self.verify_notice_sink()
+        sink = self.sink
+        before = len(self.probe_rows(sink["probe"]))
+        command = "/probe-notice-invite " + json.dumps({"sid": sink["sid"], "target": self.seat, "hold": SINK_DRAFT})
+        self.probe_command(command, SINK_DRAFT, pane=sink["pane"], probe=sink["probe"], sid=sink["sid"])
+        row = self.wait("actual agent-authored invitation", lambda: next((r for r in self.probe_rows(sink["probe"])[before:]
+                        if r["event"] == "notice_invitation" and r["state"]["sid"] == sink["sid"] and r["target"] == self.seat), None))
+        self.verify_notice_sink()
+        return row
+
+    def case_notice_page(self):
+        self.hold_notice_editor()
+        self.set_private_channel(False)
+        invitation = self.stage_notice_invitation()
+        cause = self.new_notice_cause("whole-page-positive")
+        self.wait("canonical overdue warning projection", lambda: self.canonical_read(
+            "SELECT warning_message_id FROM receipt_state WHERE message_id=? AND seat_id=? AND warning_message_id IS NOT NULL",
+            (cause["message"], self.sink["seat"])), 30)
+        self.set_private_channel(True)
+        # Disabled watches stop. Restore through public reload while idle and
+        # guarded, rather than assuming re-enable restarts a parked child.
+        self.reload_notice_draft()
+        page = self.pending_notice(cause)
+        invitations = [d for index, d in enumerate(page["descriptors"])
+                       if d["item"].get("kind") == "invitation" and d["item"]["content"]["thread"] == invitation["thread"]
+                       and not (page["outbox_retired_mask"] or 0) & (1 << index)]
+        assert len(invitations) == 1, "real notice and invitation were not retained in one canonical page"
+        item = invitations[0]["item"]
+        assert item["content"].get("truncated") is False, "whole-page invitation body is truncated"
+        since = len(self.rows())
+        self.quiet(cause["run_starts_before_send"], 0)
+        assert not self.notice_context(cause["warning"], cause["body"])
+        self.keys("enter")
+        proof = self.assert_notice_settled(cause, since)
+        invitation_proof = self.wait("exact invitation frame in actual native branch/context", lambda:
+            self.notice_context(item["id"], item["content"]["body"], since, kind="invitation"))
+        assert invitation_proof["customType"] == proof["native_context"]["customType"] and invitation_proof["content"] == proof["native_context"]["content"], "notice and invitation lacked one actual complete native proposal"
+        participants = self.ht("thread", "participants", invitation["thread"], pane=self.sender, human=True)["result"]["data"]["items"]
+        membership = next(r for r in participants if r["seat"] == self.seat)
+        assert not membership["joined"], "presentation unexpectedly accepted the invitation"
+        self.wait("notice-page recovery idle", lambda: self.herdr("agent", "get", self.recipient)["result"]["agent"]["agent_status"] in ("idle", "done"))
+        self.probe_command("/probe-accept " + invitation["thread"])
+        self.wait("actual invitation acceptance", lambda: any(r["event"] == "command" and r["args"] == ["accept", invitation["thread"]] and r["code"] == 0 for r in self.rows()[since:]))
+        participants = self.ht("thread", "participants", invitation["thread"], pane=self.sender, human=True)["result"]["data"]["items"]
+        assert next(r for r in participants if r["seat"] == self.seat)["joined"]
+        self.facts["notice_page"] = {"cause": cause, "page": page, "invitation": invitation,
+            "invitation_context": invitation_proof, "separate_public_accept": True, **proof,
+            "scope": "native positive only; partial/transformed negatives belong to reviewed SDK/canonical layers; hidden controls not inferred from retained descriptors"}
+        self.finish_notice_cause(cause)
+
+    def case_notice_wake(self):
+        self.start_notice_sink()
+        self.wake_lane()
+        self.observe_state("", sid=self.main_sid)
+        self.capture("notice-only-empty-before")
+        since, starts = len(self.rows()), self.count("before_agent_start")
+        assert any(r["event"] == "agent_settled" and r["state"]["sid"] == self.main_sid for r in self.rows()), "notice-only wake lacks prior actual settlement"
+        cause = self.new_notice_cause("notice-only-wake", hold=False)
+        page = self.pending_notice(cause)
+        wake = self.wait("notice-only actual Native wake", lambda: next((r for r in self.rows()[since:]
+                         if r["event"] == "before_agent_start" and r["state"]["sid"] == self.main_sid and r["data"].get("prompt") == WAKE), None), 45)
+        proof = self.assert_notice_settled(cause, since)
+        self.wait("notice-only native wake settled", lambda: any(r["event"] == "agent_settled" and r["state"]["sid"] == self.main_sid for r in self.rows()[since:]))
+        assert self.count("before_agent_start") == starts + 1, "notice-only scenario created extra runs"
+        self.facts["notice_wake"] = {"cause": cause, "page": page, "actual_wake": wake, **proof}
+        self.finish_notice_cause(cause)
+
     def quiet(self, starts, seconds=1):
         time.sleep(seconds)
         if self.count("before_agent_start") != starts:
@@ -177,15 +544,21 @@ class Run:
         self.quiet(starts, seconds)
         return result
 
-    def observe_state(self, editor=None):
-        state = next((r["state"] for r in reversed(self.rows()) if "state" in r), {})
-        sid = state.get("sid")
+    def observe_state(self, editor=None, *, probe=None, sid=None):
+        root = probe or self.root
+        def rows():
+            if probe is None:
+                return self.rows()
+            path = root / "native.jsonl"
+            return [json.loads(line) for line in path.read_text().splitlines()] if path.exists() else []
+        state = next((r["state"] for r in reversed(rows()) if "state" in r), {})
+        sid = sid or state.get("sid")
         if not sid:
             raise RuntimeError("native observation session unavailable")
         nonce = str(uuid.uuid4())
-        (self.root / "observe-state.json").write_text(json.dumps({"sid": sid, "nonce": nonce}))
+        (root / "observe-state.json").write_text(json.dumps({"sid": sid, "nonce": nonce}))
         def observed():
-            row = next((r for r in reversed(self.rows()) if r.get("event") == "state"
+            row = next((r for r in reversed(rows()) if r.get("event") == "state"
                         and r.get("observation") == nonce and r["state"]["sid"] == sid), None)
             return row if row and (editor is None or row["state"]["editor"] == editor) else None
         return self.wait("fresh native editor observation", observed)
@@ -801,9 +1174,20 @@ read -r _ || true
             except BaseException as exc:
                 errors[name] = type(exc).__name__ + ": " + str(exc)
                 return None
+        sink_trace = ""
+        if self.sink:
+            pane = self.sink["pane"]
+            attempt("sink_capture", lambda: self.capture("notice-sink-final", pane=pane))
+            attempt("sink_clear", lambda: self.herdr("pane", "send-keys", pane, "ctrl+c"))
+            attempt("sink_quit_text", lambda: self.herdr("pane", "send-text", pane, "/quit"))
+            attempt("sink_quit_submit", lambda: self.herdr("pane", "send-keys", pane, "enter"))
+            path = self.sink["probe"] / "native.jsonl"
+            if path.exists():
+                sink_trace = attempt("sink_trace_read", path.read_text) or ""
+                cleanup.pop("sink_trace_read", None)
         if self.recipient:
             attempt("final_capture", lambda: self.capture("final"))
-            attempt("recipient_quit", lambda: (self.keys("esc"), self.prompt("/quit")))
+            attempt("recipient_quit", lambda: (self.keys("esc"), self.keys("ctrl+c"), self.prompt("/quit")))
         if self.root and (self.root / "native.jsonl").exists():
             trace = attempt("trace_read", lambda: (self.root / "native.jsonl").read_text()) or ""
             cleanup.pop("trace_read", None)
@@ -844,6 +1228,8 @@ read -r _ || true
         for name, value in (("manifest.json", self.facts), ("results.json", self.results), ("commands.json", self.commands), ("captures.json", self.captures)):
             (self.ev / name).write_text(self.clean(json.dumps(value, indent=2)) + "\n")
         (self.ev / "native.jsonl").write_text(self.clean(trace))
+        if self.sink:
+            (self.ev / "native-sink.jsonl").write_text(self.clean(sink_trace))
         for secret in self.secrets:
             if any(secret in path.read_text() for path in self.ev.iterdir() if path.is_file()):
                 shutil.rmtree(self.ev)
@@ -852,6 +1238,188 @@ read -r _ || true
 
 
 class DriverTests(unittest.TestCase):
+    def test_real_fixture_notice_commands_and_atomic_editor_guard(self):
+        # Fixture mechanics only: mocked exec is not canonical notice evidence.
+        with tempfile.TemporaryDirectory(prefix="ht-pi-notice-fixture-") as root:
+            code = r'''
+import assert from 'node:assert/strict'
+import fs from 'node:fs'
+import { pathToFileURL } from 'node:url'
+const root=process.env.HT_PI_QUALIFY_ROOT, callbacks=new Map(), commands=new Map(), calls=[]
+let tick,editor='OWNED',reloads=0
+globalThis.setInterval=fn=>{tick=fn;return {unref(){}}};globalThis.clearInterval=()=>{}
+const ctx={isIdle:()=>true,model:{id:'scripted',provider:'ht-fixture'},
+ sessionManager:{getSessionId:()=> 'main',getSessionFile:()=>null,getBranch:()=>[]},
+ ui:{getEditorText:()=>editor,setEditorText:text=>{editor=text},onTerminalInput:()=>{}},reload:async()=>{reloads++}}
+const pi={on:(event,fn)=>callbacks.set(event,[...(callbacks.get(event)||[]),fn]),
+ registerCommand:(name,value)=>commands.set(name,value),registerTool:()=>{},
+ exec:async(program,args)=>{calls.push({program,args,editor});return {code:0,stdout:JSON.stringify({result:{data:args[1]==='thread'?'thread':'message'}}),stderr:''}}}
+const fixture=(await import(pathToFileURL(process.env.HT_PI_FIXTURE))).default;fixture(pi)
+for(const fn of callbacks.get('session_start')) await fn({reason:'startup'},ctx)
+const prepare=data=>{fs.writeFileSync(root+'/prepare-command.json',JSON.stringify(data));tick()}
+prepare({sid:'foreign',nonce:'foreign',expected:'OWNED',command:'/probe-notice-reload'})
+assert.equal(editor,'OWNED')
+prepare({sid:'main',nonce:'wrong-editor',expected:'OTHER',command:'/probe-notice-reload'})
+assert.equal(editor,'OWNED')
+prepare({sid:'main',nonce:'correct',expected:'OWNED',command:'/probe-notice-reload'})
+assert.equal(editor,'/probe-notice-reload');editor='NEW OWNED';tick();assert.equal(editor,'NEW OWNED')
+const cause={sid:'main',target:'sink',body:'UNIQUE CAUSE',deadline:8,hold:'GUARD'}
+await commands.get('probe-notice-cause').handler(JSON.stringify(cause),ctx)
+assert.equal(calls[0].editor,'GUARD')
+assert.deepEqual(calls[0].args,['--json','send','--seat','sink','--body','UNIQUE CAUSE','--require-ack','sink','--deadline','8'])
+await assert.rejects(commands.get('probe-notice-cause').handler(JSON.stringify({...cause,sid:'foreign'}),ctx));assert.equal(calls.length,1)
+await commands.get('probe-notice-invite').handler(JSON.stringify({sid:'main',target:'primary',hold:'SINK GUARD'}),ctx)
+assert.deepEqual(calls[2].args,['--json','invite','thread','--seat','primary']);assert.equal(calls[2].editor,'SINK GUARD')
+fs.writeFileSync(root+'/reload-hold.json',JSON.stringify({sid:'main',nonce:'reload',editor:'RELOAD GUARD'}))
+for(const fn of callbacks.get('session_start')) await fn({reason:'reload'},ctx)
+assert.equal(editor,'RELOAD GUARD')
+await commands.get('probe-notice-reload').handler('',ctx);assert.equal(reloads,1)
+const rows=fs.readFileSync(root+'/native.jsonl','utf8').trim().split('\n').map(JSON.parse)
+assert.deepEqual(rows.filter(r=>r.event==='command_prepared').map(r=>[r.nonce,r.accepted]),[['wrong-editor',false],['correct',true]])
+assert.equal(rows.find(r=>r.event==='notice_cause').result.result.data,'message')
+assert.equal(rows.find(r=>r.event==='reload_draft_held').nonce,'reload')
+assert.ok(!rows.some(r=>r.event==='context'||r.event==='provider_request'))
+'''
+            env = {"PATH": os.environ["PATH"], "HOME": root, "HT_PI_QUALIFY_ROOT": root,
+                   "HT_PI_QUALIFY_MODULES": str(MODULES), "HT_PI_FIXTURE": str(FIXTURE),
+                   "HT_PI_QUALIFY_CLI": '["owned-cli","--json"]', "HT_PI_QUALIFY_LIVE": "1",
+                   "HT_TEST_OWNER": str(os.getpid()), "HT_LEAK_RUN_ID": os.environ.get("HT_LEAK_RUN_ID", str(uuid.uuid4()))}
+            result = subprocess.run(["node", "--input-type=module", "-e", code], env=env, cwd=REPO,
+                                    capture_output=True, text=True, timeout=5)
+            self.assertEqual(result.returncode, 0, result.stderr)
+
+    def test_notice_observer_sql_requires_current_connected_resolved_owner(self):
+        # A synthetic schema tests read-only query scope, never native authority.
+        with tempfile.TemporaryDirectory(prefix="ht-pi-notice-scope-") as root:
+            path = Path(root) / "state/node/herdr-threads.db"; path.parent.mkdir(parents=True)
+            db = sqlite3.connect(path)
+            db.executescript("""
+                CREATE TABLE receipt_state(message_id,seat_id,warning_message_id);
+                CREATE TABLE receipts(message_id,seat_id,warning_message_id);
+                CREATE TABLE digest_programmatic_warnings(warning_id,seat_id,thread_id,ordinal,event_seq);
+                CREATE TABLE messages(id,sequence);
+                CREATE TABLE occupant_bindings(binding_id,seat_id,generation,native_session,execution_id,harness,role,agent_id,target_id,target_generation,ended_at,liveness,registered_at,observation_provenance);
+                CREATE TABLE seats(id,generation,state,instance_id,target_id,target_generation);
+                CREATE TABLE digest_notice_offer(binding_id,offered_ordinal);
+                CREATE TABLE invitation_presentation_consumers(binding_id,consumer,generation,execution,instance_id,seat_id,outbox_token,outbox_descriptors,outbox_retired_mask);
+                INSERT INTO receipt_state VALUES('cause','sink','warning');
+                INSERT INTO digest_programmatic_warnings VALUES('warning','primary','thread',4,3);
+                INSERT INTO messages VALUES('warning',2);
+                INSERT INTO occupant_bindings VALUES('binding','primary',1,'main','exec','pi','top_level','','pane',2,NULL,'connected',1,'cooperative_top_level');
+                INSERT INTO seats VALUES('primary',1,'resolved','instance','pane',2);
+                INSERT INTO invitation_presentation_consumers VALUES('binding','watch',1,'exec','instance','primary','token','[]',0);
+            """)
+            db.commit()
+            run = Run.__new__(Run); run.root = Path(root); run.sink = {"seat": "sink"}; run.seat = "primary"; run.main_sid = "main"; run.recipient = "pane"
+            self.assertTrue(run.notice_snapshot({"message": "cause"})["pending"])
+            for table, field, value, original in (("seats", "state", "unresolved", "resolved"), ("occupant_bindings", "liveness", "disconnected", "connected"),
+                                                ("occupant_bindings", "target_generation", 1, 2), ("occupant_bindings", "registered_at", None, 1)):
+                db.execute(f"UPDATE {table} SET {field}=?", (value,)); db.commit()
+                self.assertIsNone(run.notice_snapshot({"message": "cause"}), field)
+                db.execute(f"UPDATE {table} SET {field}=?", (original,)); db.commit()
+            db.execute("UPDATE invitation_presentation_consumers SET execution='stale'"); db.commit()
+            with self.assertRaisesRegex(AssertionError, "stale"): run.notice_snapshot({"message": "cause"})
+            db.close()
+
+    def test_notice_send_requires_fresh_sink_guard_before_public_cause(self):
+        with tempfile.TemporaryDirectory(prefix="ht-pi-cause-order-") as root:
+            run = Run.__new__(Run); run.root = Path(root); run.main_sid = "main"; run.facts = {}; run.notice_causes = []
+            run.sink = {"seat": "sink"}; observed, order = [], []
+            starts = [0]
+            run.rows = lambda: observed
+            run.count = lambda _event: starts[0]
+            run.observe_state = lambda *_args, **_kwargs: {}
+            run.capture = lambda *_args, **_kwargs: {"styled": {"raw": "owned composer before trigger"}}
+            run.start_notice_sink = lambda: order.append("admitted")
+            run.verify_notice_sink = lambda: order.append("draft-verified")
+            def probe(command, *_args, **_kwargs):
+                self.assertEqual(order[-1], "draft-verified", "send preceded fresh sink draft witness")
+                data = json.loads(command.split(" ", 1)[1]); order.append("public-send")
+                observed.append({"event": "notice_cause", "state": {"sid": "main", "editor": data["hold"]}, "body": data["body"], "target": "sink", "result": {"result": {"data": "cause", "thread": "pair"}}})
+            run.probe_command = probe
+            run.wait = lambda _label, predicate, *_args: predicate()
+            run.recipient_receipt = lambda _mid, _seat: {"seat": "sink", "effective_status": "pending", "deadline": 2000}
+            with mock.patch.object(time, "time", return_value=1):
+                cause = run.new_notice_cause("test")
+            self.assertEqual(cause["message"], "cause"); self.assertEqual(order, ["admitted", "draft-verified", "public-send", "draft-verified"])
+            run.recipient_receipt = lambda _mid, _seat: {"seat": "sink", "effective_status": "not_required", "deadline": None}
+            with mock.patch.object(time, "time", return_value=1), self.assertRaisesRegex(AssertionError, "pending agent receipt"):
+                run.new_notice_cause("invalid-person-like-result")
+            run.recipient_receipt = lambda _mid, _seat: {"seat": "sink", "effective_status": "pending", "deadline": 2000}
+            def synchronous_run(*args, **kwargs):
+                probe(*args, **kwargs)
+                starts[0] += 1
+            run.probe_command = synchronous_run
+            with mock.patch.object(time, "time", return_value=1), self.assertRaisesRegex(AssertionError, "unexpected native run"):
+                run.new_notice_cause("synchronous-unsafe-run")
+
+    def test_partial_second_recipient_is_cleaned_after_interruption(self):
+        self.cleanup_failure_fixture(KeyboardInterrupt(), capture_failure=True, second_recipient=True)
+
+    def test_notice_cause_requires_agent_binding_and_future_pending_receipt(self):
+        binding = {"binding_id": "binding", "native_session": "sink-sid", "harness": "pi", "role": "top_level", "connected": True, "provenance": "cooperative_top_level"}
+        inspection = {"summary": {"seat": "sink", "active": True, "availability": "available", "bindings": [binding]}}
+        require_agent_sink(inspection, "sink", "sink-sid")
+        row = {"seat": "sink", "effective_status": "pending", "deadline": 2000}
+        self.assertEqual(require_pending_cause(row, "sink", 1000), 2000)
+        for bad in ({**row, "effective_status": "not_required"}, {**row, "effective_status": "acknowledged"}, {**row, "deadline": None}, {**row, "deadline": 999}, {**row, "seat": "other"}):
+            with self.assertRaises(AssertionError): require_pending_cause(bad, "sink", 1000)
+        for change in ({"harness": "human"}, {"provenance": "managed_launch"}, {"connected": False}, {"binding_id": None}, {"agent_id": "child"}):
+            bad = {"summary": {**inspection["summary"], "bindings": [{**binding, **change}]}}
+            with self.assertRaises(AssertionError): require_agent_sink(bad, "sink", "sink-sid")
+        with self.assertRaises(AssertionError): require_agent_sink(inspection, "sink", "foreign-sid")
+        # All facts exist separately; no single live binding has them together.
+        mixed = {**inspection, "open_binding": {"harness": "pi", "provenance": "cooperative_top_level"},
+                 "history": {"items": [{"kind": "binding", "data": binding}]},
+                 "summary": {**inspection["summary"], "bindings": [{**binding, "connected": False}, {**binding, "native_session": "other"}]}}
+        with self.assertRaises(AssertionError): require_agent_sink(mixed, "sink", "sink-sid")
+
+    def test_notice_snapshot_rejects_stale_consumer_and_untagged_or_changed_notice(self):
+        descriptor = {"context_key": "dn1:2:3:4", "item": {"kind": "notice", "warning": "warning", "thread": "thread", "body": "FULL BODY"}}
+        good = {"binding_id": "binding", "generation": 1, "native_session": "main", "execution_id": "exec", "warning_id": "warning", "thread_id": "thread", "ordinal": 4,
+                "event_seq": 3, "sequence": 2, "frontier": 0, "outbox_token": "token", "outbox_descriptors": json.dumps([descriptor]), "outbox_retired_mask": 0,
+                "consumer_generation": 1, "consumer_execution": "exec", "consumer_instance": "instance", "consumer_seat": "primary", "instance_id": "instance"}
+        run = Run.__new__(Run); run.sink = {"seat": "sink"}; run.seat = "primary"; run.main_sid = "main"; run.recipient = "pane"
+        run.canonical_read = lambda *_args: [dict(good)]
+        cause = {"message": "cause", "body": "FULL BODY"}
+        self.assertEqual(run.notice_snapshot(cause)["notice_descriptor"], descriptor)
+        for field, value in (("consumer_generation", 0), ("consumer_execution", "old"), ("consumer_instance", "other"), ("consumer_seat", "other")):
+            run.canonical_read = lambda *_args, field=field, value=value: [{**good, field: value}]
+            with self.assertRaisesRegex(AssertionError, "stale"): run.notice_snapshot(cause)
+        for change in ({"context_key": None}, {"context_key": "dn1:2:3:5"}, {"item": {**descriptor["item"], "body": "FULL"}}):
+            run.canonical_read = lambda *_args, change=change: [{**good, "outbox_descriptors": json.dumps([{**descriptor, **change}])}]
+            self.assertIsNone(run.notice_snapshot(cause)["notice_descriptor"])
+
+    def test_notice_context_requires_exact_body_current_session_and_branch(self):
+        text = '[herdr-threads] new messages:\n\n[herdr-threads] notice notice:w-target in thread from sender:\n  FULL NOTICE BODY'
+        message = {"role": "custom", "customType": "herdr-threads:proposal", "content": text}
+        entry = {"type": "custom_message", "customType": message["customType"], "content": text}
+        good = {"at": 123, "event": "context", "state": {"sid": "main"}, "data": {"messages": [message]}, "branch": [entry]}
+        run = Run.__new__(Run); run.main_sid = "main"; run.rows = lambda: [good]
+        self.assertIsNotNone(run.notice_context("w-target", "FULL NOTICE BODY"))
+        for change in ("branch", "context", "sid", "body", "id"):
+            bad = json.loads(json.dumps(good))
+            if change == "branch": bad["branch"] = []
+            elif change == "context": bad["data"]["messages"] = []
+            elif change == "sid": bad["state"]["sid"] = "other"
+            else:
+                old, new = ("FULL NOTICE BODY", "FULL NOTICE") if change == "body" else ("w-target", "w-other")
+                bad["data"]["messages"][0]["content"] = text.replace(old, new)
+                bad["branch"][0]["content"] = text.replace(old, new)
+            run.rows = lambda: [bad]
+            self.assertIsNone(run.notice_context("w-target", "FULL NOTICE BODY"), change)
+
+    def test_canonical_observer_cannot_write_database(self):
+        # Synthetic metadata exercises the observer only, never native/canonical notice proof.
+        import sqlite3
+        with tempfile.TemporaryDirectory(prefix="ht-pi-observer-selftest-") as root:
+            path = Path(root) / "state/node/herdr-threads.db"; path.parent.mkdir(parents=True)
+            db = sqlite3.connect(path); db.execute("CREATE TABLE fixture(value TEXT)"); db.execute("INSERT INTO fixture VALUES('unchanged')"); db.commit(); db.close()
+            run = Run.__new__(Run); run.root = Path(root)
+            self.assertEqual(run.canonical_read("SELECT value FROM fixture"), [{"value": "unchanged"}])
+            with self.assertRaises(sqlite3.OperationalError): run.canonical_read("DELETE FROM fixture")
+            self.assertEqual(run.canonical_read("SELECT value FROM fixture"), [{"value": "unchanged"}])
+
     def test_negative_case_rejects_late_watch_without_a_target_proposal(self):
         with tempfile.TemporaryDirectory(prefix="ht-pi-negative-selftest-") as root:
             run = Run.__new__(Run)
@@ -1054,7 +1622,7 @@ assert.ok(logged.find(r=>r.event==='settle_abort'&&JSON.stringify(r.entries).inc
             with mock.patch.object(shutil, "which", return_value="/fake/tmux"), mock.patch.object(time, "time", side_effect=lambda: now[0]), mock.patch.object(time, "sleep", side_effect=lambda seconds: now.__setitem__(0, now[0] + seconds)), self.assertRaises(Checked):
                 run.case_named()
 
-    def cleanup_failure_fixture(self, interruption, ignore_term=False, capture_failure=False):
+    def cleanup_failure_fixture(self, interruption, ignore_term=False, capture_failure=False, second_recipient=False):
         with tempfile.TemporaryDirectory(prefix="ht-pi-driver-selftest-") as evidence:
             root = Path(tempfile.mkdtemp(prefix="ih."))
             args = argparse.Namespace(bin=sys.executable, modules=MODULES, pi=None,
@@ -1102,6 +1670,9 @@ while True: time.sleep(.05)
             run.start = lambda: None
             run.case_setup = lambda: None
             actions = []
+            if second_recipient:
+                probe = root / "sink"; probe.mkdir(); (probe / "native.jsonl").write_text('{"event":"fixture_loaded"}\n')
+                run.sink = {"pane": "owned-sink-pane", "probe": probe}
             if capture_failure:
                 run.recipient, run.workspace = "owned-fixture-pane", "owned-fixture-workspace"
                 def fail_capture(_label):
@@ -1129,6 +1700,10 @@ while True: time.sleep(.05)
                 if capture_failure:
                     self.assertIn(("workspace", "close", "owned-fixture-workspace"), actions)
                     self.assertIn(("daemon", "stop"), actions)
+                if second_recipient:
+                    self.assertIn(("pane", "send-keys", "owned-sink-pane", "ctrl+c"), actions)
+                    self.assertIn(("pane", "send-text", "owned-sink-pane", "/quit"), actions)
+                    self.assertTrue((run.ev / "native-sink.jsonl").exists())
                 if ignore_term:
                     self.assertEqual(helper.returncode, -signal.SIGKILL)
             finally:
