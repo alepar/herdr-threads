@@ -97,67 +97,87 @@ So `prompt.submit` precedes the turn hooks and brackets window 1 exactly. Window
 
 ## Fix (applied on this branch)
 
-Both parts are in `integrations/claude/mod/hooks/register.js`; neither adds model-visible text.
+Both parts are in `integrations/claude/mod/hooks/register.js`; neither adds model-visible text. In both,
+only the wake submit waits. The append is immediate, so the other prompt's turn reads the rows in its
+first request (as it did in all five incidents) and its `turn.start` clears the pending wake.
 
-1. **Entering prompt counts as busy.** An `on('prompt.submit')` handler counts dispatches of other origins
-   in flight (`S.entering`); `busy()` includes it. It ends when `next(e)` settles: by then a started turn
-   is in `turns.open`, a drop frees the wake at once, and a dispatch that settled with no turn open starts
-   the settle below. The handler only observes; it never calls `$.prompt.submit` (the engine rejects that,
-   `submit-race-spike.md` t18). Nothing is appended while a prompt is entering, so the item goes to that
-   turn's first tool boundary, or to the idle path when the turn ends.
-2. **Turn-boundary settle.** For `TURN_SETTLE_MS` (500 ms) after a main `turn.complete`, the wake submit
-   waits (ledger `held`, reason `settle`); the append is not delayed. A queued prompt's `turn.start`
-   clears the pending wake, as before, and its turn reads the appended rows. `$.clock.after` re-runs the
-   pump when the settle ends; the 1 s tick is the fallback. Cost: 0.5 s more latency on the 4% of wakes
-   that follow a turn end directly.
+1. **No wake while a prompt is entering.** An `on('prompt.submit')` handler counts dispatches of other
+   origins in flight (`S.entering`). While the count is above zero the wake is held (ledger `held`, reason
+   `entering`). When `next(e)` settles: a started turn has already cleared the wake, a drop frees it, and
+   a dispatch that settled with no turn open starts the settle below. A dispatch the engine abandons (Esc
+   during a slow hook, a hung hook) is released by the tick after 120 s with an empty prompt box and no
+   open turn, like the post-abort and predecessor holds. The handler only observes, and the pump it
+   triggers runs from `$.clock.after(1)`: the engine rejects a `$.prompt.submit` attributed to a
+   `prompt.submit` dispatch (`submit-race-spike.md` t11, t12, t18).
+2. **Turn-boundary settle.** For `TURN_SETTLE_MS` (500 ms) after a main `turn.complete` the wake is held
+   (reason `settle`), so a queued prompt's `turn.start` comes first. `$.clock.after` re-runs the pump when
+   the settle ends; the 1 s tick is the fallback. Cost: 0.5 s more latency on the 4% of wakes that follow
+   a turn end directly.
 
 The entering count and the settle live in memory only (a mod reload starts them at zero).
 
+The first version of this fix (89389553c) also held the append while a prompt was entering, and had no
+bound on the entering state. Review found both: a text-only turn then never saw the item and a wake
+followed it anyway, and an abandoned dispatch would have blocked every later wake. 09d3cf7f0 corrects them.
+
 ### Tests
 
-Unit, `integrations/claude/mod/tests/delivery.test.ts` (each failed before the change):
+Unit, `integrations/claude/mod/tests/delivery.test.ts`:
 
-- a prompt entering holds the wake until its turn starts, and that turn's tool boundary carries the item;
+- a draft-held item is appended when the prompt enters; a text-only turn follows; no wake, ACK via append;
+- an item arriving while a prompt is entering is appended at once, and no wake follows its turn;
+- an abandoned dispatch releases the wake after 120 s, not while a draft is in the box, and its late
+  settlement changes nothing;
 - a prompt queued behind the turn starts first: one append, no submit;
 - control: nothing queued, the wake is submitted when the settle elapses (not at 499 ms);
-- a dropped prompt clears the entering state and the wake goes out at once;
+- a dropped prompt frees the wake, submitted from the timer and not inside the dispatch;
 - a prompt that enters without starting a turn releases the wake after the settle;
 - the mod's own wake prompt entering is not a rival;
 - "a draft that is cleared ..." is renamed to the deleted-draft case, which still submits at the next tick.
 
-`tests/stress.test.ts` models both gates (steps `prompt.in`, `prompt.out`) and fails on a submit while a
-prompt is entering or inside the settle. The settle lowers the submit rate per schedule, so the schedule
-count went from 800 to 2400 to keep the coverage floors (1.4 s).
+The test harness's timers now fire only when the test clock reaches them, so twelve older tests state the
+settle explicitly (`h.elapse(500)`).
+
+`tests/stress.test.ts` models both gates (steps `prompt.in`, `prompt.out`, the 120 s release) and fails on
+a submit while a prompt is entering or inside the settle. At the end of each schedule it clears every hold
+and fails if a wake is still pending or a waking item was never delivered. The settle lowers the submit
+rate per schedule, so the schedule count went from 800 to 2400 to keep the coverage floors.
 
 Live, opt-in `scripts/wake-e2e.py --harness claude --cases enter-race/group,queued-prompt/group` (mod
-Claude at T = 0). Both count `wake up` rows in the engine queue from the recipient's transcript.
+Claude at T = 0). Both count `wake up` rows in the engine queue from the recipient's transcript. They run
+alone: their 2 s UserPromptSubmit hook sits in settings every Claude recipient of the run shares, so a
+`--cases` list that mixes them with other cases is refused.
 
-- `enter-race/group`: an ACK request is held by a typed draft; the driver presses Enter; a 2 s
-  UserPromptSubmit hook, added to the scratch settings for these cases only, keeps the prompt entering.
-  Pass: no wake queued or on screen, the item ACKed `via: context` in that turn.
+- `enter-race/group`: an ACK request is held by a typed draft; the driver presses Enter; the hook keeps
+  the prompt entering. The prompt asks for a text-only turn that names every item received. Pass: no wake
+  queued or on screen, the item named in that turn, ACK `via: append`.
 - `queued-prompt/group`: an ACK request and a follow-up prompt arrive while the turn writes its final
-  answer. Pass: no wake queued or on screen, the item ACKed `via: append`, the follow-up's turn shows it.
-- A run whose `via` is the other one did not stage the window and fails (`window_staged`).
+  answer. Pass: no wake queued or on screen, ACK `via: append`, the follow-up's turn shows the item.
 
-### Live results (Claude Code 2.1.325, Herdr 0.9.5, recipient `cl-t0`)
+### Live results (09d3cf7f0, Claude Code 2.1.325, Herdr 0.9.5, recipient `cl-t0`)
 
-| Binary | Case | Wakes queued | Wake on screen | ACK via | Result |
+| Binary | Case | Wakes queued | Wake on screen | Item shown | Result |
 |---|---|---|---|---|---|
-| control (same tree, `register.js` from the investigation commit) | enter-race/group | 1 | 1 | append | FAIL |
-| control | queued-prompt/group | 1 | 1 | append | FAIL |
-| fix | enter-race/group | 0 | 0 | context | PASS |
-| fix | queued-prompt/group | 0 | 0 | append | PASS |
+| control (same tree, `register.js` from c60fc2a09) | enter-race/group | 1 | 1 | yes | FAIL |
+| control | queued-prompt/group | 1 | 1 | yes | FAIL |
+| fix | enter-race/group | 0 | 0 | yes | PASS |
+| fix | queued-prompt/group | 0 | 0 | yes | PASS |
 
-The control reproduces both windows live. In the control's enter-race the mod appended and woke during
-the 2 s hook, hence `via: append`.
+Each case ran once per binary. The same result held for 89389553c against its own control.
 
-Also run on the fix: `scripts/test-claude-mod` (187 pass), `scripts/wake-e2e.py --self-test` (238 pass),
-clippy with `-D warnings`, `scripts/check-harness-neutral`, `scripts/check-wire-compat`,
-`cargo test claude_mod` (26 pass) and `cargo test mod_delivery` (68 pass).
+Also run on 09d3cf7f0:
+
+- full Rust suite, unfiltered (`cargo nextest run --locked --all-targets --all-features -j 4`): 9590 passed,
+  64 skipped, 951 s at the 4-thread cap; `scripts/check-no-leaked-processes --run-id`: no leaked processes
+  or temp files;
+- `scripts/test-claude-mod`: 189 pass.
+
+Run on 89389553c and not repeated (the later commit changes only the mod, its tests and the e2e driver's
+prompt-race cases): clippy with `-D warnings`, `scripts/check-harness-neutral`, `scripts/check-wire-compat`,
+`scripts/wake-e2e.py --self-test` (238 pass).
 
 ## Not done
 
-- The full Rust suite and the default wake e2e matrix were not run; both are due before a merge.
-- Each live case ran once per binary.
+- The default wake e2e matrix was not run; it runs in the next release qualification.
 - What runs the pump within 140 ms of Enter in production is still inferred. The fix does not depend on it.
 - Hooks-only Claude has 9 native wakes in the sample, all idle; too few to say more.
