@@ -21,7 +21,7 @@ function harness(options = {}) {
     },
     spawn: (argv, request, handlers) => {
       if (options.spawn) options.spawn(argv, request, handlers)
-      const watch = { argv, request, ...handlers, stops: 0, stop() { this.stops++; return Promise.resolve() } }
+      const watch = { argv, request, ...handlers, stops: 0, stop() { this.stops++; return options.stop ? options.stop(this) : Promise.resolve() } }
       watches.push(watch); return watch
     },
     schedule: (ms, fn) => { const timer = { ms, fn, canceled: false }; timers.push(timer); return () => { timer.canceled = true } },
@@ -393,4 +393,107 @@ test('failed compact admission retries its own source on the next native run', a
   } })
   await h.start(); await h.emit('session_compact'); await h.emit('before_agent_start')
   assert.equal(compacts, 2)
+})
+
+test('alternating unchanged urgent keys cannot release rejected or error attention', async () => {
+  for (const outcome of ['completed', 'error', 'aborted']) {
+    const h = harness(); await h.start(); h.setIdle(false)
+    await h.emit('before_agent_start', { messageType: 'user' })
+    h.message('urgent-a', 0, { wakes: true }); h.message('urgent-b', 0, { wakes: true })
+    const r = await h.emit('turn_end', { outcome, entries: [], continue: false, context: {} })
+    if (outcome === 'completed') {
+      h.store({ entries: r.entries.map(entry => ({ ...entry, content: 'later extension rejected both urgent frames' })) })
+      await h.context()
+    }
+    h.setIdle(true); await h.emit('agent_settled', { aborted: outcome === 'aborted' })
+    assert.equal(h.wakes.length, 0, outcome)
+    h.line({ kind: 'status', id: 'status:duplicate', state: 'connected' })
+    assert.equal(h.wakes.length, 0, 'repeated same-channel status is not a replacement')
+    for (const id of ['urgent-a', 'urgent-b', 'urgent-a', 'urgent-b']) {
+      h.message(id, 0, { wakes: true })
+      assert.equal(h.wakes.length, 0, `${outcome}: unchanged ${id}`)
+    }
+    h.message('genuinely-new-urgent', 0, { wakes: true })
+    assert.equal(h.wakes.length, 1, `${outcome}: new attention may wake`)
+    await h.emit('session_shutdown')
+  }
+})
+
+test('unchanged urgent keys cannot release no-progress wake suspension', async () => {
+  const h = harness(); await h.start(); h.setDraft('hold wake')
+  h.message('urgent-a', 0, { wakes: true }); h.message('urgent-b', 0, { wakes: true })
+  h.setDraft(''); await h.emit('agent_settled'); assert.equal(h.wakes.length, 1)
+  await h.tick(30000)
+  for (const id of ['urgent-a', 'urgent-b', 'urgent-a']) h.message(id, 0, { wakes: true })
+  assert.equal(h.wakes.length, 1)
+  h.message('new-urgent', 0, { wakes: true }); assert.equal(h.wakes.length, 2)
+  await h.emit('session_shutdown')
+})
+
+test('shutdown joins a watch detached by overflow replacement before reporting completion', async () => {
+  let releaseStop, closed = false
+  const stopped = new Promise(resolve => { releaseStop = resolve })
+  const h = harness({ stop: () => stopped }); await h.start()
+  for (let i = 0; i < 257; i++) h.message(`overflow-${i}`)
+  const r = await h.emit('before_agent_start'); h.store(r); await h.context(); await h.flush()
+  assert.equal(h.watches[0].stops, 1)
+  const closing = h.emit('session_shutdown', { reason: 'quit' }).then(() => { closed = true })
+  await h.flush()
+  try {
+    assert.equal(closed, false, 'predecessor watch has not exited yet')
+    h.watches[0].line({ schema: 1, id: 'old-urgent', kind: 'attention', attention_version: 1, text: 'stale' })
+    assert.equal(h.wakes.length, 0)
+    assert.equal(h.watches.length, 1)
+  } finally { releaseStop(); await closing; await h.flush() }
+  assert.equal(closed, true); assert.equal(h.watches.length, 1, 'closed replacement cannot start a successor')
+})
+
+test('reload waits for a detached predecessor watch, including an already closing owner', async () => {
+  for (const shutdownFirst of [false, true]) {
+    let releaseStop, reloaded = false
+    const stopped = new Promise(resolve => { releaseStop = resolve })
+    const h = harness({ stop: watch => watch === h.watches[0] ? stopped : Promise.resolve() }); await h.start()
+    for (let i = 0; i < 257; i++) h.message(`overflow-${i}`)
+    const r = await h.emit('before_agent_start'); h.store(r); await h.context(); await h.flush()
+    assert.equal(h.watches[0].stops, 1)
+    const closing = shutdownFirst ? h.emit('session_shutdown', { reason: 'reload' }) : Promise.resolve()
+    const reloading = h.start('reload').then(() => { reloaded = true }); await h.flush()
+    try {
+      assert.equal(reloaded, false, `shutdownFirst=${shutdownFirst}`)
+      assert.equal(h.calls.filter(call => call.argv.at(-1) === 'SessionStart').length, 1)
+      assert.equal(h.watches.length, 1)
+    } finally { releaseStop(); await closing; await reloading; await h.flush() }
+    assert.equal(reloaded, true); assert.equal(h.watches.length, 2)
+    assert.equal(h.watches[0].stops, 1, 'one owner reaps the predecessor exactly once')
+    await h.emit('session_shutdown', { reason: 'quit' })
+  }
+})
+
+test('saturated discarded urgent history cannot turn old or ambiguous keys into new wake authority', async () => {
+  for (const outcome of ['error', 'no-progress']) {
+    const h = harness(); await h.start(); h.setDraft('hold idle wake')
+    if (outcome === 'error') { h.setIdle(false); await h.emit('before_agent_start', { messageType: 'user' }) }
+    // Keep 256 better passive records. All lower-ranked admitted urgent bodies
+    // are discarded; their waking identities must still fence later reoffers.
+    for (let i = 0; i < 256; i++) h.message(`retained-${i}`, 0)
+    for (let i = 0; i < 300; i++) h.message(`discarded-${i}`, 9, { wakes: true })
+    if (outcome === 'error') {
+      await h.emit('turn_end', { outcome: 'error', entries: [], continue: false, context: {} })
+      h.setIdle(true); h.setDraft(''); await h.emit('agent_settled')
+    } else {
+      h.setDraft(''); await h.emit('agent_settled'); assert.equal(h.wakes.length, 1)
+      await h.tick(30000)
+    }
+    const before = h.wakes.length
+    for (const i of [0, 299, 1, 298, 0, 299]) h.message(`discarded-${i}`, 9, { wakes: true })
+    for (let i = 300; i < 600; i++) h.message(`discarded-${i}`, 9, { wakes: true })
+    assert.equal(h.wakes.length, before, `${outcome}: bounded history cannot classify ambiguous keys as new`)
+    await h.emit('agent_settled'); assert.equal(h.wakes.length, before, 'settlement alone does not reset saturated history')
+    // An explicitly permitted user transition starts a fresh bounded history.
+    h.setIdle(false); await h.emit('before_agent_start', { messageType: 'user' })
+    h.message('after-user-transition', 9, { wakes: true })
+    h.setIdle(true); await h.emit('agent_settled')
+    assert.equal(h.wakes.length, before + 1)
+    await h.emit('session_shutdown')
+  }
 })

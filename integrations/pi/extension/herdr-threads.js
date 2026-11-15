@@ -113,18 +113,28 @@ export function register(pi, io) {
     }
   }
   function retain(o, record) { o.pending.set(record.key, record); trim(o) }
+  function ownStop(o, promise) {
+    const task = Promise.resolve(promise)
+    o.stops.add(task)
+    task.then(() => o.stops.delete(task), () => o.stops.delete(task))
+    return task
+  }
+  function stopWatch(o, child) {
+    if (!child) return Promise.resolve()
+    return ownStop(o, Promise.resolve().then(() => child.stop()).catch(() => diagnostic('watch cleanup failed')))
+  }
   // A connected replacement pays debt only after actual capacity release. Merely
   // being full never creates a reconnect loop asking for the same excess bodies.
   function released(o) {
     if (o.replayDebt && !o.replaying && count(o) < MAX_RECORDS && current(o)) {
       o.replaying = true
-      void replaceWatch(o)
+      void ownStop(o, replaceWatch(o))
     }
   }
   async function replaceWatch(o) {
     o.live = false; ++o.watchRun
     const child = o.child; o.child = null
-    try { await child?.stop() } catch { diagnostic('watch cleanup failed') }
+    await stopWatch(o, child)
     if (current(o)) startWatch(o)
   }
   function startWatch(o) {
@@ -151,13 +161,17 @@ export function register(pi, io) {
   function progress(o) {
     o.wakeCancel?.(); o.wakeCancel = null; o.waking = false; o.suspended = false
   }
+  function resetAttentionHistory(o) {
+    o.attentionKeys.clear(); o.attentionHistoryBlocked = false
+  }
   function blockAttention(o) {
+    if (o.intent && o.attentionKeys.size === MAX_RECORDS) o.attentionHistoryBlocked = true
     if (o.intent && !o.intent.blocked) { o.intent.blocked = true; diagnostic('delivery deferred') }
   }
   function wake(o) {
     // No await between final owner/idle/UI/intent checks and the content-free call.
     if (!current(o) || !o.bound || !o.live || !o.idle || o.active || o.compacting || o.prompts
-        || o.branchMissing || o.waking || o.suspended || !o.intent || o.intent.blocked || o.ctx.isIdle() !== true) return
+        || o.branchMissing || o.waking || o.suspended || o.attentionHistoryBlocked || !o.intent || o.intent.blocked || o.ctx.isIdle() !== true) return
     try {
       if (typeof o.ctx.ui?.getEditorText !== 'function' || typeof pi.sendMessage !== 'function') {
         if (!o.wakeMissing) { o.wakeMissing = true; diagnostic('wake API unavailable') }
@@ -165,7 +179,11 @@ export function register(pi, io) {
       }
       if (o.ctx.ui.getEditorText() !== '') return
       o.waking = true
-      o.wakeCancel = later(o, 30000, () => { o.waking = false; o.suspended = true; diagnostic('wake unreceived') })
+      o.wakeCancel = later(o, 30000, () => {
+        o.waking = false; o.suspended = true
+        if (o.attentionKeys.size === MAX_RECORDS) o.attentionHistoryBlocked = true
+        diagnostic('wake unreceived')
+      })
       pi.sendMessage({ customType: 'herdr-threads-wake', content: WAKE, display: false }, { triggerTurn: true })
     } catch { o.wakeCancel?.(); o.waking = false; o.suspended = true; diagnostic('wake unavailable') }
   }
@@ -173,8 +191,11 @@ export function register(pi, io) {
     if (!line || line.schema !== 1 || typeof line.id !== 'string' || size(line.id) > 128) return
     if (line.kind === 'status') {
       if (line.state === 'connected') {
-        o.live = true; o.suspended = false
-        if (o.intent) o.intent.blocked = false
+        if (!o.live) {
+          resetAttentionHistory(o); o.suspended = false
+          if (o.intent) o.intent.blocked = false
+        }
+        o.live = true
         if (o.replaying) { o.replaying = false; o.replayDebt = false }
         retryAcks(o); wake(o)
       } else if (['closing', 'refused'].includes(line.state)) {
@@ -195,12 +216,25 @@ export function register(pi, io) {
     const key = JSON.stringify([line.kind, line.id, line.kind === 'invitation' ? [line.topic_revision ?? null, line.command_context_epoch ?? null] : line.kind === 'attention' ? line.presentation_epoch ?? line.attention_version : null])
     if (o.done.has(key)) return
     const waking = line.wakes === true || line.kind === 'attention'
-    if (waking && o.intent?.key !== key) { o.intent = { key, kind: line.kind, epoch: line.presentation_epoch }; o.suspended = false }
-    if (o.pending.has(key) || o.proposals.some(p => p.items.some(r => r.key === key))) { wake(o); return }
+    const existing = o.pending.get(key) ?? o.proposals.flatMap(p => p.items).find(r => r.key === key)
+    // Reoffers of any known urgent ID belong to the same attention generation,
+    // not just reoffers of its last key. Retained records keep this witness even
+    // when the bounded cache of discarded waking keys is full. At that bound,
+    // unknown keys cannot release a rejection/timeout fence by evicting history.
+    if (waking && !existing?.waking && !o.attentionKeys.has(key) && o.intent?.key !== key) {
+      if (o.attentionKeys.size === MAX_RECORDS && (o.suspended || o.intent?.blocked)) o.attentionHistoryBlocked = true
+      if (!o.attentionHistoryBlocked) {
+        if (o.attentionKeys.size < MAX_RECORDS) o.attentionKeys.add(key)
+        o.intent = { key, kind: line.kind, epoch: line.presentation_epoch }
+        o.suspended = false
+      }
+    }
+    if (existing) { existing.waking ||= waking; wake(o); return }
     // Coalesced invitations are presentation, never automatic acceptance or mail ACK.
     if (line.kind === 'invitation') for (const [oldKey, r] of o.pending) if (r.kind === 'invitation' && r.id === line.id) o.pending.delete(oldKey)
     retain(o, {
       key, id: line.id, kind: line.kind, epoch: line.presentation_epoch,
+      waking,
       priority: Number.isInteger(line.priority) && line.priority >= 0 && line.priority <= 9 ? line.priority : line.kind === 'lazy' ? 1 : 0,
       deadline: Number.isFinite(line.deadline_at) ? line.deadline_at : Infinity,
       order: sequence++, truncated: line.truncated === true, rendered: frame(line),
@@ -277,22 +311,32 @@ export function register(pi, io) {
     if (complete.length || !p.items.length) released(o)
   }
   function retryAcks(o) { for (const p of o.proposals) if (!p.retryCancel) void acknowledge(o, p) }
-  async function close(o, releaseOwner = true, reload = false) {
-    if (!o || o.closed) return
+  function close(o, releaseOwner = true, reload = false) {
+    if (!o) return Promise.resolve()
+    if (o.closing) {
+      // A same-instance successor reserves the owner while joining the already
+      // running shutdown; it still cannot start until that shutdown has reaped.
+      if (!releaseOwner) o.releaseOwner = false
+      return o.closing
+    }
     o.closed = true
+    o.releaseOwner = releaseOwner
     o.abort.abort()
     if (reload) io.registry[RECOVERY] = { sid: o.sid, proposals: o.proposals }
     else if (releaseOwner) delete io.registry[RECOVERY]
     for (const cancel of o.timers) cancel()
     o.timers.clear(); ++o.watchRun
-    const stopping = o.child?.stop(); o.child = null; o.live = false
+    const stopping = stopWatch(o, o.child); o.child = null; o.live = false
     // Form the old-owner event/env before cleanup; no successor fields are removed.
     const ending = o.bound ? hook(o, 'SessionEnd') : Promise.resolve()
     for (const [key, value] of Object.entries(o.env)) if (io.env[key] === value) delete io.env[key]
-    if (releaseOwner && io.registry[OWNER] === token) delete io.registry[OWNER]
-    try { await stopping } catch { diagnostic('watch cleanup failed') }
-    await ending
-    await Promise.allSettled([...o.calls])
+    o.closing = (async () => {
+      await stopping
+      await ending
+      await Promise.allSettled([...o.calls, ...o.stops])
+      if (o.releaseOwner && io.registry[OWNER] === token) delete io.registry[OWNER]
+    })()
+    return o.closing
   }
   pi.on('session_start', async (event, ctx) => {
     if (forbidden || ctx.mode !== 'tui' || (io.registry[OWNER] && io.registry[OWNER] !== token)) return
@@ -311,7 +355,7 @@ export function register(pi, io) {
       env: { [PREFIX + 'SESSION']: sid, [PREFIX + 'ROLE']: 'top_level', [PREFIX + 'MODE']: 'tui', [PREFIX + 'PID']: String(io.pid) },
       bound: false, closed: false, admission: null, idle: false, active: false, compacting: false, prompts: 0, abort: new AbortController(),
       pending: new Map(), proposals: recovery?.proposals ?? [], done: new Set(), guidance: '', guidanceAttempted: false, run: 0, revision: 0,
-      timers: new Set(), calls: new Set(), child: null, watchRun: 0, live: false, backoff: 0, intent: null,
+      timers: new Set(), calls: new Set(), stops: new Set(), closing: null, child: null, watchRun: 0, live: false, backoff: 0, intent: null, attentionKeys: new Set(), attentionHistoryBlocked: false,
       replayDebt: false, replaying: false, waking: false, suspended: false }
     if (!owner.source) { await close(owner); return }
     for (const p of owner.proposals) {
@@ -325,7 +369,7 @@ export function register(pi, io) {
     const o = callbackOwner(ctx)
     if (!o) return
     o.ctx = ctx; o.idle = false; o.active = true; o.run++; o.guidanceAttempted = false; progress(o)
-    if (event.messageType === 'user' && o.intent) o.intent.blocked = false
+    if (event.messageType === 'user') { resetAttentionHistory(o); if (o.intent) o.intent.blocked = false }
     if (!await admit(o)) return
     const live = await hook(o, 'TurnStart')
     if (!current(o) || live === null) return
@@ -351,6 +395,7 @@ export function register(pi, io) {
     if (!reconcile(o, entries)) return
     for (const p of o.proposals) if (entries.some(e => exact(e, p)) && event.messages.some(m => m.role === 'custom' && m.customType === p.customType && m.content === p.text)) {
       p.evidenced = true; p.revision = o.revision
+      for (const r of p.items) o.attentionKeys.delete(r.key)
       if (p.items.some(r => r.key === o.intent?.key)) o.intent = null
       void acknowledge(o, p)
     }

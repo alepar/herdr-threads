@@ -57,13 +57,25 @@ progress and suspends unchanged attention. Pending passive mail starts no run.
 Rejected/altered drafts, error/aborted boundaries and attempted mail left without
 context at settlement also block unchanged attention from restarting itself. A
 later user run, new attention or channel replacement can retry; receipts stay pending.
+Already known urgent keys share their attention fence, including alternating
+reoffers of different retained IDs. A bounded cache remembers up to 256 waking
+keys in addition to the witnesses on retained records. It never evicts a key to
+infer new attention. If rejection or no-progress suspension reaches that history
+bound, ambiguous identities cannot start automatic runs until an authentic user
+run, new owner or successful channel transition resets the fence. This degrades
+only wake; boundary delivery and canonical pending mail remain available. Repeated
+connected status on the same live channel is not such a transition.
 Wake is rechecked on new watch attention/connection, final settlement and extension
 UI prompt completion. There is no editor-change polling; merely deleting a draft
 may leave attention pending until one of those events or a manual turn.
 
 Shutdown fences old callbacks first, cancels retries, aborts owned command children
 and stops/reaps the watch. Its best-effort old-owner SessionEnd reports liveness;
-it never retires a seat. Environment cleanup compares exact old values so a
+it never retires a seat.
+Detached watches remain owned until their replacement/stop promises settle;
+shutdown and reload join those promises before releasing the process owner or
+admitting a successor.
+Environment cleanup compares exact old values so a
 successor's markers survive. Every child has bounded output; one-shot commands
 have a deadline and owned processes receive TERM then KILL if necessary.
 
