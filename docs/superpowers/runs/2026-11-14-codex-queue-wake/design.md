@@ -4,7 +4,7 @@
 
 Wake a qualified idle Codex session through its persistent input queue while preserving herdr-threads delivery, attribution and user-interaction guarantees. Queue only `herdr-threads: wake up`; hooks continue to carry bodies and canonical delivery observations.
 
-Status: design draft; production enablement blocked on qualification ht-d2jq.1. Design/quality owner: snSGPb0CT1uM. Implementor: snSGte2clRpf. Queue: ht-d2jq. Source baseline: main 1cf51f9a4; live spike: 8625c066e, `docs/validation/codex-queue-spike-2026-11-14/report.md` on branch `spike/codex-queue-wake`. The spike is not merged into this document's baseline.
+Status: qualification reviewed; tested queue/hook-veto route rejected for automatic activation. Production implementation remains blocked on missing supported upstream guarantees. Design/quality owner: snSGPb0CT1uM. Implementor: snSGte2clRpf. Queue: ht-d2jq. Source baseline: main 1cf51f9a4; live spike: 8625c066e, `docs/validation/codex-queue-spike-2026-11-14/report.md` on branch `spike/codex-queue-wake`. The spike is not merged into this document's baseline.
 
 ## Requirement baseline
 
@@ -113,3 +113,20 @@ Deterministic fake-peer and store/scheduler tests establish state transitions. R
 Beads is the task-state authority: ht-d2jq.1 qualification (implementor), .2 design (design owner), .3 target/control adapter, .4 durable reconciliation, .5 selection/admission integration, .6 integrated qualification and final review. The implementation tasks are gated by the settled design; their initial briefs are conditional, not approval to build speculative abstractions.
 
 Unresolved gates: pre-inference veto semantics and exact queue correlation at hooks; delete/dequeue linearization; receiver-loaded and storage evidence; same-session multiple receivers; bounded helper startup/config side effects; mixed-version rollback fencing. ht-d2jq.1 supplies first evidence. The design owner will settle the gate and refine task boundaries before production implementation, then review actual code and traces. If no compliant queue route exists, retain native behavior, preserve the findings and explicitly report that outcome rather than declaring the requested feature delivered.
+
+
+## Qualification decision — 2026-11-14
+
+Reviewed evidence: spike branch commit `455b2c919`, parent `8625c066e`, especially `docs/validation/codex-queue-spike-2026-11-14/admission-qualification.md`, `admission-source-inspection.json`, run-7 results/RPC capture/driver, run-8 results and `admission-cleanup-check.json`. The design owner inspected these artifacts directly. This decision supersedes the draft's pending qualification language above; the conditional architecture remains a record of requirements, not an implementation authorization.
+
+**Do not implement or enable automatic queue waking through the tested enqueue/list/delete plus UserPromptSubmit-veto route.** Keep production native waking and hook delivery unchanged. Qualification ht-d2jq.1 fulfilled its negative-evidence acceptance criteria; that does not complete the feature epic.
+
+Run 7's explicit block prevented observed model sampling but left a visible blocked/completed turn. Its full hook payload contains native session/turn and prompt fields but no queued-submission or client correlation ID. Hook failure exited 1 and allowed inference. The hook had already lost access to the pending queue row: list was empty and deletion returned false. Pending-only lost-add-reply recovery worked, with no inference claim for vanished rows. Run 8 reached an ownership screen before a second SessionStart, so competing dispatch was not tested.
+
+The retained source shows peek/copy, start-if-idle, then deletion; the dispatch mutex is local to a service instance. A controller may successfully delete a row after a receiver copied it but before it starts. That true-delete race is a source-derived possibility, not a live forced result. Both the observed false-delete boundary and source-derived true-delete boundary defeat cancellation as a general no-latent-turn proof. The report correctly separates these evidence classes.
+
+CODEX_HOME was captured from environment, not hook payload. Effective sqlite_home/CODEX_SQLITE_HOME configuration and shared queue namespace still lack the necessary receiver observation. The same-home ownership screen is not proof of exclusivity across all queue-storage configurations. Cleanup artifacts report unchanged source credentials, no private refresh and no remaining tagged processes/scratch roots; the worktree has no build artifacts. Repository checks are the implementor's recorded successful run, not a new full-suite or release qualification by this design review.
+
+Reopening requires evidence of a supported mechanism that identifies an owned submission, conditionally admits it before obsolete runtime turns are created, and accounts for unknown enqueue/cancel effects without unsafe retries or fallback. These are required semantics, not a request to invent a new protocol or patch upstream. A proposed alternative must also resolve exact receiver/storage scope, interruption/UI policy and mixed-version recovery. No version pin, text/timing heuristic, silent extra turn, or fail-open hook is an acceptable substitute.
+
+The design-owner quality review accepts the evidence as a bounded negative qualification. It makes no universal claim that every present or future Codex programmatic wake route is impossible. Production tasks stay blocked; the design and evidence should be retained through normal repository integration. No further live experiments are assigned.
