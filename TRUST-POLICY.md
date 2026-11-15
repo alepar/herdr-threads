@@ -4045,3 +4045,14 @@ programmatic helpers, and require a fresh fully guarded native wake. This does
 not prove cleanup or authorize pruning, and does not cover Active possible effects
 or witnessed helper uncertainty. Durable witness state, not a lost callback reply,
 decides which case applies.
+
+
+### Accepted external queue polling latency (2026-11-15)
+
+The user accepted receiver polling latency for programmatic Codex queue wakes:
+approximately one ten-second polling interval in the inspected runtime plus
+processing overhead, qualified with a 15-second window. This changes queue wake
+latency acceptance only; native wake limits, observed-idle admission, priority,
+body/receipt authority and no-blind-replay rules are unchanged. Queue acceptance
+still does not prove target activity or delivery. This is an accepted runtime limit,
+not an exact-version admission gate or permission to add a native poke after enqueue.

@@ -189,6 +189,36 @@ Migration numbering is assigned there; no push, standalone inactive merge, relea
 or shared-server restart is authorized by this assignment. Retain the warm target
 until integration, then remove owned build artifacts/worktree as the final step.
 
+## Accepted queue-wake latency (2026-11-15)
+
+The user explicitly accepted the latency after being shown the external receiver
+polling constraint and offered a 15-second queue qualification window: “i accept
+that latency”. This supersedes the six-second behavioral window for programmatic
+queue qualification only; existing native wake expectations remain unchanged.
+
+The inspected Codex rust-v0.167.0 queue service polls external SQLite changes every
+ten seconds. Immediate enqueue notification reaches the helper's own thread
+manager, not the receiver's. This is historical source evidence, not a version gate
+or a promise that every future runtime uses the same interval. Queue waking may
+wait approximately one receiver polling interval plus normal processing overhead.
+The accepted qualification window is 15 seconds; neither Accepted nor eventual
+body delivery alone substitutes for observed timely target activity.
+
+Keep the initial 0/3 and diagnostic 1/3 six-second results as failed historical
+qualification evidence. The diagnostic proved Accepted/body/same-attempt lifecycle
+for all three and observed native starts at approximately 2.5, 6.6 and 6.1 seconds;
+Herdr activity followed shortly afterward. Observation intervals are not exact
+runtime event timestamps. Cleanup completed without reported residual resources.
+
+Apply the new window only to queue-eligible positive cases in opt-in queue proof.
+Native fallback/excluded cases retain six seconds; silent/busy/UI safety assertions
+and all sampling bounds stay intact. Re-run the three-threshold baseline under the
+new contract, then complete the remaining 69 rows. Record which window and actual
+transport each row used; no blanket default release-window increase, version gate,
+post-Accepted native poke, or retry enqueue is authorized. A new failure must be
+diagnosed under the new bound, not silently granted additional time. Full-suite
+correctness/timing and final integration review remain separate gates.
+
 ## Requirement baseline
 
 Source: user in this design session: “Own comprehensive Codex queue wake design and quality; full instructions are already in thread dzU0QoN9Dew.” The handoff mnSGdbzbn5j9 records the originating user's request for a separate design/quality owner and implementor and agreement that queueing is user input, not regular message delivery. This design introduces engineering decisions, not additional claims of human approval.
