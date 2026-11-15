@@ -1,6 +1,6 @@
 # Research and design verification
 
-This checkpoint contains research, probe code and design artifacts only. Implementation has not started. The checks below ran against the initial `c4c5ecb9e` baseline; the documentation branch was subsequently rebased onto landed opencode core at `cf93b1bef`. They are historical baseline results, not checks of the new integrated base.
+The initial research/design checks below ran against `c4c5ecb9e`; the documentation branch was subsequently rebased onto landed opencode core at `cf93b1bef`. They are historical baseline results, not checks of the new integrated base. Native extension implementation and independent task review have since completed; see [extension task evidence](qualification/extension.md). Rust integration and real-TUI/live qualification are not yet claimed.
 
 | Check | Result |
 |---|---|
