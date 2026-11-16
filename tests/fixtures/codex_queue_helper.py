@@ -37,6 +37,12 @@ for line in sys.stdin:
             time.sleep(10)
             continue
         result = {"queuedSubmission": {"id": "queue-owned-1", "clientUserMessageId": row["params"]["clientUserMessageId"], "input": row["params"]["input"]}}
+        if mode == "add_wrong_correlation":
+            result["queuedSubmission"]["clientUserMessageId"] = "unrelated-attempt"
+        elif mode == "add_missing_correlation":
+            del result["queuedSubmission"]["clientUserMessageId"]
+        elif mode == "add_invalid_id":
+            result["queuedSubmission"]["id"] = ""
     elif method == "thread/queue/list":
         cursor = row["params"].get("cursor")
         page = int(cursor or "0")

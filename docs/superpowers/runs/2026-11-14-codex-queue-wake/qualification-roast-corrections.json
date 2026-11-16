@@ -1,0 +1,100 @@
+{
+  "basis": "6e4d55cba reviewed by formal round1; reportcherry7fb8694a7/perftestscherrycdf8de5ca",
+  "authorization": "Astra193/195/197, main32/33 migration coordination",
+  "files_sha256": {
+    "migrations/node/0018_programmatic_wake_intents.sql": "89b034f0c2f3985679f07f9ac4c7cd35149ceceec41cf5ab58271a76809623e0",
+    "scripts/wake_e2e_queue.py": "763de009ed056ea47954026d7e19eb7d90409b8d083756623a653c7ba7643768",
+    "scripts/wake_e2e_queue_selftest.py": "5429e14b773ba78d6c211972c33d785c9906466a4f2a489d138ad69c0b900b39",
+    "src/app.rs": "8a4973f2f2937c442735091d3caf2d6e6e88cb9e118ff20cf8ae7ca17ab0d3f1",
+    "src/notification/queue.rs": "1c6fe6f4b85759ea2f87a7fae422d6142a6c78bb570201883da72d9515da55e0",
+    "src/notification/queue_recovery.rs": "7124a0d5bb391030555255076d871d49db416c374f420852ef6d6afa55d31c83",
+    "src/ports/wake_intents.rs": "8d0f5ab1da376839698eaf6a451109cd6db4801fc0d34cc3648c8103e90ffc5a",
+    "src/store/wake_intents.rs": "bf49ea369ae6f1282e519cfd6b42100ce8eb13b3a669e3174981aca59158d632",
+    "tests/fixtures/codex_queue_helper.py": "2b8b2b162fd4e2aa8844232d9ed67c740ac3042e429262efbc30a66547034b79",
+    "tests/fixtures/schema/0018_queue_wake_candidate.sql": "ca9058b605845b6a2621fc0193f4454924265ee16c9d94db0a7d7de97e0c6b73",
+    "tests/harness/codex_wake_control.rs": "b65aa3a77b2d2d5be144ca2a50c6ab377a0d3bf8af6973c7435860338df42a0e",
+    "tests/notification/queue_recovery.rs": "d7072b43ae48935dc473d723840ccc6d559fa87adcaf38c4baa5407714a2aeb1",
+    "tests/store/schema.rs": "e8fae268389a047fb542a9944eef3e935ddec069427f383c0563ec266af50655",
+    "tests/store/wake_activation_recovery.rs": "120dd62dfce214dbd5a5892d4978dd6db20967af09d022904c63901910d797f8"
+  },
+  "report_sha256": "0a14de6a25d2b697ae5d04c07324d9320fdd879f1e22b8793a0c6a1bd76dbb78",
+  "findings": [
+    {
+      "id": "R1",
+      "severity": "Should-fix",
+      "change": "pagination progress separated from pending activity",
+      "red": "97clean rows rescan sets activity at21000ms",
+      "green": "97clean history+IdleTimer and initial/later late pending helpers"
+    },
+    {
+      "id": "R2",
+      "severity": "Should-fix",
+      "change": "immutable add_helper_json copied at successful arm CAS; qualification reads pinnedAdd",
+      "red": "storage missing column; reader3 behavioral assertion failures",
+      "green": "failed/replay arm, exact bytes/bound, cleanup/restart/recovery and no-earlier-sample proof"
+    },
+    {
+      "id": "R3",
+      "severity": "Should-fix",
+      "change": "fake parsed negative Add-response coverage only",
+      "red": "old fake mode returned Accepted",
+      "green": "mismatch/missing correlation/invalidID eachUnknown, noDelete ownership"
+    },
+    {
+      "id": "R4",
+      "severity": "Nit",
+      "change": "bounded existing Wakes lane error log, Unknown/fences unchanged",
+      "red": "fault resultwrite has0logentries",
+      "green": "1bounded logentry plus existing Unknown/bothfences assertions"
+    }
+  ],
+  "rust": {
+    "passed": 121,
+    "seconds": 9.701,
+    "compile_seconds": 105,
+    "run_id": "064ed457-9200-412e-89d6-a822d556ad2c",
+    "cleanup": "processes and tempfiles clean"
+  },
+  "reader": {
+    "passed": 31,
+    "seconds": 0.079
+  },
+  "driver": {
+    "passed": 292,
+    "seconds": 102.745,
+    "run_id": "104a0fdc-d0b2-49c6-9979-5b633da77c89",
+    "cleanup": "processes clean; no tempfile ledger"
+  },
+  "checks": {
+    "clippy": "PASS51.44s alltargets/allfeatures",
+    "default_features": "PASS",
+    "fmt": "PASS",
+    "harness_neutral": "PASS",
+    "wire_compat": "PASS",
+    "release_docs": "DOCS_TEST_PASS",
+    "python39": "PASS",
+    "diff": "PASS"
+  },
+  "schema": {
+    "delta": 18,
+    "historical_fixture_byte_identical": true,
+    "historical_fixture_sha256": "ca9058b605845b6a2621fc0193f4454924265ee16c9d94db0a7d7de97e0c6b73",
+    "old18": "unreleased candidate refused with schema/application rows/change count preserved; no production repair",
+    "fresh_and_17_upgrade": "PASS",
+    "final_master": "old candidate plus one additive bounded witness; existing objects preserved",
+    "creation_work": "under2500 ten-op VM units",
+    "performance": "fold optional; separate paired sample about2%wall improvement, not suite slowdown fix"
+  },
+  "model_visible_added_bytes": 0,
+  "private_log": {
+    "generated_attempt_bytes": 36,
+    "cause_max_unicode_characters": 128,
+    "max_body_bytes": 563
+  },
+  "limits": [
+    "Full9737/72live evidence remains on earlier exactsources",
+    "No full/live repeat aftercorrections",
+    "Round2wholeartifactreview pending",
+    "Same-family formal review is seat-differentiated, not cross-family independence"
+  ]
+}

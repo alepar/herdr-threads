@@ -43,6 +43,7 @@ pub struct QueueWakeRuntime {
     state_dir: PathBuf,
     turn_state: Arc<TurnStateBook>,
     recovery: Arc<QueueRecovery>,
+    error_log: Arc<dyn crate::daemon::logs::LaneErrorLog>,
 }
 fn unavailable(detail: &str) -> ApiError {
     ApiError::new(ErrorCode::TargetUnsafe, detail)
@@ -66,7 +67,12 @@ impl QueueWakeRuntime {
             state_dir,
             turn_state,
             recovery,
+            error_log: Arc::new(crate::daemon::logs::NoopLaneErrorLog),
         }
+    }
+    pub fn with_error_log(mut self, error_log: Arc<dyn crate::daemon::logs::LaneErrorLog>) -> Self {
+        self.error_log = error_log;
+        self
     }
     fn write<T>(
         &self,
@@ -225,7 +231,22 @@ impl QueueWakeRuntime {
         };
         let recorded = match recording {
             Ok(recorded) => recorded,
-            Err(_) if possible_effect => return Ok(QueueDispatch::Unknown),
+            Err(error) if possible_effect => {
+                let detail: String = error
+                    .detail
+                    .chars()
+                    .filter(|c| !c.is_control())
+                    .take(128)
+                    .collect();
+                self.error_log.record(
+                    crate::service::kicks::Lane::Wakes,
+                    &ApiError::new(
+                        error.code,
+                        format!("queue result {}: {detail}", r.attempt.as_str()),
+                    ),
+                );
+                return Ok(QueueDispatch::Unknown);
+            }
             Err(error) => return Err(error),
         };
         if !recorded
@@ -550,7 +571,16 @@ mod tests {
     }
     #[test]
     fn accepted_effect_with_result_write_failure_is_unknown_and_never_native() {
+        #[derive(Default)]
+        struct Records(std::sync::Mutex<Vec<String>>);
+        impl crate::daemon::logs::LaneErrorLog for Records {
+            fn record(&self, _: crate::service::kicks::Lane, error: &ApiError) {
+                self.0.lock().unwrap().push(error.detail.clone());
+            }
+        }
         let (runtime, control, preparation, key, context) = runtime_fixture(true);
+        let log = Arc::new(Records::default());
+        let runtime = runtime.with_error_log(log.clone());
         assert_eq!(
             runtime
                 .submit_captured(
@@ -565,6 +595,16 @@ mod tests {
                 .unwrap(),
             QueueDispatch::Unknown
         );
+        let diagnostics = log.0.lock().unwrap();
+        assert_eq!(
+            diagnostics.len(),
+            1,
+            "possible-effect result failure must be diagnosable"
+        );
+        assert!(diagnostics[0].contains(control.reservation.attempt.as_str()));
+        assert!(diagnostics[0].len() <= 1024);
+        assert!(!diagnostics[0].contains('\n'));
+        drop(diagnostics);
         let row = control
             .store
             .wake_intent(&control.reservation.attempt, &context.budget)

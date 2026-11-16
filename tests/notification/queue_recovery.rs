@@ -858,3 +858,125 @@ fn queue_cleanup_worker_exhausted_quantum_waits_for_next_safety_tick() {
     assert_eq!(received.recv_timeout(Duration::from_secs(2)).unwrap(), 2);
     drop(worker);
 }
+
+fn seed_clean_history(
+    store: &SqliteStore,
+    row: &WakeIntentSnapshot,
+    count: usize,
+) -> herdr_threads::protocol::ids::WakeAttemptId {
+    let db = store.context().open_writer().unwrap();
+    db.execute("UPDATE wake_intents SET phase='no_effect',logical_status='scope_ended',cleanup_quarantined=0,cleanup_list_attempted=1 WHERE attempt=?1", [row.attempt.as_str()]).unwrap();
+    let columns = db
+        .prepare("PRAGMA table_info(wake_intents)")
+        .unwrap()
+        .query_map([], |r| r.get::<_, String>(1))
+        .unwrap()
+        .map(Result::unwrap)
+        .collect::<Vec<_>>();
+    let selected = columns
+        .iter()
+        .map(|c| match c.as_str() {
+            "ordinal" => "NULL".to_owned(),
+            "attempt" => "?2".to_owned(),
+            _ => c.clone(),
+        })
+        .collect::<Vec<_>>()
+        .join(",");
+    let mut last = row.attempt.clone();
+    for n in 1..count {
+        last = herdr_threads::protocol::ids::WakeAttemptId::parse(format!("clean-history-{n}"))
+            .unwrap();
+        db.execute(
+            &format!(
+                "INSERT INTO wake_intents({}) SELECT {selected} FROM wake_intents WHERE attempt=?1",
+                columns.join(",")
+            ),
+            rusqlite::params![row.attempt.as_str(), last.as_str()],
+        )
+        .unwrap();
+    }
+    last
+}
+
+#[test]
+fn completed_multi_page_history_does_not_reset_idle_exit() {
+    use herdr_threads::daemon::idle_exit::IdleTimer;
+    let (store, clock, recovery, row) = rig();
+    seed_clean_history(&store, &row, 97);
+    for n in 0..4 {
+        clock.0.store(1000 + n * 5000, Ordering::SeqCst);
+        recovery.tick(&budget()).unwrap();
+    }
+    assert!(!recovery.has_work());
+    let mut timer = IdleTimer::new(std::time::Duration::from_secs(600));
+    assert!(!timer.observe(recovery.has_work(), 16_000));
+    for n in 1..=8 {
+        let now = 16_000 + n * 5000;
+        clock.0.store(now, Ordering::SeqCst);
+        recovery
+            .tick(&CallBudget {
+                deadline: MonoInstant(now + 2500),
+                cancellation: Default::default(),
+            })
+            .unwrap();
+        assert!(
+            !recovery.has_work(),
+            "clean pagination renewed activity at {now}"
+        );
+        if n % 6 == 0 {
+            assert!(!timer.observe(recovery.has_work(), now));
+        }
+    }
+    // Two complete rescans stayed inactive; advance the same monotonic clock
+    // to the idle deadline rather than repeating hundreds of unchanged reads.
+    clock.0.store(616_000, Ordering::SeqCst);
+    recovery
+        .tick(&CallBudget {
+            deadline: MonoInstant(618_500),
+            cancellation: Default::default(),
+        })
+        .unwrap();
+    assert!(
+        timer.observe(recovery.has_work(), 616_000),
+        "completed history must permit the ten-minute idle timer to expire"
+    );
+}
+
+#[test]
+fn pending_helper_late_in_history_keeps_initial_and_later_sweeps_live() {
+    use herdr_threads::{harness::wake::WakeHelperObserver, ports::ProcessInfo};
+    for clean_first in [false, true] {
+        let (store, clock, recovery, row) = rig();
+        let late = seed_clean_history(&store, &row, 97);
+        if clean_first {
+            for n in 0..4 {
+                clock.0.store(1000 + n * 5000, Ordering::SeqCst);
+                recovery.tick(&budget()).unwrap();
+            }
+            assert!(!recovery.has_work());
+        }
+        store.context().open_writer().unwrap().execute("UPDATE wake_intents SET phase='prepared',logical_status='active',cleanup_list_attempted=0 WHERE attempt=?1", [late.as_str()]).unwrap();
+        let pending = store.wake_intent(&late, &budget()).unwrap().unwrap();
+        let journal = recovery
+            .begin_helper(&pending, WakeHelperPurpose::Add, None, &budget())
+            .unwrap()
+            .unwrap();
+        journal
+            .started(&WakeHelperWitness {
+                process: LivenessFingerprint::current_process(),
+                pgid: std::process::id(),
+                kernel_boot: HostProcessTable.kernel_boot().unwrap(),
+            })
+            .unwrap();
+        assert!(recovery.has_work());
+        let start = clock.monotonic_now().0 + 5000;
+        for n in 0..8 {
+            clock.0.store(start + n * 5000, Ordering::SeqCst);
+            recovery.tick(&budget()).unwrap();
+            assert!(
+                recovery.has_work(),
+                "pending late helper lost during page {n}, clean_first={clean_first}"
+            );
+        }
+    }
+}

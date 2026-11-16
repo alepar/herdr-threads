@@ -23,7 +23,7 @@ const MAX_INTENTS: i64 = 4096;
 const MAX_IDS: usize = 128;
 const UNRESOLVED: &str =
     "((logical_status='active' AND phase!='no_effect') OR cleanup_quarantined=1)";
-const COLUMNS: &str = "ordinal,attempt,adapter,replay_scope,origin_seat,origin_host,origin_host_boot,origin_host_epoch,origin_target,origin_target_generation,target_json,descriptor,correlation,invitation_seq,invitation_offset,receipt_seq,receipt_offset,warning_seq,warning_offset,lazy_ordinal,phase,revision,owner_boot,arm_nonce,cleanup_quarantined,diagnostic,ids_complete,logical_status,fulfillment_turn,fulfillment_ordinal,arm_native_id,arm_native_ordinal,helper_json,cleanup_list_attempted,native_no_add_exception";
+const COLUMNS: &str = "ordinal,attempt,adapter,replay_scope,origin_seat,origin_host,origin_host_boot,origin_host_epoch,origin_target,origin_target_generation,target_json,descriptor,correlation,invitation_seq,invitation_offset,receipt_seq,receipt_offset,warning_seq,warning_offset,lazy_ordinal,phase,revision,owner_boot,arm_nonce,cleanup_quarantined,diagnostic,ids_complete,logical_status,fulfillment_turn,fulfillment_ordinal,arm_native_id,arm_native_ordinal,helper_json,cleanup_list_attempted,native_no_add_exception,add_helper_json";
 fn invalid(detail: &str) -> ApiError {
     api_error(ErrorCode::InvalidRequest, detail)
 }
@@ -124,6 +124,9 @@ fn decode(r: &Row<'_>) -> Result<WakeIntentSnapshot, ApiError> {
         cleanup_list_attempted: get(r, 33)?,
         cleanup_pending_ids: Vec::new(),
         native_no_add_exception: get(r, 34)?,
+        add_helper: get::<Option<Vec<u8>>>(r, 35)?
+            .map(|bytes| serde_json::from_slice(&bytes).map_err(|_| corrupt()))
+            .transpose()?,
         owned_ids: vec![],
     })
 }
@@ -273,7 +276,7 @@ pub(super) fn arm(
     },|tx,at,native| {
         let Some(native)=native else{return Ok(None)};
         let next=revision.checked_add(1).ok_or_else(corrupt)?;
-        let changed=tx.execute("UPDATE wake_intents SET phase='armed',revision=?3,arm_nonce=?4,updated_at=?5,arm_native_id=?7,arm_native_ordinal=?8 WHERE instance_id=?1 AND attempt=?2 AND phase='prepared' AND revision=?6",params![store.instance,r.attempt.as_str(),signed(next)?,nonce.to_string(),at.utc.0,signed(revision)?,native.id.as_str(),signed(native.ordinal)?]).map_err(store_error)?;
+        let changed=tx.execute("UPDATE wake_intents SET phase='armed',revision=?3,arm_nonce=?4,updated_at=?5,arm_native_id=?7,arm_native_ordinal=?8,add_helper_json=helper_json WHERE instance_id=?1 AND attempt=?2 AND phase='prepared' AND revision=?6",params![store.instance,r.attempt.as_str(),signed(next)?,nonce.to_string(),at.utc.0,signed(revision)?,native.id.as_str(),signed(native.ordinal)?]).map_err(store_error)?;
         Ok((changed==1).then(||WakeArmTicket {attempt:r.attempt.clone(),revision:next,owner_boot:r.daemon_boot,nonce}))
     })
 }

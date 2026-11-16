@@ -768,3 +768,38 @@ fn replay_cohort_is_derived_without_capture_and_rejects_invalid_session() {
             .is_err()
     );
 }
+
+#[test]
+fn parsed_add_response_with_wrong_or_missing_correlation_or_invalid_id_is_unknown() {
+    for mode in [
+        "add_wrong_correlation",
+        "add_missing_correlation",
+        "add_invalid_id",
+    ] {
+        let f = Fixture::new(mode);
+        let outcome = enqueue(
+            &f.descriptor,
+            "00000000-0000-0000-0000-000000000001",
+            "owned-attempt-1",
+            &mut || Ok(()),
+            &mut || Ok(true),
+            &f.context(),
+        );
+        assert!(
+            matches!(outcome, WakeAddOutcome::Unknown(_)),
+            "{mode}: {outcome:?}"
+        );
+        assert_eq!(
+            f.trace()
+                .iter()
+                .filter(|r| r["method"] == "thread/queue/add")
+                .count(),
+            1
+        );
+        assert!(
+            !f.trace()
+                .iter()
+                .any(|r| r["method"] == "thread/queue/delete")
+        );
+    }
+}

@@ -7956,11 +7956,48 @@ fn queue_wake_candidate_schema_with_additive_witness_passes_audit_and_rejects_ta
     ))
     .unwrap();
     db.pragma_update(None, "user_version", 18).unwrap();
+    let sentinel = uuid::Uuid::new_v4().simple().to_string();
+    db.execute("INSERT INTO node_directory(node_uuid,tag,tag_k,host_label,first_seen_at) VALUES(?1,'dev',0,'candidate-row',42)", [&sentinel]).unwrap();
+    let schema_text = |db: &Connection| {
+        db.prepare("SELECT name,sql FROM sqlite_master WHERE sql IS NOT NULL ORDER BY name")
+            .unwrap()
+            .query_map([], |r| Ok((r.get::<_, String>(0)?, r.get::<_, String>(1)?)))
+            .unwrap()
+            .map(Result::unwrap)
+            .collect::<Vec<_>>()
+    };
+    let before_schema = schema_text(&db);
+    let before_changes = db.total_changes();
     assert_eq!(
         schema::verify_baseline(&db).unwrap_err().code,
         ErrorCode::IncompatibleSchema,
         "the older unshipped candidate lacks the immutable Add witness"
     );
+    assert_eq!(
+        open_with(&db, schema::NODE_DELTAS).unwrap_err().code,
+        ErrorCode::IncompatibleSchema
+    );
+    assert_eq!(
+        schema_text(&db),
+        before_schema,
+        "refusal must not repair the unshipped candidate"
+    );
+    assert_eq!(
+        db.total_changes(),
+        before_changes,
+        "refusal must preserve application rows"
+    );
+    assert_eq!(
+        db.query_row(
+            "SELECT host_label FROM node_directory WHERE node_uuid=?1",
+            [&sentinel],
+            |r| r.get::<_, String>(0)
+        )
+        .unwrap(),
+        "candidate-row"
+    );
+    // Construct the separately intended final schema only in this test. The
+    // production opener above refused the historical candidate without repair.
     db.execute_batch("ALTER TABLE wake_intents ADD COLUMN add_helper_json BLOB CHECK(add_helper_json IS NULL OR length(add_helper_json)<=2048)")
         .unwrap();
     schema::verify_baseline(&db).unwrap();

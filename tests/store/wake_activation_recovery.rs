@@ -875,3 +875,152 @@ fn activation_recovery_restart_preserves_clean_prepared_helper_without_inventing
         assert!(!blockers.programmatic && !blockers.native);
     }
 }
+
+#[test]
+fn pinned_add_witness_is_written_only_by_successful_arm_and_survives_cleanup() {
+    let (store, path, r, p) = fixture();
+    let prepared = prepare(&store, &r, &p);
+    let pinned = |store: &SqliteStore| {
+        store
+            .context()
+            .open_writer()
+            .unwrap()
+            .query_row(
+                "SELECT add_helper_json FROM wake_intents WHERE attempt=?1",
+                [r.attempt.as_str()],
+                |row| row.get::<_, Option<Vec<u8>>>(0),
+            )
+            .unwrap()
+    };
+    assert!(pinned(&store).is_none());
+    assert!(
+        StorePort::arm_wake_intent(
+            &store,
+            &r,
+            prepared.revision + 1,
+            uuid::Uuid::new_v4(),
+            &budget()
+        )
+        .unwrap()
+        .is_none()
+    );
+    assert!(pinned(&store).is_none());
+    let ticket = StorePort::arm_wake_intent(
+        &store,
+        &r,
+        prepared.revision,
+        uuid::Uuid::new_v4(),
+        &budget(),
+    )
+    .unwrap()
+    .unwrap();
+    let original = pinned(&store).unwrap();
+    let helper_bytes = store
+        .context()
+        .open_writer()
+        .unwrap()
+        .query_row(
+            "SELECT helper_json FROM wake_intents WHERE attempt=?1",
+            [r.attempt.as_str()],
+            |row| row.get::<_, Vec<u8>>(0),
+        )
+        .unwrap();
+    assert_eq!(
+        original, helper_bytes,
+        "arm must pin the exact already-committed Add bytes"
+    );
+    assert!(
+        store
+            .context()
+            .open_writer()
+            .unwrap()
+            .execute(
+                "UPDATE wake_intents SET add_helper_json=zeroblob(2049) WHERE attempt=?1",
+                [r.attempt.as_str()]
+            )
+            .is_err()
+    );
+    assert_eq!(pinned(&store).unwrap(), original);
+    assert_eq!(
+        serde_json::from_slice::<WakeHelperOperation>(&original).unwrap(),
+        prepared.helper.unwrap()
+    );
+    assert!(
+        StorePort::arm_wake_intent(
+            &store,
+            &r,
+            prepared.revision,
+            uuid::Uuid::new_v4(),
+            &budget()
+        )
+        .unwrap()
+        .is_none()
+    );
+    assert_eq!(pinned(&store).unwrap(), original);
+    result(
+        &store,
+        &ticket,
+        WakeIntentOutcome::Accepted {
+            id: "pinned-owned-id".into(),
+        },
+        true,
+    );
+    fulfill(&store, &r, &p);
+    let list = op(&r, &p, WakeHelperPurpose::List, None);
+    assert!(begin(&store, &r, &list));
+    complete(&store, &r, &list);
+    assert!(
+        StorePort::record_wake_cleanup_progress(&store, &r.attempt, list.id, true, None, &budget())
+            .unwrap()
+    );
+    let delete = op(&r, &p, WakeHelperPurpose::Delete, Some("pinned-owned-id"));
+    assert!(begin(&store, &r, &delete));
+    complete(&store, &r, &delete);
+    assert_eq!(pinned(&store).unwrap(), original);
+    drop(store);
+    let reopened = open(path, uuid::Uuid::new_v4());
+    assert_eq!(pinned(&reopened).unwrap(), original);
+}
+
+#[test]
+fn armed_recovery_preserves_pinned_add_witness_bytes() {
+    let (store, path, r, p) = fixture();
+    arm(&store, &r, &p);
+    let pinned = store
+        .context()
+        .open_writer()
+        .unwrap()
+        .query_row(
+            "SELECT add_helper_json FROM wake_intents WHERE attempt=?1",
+            [r.attempt.as_str()],
+            |row| row.get::<_, Vec<u8>>(0),
+        )
+        .unwrap();
+    let before = row(&store, &r);
+    complete(&store, &r, before.helper.as_ref().unwrap());
+    fulfill(&store, &r, &p);
+    drop(store);
+    let reopened = open(path, uuid::Uuid::new_v4());
+    let before = row(&reopened, &r);
+    assert!(
+        StorePort::recover_wake_intent(
+            &reopened,
+            &r.attempt,
+            before.revision,
+            r.daemon_boot,
+            &budget()
+        )
+        .unwrap()
+    );
+    let after = reopened
+        .context()
+        .open_writer()
+        .unwrap()
+        .query_row(
+            "SELECT add_helper_json FROM wake_intents WHERE attempt=?1",
+            [r.attempt.as_str()],
+            |row| row.get::<_, Vec<u8>>(0),
+        )
+        .unwrap();
+    assert_eq!(after, pinned);
+}

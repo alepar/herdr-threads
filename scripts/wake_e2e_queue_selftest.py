@@ -33,7 +33,7 @@ class QueueEvidence(unittest.TestCase):
             CREATE TABLE occupant_bindings(ordinal INTEGER PRIMARY KEY,binding_id TEXT,seat_id TEXT,harness TEXT,native_session TEXT,execution_id TEXT,generation INTEGER,liveness_pid INTEGER,liveness_start INTEGER,liveness_boot TEXT,liveness TEXT,role TEXT,agent_id TEXT,registered_at INTEGER,observation_provenance TEXT,target_id TEXT,target_generation INTEGER,ended_at INTEGER);
             CREATE TABLE native_turn_state(binding_id TEXT,instance_id TEXT,scope_json BLOB,turn_id TEXT,phase TEXT,observation_ordinal INTEGER);
             CREATE TABLE wake_work(seat_id TEXT,reservation_id TEXT,reservation_boot TEXT,last_reservation_id TEXT,last_reservation_boot TEXT,last_outcome TEXT,reserved_at_utc INTEGER,last_reserved_at_utc INTEGER,completed_at_utc INTEGER,reason_bits INTEGER,retry_step INTEGER);
-            CREATE TABLE wake_intents(ordinal INTEGER PRIMARY KEY,instance_id TEXT,attempt TEXT,adapter TEXT,origin_seat TEXT,target_json BLOB,phase TEXT,revision INTEGER,owner_boot TEXT,arm_nonce TEXT,arm_native_id TEXT,arm_native_ordinal INTEGER,logical_status TEXT,fulfillment_turn TEXT,fulfillment_ordinal INTEGER,cleanup_quarantined INTEGER,cleanup_list_attempted INTEGER,native_no_add_exception INTEGER,helper_json BLOB,ids_complete INTEGER,created_at INTEGER,updated_at INTEGER,descriptor BLOB,diagnostic TEXT);
+            CREATE TABLE wake_intents(ordinal INTEGER PRIMARY KEY,instance_id TEXT,attempt TEXT,adapter TEXT,origin_seat TEXT,target_json BLOB,phase TEXT,revision INTEGER,owner_boot TEXT,arm_nonce TEXT,arm_native_id TEXT,arm_native_ordinal INTEGER,logical_status TEXT,fulfillment_turn TEXT,fulfillment_ordinal INTEGER,cleanup_quarantined INTEGER,cleanup_list_attempted INTEGER,native_no_add_exception INTEGER,helper_json BLOB,ids_complete INTEGER,created_at INTEGER,updated_at INTEGER,descriptor BLOB,diagnostic TEXT,add_helper_json BLOB);
             CREATE TABLE wake_intent_ids(intent_ordinal INTEGER,queue_id TEXT,cleanup_attempted INTEGER);
             INSERT INTO seats VALUES('seat','resolved',1,'pane',1,'instance');
             INSERT INTO node_kernel_boot VALUES(1,'kernel');
@@ -50,9 +50,9 @@ class QueueEvidence(unittest.TestCase):
         helper = copy.deepcopy(HELPER if helper is None else helper)
         if not witnessed:
             helper["witness"] = None
-        self.db.execute("INSERT INTO wake_intents VALUES(?, 'instance', ?, 'codex', 'seat', ?, ?, 4, ?, 'nonce', 'baseline', 2, 'active', NULL, NULL, 0, 0, 0, ?, 0, 100, 110, ?, ?)",
+        self.db.execute("INSERT INTO wake_intents VALUES(?, 'instance', ?, 'codex', 'seat', ?, ?, 4, ?, 'nonce', 'baseline', 2, 'active', NULL, NULL, 0, 0, 0, ?, 0, 100, 110, ?, ?, ?)",
                         (ordinal, f"attempt-{ordinal}", json.dumps(SCOPE).encode(), phase, OWNER,
-                         json.dumps(helper).encode(), b"SECRET-DESCRIPTOR /real/config/auth.json", "SECRET-DIAGNOSTIC"))
+                         json.dumps(helper).encode(), b"SECRET-DESCRIPTOR /real/config/auth.json", "SECRET-DIAGNOSTIC", json.dumps(helper).encode() if phase in ("armed", "accepted", "unknown") else None))
         if phase == "accepted":
             self.db.execute("INSERT INTO wake_intent_ids VALUES(?, 'owned-queue-id', 0)", (ordinal,))
         self.db.commit()
@@ -130,7 +130,7 @@ class QueueEvidence(unittest.TestCase):
         before = self.snapshot()
         self.add_intent(witnessed=False)
         self.assertFalse(queue_proof(before, [self.snapshot()], "accepted")["passed"])
-        self.db.execute("UPDATE wake_intents SET helper_json=?", (json.dumps(HELPER).encode(),))
+        self.db.execute("UPDATE wake_intents SET helper_json=?1,add_helper_json=?1", (json.dumps(HELPER).encode(),))
         self.db.commit()
         accepted = self.snapshot()
         self.assertTrue(queue_proof(before, [accepted], "accepted")["passed"])
@@ -162,10 +162,46 @@ class QueueEvidence(unittest.TestCase):
         self.db.execute("UPDATE native_turn_state SET turn_id='next-turn',phase='started',observation_ordinal=3")
         self.db.commit()
         later = self.snapshot()
-        self.assertFalse(queue_proof(before, [later], "accepted")["passed"])
+        self.assertTrue(queue_proof(before, [later], "accepted")["passed"])
         proof = queue_proof(before, [add, later], "accepted")
         self.assertTrue(proof["passed"])
         self.assertIn("compositional", proof["transport_inference"])
+
+    def test_post_cleanup_snapshot_uses_pinned_add_without_sampling_earlier_helper(self):
+        before = self.snapshot()
+        self.add_intent()
+        for purpose in ("list", "delete"):
+            later = self.snapshot()
+            later["intents"][0]["add_helper"] = copy.deepcopy(HELPER)
+            later["intents"][0]["helper"]["purpose"] = purpose
+            later["intents"][0]["helper"]["id"] = "cleanup-operation"
+            later["intents"][0]["logical_status"] = "fulfilled"
+            self.assertTrue(queue_proof(before, [later], "accepted")["passed"], purpose)
+
+    def test_current_add_helper_cannot_replace_missing_immutable_arm_evidence(self):
+        before = self.snapshot()
+        self.add_intent()
+        sample = self.snapshot()
+        sample["intents"][0]["add_helper"] = None
+        self.assertFalse(queue_proof(before, [sample], "accepted")["passed"])
+
+    def test_invalid_pinned_witness_fails_projection_closed(self):
+        self.add_intent()
+        self.db.execute("UPDATE wake_intents SET add_helper_json=?", (b"invalid JSON",))
+        self.db.commit()
+        self.assertFalse(self.snapshot()["ok"])
+
+    def test_pinned_witness_requires_accepted_effect_and_exact_add_identity(self):
+        before = self.snapshot()
+        self.add_intent()
+        sample = self.snapshot()
+        sample["intents"][0]["add_helper"] = copy.deepcopy(HELPER)
+        for field, value in (("purpose", "list"), ("owner_boot", "other-owner"), ("kernel_boot", "other-kernel"), ("witness", None)):
+            altered = copy.deepcopy(sample)
+            altered["intents"][0]["add_helper"][field] = value
+            self.assertFalse(queue_proof(before, [altered], "accepted")["passed"], field)
+        sample["intents"][0]["phase"] = "armed"
+        self.assertFalse(queue_proof(before, [sample], "accepted")["passed"])
 
     def test_plain_or_multiple_actual_bindings_support_native_inference(self):
         qualified = self.snapshot()
@@ -205,7 +241,7 @@ class QueueEvidence(unittest.TestCase):
         before["watermark"] = 0
         wrong = copy.deepcopy(HELPER)
         wrong["owner_boot"] = "other-owner"
-        self.db.execute("UPDATE wake_intents SET helper_json=?", (json.dumps(wrong).encode(),))
+        self.db.execute("UPDATE wake_intents SET add_helper_json=?", (json.dumps(wrong).encode(),))
         self.db.commit()
         self.assertFalse(queue_proof(before, [self.snapshot()], "accepted")["passed"])
 

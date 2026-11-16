@@ -133,7 +133,7 @@ def queue_snapshot(state: Path, seat: str, after: int = 0) -> dict:
                 snapshot["wake_work"] = dict(zip(("active_attempt", "active_boot", "last_attempt", "last_boot", "last_outcome", "reserved_at_utc", "last_reserved_at_utc", "completed_at_utc", "reason_bits", "retry_step"), work))
                 for key in ("active_attempt", "active_boot", "last_attempt", "last_boot", "last_outcome"):
                     snapshot["wake_work"][key] = _text(snapshot["wake_work"][key], optional=True)
-            intents = db.execute("SELECT ordinal,attempt,adapter,target_json,phase,revision,owner_boot,arm_nonce,arm_native_id,arm_native_ordinal,logical_status,fulfillment_turn,fulfillment_ordinal,cleanup_quarantined,cleanup_list_attempted,native_no_add_exception,helper_json,ids_complete,created_at,updated_at FROM wake_intents WHERE instance_id=? AND origin_seat=? AND ordinal>? ORDER BY ordinal LIMIT 33", (seat_scope["instance"], seat, after)).fetchall()
+            intents = db.execute("SELECT ordinal,attempt,adapter,target_json,phase,revision,owner_boot,arm_nonce,arm_native_id,arm_native_ordinal,logical_status,fulfillment_turn,fulfillment_ordinal,cleanup_quarantined,cleanup_list_attempted,native_no_add_exception,helper_json,add_helper_json,ids_complete,created_at,updated_at FROM wake_intents WHERE instance_id=? AND origin_seat=? AND ordinal>? ORDER BY ordinal LIMIT 33", (seat_scope["instance"], seat, after)).fetchall()
             snapshot["truncated"] |= len(intents) > MAX_INTENTS
             for intent in intents[:MAX_INTENTS]:
                 ids = db.execute("SELECT queue_id,cleanup_attempted FROM wake_intent_ids WHERE intent_ordinal=? ORDER BY queue_id LIMIT 129", (intent["ordinal"],)).fetchall()
@@ -150,6 +150,7 @@ def queue_snapshot(state: Path, seat: str, after: int = 0) -> dict:
                     "fulfillment": {"turn_id": _text(intent["fulfillment_turn"]), "ordinal": _number(intent["fulfillment_ordinal"])} if intent["fulfillment_turn"] is not None else None,
                     "cleanup_quarantined": bool(intent["cleanup_quarantined"]), "cleanup_list_attempted": bool(intent["cleanup_list_attempted"]),
                     "native_no_add_exception": bool(intent["native_no_add_exception"]), "helper": _helper(intent["helper_json"]),
+                    "add_helper": _helper(intent["add_helper_json"]),
                     "ids": [{"id": _text(item["queue_id"]), "cleanup_attempted": bool(item["cleanup_attempted"])} for item in ids[:MAX_IDS]],
                     "ids_complete": bool(intent["ids_complete"]), "created_at": intent["created_at"], "updated_at": intent["updated_at"]})
             db.execute("ROLLBACK")
@@ -183,7 +184,7 @@ def eligible_scope(snapshot: dict, phase: str = "ended") -> dict | None:
 
 
 def _add_witness(intent):
-    helper = intent.get("helper")
+    helper = intent.get("add_helper")
     if not helper or helper["purpose"] != "add" or helper["subject"] is not None or helper["owner_boot"] != intent["owner_boot"]:
         return None
     witness = helper.get("witness")
@@ -197,9 +198,9 @@ def _add_witness(intent):
 def queue_proof(before: dict, samples: list[dict], expectation: str) -> dict:
     """Judge only the measured interval. Unknown is never positive transport proof.
 
-    The Accepted row, its pre-send matched Ended baseline and a committed Add witness
-    may occur in different samples; cleanup replacing helper_json does not erase an
-    earlier same-attempt observation. Fulfillment is activity, never a receipt.
+    The Accepted row and its immutable arm-time Add witness remain readable after
+    cleanup replaces the current helper. The pre-send matched Ended baseline must
+    still agree. Fulfillment is activity, never a receipt.
     """
     result = {"passed": False, "expectation": expectation, "reasons": [], "attempts": [],
               "observed": {"samples": len(samples), "intents": 0, "armed": 0, "accepted": 0, "unknown": 0, "add_witnesses": 0},

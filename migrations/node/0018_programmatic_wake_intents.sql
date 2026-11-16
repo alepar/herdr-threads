@@ -1,4 +1,5 @@
--- Frozen queue-effect history survives origin retirement and binding replacement.
+-- Final unreleased queue-wake schema; historical candidate DDL is a test fixture.
+
 CREATE TABLE wake_intents (
  ordinal INTEGER PRIMARY KEY AUTOINCREMENT,
  instance_id TEXT NOT NULL,
@@ -29,24 +30,26 @@ CREATE TABLE wake_intents (
  updated_at INTEGER NOT NULL,
  cleanup_quarantined INTEGER NOT NULL CHECK(cleanup_quarantined IN (0,1)),
  diagnostic TEXT NOT NULL CHECK(length(CAST(diagnostic AS BLOB))<=2048),
- ids_complete INTEGER NOT NULL DEFAULT 0 CHECK(ids_complete IN (0,1)),
+ ids_complete INTEGER NOT NULL DEFAULT 0 CHECK(ids_complete IN (0,1)), logical_status TEXT NOT NULL DEFAULT 'active' CHECK(logical_status IN ('active','fulfilled','scope_ended')), fulfillment_turn TEXT, fulfillment_ordinal INTEGER, arm_native_id TEXT, arm_native_ordinal INTEGER, helper_json BLOB CHECK(helper_json IS NULL OR length(helper_json)<=2048), cleanup_list_attempted INTEGER NOT NULL DEFAULT 0 CHECK(cleanup_list_attempted IN (0,1)), native_no_add_exception INTEGER NOT NULL DEFAULT 0 CHECK(native_no_add_exception IN (0,1)), add_helper_json BLOB CHECK(add_helper_json IS NULL OR length(add_helper_json)<=2048),
  UNIQUE(instance_id,attempt),
  CHECK((invitation_seq IS NULL)=(invitation_offset IS NULL)),
  CHECK((receipt_seq IS NULL)=(receipt_offset IS NULL)),
  CHECK((warning_seq IS NULL)=(warning_offset IS NULL)),
  CHECK(phase NOT IN ('armed','accepted','unknown') OR arm_nonce IS NOT NULL)
 ) STRICT;
+
 CREATE UNIQUE INDEX wake_intents_unresolved_cohort ON wake_intents(instance_id,adapter,replay_scope)
- WHERE phase!='no_effect' OR cleanup_quarantined=1;
+ WHERE (logical_status='active' AND phase!='no_effect') OR cleanup_quarantined=1;
+
 CREATE INDEX wake_intents_origin_seat ON wake_intents(instance_id,origin_seat,ordinal)
- WHERE phase!='no_effect' OR cleanup_quarantined=1;
+ WHERE (logical_status='active' AND phase!='no_effect') OR cleanup_quarantined=1;
+
 CREATE TABLE wake_intent_ids (
  intent_ordinal INTEGER NOT NULL REFERENCES wake_intents(ordinal) ON DELETE CASCADE,
- queue_id TEXT NOT NULL CHECK(length(CAST(queue_id AS BLOB)) BETWEEN 1 AND 128),
+ queue_id TEXT NOT NULL CHECK(length(CAST(queue_id AS BLOB)) BETWEEN 1 AND 128), cleanup_attempted INTEGER NOT NULL DEFAULT 0 CHECK(cleanup_attempted IN (0,1)),
  PRIMARY KEY(intent_ordinal,queue_id)
 ) STRICT, WITHOUT ROWID;
 
--- One current observation per canonical binding, never a lifetime turn journal.
 CREATE TABLE native_turn_state (
  binding_id TEXT PRIMARY KEY REFERENCES occupant_bindings(binding_id) ON DELETE CASCADE,
  instance_id TEXT NOT NULL,
@@ -55,24 +58,10 @@ CREATE TABLE native_turn_state (
  phase TEXT NOT NULL CHECK(phase IN ('started','ended','end_first','unknown')),
  observation_ordinal INTEGER NOT NULL CHECK(observation_ordinal>0)
 ) STRICT, WITHOUT ROWID;
+
 CREATE INDEX native_turn_state_instance ON native_turn_state(instance_id);
+
 CREATE TRIGGER native_turn_binding_end AFTER UPDATE OF ended_at ON occupant_bindings
  WHEN NEW.ended_at IS NOT NULL BEGIN
  DELETE FROM native_turn_state WHERE binding_id=NEW.binding_id;
 END;
-
-ALTER TABLE wake_intents ADD COLUMN logical_status TEXT NOT NULL DEFAULT 'active' CHECK(logical_status IN ('active','fulfilled','scope_ended'));
-ALTER TABLE wake_intents ADD COLUMN fulfillment_turn TEXT;
-ALTER TABLE wake_intents ADD COLUMN fulfillment_ordinal INTEGER;
-ALTER TABLE wake_intents ADD COLUMN arm_native_id TEXT;
-ALTER TABLE wake_intents ADD COLUMN arm_native_ordinal INTEGER;
-ALTER TABLE wake_intents ADD COLUMN helper_json BLOB CHECK(helper_json IS NULL OR length(helper_json)<=2048);
-ALTER TABLE wake_intents ADD COLUMN cleanup_list_attempted INTEGER NOT NULL DEFAULT 0 CHECK(cleanup_list_attempted IN (0,1));
-ALTER TABLE wake_intents ADD COLUMN native_no_add_exception INTEGER NOT NULL DEFAULT 0 CHECK(native_no_add_exception IN (0,1));
-ALTER TABLE wake_intent_ids ADD COLUMN cleanup_attempted INTEGER NOT NULL DEFAULT 0 CHECK(cleanup_attempted IN (0,1));
-DROP INDEX wake_intents_unresolved_cohort;
-DROP INDEX wake_intents_origin_seat;
-CREATE UNIQUE INDEX wake_intents_unresolved_cohort ON wake_intents(instance_id,adapter,replay_scope)
- WHERE (logical_status='active' AND phase!='no_effect') OR cleanup_quarantined=1;
-CREATE INDEX wake_intents_origin_seat ON wake_intents(instance_id,origin_seat,ordinal)
- WHERE (logical_status='active' AND phase!='no_effect') OR cleanup_quarantined=1;

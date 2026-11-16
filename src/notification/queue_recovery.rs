@@ -277,7 +277,9 @@ impl QueueRecovery {
         }
         if let Some(after) = next {
             sweep.after = after;
-            self.work.store(true, Ordering::Release);
+            // Pagination alone is not activity. Preserve the previous completed
+            // sweep (and new helper notifications) until this sweep finishes.
+            self.work.fetch_or(sweep.work, Ordering::AcqRel);
         } else {
             sweep.after = 0;
             self.work.store(sweep.work, Ordering::Release);

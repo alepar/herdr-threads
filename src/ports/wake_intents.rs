@@ -74,6 +74,8 @@ pub struct WakeIntentSnapshot {
     pub logical: WakeIntentLogical,
     pub arm_baseline: Option<WakeNativeBaseline>,
     pub helper: Option<WakeHelperOperation>,
+    /// Immutable arm-time evidence; never describes current helper liveness.
+    pub add_helper: Option<WakeHelperOperation>,
     pub cleanup_list_attempted: bool,
     pub cleanup_pending_ids: Vec<String>,
     /// Native-only resource exception for an uninitialized revoked helper; never says
