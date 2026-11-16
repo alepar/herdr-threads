@@ -4405,6 +4405,7 @@ pub trait StorePort: ModStoreReads + Send + Sync {
     fn queue_wake_selection(
         &self,
         _reservation: &WakeReservation,
+        _eligibility_needed: bool,
         _budget: &CallBudget,
     ) -> Result<WakeQueueSelection, ApiError> {
         Err(ApiError::new(

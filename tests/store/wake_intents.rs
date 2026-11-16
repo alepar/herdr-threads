@@ -835,7 +835,7 @@ fn native_turn_restart_preserves_current_id_and_scope_change_resets_qualificatio
         StorePort::record_native_turn(&store, &start, &budget())
             .unwrap()
             .edge
-            .is_none()
+            .is_some()
     );
     assert_eq!(
         StorePort::native_turn_state(&store, &p.target.scope.binding, &budget())
@@ -856,7 +856,7 @@ fn native_turn_restart_preserves_current_id_and_scope_change_resets_qualificatio
         StorePort::record_native_turn(&store, &start, &budget())
             .unwrap()
             .edge
-            .is_none()
+            .is_some()
     );
     let mut replacement = start;
     replacement.claim.liveness.as_mut().unwrap().pid = 20;
@@ -894,7 +894,7 @@ fn native_turn_never_changes_intents_or_qualifies_invalid_claims() {
             StorePort::record_native_turn(&store, &bad, &budget())
                 .unwrap()
                 .edge
-                .is_none()
+                .is_some()
         );
     }
     StorePort::record_native_turn(&store, &good, &budget()).unwrap();
@@ -919,7 +919,7 @@ fn native_turn_never_changes_intents_or_qualifies_invalid_claims() {
         StorePort::record_native_turn(&store, &good, &budget())
             .unwrap()
             .edge
-            .is_none()
+            .is_some()
     );
 }
 
@@ -1016,7 +1016,7 @@ fn native_turn_refuses_invalid_claims_but_keeps_legacy_edge_without_queue_scope(
             StorePort::record_native_turn(&store, &bad, &budget())
                 .unwrap()
                 .edge,
-            (index == 2).then_some(TurnEdge::Busy),
+            matches!(index, 0 | 2).then_some(TurnEdge::Busy),
         );
     }
     let db = store.context().open_writer().unwrap();
@@ -1025,7 +1025,7 @@ fn native_turn_refuses_invalid_claims_but_keeps_legacy_edge_without_queue_scope(
         StorePort::record_native_turn(&store, &good, &budget())
             .unwrap()
             .edge
-            .is_none()
+            .is_some()
     );
     db.execute("DELETE FROM recovery_holds", []).unwrap();
     db.execute("UPDATE node_kernel_boot SET boot='different'", [])
@@ -1096,7 +1096,7 @@ fn native_turn_capacity_never_evicts_a_current_binding() {
 }
 
 #[test]
-fn native_turn_domain_updates_memory_only_after_canonical_acceptance() {
+fn native_turn_domain_keeps_legacy_activity_separate_from_queue_qualification() {
     use herdr_threads::{
         harness::adapter::TurnEdge,
         ports::LocalService,
@@ -1124,9 +1124,9 @@ fn native_turn_domain_updates_memory_only_after_canonical_acceptance() {
         service
             .handle(Command::TurnState(invalid), peer(), &budget())
             .unwrap(),
-        CommandResult::TurnState { recorded: false }
+        CommandResult::TurnState { recorded: true }
     ));
-    assert_eq!(service.turn_state().state(&key), TurnState::Unknown);
+    assert_eq!(service.turn_state().state(&key), TurnState::Busy);
     assert!(matches!(
         service
             .handle(Command::TurnState(valid.clone()), peer(), &budget())
@@ -1620,10 +1620,86 @@ fn native_turn_without_queue_scope_keeps_legacy_edges_and_invalidates_qualificat
         assert_eq!(state.id.as_str(), "baseline");
         assert_eq!(state.ordinal, 3);
         assert!(
-            StorePort::queue_wake_selection(&store, &r, &budget())
+            StorePort::queue_wake_selection(&store, &r, true, &budget())
                 .unwrap()
                 .binding
                 .is_none()
+        );
+    }
+}
+
+#[test]
+fn canonical_absence_preserves_top_level_legacy_memory_edges_without_queue_qualification() {
+    use herdr_threads::{
+        harness::adapter::TurnEdge,
+        ports::{LocalService, WakeIntentLogical},
+        protocol::{authority::Harness, commands::Command, results::CommandResult},
+        service::{
+            dispatch::DomainService,
+            fair_writer::FairWriter,
+            turn_state::{TurnKey, TurnState},
+        },
+    };
+    for harness in [
+        Harness::Codex,
+        Harness::Claude,
+        Harness::Agent(
+            herdr_threads::harness::registry::builtins()
+                .agent("hermes")
+                .unwrap(),
+        ),
+    ] {
+        let (store, _path, r, p) = fixture();
+        let prepared = prepare(&store, &r, &p);
+        store
+            .arm_wake_intent(&r, prepared.revision, uuid::Uuid::new_v4(), &budget())
+            .unwrap()
+            .unwrap();
+        let baseline = store
+            .native_turn_state(&p.target.scope.binding, &budget())
+            .unwrap();
+        store.context().open_writer().unwrap().execute("UPDATE occupant_bindings SET liveness='disconnected',disconnected_at=100,disconnect_reason='liveness_process_exit'",[]).unwrap();
+        let store = Arc::new(store);
+        let service = DomainService::new(INSTANCE.into(), store.clone(), Arc::new(IntentClock))
+            .with_cooperative_owner(501, Arc::new(FairWriter::new(32)));
+        let mut report = native_report(&store, &r, &p, "legacy-only", TurnEdge::Busy);
+        report.claim.harness = harness;
+        let key = TurnKey {
+            seat: r.seat.clone(),
+            generation: 1,
+            harness: harness.as_str().into(),
+            native_session: p.target.scope.native_session.clone(),
+        };
+        for (edge, state) in [
+            (TurnEdge::Busy, TurnState::Busy),
+            (TurnEdge::Idle, TurnState::Idle),
+        ] {
+            report.edge = edge;
+            assert!(matches!(
+                service
+                    .handle(
+                        Command::TurnState(report.clone()),
+                        herdr_threads::test_support::peer_identity(501),
+                        &budget()
+                    )
+                    .unwrap(),
+                CommandResult::TurnState { recorded: true }
+            ));
+            assert_eq!(service.turn_state().state(&key), state);
+        }
+        assert_eq!(
+            store
+                .native_turn_state(&p.target.scope.binding, &budget())
+                .unwrap(),
+            baseline
+        );
+        assert_eq!(
+            store
+                .wake_intent(&r.attempt, &budget())
+                .unwrap()
+                .unwrap()
+                .logical,
+            WakeIntentLogical::Active
         );
     }
 }

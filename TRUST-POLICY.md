@@ -4064,7 +4064,7 @@ body/receipt authority and no-blind-replay rules are unchanged. Queue acceptance
 still does not prove target activity or delivery. This is an accepted runtime limit,
 not an exact-version admission gate or permission to add a native poke after enqueue.
 
-### Bounded native-only queue degradation (2026-11-16)
+### Bounded native-only queue degradation (2026-11-15)
 
 Programmatic wake is an explicit per-install opt-in (`programmatic_wake: true` in
 the node settings); absent/false preserves native wake. The switch gates only
@@ -4079,6 +4079,17 @@ prove cancellation, queue absence, consumption or delivery. Physical phase, owne
 IDs, logical status and the programmatic fence remain; a residual queued marker
 may still run later and cause an extra turn. The intent records queue_unreceived
 as a diagnostic, never a receipt or fabricated seat contact.
+
+A lost result write is retried only from the typed result returned after the Add
+control callback has ended, with its exact existing owner/arm ticket/nonce. A
+node-owned collection reserves capacity before possible Add (at most 4096 unique
+attempts, no effectful-result eviction). The existing recovery tick fairly retries
+bounded metadata work; no helper, Add or cancellation is replayed. Failed writes,
+failed reads and an exact still-Armed ticket remain pending. A false CAS reply
+alone does not settle the entry: a canonical read must prove terminal state or
+permanent ticket inapplicability. The collection remains node-owned and shutdown
+bounded; a process restart uses the existing prior-owner recovery. Positive helper
+cleanup alone never reclassifies an in-flight same-boot Armed callback.
 
 The allowance covers one native effect per genuinely newer canonical attention
 frontier. All applicable origin/cohort blockers are claimed atomically, using an
@@ -4100,6 +4111,12 @@ reservation, candidate discovery reuses the same due/blocker/high-water predicat
 as the writer claim. The derived bit is selection evidence only; the existing
 wake lane rechecks canonical eligibility and keeps its spacing/backoff and lazy
 owed check. No frontier, publication or seat contact is cleared or fabricated.
+
+Soft-deadline pokes publish no new attention frontier. While a retained possible
+queue effect covers that attention, they earn no additional native fallback
+allowance and remain suppressed. This conservative reminder limit leaves ordinary
+fallback for genuinely newer attention and the sender's overdue warnings intact;
+no publication or frontier is fabricated to authorize another poke.
 
 A qualified same-scope EndFirst for a different native turn ID beyond the arm
 observation ordinal may fulfill logical wake purpose when its Start was lost.

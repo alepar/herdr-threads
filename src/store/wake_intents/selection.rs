@@ -41,49 +41,77 @@ fn blockers(
     .map_err(store_error)
 }
 
+fn retained_fences(
+    db: &Connection,
+    instance: &str,
+    seat: &SeatId,
+) -> Result<WakeIntentBlockers, ApiError> {
+    let retained: bool = db
+        .query_row(
+            &format!(
+                "SELECT EXISTS(SELECT 1 FROM wake_intents WHERE instance_id=?1 AND {UNRESOLVED})"
+            ),
+            [instance],
+            |r| r.get(0),
+        )
+        .map_err(store_error)?;
+    let mut blocked = crate::ports::WakeIntentBlockers {
+        programmatic: false,
+        native: false,
+    };
+    if retained {
+        // The origin fence exists even when no current binding can name a cohort.
+        blocked = blockers(db, instance, "origin_seat=?2", &[seat.as_str()])?;
+        // Cohort fences are independent of eligibility and binding population. The
+        // query budget bounds this streaming census; cardinality never invents effects.
+        let registry = builtins();
+        {
+            let mut statement = db.prepare_cached("SELECT DISTINCT harness,native_session FROM occupant_bindings INDEXED BY occupant_bindings_open WHERE seat_id=?1 AND ended_at IS NULL").map_err(store_error)?;
+            let cohorts = statement
+                .query_map([seat.as_str()], |r| {
+                    Ok((r.get::<_, String>(0)?, r.get::<_, String>(1)?))
+                })
+                .map_err(store_error)?;
+            for row in cohorts {
+                let (adapter, session) = row.map_err(store_error)?;
+                let Ok(adapter) = registry.agent(&adapter) else {
+                    continue;
+                };
+                let registration = registry.by_id(adapter).map_err(|_| corrupt())?;
+                let Some(cohort) = registration.wake_replay_scope(&NativeSessionId::new(session))
+                else {
+                    continue;
+                };
+                let fence = blockers(
+                    db,
+                    instance,
+                    "adapter=?2 AND replay_scope=?3",
+                    &[adapter.as_str(), cohort.as_str()],
+                )?;
+                blocked.programmatic |= fence.programmatic;
+                blocked.native |= fence.native;
+            }
+        }
+    }
+    Ok(blocked)
+}
+
 pub(crate) fn queue_wake_selection(
     store: &SqliteStore,
     reservation: &WakeReservation,
+    eligibility_needed: bool,
     budget: &CallBudget,
 ) -> Result<WakeQueueSelection, ApiError> {
     let db = store.context.open_query(budget.clone())?;
     let tx = db.unchecked_transaction().map_err(store_error)?;
-    // The origin fence exists even when no current binding can name a cohort.
-    let mut blocked = blockers(
-        &tx,
-        &store.instance,
-        "origin_seat=?2",
-        &[reservation.seat.as_str()],
-    )?;
-    // Cohort fences are independent of eligibility and binding population. The
-    // query budget bounds this streaming census; cardinality never invents effects.
-    let registry = builtins();
-    {
-        let mut statement = tx.prepare_cached("SELECT DISTINCT harness,native_session FROM occupant_bindings INDEXED BY occupant_bindings_open WHERE seat_id=?1 AND ended_at IS NULL").map_err(store_error)?;
-        let cohorts = statement
-            .query_map([reservation.seat.as_str()], |r| {
-                Ok((r.get::<_, String>(0)?, r.get::<_, String>(1)?))
-            })
-            .map_err(store_error)?;
-        for row in cohorts {
-            let (adapter, session) = row.map_err(store_error)?;
-            let Ok(adapter) = registry.agent(&adapter) else {
-                continue;
-            };
-            let registration = registry.by_id(adapter).map_err(|_| corrupt())?;
-            let Some(cohort) = registration.wake_replay_scope(&NativeSessionId::new(session))
-            else {
-                continue;
-            };
-            let fence = blockers(
-                &tx,
-                &store.instance,
-                "adapter=?2 AND replay_scope=?3",
-                &[adapter.as_str(), cohort.as_str()],
-            )?;
-            blocked.programmatic |= fence.programmatic;
-            blocked.native |= fence.native;
-        }
+    let blocked = retained_fences(&tx, &store.instance, &reservation.seat)?;
+    if !eligibility_needed {
+        tx.rollback().map_err(store_error)?;
+        store.live_budget(budget)?;
+        return Ok(WakeQueueSelection {
+            binding: None,
+            blockers: blocked,
+        });
     }
     let rows = {
         let mut statement = tx.prepare_cached("SELECT binding_id,harness,native_session,execution_id,generation,liveness_pid,liveness_start,liveness_boot,(ended_at IS NULL AND liveness='connected' AND role='top_level'),(agent_id='' AND registered_at IS NOT NULL AND observation_provenance='cooperative_top_level') FROM occupant_bindings INDEXED BY occupant_bindings_open WHERE seat_id=?1 AND ended_at IS NULL AND liveness='connected' AND role='top_level' ORDER BY ordinal DESC LIMIT 2").map_err(store_error)?;
@@ -189,3 +217,7 @@ fn select_binding(
         replay_scope,
     }))
 }
+
+#[cfg(test)]
+#[path = "../../../tests/store/wake_queue_cost.rs"]
+mod tests;

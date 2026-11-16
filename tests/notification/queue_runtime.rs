@@ -43,13 +43,16 @@ impl ProcessInfo for MissingProcess {
 }
 #[test]
 fn queue_runtime_checks_fences_before_capture_and_never_helpers_a_known_busy_binding() {
-    for (enabled, blocked, busy) in [
-        (Some(true), true, false),
-        (Some(true), false, true),
-        (Some(true), false, false),
-        (Some(false), false, false),
-        (None, false, false),
-        (Some(false), true, false),
+    for (enabled, blocked, busy, corrupt_eligibility) in [
+        (Some(true), true, false, false),
+        (Some(true), false, true, false),
+        (Some(true), false, false, false),
+        (Some(false), false, false, false),
+        (None, false, false, false),
+        (Some(false), true, false, false),
+        (None, false, false, true),
+        (None, true, false, true),
+        (Some(false), false, false, true),
     ] {
         let (store, _path, r, p) = super::wake_intents::fixture();
         let budget = super::wake_intents::budget();
@@ -59,6 +62,14 @@ fn queue_runtime_checks_fences_before_capture_and_never_helpers_a_known_busy_bin
                     &super::wake_intents::native_report(&store, &r, &p, "qualified", edge),
                     &budget,
                 )
+                .unwrap();
+        }
+        if corrupt_eligibility {
+            store
+                .context()
+                .open_writer()
+                .unwrap()
+                .execute("UPDATE native_turn_state SET scope_json=x'00'", [])
                 .unwrap();
         }
         if blocked {

@@ -110,7 +110,12 @@ impl QueueWakeRuntime {
         budget: &CallBudget,
     ) -> Result<QueueDispatch, ApiError> {
         Ok(
-            if self.store.queue_wake_selection(r, budget)?.blockers.native {
+            if self
+                .store
+                .queue_wake_selection(r, false, budget)?
+                .blockers
+                .native
+            {
                 QueueDispatch::Refused
             } else {
                 QueueDispatch::Native
@@ -148,6 +153,9 @@ impl QueueWakeRuntime {
         owed: &dyn Fn() -> Result<bool, ApiError>,
         context: &HostCallContext,
     ) -> Result<QueueDispatch, ApiError> {
+        let Some(result_slot) = self.recovery.reserve_result(r)? else {
+            return Ok(QueueDispatch::Refused);
+        };
         let row = match self.write(&context.budget, |store| {
             store.prepare_wake_intent(r, &preparation, &context.budget)
         })? {
@@ -237,6 +245,9 @@ impl QueueWakeRuntime {
             cleanup_confirmed: journal.cleanup_confirmed(),
             diagnostic: diagnostic.chars().take(512).collect(),
         };
+        if let Some(ticket) = reporting_ticket.as_ref() {
+            result_slot.publish(ticket.clone(), result.clone())?;
+        }
         let possible_effect = !matches!(outcome, WakeAddOutcome::RefusedBeforeEffect(_));
         let recording = match reporting_ticket {
             Some(ticket) => self.write(&budget, |store| {
@@ -264,6 +275,9 @@ impl QueueWakeRuntime {
             }
             Err(error) => return Err(error),
         };
+        if recorded {
+            result_slot.settled()?;
+        }
         if !recorded
             && matches!(outcome, WakeAddOutcome::RefusedBeforeEffect(_))
             && let Some(current) = self.store.wake_intent(&r.attempt, &budget)?
@@ -319,7 +333,11 @@ impl QueueWakePort for QueueWakeRuntime {
             return Err(unavailable("queue target changed"));
         }
         // Fences are checked before capture, including unsupported native-only paths.
-        let selection = self.store.queue_wake_selection(r, &context.budget)?;
+        let selection = self.store.queue_wake_selection(
+            r,
+            use_queue && self.programmatic_wake,
+            &context.budget,
+        )?;
         if selection.blockers.native {
             guard()?;
             if !owed()? {
@@ -403,10 +421,23 @@ mod tests {
         use crate as herdr_threads;
         include!("../../tests/fixtures/wake_intent.rs");
     }
+    struct RetryClock(std::sync::atomic::AtomicU64);
+    impl Clock for RetryClock {
+        fn utc_now(&self) -> crate::protocol::time::UtcMillis {
+            crate::protocol::time::UtcMillis(100 + self.0.load(Ordering::SeqCst) as i64)
+        }
+        fn monotonic_now(&self) -> MonoInstant {
+            MonoInstant(1000 + self.0.load(Ordering::SeqCst))
+        }
+    }
     struct AcceptingControl {
         store: Arc<SqliteStore>,
         reservation: WakeReservation,
         reject_result: bool,
+        result_fault: std::sync::Mutex<Option<rusqlite::Connection>>,
+        lost_arm_reply: bool,
+        clock: Arc<RetryClock>,
+        recovery: Arc<QueueRecovery>,
         calls: AtomicUsize,
         effects: AtomicUsize,
     }
@@ -456,13 +487,21 @@ mod tests {
                     assert_eq!(armed.phase, WakeIntentPhase::Armed);
                     assert!(armed.arm_nonce.is_some());
                     assert!(armed.arm_baseline.is_some());
-                    self.effects.fetch_add(1, Ordering::SeqCst);
                     if self.reject_result {
-                        self.store.context().open_writer().unwrap().execute_batch("CREATE TRIGGER reject_runtime_result BEFORE UPDATE OF phase ON wake_intents WHEN NEW.phase='accepted' BEGIN SELECT RAISE(ABORT,'injected accepted result refusal'); END;").unwrap();
+                        let fault = self.store.context().open_writer().unwrap();
+                        fault.execute_batch("CREATE TRIGGER reject_runtime_result BEFORE UPDATE OF phase ON wake_intents WHEN NEW.phase IN ('accepted','no_effect') BEGIN SELECT RAISE(ABORT,'injected accepted result refusal'); END;").unwrap();
+                        *self.result_fault.lock().unwrap() = Some(fault);
                     }
-                    WakeAddOutcome::Accepted {
-                        id: "queued-runtime-1".into(),
-                        cleanup_error: None,
+                    if self.lost_arm_reply {
+                        WakeAddOutcome::RefusedBeforeEffect(
+                            unavailable("injected lost arm reply").into(),
+                        )
+                    } else {
+                        self.effects.fetch_add(1, Ordering::SeqCst);
+                        WakeAddOutcome::Accepted {
+                            id: "queued-runtime-1".into(),
+                            cleanup_error: None,
+                        }
                     }
                 }
                 Ok(false) => {
@@ -471,6 +510,11 @@ mod tests {
                 Err(error) => WakeAddOutcome::RefusedBeforeEffect(error.into()),
             };
             observer.completed(true).unwrap();
+            // Even positive helper cleanup cannot stand in for a returned result.
+            if snapshot().phase == WakeIntentPhase::Armed {
+                self.recovery.tick(context.budget).unwrap();
+                assert_eq!(snapshot().phase, WakeIntentPhase::Armed);
+            }
             outcome
         }
         fn list(
@@ -515,7 +559,7 @@ mod tests {
                 .unwrap();
         }
         let store = Arc::new(store);
-        let clock: Arc<dyn Clock> = Arc::new(fixture_support::IntentClock);
+        let clock = Arc::new(RetryClock(std::sync::atomic::AtomicU64::new(0)));
         let writer = Arc::new(FairWriter::new(32));
         let processes: Arc<dyn ProcessInfo> = Arc::new(HostProcessTable);
         let book = Arc::new(TurnStateBook::default());
@@ -538,11 +582,11 @@ mod tests {
         let runtime = QueueWakeRuntime::new(
             store.clone(),
             writer,
-            clock,
+            clock.clone(),
             processes,
             state_dir,
             book,
-            recovery,
+            recovery.clone(),
         );
         let context = HostCallContext {
             budget: fixture_support::budget(),
@@ -553,6 +597,10 @@ mod tests {
             store,
             reservation,
             reject_result,
+            result_fault: Default::default(),
+            lost_arm_reply: false,
+            clock,
+            recovery,
             calls: AtomicUsize::new(0),
             effects: AtomicUsize::new(0),
         };
@@ -666,6 +714,46 @@ mod tests {
             )
             .unwrap();
         assert!(blockers.programmatic && blockers.native);
+        for offset in [5000, 10000] {
+            control.clock.0.store(offset, Ordering::SeqCst);
+            assert!(runtime.recovery.tick(&runtime.completion_budget()).is_err());
+            assert_eq!(
+                control
+                    .store
+                    .wake_intent(&control.reservation.attempt, &context.budget)
+                    .unwrap()
+                    .unwrap()
+                    .phase,
+                WakeIntentPhase::Armed
+            );
+            assert!(runtime.recovery.has_work());
+        }
+        control.clock.0.store(15000, Ordering::SeqCst);
+        control
+            .result_fault
+            .lock()
+            .unwrap()
+            .take()
+            .unwrap()
+            .execute_batch("DROP TRIGGER reject_runtime_result")
+            .unwrap();
+        runtime.recovery.tick(&runtime.completion_budget()).unwrap();
+        let recovered = control
+            .store
+            .wake_intent(&control.reservation.attempt, &context.budget)
+            .unwrap()
+            .unwrap();
+        assert_eq!(
+            recovered.phase,
+            WakeIntentPhase::Accepted,
+            "completed result must retry in the same boot"
+        );
+        assert_eq!(recovered.owned_ids, ["queued-runtime-1"]);
+        assert_eq!(
+            control.effects.load(Ordering::SeqCst),
+            1,
+            "metadata retry must not add again"
+        );
     }
     #[test]
     fn final_guard_refusal_after_prepare_never_arms_or_adds() {
@@ -706,5 +794,187 @@ mod tests {
         assert!(row.owned_ids.is_empty());
         assert!(!row.cleanup_quarantined);
         assert_eq!(control.effects.load(Ordering::SeqCst), 0);
+    }
+    #[test]
+    fn completed_noeffect_after_lost_arm_reply_retries_without_add() {
+        let (runtime, mut control, preparation, key, context) = runtime_fixture(true);
+        control.lost_arm_reply = true;
+        assert!(
+            runtime
+                .submit_captured(
+                    &control.reservation,
+                    &key,
+                    preparation,
+                    &control,
+                    &|| Ok(()),
+                    &|| Ok(true),
+                    &context
+                )
+                .is_err()
+        );
+        assert_eq!(control.effects.load(Ordering::SeqCst), 0);
+        control
+            .result_fault
+            .lock()
+            .unwrap()
+            .take()
+            .unwrap()
+            .execute_batch("DROP TRIGGER reject_runtime_result")
+            .unwrap();
+        control.clock.0.store(5000, Ordering::SeqCst);
+        runtime.recovery.tick(&runtime.completion_budget()).unwrap();
+        let row = control
+            .store
+            .wake_intent(&control.reservation.attempt, &context.budget)
+            .unwrap()
+            .unwrap();
+        assert_eq!(row.phase, WakeIntentPhase::NoEffect);
+        assert!(row.arm_nonce.is_some());
+        assert!(row.owned_ids.is_empty());
+        assert_eq!(control.calls.load(Ordering::SeqCst), 1);
+    }
+    #[test]
+    fn completed_result_lost_success_reply_and_stale_nonce_settle_without_replay() {
+        for stale in [false, true] {
+            let (runtime, control, preparation, key, context) = runtime_fixture(false);
+            runtime
+                .submit_captured(
+                    &control.reservation,
+                    &key,
+                    preparation,
+                    &control,
+                    &|| Ok(()),
+                    &|| Ok(true),
+                    &context,
+                )
+                .unwrap();
+            let row = control
+                .store
+                .wake_intent(&control.reservation.attempt, &context.budget)
+                .unwrap()
+                .unwrap();
+            let slot = runtime
+                .recovery
+                .reserve_result(&control.reservation)
+                .unwrap()
+                .unwrap();
+            let ticket = WakeArmTicket {
+                attempt: row.attempt.clone(),
+                owner_boot: row.owner_boot,
+                revision: row.revision,
+                nonce: if stale {
+                    uuid::Uuid::new_v4()
+                } else {
+                    row.arm_nonce.unwrap()
+                },
+            };
+            let result = WakeIntentResult {
+                outcome: WakeIntentOutcome::Accepted {
+                    id: "queued-runtime-1".into(),
+                },
+                cleanup_confirmed: true,
+                diagnostic: String::new(),
+            };
+            slot.publish(ticket.clone(), result.clone()).unwrap();
+            slot.publish(ticket.clone(), result.clone()).unwrap();
+            let mut other = ticket;
+            other.nonce = uuid::Uuid::new_v4();
+            assert!(slot.publish(other, result).is_err());
+            drop(slot);
+            control.clock.0.store(5000, Ordering::SeqCst);
+            runtime.recovery.tick(&runtime.completion_budget()).unwrap();
+            assert_eq!(
+                control
+                    .store
+                    .wake_intent(&row.attempt, &context.budget)
+                    .unwrap()
+                    .unwrap(),
+                row
+            );
+            assert!(
+                runtime
+                    .recovery
+                    .reserve_result(&control.reservation)
+                    .unwrap()
+                    .is_some(),
+                "terminal/inapplicable ticket must release only its metadata slot"
+            );
+            assert_eq!(control.effects.load(Ordering::SeqCst), 1);
+        }
+    }
+    #[test]
+    fn result_retry_capacity_is_reserved_before_helper_and_recovered_without_eviction() {
+        let (runtime, control, preparation, key, context) = runtime_fixture(false);
+        let mut slots = Vec::new();
+        for index in 0..4096 {
+            let mut r = control.reservation.clone();
+            r.attempt = crate::protocol::ids::WakeAttemptId::new(format!("capacity-{index}"));
+            slots.push(runtime.recovery.reserve_result(&r).unwrap().unwrap());
+        }
+        assert_eq!(
+            runtime
+                .submit_captured(
+                    &control.reservation,
+                    &key,
+                    preparation.clone(),
+                    &control,
+                    &|| Ok(()),
+                    &|| Ok(true),
+                    &context
+                )
+                .unwrap(),
+            QueueDispatch::Refused
+        );
+        assert_eq!(control.calls.load(Ordering::SeqCst), 0);
+        assert!(
+            control
+                .store
+                .wake_intent(&control.reservation.attempt, &context.budget)
+                .unwrap()
+                .is_none()
+        );
+        let first_ticket = WakeArmTicket {
+            attempt: crate::protocol::ids::WakeAttemptId::new("capacity-0"),
+            revision: 1,
+            owner_boot: control.reservation.daemon_boot,
+            nonce: uuid::Uuid::new_v4(),
+        };
+        slots[0]
+            .publish(
+                first_ticket.clone(),
+                WakeIntentResult {
+                    outcome: WakeIntentOutcome::Unknown,
+                    cleanup_confirmed: false,
+                    diagnostic: String::new(),
+                },
+            )
+            .unwrap();
+        drop(slots);
+        let mut retained = control.reservation.clone();
+        retained.attempt = first_ticket.attempt;
+        assert!(
+            runtime
+                .recovery
+                .reserve_result(&retained)
+                .unwrap()
+                .is_none(),
+            "dropping producer must not evict an effectful result"
+        );
+
+        assert_eq!(
+            runtime
+                .submit_captured(
+                    &control.reservation,
+                    &key,
+                    preparation,
+                    &control,
+                    &|| Ok(()),
+                    &|| Ok(true),
+                    &context
+                )
+                .unwrap(),
+            QueueDispatch::Submitted
+        );
+        assert_eq!(control.effects.load(Ordering::SeqCst), 1);
     }
 }

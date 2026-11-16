@@ -515,3 +515,25 @@ registration/final guards/verification/unreceived semantics remain. The original
 intent/IDs/logical status persist; queue_unreceived is diagnostic only. Qualified
 new EndFirst may fulfill purpose without qualifying a queue bootstrap. See the
 normative TRUST-POLICY amendment for all retained limits.
+
+
+### Completed-result metadata retry and legacy activity correction
+
+Main54/Astra257 preserve Armed while a control callback runs. After control.add
+returns, its exact typed result and reporting owner/ticket/nonce can be retained
+for a later record_result CAS. A bounded node-owned 4096-entry collection reserves
+capacity before possible Add; it never evicts an effectful result or replaces a
+nonce. Existing five-second recovery retries metadata, fairly within a32-item
+quantum, and keeps activity until settled. Failed writes/reads retain entries;
+false CAS requires canonical terminal/inapplicable proof. No helper/Add replay,
+time-based Armed conversion, new lane or shutdown wait is introduced.
+
+Queue qualification no longer gates same-instance top-level legacy activity when
+canonical queue scope is unavailable. Those observations refresh the process-local
+book without writing queue state or fulfilling intent purpose; canonical stale-ID
+and mismatched-End suppression remains. Selection reads real retained fences
+before optional new-add eligibility. An empty unresolved ledger avoids cohort
+census, and disabled new-add eligibility skips binding/canonical admission. Real
+cross-origin/cohort fences remain when off. TRUST records the conservative soft
+poke limit: no new publication means no additional native fallback allowance while
+retained possible effects cover the same attention.

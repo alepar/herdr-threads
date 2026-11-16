@@ -1,5 +1,14 @@
 # Changelog
 
+## Unreleased
+
+One-way store upgrade to node schema 18. Older binaries that support at most schema 17 refuse an upgraded store.
+
+### Added
+
+- **Optional queue wake for Linux Codex.** Queue wake is off by default. Set `"programmatic_wake": true` in the selected install's `node/settings.json` to opt in at the next daemon start. Message bodies and ACKs still use hooks; retained effect fences and cleanup stay active when new adds are off.
+- **Known opt-in limit (ht-d2jq.8).** If an Add is refused before arm and the subsequent no-effect metadata write fails transiently, its same-boot Prepared row can keep further wakes for that seat/cohort fenced after contention ends, until qualified scope/binding finality or daemon ownership restart. Message bodies remain available through hooks on an ordinary user turn. This is tracked for a follow-up patch; the exact armed-ticket result retry does not fix it.
+
 ## v3.2.2
 
 Fixes only; no store schema or peer wire change.

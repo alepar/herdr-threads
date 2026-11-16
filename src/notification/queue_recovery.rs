@@ -27,6 +27,9 @@ use std::{
 };
 use uuid::Uuid;
 
+mod results;
+use results::{ResultSlot, Results};
+
 fn reap_owned_helpers() {
     for registration in builtins().registrations() {
         if let Some(control) = registration.wake_control() {
@@ -134,6 +137,7 @@ impl WakeHelperObserver for HelperJournal {
 }
 #[derive(Default)]
 struct Sweep {
+    result_after: Option<WakeAttemptId>,
     after: u64,
     last: Option<MonoInstant>,
     work: bool,
@@ -147,6 +151,7 @@ pub struct QueueRecovery {
     state_dir: PathBuf,
     boot: Uuid,
     sweep: Mutex<Sweep>,
+    results: Arc<Results>,
     work: Arc<AtomicBool>,
 }
 impl QueueRecovery {
@@ -166,6 +171,7 @@ impl QueueRecovery {
             state_dir,
             boot,
             sweep: Mutex::new(Sweep::default()),
+            results: Arc::new(Results::default()),
             work: Arc::new(AtomicBool::new(true)),
         }
     }
@@ -196,7 +202,16 @@ impl QueueRecovery {
         reap_owned_helpers();
     }
     pub fn has_work(&self) -> bool {
-        self.work.load(Ordering::Acquire) || owned_helpers_pending()
+        self.work.load(Ordering::Acquire) || self.results.has_work() || owned_helpers_pending()
+    }
+    pub(crate) fn reserve_result(
+        &self,
+        reservation: &crate::ports::WakeReservation,
+    ) -> Result<Option<ResultSlot>, ApiError> {
+        if reservation.daemon_boot != self.boot {
+            return Err(refused("wake result owner changed"));
+        }
+        self.results.reserve(&reservation.attempt, self.boot)
     }
     pub fn begin_helper(
         &self,
@@ -268,10 +283,14 @@ impl QueueRecovery {
         }
         sweep.last = Some(now);
         reap_owned_helpers();
-        let page = self
-            .store
-            .wake_intent_recovery_page(sweep.after, 32, budget)?;
-        let mut error = None;
+        let (result_count, result_error) =
+            self.results.retry(self, &mut sweep.result_after, budget)?;
+        let page = self.store.wake_intent_recovery_page(
+            sweep.after,
+            (32 - result_count) as u16,
+            budget,
+        )?;
+        let mut error = result_error;
         let mut next = page.next_after;
         for (index, summary) in page.items.iter().take(32).enumerate() {
             let mut invoked = false;

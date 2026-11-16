@@ -5,7 +5,7 @@ use herdr_threads::{harness::adapter::TurnEdge, ports::StorePort};
 fn selection_requires_exact_matched_ended_unique_binding() {
     let (store, _path, reservation, preparation) = fixture();
     assert!(
-        StorePort::queue_wake_selection(&store, &reservation, &budget())
+        StorePort::queue_wake_selection(&store, &reservation, true, &budget())
             .unwrap()
             .binding
             .is_none()
@@ -18,7 +18,7 @@ fn selection_requires_exact_matched_ended_unique_binding() {
         )
         .unwrap();
     }
-    let selected = StorePort::queue_wake_selection(&store, &reservation, &budget()).unwrap();
+    let selected = StorePort::queue_wake_selection(&store, &reservation, true, &budget()).unwrap();
     let binding = selected.binding.unwrap();
     assert_eq!(binding.scope, preparation.target.scope);
     assert_eq!(binding.replay_scope, preparation.replay_scope);
@@ -35,7 +35,8 @@ fn origin_fence_survives_unqualified_and_disconnected_binding() {
             store.context().open_writer().unwrap().execute("INSERT INTO occupant_bindings(seat_id,generation,target_generation,target_id,host_boot,host_epoch,harness,native_session,execution_id,observation_provenance,observed_at,registered_at,terminal_id,incarnation,binding_id) VALUES ('s',1,1,'pane','host',0,'codex','invalid-current','replacement','cooperative_top_level',0,0,'term-pane','inc','replacement')", []).unwrap();
             store.context().open_writer().unwrap().execute("UPDATE occupant_bindings SET liveness='disconnected',disconnected_at=100,disconnect_reason='liveness_process_exit' WHERE binding_id='binding'", []).unwrap();
         }
-        let selected = StorePort::queue_wake_selection(&store, &reservation, &budget()).unwrap();
+        let selected =
+            StorePort::queue_wake_selection(&store, &reservation, true, &budget()).unwrap();
         assert!(selected.binding.is_none());
         assert!(selected.blockers.programmatic);
         assert!(selected.blockers.native);
@@ -51,7 +52,7 @@ fn cohort_fence_survives_different_origin_and_invalid_current_session() {
     db.execute("UPDATE wake_intents SET origin_seat='old-origin'", [])
         .unwrap();
     drop(db);
-    let selected = StorePort::queue_wake_selection(&store, &reservation, &budget()).unwrap();
+    let selected = StorePort::queue_wake_selection(&store, &reservation, true, &budget()).unwrap();
     assert!(selected.binding.is_none());
     assert!(selected.blockers.programmatic);
     assert!(selected.blockers.native);
@@ -61,7 +62,7 @@ fn cohort_fence_survives_different_origin_and_invalid_current_session() {
     db.execute("UPDATE occupant_bindings SET liveness='disconnected',disconnected_at=100,disconnect_reason='liveness_process_exit' WHERE binding_id='binding'", []).unwrap();
     db.execute("INSERT INTO occupant_bindings(seat_id,generation,target_generation,target_id,host_boot,host_epoch,harness,native_session,execution_id,observation_provenance,observed_at,registered_at,terminal_id,incarnation,binding_id) VALUES ('s',1,1,'pane','host',0,'codex','invalid-session','other','cooperative_top_level',0,0,'term-pane','inc','other-binding')", []).unwrap();
     drop(db);
-    let selected = StorePort::queue_wake_selection(&store, &reservation, &budget()).unwrap();
+    let selected = StorePort::queue_wake_selection(&store, &reservation, true, &budget()).unwrap();
     assert!(selected.binding.is_none());
     assert!(selected.blockers.programmatic);
     assert!(selected.blockers.native);
@@ -80,7 +81,7 @@ fn multiple_connected_sessions_cannot_select_a_queue_binding() {
     }
     prepare_raw(&store, &reservation, &preparation);
     store.context().open_writer().unwrap().execute("INSERT INTO occupant_bindings(seat_id,generation,target_generation,target_id,host_boot,host_epoch,harness,native_session,execution_id,observation_provenance,observed_at,registered_at,terminal_id,incarnation,binding_id) VALUES ('s',1,1,'pane','host',0,'codex','00000000-0000-0000-0000-000000000002','sibling','cooperative_top_level',0,0,'term-pane','inc','sibling')", []).unwrap();
-    let selected = StorePort::queue_wake_selection(&store, &reservation, &budget()).unwrap();
+    let selected = StorePort::queue_wake_selection(&store, &reservation, true, &budget()).unwrap();
     assert!(selected.binding.is_none());
     assert!(selected.blockers.programmatic);
     assert!(selected.blockers.native);
@@ -102,7 +103,7 @@ fn end_first_and_stale_reservation_cannot_authorize_selection() {
     )
     .unwrap();
     assert!(
-        StorePort::queue_wake_selection(&store, &reservation, &budget())
+        StorePort::queue_wake_selection(&store, &reservation, true, &budget())
             .unwrap()
             .binding
             .is_none()
@@ -113,7 +114,7 @@ fn end_first_and_stale_reservation_cannot_authorize_selection() {
         .unwrap()
         .execute("DELETE FROM wake_work", [])
         .unwrap();
-    let selection = StorePort::queue_wake_selection(&store, &reservation, &budget()).unwrap();
+    let selection = StorePort::queue_wake_selection(&store, &reservation, true, &budget()).unwrap();
     assert!(selection.binding.is_none());
     assert!(!selection.blockers.native);
 }
@@ -122,7 +123,7 @@ fn end_first_and_stale_reservation_cannot_authorize_selection() {
 fn large_binding_population_does_not_manufacture_effect_fences() {
     let (store, _path, reservation, _preparation) = fixture();
     store.context().open_writer().unwrap().execute_batch("WITH RECURSIVE n(x) AS (SELECT 1 UNION ALL SELECT x+1 FROM n WHERE x<64) INSERT INTO occupant_bindings(seat_id,generation,target_generation,target_id,host_boot,host_epoch,harness,native_session,execution_id,observation_provenance,observed_at,registered_at,terminal_id,incarnation,binding_id) SELECT 's',1,1,'pane','host',0,'codex','extra-'||x,'extra-'||x,'cooperative_top_level',0,0,'term-pane','inc','extra-'||x FROM n;").unwrap();
-    let selected = StorePort::queue_wake_selection(&store, &reservation, &budget()).unwrap();
+    let selected = StorePort::queue_wake_selection(&store, &reservation, true, &budget()).unwrap();
     assert!(selected.binding.is_none());
     assert!(!selected.blockers.programmatic);
     assert!(!selected.blockers.native);
@@ -140,7 +141,7 @@ fn ended_binding_history_does_not_saturate_current_cohort_census() {
         .unwrap();
     }
     store.context().open_writer().unwrap().execute_batch("WITH RECURSIVE n(x) AS (SELECT 1 UNION ALL SELECT x+1 FROM n WHERE x<100) INSERT INTO occupant_bindings(seat_id,generation,target_generation,target_id,host_boot,host_epoch,harness,native_session,execution_id,observation_provenance,observed_at,registered_at,terminal_id,incarnation,binding_id,ended_at) SELECT 's',1,1,'pane','host',0,'codex','historical-'||x,'historical-'||x,'cooperative_top_level',0,0,'term-pane','inc','historical-'||x,1 FROM n;").unwrap();
-    let selected = StorePort::queue_wake_selection(&store, &reservation, &budget()).unwrap();
+    let selected = StorePort::queue_wake_selection(&store, &reservation, true, &budget()).unwrap();
     assert_eq!(selected.binding.unwrap().scope, preparation.target.scope);
     assert!(!selected.blockers.programmatic);
     assert!(!selected.blockers.native);
@@ -158,7 +159,8 @@ fn native_only_large_population_preserves_real_origin_fence() {
             .unwrap();
         db.execute_batch("WITH RECURSIVE n(x) AS (SELECT 1 UNION ALL SELECT x+1 FROM n WHERE x<100) INSERT INTO occupant_bindings(seat_id,generation,target_generation,target_id,host_boot,host_epoch,harness,native_session,execution_id,observation_provenance,observed_at,registered_at,terminal_id,incarnation,binding_id) SELECT 's',1,1,'pane','host',0,'claude','historical-'||x,'historical-'||x,'cooperative_top_level',0,0,'term-pane','inc','historical-'||x FROM n;").unwrap();
         drop(db);
-        let selected = StorePort::queue_wake_selection(&store, &reservation, &budget()).unwrap();
+        let selected =
+            StorePort::queue_wake_selection(&store, &reservation, true, &budget()).unwrap();
         assert!(selected.binding.is_none());
         assert_eq!(selected.blockers.native, pending);
         assert_eq!(selected.blockers.programmatic, pending);
@@ -178,7 +180,8 @@ fn large_valid_cohort_census_preserves_old_disconnected_cross_origin_fence() {
         db.execute("UPDATE occupant_bindings SET liveness='disconnected',disconnected_at=100,disconnect_reason='liveness_process_exit' WHERE binding_id='binding'", []).unwrap();
         db.execute_batch("WITH RECURSIVE n(x) AS (SELECT 2 UNION ALL SELECT x+1 FROM n WHERE x<101) INSERT INTO occupant_bindings(seat_id,generation,target_generation,target_id,host_boot,host_epoch,harness,native_session,execution_id,observation_provenance,observed_at,registered_at,terminal_id,incarnation,binding_id) SELECT 's',1,1,'pane','host',0,'codex','00000000-0000-0000-0000-'||printf('%012d',x),'valid-'||x,'cooperative_top_level',0,0,'term-pane','inc','valid-'||x FROM n;").unwrap();
         drop(db);
-        let selected = StorePort::queue_wake_selection(&store, &reservation, &budget()).unwrap();
+        let selected =
+            StorePort::queue_wake_selection(&store, &reservation, true, &budget()).unwrap();
         assert!(selected.binding.is_none());
         assert_eq!(selected.blockers.native, pending);
         assert_eq!(selected.blockers.programmatic, pending);

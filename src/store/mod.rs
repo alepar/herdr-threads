@@ -3598,9 +3598,10 @@ impl StorePort for SqliteStore {
     fn queue_wake_selection(
         &self,
         reservation: &crate::ports::WakeReservation,
+        eligibility_needed: bool,
         budget: &CallBudget,
     ) -> Result<crate::ports::WakeQueueSelection, ApiError> {
-        wake_intents::queue_wake_selection(self, reservation, budget)
+        wake_intents::queue_wake_selection(self, reservation, eligibility_needed, budget)
     }
     fn begin_wake_helper(
         &self,

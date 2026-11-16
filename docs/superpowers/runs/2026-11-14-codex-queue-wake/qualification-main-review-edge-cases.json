@@ -1,0 +1,81 @@
+{
+  "basis": "94b43c2b0f83227a38bd2b88fbd637dedc219850",
+  "main": "4dabf06ef90c8c9e8c459b524b509af3a2e98b31",
+  "authorization": [
+    "main54 mnSGYhCyIhMr",
+    "Astra253/255/257",
+    "Astra259/260 separate follow-up disposition"
+  ],
+  "files_sha256": {
+    "CHANGELOG.md": "c4278e02a6f821518bb321eef0e0cd4e7a124e79f00e7b065508c79175b0ac81",
+    "TRUST-POLICY.md": "f14e09d3871c4a5d00f766eec8b32ef5e4d1da10baf1c12e605345151ce57b7e",
+    "docs/superpowers/runs/2026-11-14-codex-queue-wake/design.md": "bcbe08bed2923ee08f064b6bbfdcfa62271b8538c7870e88adfe3237e731420d",
+    "src/notification/queue.rs": "d3bb7efb1cee5ccf7429a8775f06ac871af48d5dc36f8b344e70e20bbae4c731",
+    "src/notification/queue_recovery.rs": "ac34f6ae802f1e027845693452ad51ad0b9486cf8e36d463c52e3cd5dddfc4fd",
+    "src/notification/queue_recovery/results.rs": "4faa08dc5fffe7e56698245f07d537f24f8544ecf3e6b61506b7b9d909975714",
+    "src/ports.rs": "0f488c24d1184d33d0454d0ec378eb541a005776c2ee5aefb97cdd90751fb902",
+    "src/ports/native_turn.rs": "f3f943f5ecc1212b3ccd192c92d9bd2a225cd57cf287a2eca284743a10bcdf28",
+    "src/store/mod.rs": "4db5e021405e3433c7b880805c65da7126d4309d6c5989b12dfea4e90a9ade64",
+    "src/store/native_turn.rs": "4aff196f0c68ff8010412804179b80d956047166134fce2077b343eaad9b48c0",
+    "src/store/wake_intents/selection.rs": "1387e4eff7e42c63982dfec6c6ed3813b4953c543cf79591fc66a83566d8a38e",
+    "tests/notification/queue_runtime.rs": "6a504468c271bb261e5bd5e443aa00b3126d17dbd56991022a2dcb83755e2da6",
+    "tests/store/wake_intents.rs": "01ac44520f3c525be238462d4df30fc60344baf197831f768d55d2b270de0ee8",
+    "tests/store/wake_queue_cost.rs": "a7aa6c0b04ebacee88a7cf6c27c172bf817c8cc3a413e86c4a73172f8ff1177f",
+    "tests/store/wake_queue_selection.rs": "366befd780d9460a08fa7983af1a402b8430804e953ddefe4808a64980f6a076"
+  },
+  "report_sha256": "bc86570d936b2e3961c1563a5b1aa2cd710fa57091d751db0682f3ce5f10c161",
+  "raw_log_sha256": {
+    "target/queue-qualification/main-review-causal-red.log": "c007494ca6fd18633045477a836571ad78ea11fb8a5ab22d26289c88d033c0de",
+    "target/queue-qualification/main-review-causal-red-cleanup.log": "0b3a49cfa062a5b1922b797205d07f7cdc12b25c525d50f4bc60dcd04bb97f50",
+    "target/queue-qualification/main-review-initial-green.log": "1c920bbd5dd35a132ea1520fbaac85296a47105e1bfb86a800ec691d3f86a079",
+    "target/queue-qualification/main-review-initial-green-cleanup.log": "0b3a49cfa062a5b1922b797205d07f7cdc12b25c525d50f4bc60dcd04bb97f50",
+    "target/queue-qualification/main-review-expanded-green.log": "7bdeba67260e94db33c60da244269a6892d473a732b5efc10891f106e92d3508",
+    "target/queue-qualification/main-review-expanded-cleanup.log": "0b3a49cfa062a5b1922b797205d07f7cdc12b25c525d50f4bc60dcd04bb97f50",
+    "target/queue-qualification/main-review-focused-qualified.log": "6ccb10a47c34011bbbe5adc80a01140faafde58793826788c53f8dca70537da9",
+    "target/queue-qualification/main-review-focused-cleanup.log": "0b3a49cfa062a5b1922b797205d07f7cdc12b25c525d50f4bc60dcd04bb97f50",
+    "target/queue-qualification/main-review-focused-junit.xml": "04db77639ef75819035bf91d7b48ef6f5c22a48b99df1f18453840e8c697553c",
+    "target/queue-qualification/main-review-clippy.log": "98b40dc0083d1773205b3e7c279abe1c4489e2da967bb7e8c11224c59c0e4a4c",
+    "target/queue-qualification/main-review-default-features.log": "7877e5f955e88b2af47d772e31a68830caf775c8b4eafeaac450f9a19f6a2916",
+    "target/queue-qualification/main-review-neutral.log": "0571ae932197d03bf87cac7e8fedc30f5b77a20bf576eb8a12db528b6525b7a3",
+    "target/queue-qualification/main-review-wire.log": "7dec4953c122c2b8b603f833295b91eaf35a4bc851f8abfb671f285445a50c2f",
+    "target/queue-qualification/main-review-docs-final.log": "2282d4c00ffbd8dfbe883e28d794eb367f0861caf928069054e006d36e7b7a87",
+    "target/queue-qualification/main-review-format-final.log": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+    "target/queue-qualification/main-review-diff-final.log": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+  },
+  "rust": {
+    "passed": 434,
+    "seconds": 40.136,
+    "compile_seconds": 134,
+    "run_id": "19617bf1-561b-4b25-8e98-06f7119c4b35",
+    "cleanup": "first scoped processes and temp files clean"
+  },
+  "causal_red": {
+    "tests": 3,
+    "failed": 3,
+    "seconds": 1.487
+  },
+  "initial_green": {
+    "tests": 3,
+    "passed": 3,
+    "seconds": 1.733
+  },
+  "checks": {
+    "clippy-all-targets-all-features": "PASS",
+    "default-features": "PASS",
+    "fmt": "PASS",
+    "neutral": "PASS",
+    "wire": "PASS",
+    "docs": "PASS",
+    "diff": "PASS"
+  },
+  "clippy_seconds": 50.48,
+  "follow_up": {
+    "bug": "ht-d2jq.8",
+    "priority": 1,
+    "scope": "pre-arm no-effect completion metadata failure; Prepared fence until qualified lifecycle/owner restart",
+    "disposition": "separate documented opt-in follow-up accepted by main; not a direct human waiver"
+  },
+  "recurring_model_visible_added_bytes": 0,
+  "infrastructure_refusal_detail_max_bytes": 34,
+  "status": "narrow acceptance pending; final unfiltered suite not started; no new live run"
+}
