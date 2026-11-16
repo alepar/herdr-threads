@@ -7919,3 +7919,58 @@ fn queue_wake_ledger_upgrade_preserves_existing_reservation() {
         "an older schema cannot silently ignore retained queue effects"
     );
 }
+
+#[test]
+fn queue_wake_schema_creation_has_bounded_sqlite_work() {
+    use crate::test_support::isolation::{CostCounter, count_vm_units};
+
+    let db = Connection::open_in_memory().unwrap();
+    let index = schema::NODE_DELTAS
+        .iter()
+        .position(|delta| delta.version == 18)
+        .unwrap();
+    open_with(&db, &schema::NODE_DELTAS[..index]).unwrap();
+    let counter = CostCounter::default();
+    count_vm_units(&db, &counter, || {
+        db.execute_batch(schema::NODE_DELTAS[index].sql).unwrap();
+    });
+    assert!(
+        counter.units() < 2_500,
+        "queue schema creation used {} VM units",
+        counter.units()
+    );
+}
+
+#[test]
+fn queue_wake_candidate_schema_with_additive_witness_passes_audit_and_rejects_tampering() {
+    let db = Connection::open_in_memory().unwrap();
+    let index = schema::NODE_DELTAS
+        .iter()
+        .position(|delta| delta.version == 18)
+        .unwrap();
+    open_with(&db, &schema::NODE_DELTAS[..index]).unwrap();
+    // Preserve the unshipped candidate's exact stored SQL and add only the
+    // immutable Add witness. Direct CREATEs must yield the same audit text.
+    db.execute_batch(include_str!(
+        "../fixtures/schema/0018_queue_wake_candidate.sql"
+    ))
+    .unwrap();
+    db.pragma_update(None, "user_version", 18).unwrap();
+    assert_eq!(
+        schema::verify_baseline(&db).unwrap_err().code,
+        ErrorCode::IncompatibleSchema,
+        "the older unshipped candidate lacks the immutable Add witness"
+    );
+    db.execute_batch("ALTER TABLE wake_intents ADD COLUMN add_helper_json BLOB CHECK(add_helper_json IS NULL OR length(add_helper_json)<=2048)")
+        .unwrap();
+    schema::verify_baseline(&db).unwrap();
+    open_with(&db, schema::NODE_DELTAS).unwrap();
+    db.execute_batch("DROP INDEX wake_intents_unresolved_cohort")
+        .unwrap();
+    let error = schema::verify_baseline(&db).unwrap_err();
+    assert_eq!(error.code, ErrorCode::IncompatibleSchema);
+    assert!(
+        error.detail.contains("wake_intents_unresolved_cohort"),
+        "{error:?}"
+    );
+}
