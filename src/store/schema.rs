@@ -1492,6 +1492,14 @@ fn overdue_wake(
             .map_err(store_error)?,
         _ => None,
     };
+    if let (Some(created), Some(degraded)) = (
+        created_at,
+        super::wake_intents::degraded_at_for_seat(tx, seat)?,
+    ) && degraded >= created
+    {
+        // Preserve wake_work's independent native outcome and contact semantics.
+        return Ok("queue_unreceived".to_owned());
+    }
     let last: Option<(Option<String>, Option<i64>)> = tx
         .query_row(
             "SELECT last_outcome, completed_at_utc FROM wake_work WHERE seat_id=?1",

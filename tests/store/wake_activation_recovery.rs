@@ -1070,3 +1070,126 @@ fn refused_unarmed_unwitnessed_add_allows_native_only_without_claiming_cleanup()
         assert_eq!(blockers.native, witnessed);
     }
 }
+
+#[test]
+fn native_fallback_requires_due_known_quiescent_unfulfilled_submission() {
+    for (phase, clean, age, allowed) in [
+        (WakeIntentPhase::Accepted, true, 29_999, false),
+        (WakeIntentPhase::Accepted, true, 30_000, true),
+        (WakeIntentPhase::Unknown, true, 30_000, true),
+        (WakeIntentPhase::Accepted, false, 30_000, false),
+        (WakeIntentPhase::Armed, true, 30_000, false),
+    ] {
+        let (store, _path, r, p) = fixture();
+        let ticket = arm(&store, &r, &p);
+        if phase == WakeIntentPhase::Armed {
+            if clean {
+                complete(&store, &r, &row(&store, &r).helper.unwrap());
+            }
+        } else {
+            result(
+                &store,
+                &ticket,
+                if phase == WakeIntentPhase::Accepted {
+                    WakeIntentOutcome::Accepted {
+                        id: "retained-owned".into(),
+                    }
+                } else {
+                    WakeIntentOutcome::Unknown
+                },
+                clean,
+            );
+        }
+        let before = row(&store, &r);
+        let now = store.context().clock().utc_now().0;
+        // The fixture clock is fixed; represent elapsed wall time in stored arm evidence.
+        store
+            .context()
+            .open_writer()
+            .unwrap()
+            .execute("UPDATE wake_intents SET armed_at_utc=?1", [now - age])
+            .unwrap();
+        let next = reserve_again(&store);
+        let fallback = uuid::Uuid::new_v4();
+        assert_eq!(
+            StorePort::claim_native_wake_fallback(&store, &next, fallback, &budget()).unwrap(),
+            allowed,
+            "{phase:?} clean={clean} age={age}"
+        );
+        let after = row(&store, &r);
+        assert_eq!(after.phase, before.phase);
+        assert_eq!(after.logical, before.logical);
+        assert_eq!(after.owned_ids, before.owned_ids);
+        assert_eq!(after.cleanup_quarantined, before.cleanup_quarantined);
+        if allowed {
+            assert!(
+                !StorePort::claim_native_wake_fallback(&store, &next, fallback, &budget()).unwrap()
+            );
+            assert!(
+                StorePort::wake_intent_blockers(
+                    &store,
+                    &r.seat,
+                    p.adapter,
+                    &p.replay_scope,
+                    &budget()
+                )
+                .unwrap()
+                .programmatic
+            );
+        }
+    }
+}
+
+#[test]
+fn native_fallback_no_effect_restores_coverage_but_unknown_spends_it() {
+    use herdr_threads::ports::NativeFallbackOutcome;
+    for outcome in [
+        NativeFallbackOutcome::NoEffect,
+        NativeFallbackOutcome::Unknown,
+        NativeFallbackOutcome::Submitted,
+    ] {
+        let (store, _path, r, p) = fixture();
+        let ticket = arm(&store, &r, &p);
+        result(
+            &store,
+            &ticket,
+            WakeIntentOutcome::Accepted {
+                id: "retained-owned".into(),
+            },
+            true,
+        );
+        store
+            .context()
+            .open_writer()
+            .unwrap()
+            .execute(
+                "UPDATE wake_intents SET armed_at_utc=armed_at_utc-30000",
+                [],
+            )
+            .unwrap();
+        let first = reserve_again(&store);
+        let token = uuid::Uuid::new_v4();
+        assert!(StorePort::claim_native_wake_fallback(&store, &first, token, &budget()).unwrap());
+        assert!(!StorePort::claim_native_wake_fallback(&store, &first, token, &budget()).unwrap());
+        assert!(
+            StorePort::finish_native_wake_fallback(&store, &first, token, outcome, &budget())
+                .unwrap()
+        );
+        let next = reserve_again(&store);
+        assert_eq!(
+            StorePort::claim_native_wake_fallback(&store, &next, uuid::Uuid::new_v4(), &budget())
+                .unwrap(),
+            outcome == NativeFallbackOutcome::NoEffect
+        );
+        assert!(
+            !StorePort::finish_native_wake_fallback(
+                &store,
+                &first,
+                token,
+                NativeFallbackOutcome::NoEffect,
+                &budget()
+            )
+            .unwrap()
+        );
+    }
+}

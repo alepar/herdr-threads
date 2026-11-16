@@ -245,6 +245,8 @@ mod queue_recovery;
 #[path = "store/wake_activation_recovery.rs"]
 mod wake_activation_recovery;
 
+#[path = "store/wake_native_fallback.rs"]
+mod wake_native_fallback;
 #[path = "store/wake_queue_selection.rs"]
 mod wake_queue_selection;
 

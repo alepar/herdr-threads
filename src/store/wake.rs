@@ -81,6 +81,7 @@ pub fn load_candidate(
     seat: &SeatId,
     attention: &EffectiveSeatAttention,
     scan_decision_seq: i64,
+    now: UtcMillis,
 ) -> Result<WakeCandidate, ApiError> {
     type SeatColumns = (
         String,
@@ -307,7 +308,11 @@ pub fn load_candidate(
                 decision_seq,
             )?,
         )?;
+    let programmatic_fallback_due = attention.frontier.lazy.is_some()
+        && attention.frontier.lazy <= last_reserved_frontier.lazy
+        && super::wake_intents::native_fallback::due(db, instance, seat, now, &attention.frontier)?;
     Ok(WakeCandidate {
+        programmatic_fallback_due,
         seat: seat.clone(),
         attention_witness: Some(witness),
         effectively_retired: state == "retired",
@@ -839,7 +844,7 @@ fn reason_labels(candidate: &WakeCandidate) -> Vec<String> {
     {
         reasons.push("actionable_warning".into());
     }
-    if candidate.has_unreserved_lazy() {
+    if candidate.has_unreserved_lazy() || candidate.programmatic_fallback_due {
         reasons.push("lazy".into());
     }
     reasons
@@ -886,7 +891,7 @@ pub fn reserve(
         if current_lazy!=witness.frontier().lazy {return Ok(None)}
         let attention=EffectiveSeatAttention {has_pending_invitation:witness.pending_invitation,
             has_pending_receipt:witness.pending_receipt,latest_warning_seq:witness.latest_warning_seq.map(|seq|i64::try_from(seq).map_err(|_|api_error(ErrorCode::StoreCorrupt,"warning sequence overflow"))).transpose()?,frontier:witness.frontier()};
-        let current=load_candidate(tx,instance,&candidate.seat,&attention,decision_seq)?;
+        let current=load_candidate(tx,instance,&candidate.seat,&attention,decision_seq,context.clock().utc_now())?;
         if !current.has_actionable_work() || !current.continuity_resolved || current.reservation_id.is_some()
             || current.binding_generation!=candidate.binding_generation || current.binding_execution!=candidate.binding_execution
             || current.target!=candidate.target || current.reason_bits!=candidate.reason_bits
@@ -989,7 +994,14 @@ pub fn validate_reservation(
             .transpose()?,
         frontier: reservation.attention_witness.frontier(),
     };
-    let candidate = load_candidate(db, instance, &reservation.seat, &attention, seq)?;
+    let candidate = load_candidate(
+        db,
+        instance,
+        &reservation.seat,
+        &attention,
+        seq,
+        reservation.reserved_at_utc,
+    )?;
     // The reservation just wrote its lazy frontier, so a lazy-only reservation
     // is no longer "unreserved" here: pending lazy rows still count.
     if !candidate.continuity_resolved
@@ -1211,7 +1223,7 @@ pub fn reserve_poke(
         let receipts:Vec<PokeReceipt>=due.receipts.iter().filter(|r|current_due.receipts.iter().any(|c|c.message==r.message&&c.source==r.source)).cloned().collect();
         if receipts.is_empty() {return Ok(None)}
         let attention=EffectiveSeatAttention {has_pending_invitation:false,has_pending_receipt:true,latest_warning_seq:None,frontier:LogicalAttentionFrontier::default()};
-        let current=load_candidate(tx,instance,seat,&attention,decision_seq)?;
+        let current=load_candidate(tx,instance,seat,&attention,decision_seq,context.clock().utc_now())?;
         if current.effectively_retired || !current.continuity_resolved || current.reservation_id.is_some() {return Ok(None)}
         let boot=HostBootId::new(boot);
         // A due receipt is seat-level attention: every connected top-level binding can act on it.

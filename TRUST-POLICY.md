@@ -3984,7 +3984,7 @@ query. It changes no seat continuity, binding attribution or receipt evidence.
 
 ### Qualified native-turn observation for queue wake purpose (2026-11-14)
 
-A canonically validated native turn-start from an exact top-level binding/session,
+A canonically validated native turn-start, or qualified new EndFirst after a lost Start, from an exact top-level binding/session,
 execution/generation and live process scope may fulfill the logical purpose of a
 previous queue wake: the target became active. It is not queue-consumption proof,
 body display, receipt evidence or invitation acceptance. A user-started turn may
@@ -4063,3 +4063,46 @@ latency acceptance only; native wake limits, observed-idle admission, priority,
 body/receipt authority and no-blind-replay rules are unchanged. Queue acceptance
 still does not prove target activity or delivery. This is an accepted runtime limit,
 not an exact-version admission gate or permission to add a native poke after enqueue.
+
+### Bounded native-only queue degradation (2026-11-16)
+
+Programmatic wake is an explicit per-install opt-in (`programmatic_wake: true` in
+the node settings); absent/false preserves native wake. The switch gates only
+new adds. Retained effect fences and cleanup continue, including List/Delete
+helpers, while it is off.
+
+After 30 seconds from the immutable successful arm timestamp, an Active
+Accepted/Unknown intent with positively confirmed current-helper quiescence may
+permit a fresh fully guarded native wake. Armed, in-flight and helper-uncertain
+states remain fenced; absent arm evidence fails closed. Elapsed time does not
+prove cancellation, queue absence, consumption or delivery. Physical phase, owned
+IDs, logical status and the programmatic fence remain; a residual queued marker
+may still run later and cause an extra turn. The intent records queue_unreceived
+as a diagnostic, never a receipt or fabricated seat contact.
+
+The allowance covers one native effect per genuinely newer canonical attention
+frontier. All applicable origin/cohort blockers are claimed atomically, using an
+exact reservation/owner/ticket and componentwise publication high-water across
+all seven frontier scalars (sequence/offset pairs keep their publication order).
+A newer reservation, elapsed time or contact alone grants nothing. Disappearing
+and reappearing old pending items do not reset coverage. Metadata reads/replays
+never grant a second external submission. Submitted, Unknown, error, cancellation,
+crash or a missing completion retain spent coverage. Only a matched typed
+pre-submit NoEffect (the host returns no submission) restores exact prior
+coverage; generic outcomes/errors are not that proof. Late/stale/partial group
+completions cannot release newer claims. Completion uses a bounded noncancelled
+metadata budget; failed release stays spent. Native submission retains ordinary
+final idle/owed/lease guards, Composer verification and closed-loop unreceived
+handling. No queue replay or logical/effect retirement follows from this exception.
+
+For still-unread threshold-admitted lazy work already covered by its queue
+reservation, candidate discovery reuses the same due/blocker/high-water predicate
+as the writer claim. The derived bit is selection evidence only; the existing
+wake lane rechecks canonical eligibility and keeps its spacing/backoff and lazy
+owed check. No frontier, publication or seat contact is cleared or fabricated.
+
+A qualified same-scope EndFirst for a different native turn ID beyond the arm
+observation ordinal may fulfill logical wake purpose when its Start was lost.
+It is completed activity evidence, not a receipt and not a matched Start/End
+queue-admission baseline. Existing current-Started/mismatched-End protection and
+the accepted delayed-ID observation limit remain.

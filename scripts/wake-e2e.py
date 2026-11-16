@@ -28,7 +28,7 @@ acknowledged inside that turn, with no wake after it.
 busy-tool-p1/group (Codex only) is busy-send-p1 whose turn calls no shell command after the send, only `apply_patch`:
 the item must arrive at that tool's boundary (every tool is one). Claude's mod delivers at every tool already.
 
-Opt-in --queue-proof qualifies Codex programmatic waking using bounded read-only snapshots of the run's own
+--queue-proof enables Codex programmatic waking only in the owned test instance and requires proof using bounded read-only snapshots of the run's own
 canonical store. Ordinary positive cases require exact Accepted intent, arm/native baseline and observed Add-helper
 witness; Unknown is not acceptance. No native typing after a possible queue effect is a compositional inference from
 the reviewed dispatcher invariant, not an independent host-call trace. Native fallback is also labeled inference from
@@ -1097,7 +1097,10 @@ class Run:
         shim.chmod(0o700)
         # Disable both saved-machine and process discovery before the release binary starts.
         (self.state / "node").mkdir(mode=0o700)
-        (self.state / "node/settings.json").write_text('{"sync":{"discover":false}}\n')
+        (self.state / "node/settings.json").write_text(json.dumps({
+            "sync": {"discover": False},
+            "programmatic_wake": bool(getattr(self.args, "queue_proof", False)),
+        }) + "\n")
         (self.state / "node/settings.json").chmod(0o600)
         self.daemon_attempted = True
         self.ht("daemon", "ensure", tag="daemon:ensure", timeout=60)

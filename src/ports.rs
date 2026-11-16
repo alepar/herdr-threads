@@ -2803,6 +2803,10 @@ impl WakeReservation {
 }
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]
 pub struct WakeCandidate {
+    /// Read-only scheduling evidence for retained reserved lazy work, rechecked
+    /// canonically at reservation and fallback claim. Never submission authority.
+    #[serde(skip)]
+    pub programmatic_fallback_due: bool,
     pub seat: SeatId,
     /// Present only after all bounded effective attention sources complete.
     pub attention_witness: Option<WakeAttentionWitness>,
@@ -3042,6 +3046,7 @@ impl WakeCandidate {
             && (self.has_unoffered_invitation()
                 || self.has_unoffered_receipt()
                 || self.has_unreserved_lazy()
+                || self.programmatic_fallback_due
                 || (self.actionable_warning_seq.is_some()
                     && !self.warning_offered_for_current_occupant()))
     }
@@ -4376,6 +4381,26 @@ pub trait StorePort: ModStoreReads + Send + Sync {
         _budget: &CallBudget,
     ) -> Result<Option<NativeTurnState>, ApiError> {
         Ok(None)
+    }
+    /// New external-submit authority only for the winning exact fallback ticket.
+    /// Replaying even an identical ticket returns false.
+    fn claim_native_wake_fallback(
+        &self,
+        _reservation: &WakeReservation,
+        _ticket: uuid::Uuid,
+        _budget: &CallBudget,
+    ) -> Result<bool, ApiError> {
+        Ok(false)
+    }
+    /// Only a typed host-boundary NoEffect may restore prior frontier coverage.
+    fn finish_native_wake_fallback(
+        &self,
+        _reservation: &WakeReservation,
+        _ticket: uuid::Uuid,
+        _outcome: NativeFallbackOutcome,
+        _budget: &CallBudget,
+    ) -> Result<bool, ApiError> {
+        Ok(false)
     }
     fn queue_wake_selection(
         &self,
@@ -5800,6 +5825,7 @@ mod allocation_tests {
     #[test]
     fn completed_wake_attention_witness_rejects_wrong_scope_or_revision() {
         let candidate = WakeCandidate {
+            programmatic_fallback_due: false,
             targets: Vec::new(),
             seat: SeatId::new("s"),
             attention_witness: None,

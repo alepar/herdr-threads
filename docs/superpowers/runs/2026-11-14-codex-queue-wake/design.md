@@ -72,7 +72,7 @@ Node shutdown joins existing operation work and makes one bounded bookkeeping pa
 Keep logical Active/Fulfilled/ScopeEnded orthogonal to physical phase, owned IDs
 and helper quarantine. Arm atomically snapshots current native ID/ordinal and
 requires matched-ended qualification plus current idle/UI/owedness guards. Only
-a different qualified Start beyond that baseline in the exact frozen scope may
+a different qualified Start or later EndFirst beyond that baseline in the exact frozen scope may
 fulfill an armed attempt. Generic contact, sibling activity, newer attention,
 list absence and delete outcomes cannot fulfill it.
 
@@ -381,7 +381,7 @@ Adding is conservative: crash before the actual write can leave an uncertain int
 
 Persist every discovered queue ID before acting on it. Discover duplicate owned rows by exact correlation and exact target, then cancel all within the bounded reconciliation page; do not delete by wake-text equality or touch user queue entries. Unexpected overflow retains Uncertain and prevents activation; it does not discard evidence to fit a limit. Rollback or local persistence failure after enqueue remains an external-effect uncertainty.
 
-Recovery scans durable unresolved intents, including retired/rebound seats, before dispatching new effects for those scopes. Cleanup may address the old queue scope to remove owned effects, but grants no authority to wake that old receiver. Native fallback is prohibited until the old effect is definitively absent from both pending and in-flight dispatch. A new process, storage selection or daemon boot does not establish that absence: old storage can replay on resume.
+Recovery scans durable unresolved intents, including retired/rebound seats, before dispatching new effects for those scopes. Cleanup may address the old queue scope to remove owned effects, but grants no authority to wake that old receiver. Native fallback remains prohibited for active possible effects except the bounded native-only degradation amendment below; that exception does not establish absence from pending or in-flight queue dispatch. A new process, storage selection or daemon boot does not establish that absence: old storage can replay on resume.
 
 ## Race handling and receiver contract
 
@@ -480,3 +480,38 @@ This is bounded source-version evidence, not a universal queue-only or future
 migration guarantee. The experiment masked the real home, disabled network and
 PID visibility, used no credentials or model/load/resume calls and removed all
 private copies. See qualification-sqlite-effects.md for exact provenance/limits.
+
+### Default-off and bounded native fallback amendment (2026-11-16)
+
+Main48 relayed the user decision: absent `programmatic_wake` is false. Existing
+settings.json startup semantics apply; true opts in new adds, false preserves
+native wake but never clears fences or stops existing recovery/cleanup helpers.
+Only owned qualification settings may be forced true by explicit queue proof.
+
+After immutable arm time plus30seconds, Accepted/Unknown with positive exact
+current-helper quiescence may claim one fresh guarded native effect per newer
+canonical frontier. Armed/in-flight/uncertain/missing-time states cannot. Durable
+fields are armed_at_utc, native_degraded_at_utc and native_fallback_json (<=2048),
+which holds member count, exact reservation/owner/ticket, terminal outcome and
+seven-scalar high-water/prior arrays. Merge publication pairs by their logical
+order, preserving components absent from the current projection; compare against
+aggregate coverage of every applicable blocker. A same-ticket replay reads no
+new authority. An exact full-group typed NoEffect restores prior coverage; any
+unknown/error/cancel/crash/missing callback stays spent for that frontier. A
+strictly newer canonical frontier may claim once without another queue add.
+Late completion cannot touch newer claims; partial old groups do not roll back.
+
+For still-unread threshold-admitted lazy work already covered by its queue
+reservation, candidate discovery reuses the same due/blocker/high-water predicate
+as the writer claim. The derived bit is selection evidence only; the existing
+wake lane rechecks canonical eligibility and keeps its spacing/backoff and lazy
+owed check. No frontier, publication or seat contact is cleared or fabricated.
+
+The dispatcher captures the raw host result before verification: only
+submit_prompt_if_owed Ok(None) proves NoEffect. Submitted and OutcomeUnknown stay
+spent; generic host errors/cancellation are Unknown. Completion uses a fresh
+bounded noncancelled metadata budget; failure stays spent. Existing Composer
+registration/final guards/verification/unreceived semantics remain. The original
+intent/IDs/logical status persist; queue_unreceived is diagnostic only. Qualified
+new EndFirst may fulfill purpose without qualifying a queue bootstrap. See the
+normative TRUST-POLICY amendment for all retained limits.

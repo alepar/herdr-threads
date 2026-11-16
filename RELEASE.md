@@ -33,13 +33,27 @@ Start ordinary push/PR CI on the candidate SHA alongside local qualification; on
 scripts/release-qualify --evidence-dir /tmp/release-X.Y.Z
 ```
 
-For supported Linux Codex queue-wake qualification, require explicit queue proof:
+Queue wake is off by default. Ordinary qualification tests native wake when the
+selected install has not opted in. On Linux, the release driver resolves the
+selected install through the candidate's read-only `doctor --json` and reads its
+bounded node settings. `"programmatic_wake": true` selects queue proof in the
+owned qualification instance. Unrelated doctor health warnings do not change
+routing; unresolved or invalid settings block automatic mode selection.
+
+To require queue proof explicitly, including when the operator setting is off:
 
 ```sh
 scripts/release-qualify --queue-proof --evidence-dir /tmp/release-X.Y.Z
 ```
 
-This forwards `--queue-proof` only to authenticated wake qualification. Eligible Codex positives must prove Accepted queue submission and use the accepted 15-second window; native/Claude windows and existing UI/resume gates remain unchanged. Non-Linux and queue-unsupported qualification use the existing command above. Linux Codex qualification automatically records bounded transport evidence, including in the unflagged command: observed Accepted queue wakes use the accepted 15-second window, observed native wakes retain six seconds, and Unknown fails. The flag additionally requires positive Accepted proof for positive queue cases; an all-native run cannot satisfy that request. Explicit queue proof is refused before any work on non-Linux; it never silently downgrades requested proof. Existing UI/resume safety gates remain unchanged.
+This flag bypasses operator-setting discovery and enables queue wake only in the
+owned isolated instance before its daemon starts. It never edits operator config
+or restarts the operator daemon. Missing/false setting keeps isolated native wake;
+non-Linux ordinary qualification stays native and rejects an explicit proof flag
+before work. Linux Codex always records bounded transport observations: actual
+Accepted queue wakes use 15 seconds, native wakes retain 6 seconds, and Unknown fails.
+The flag additionally requires Accepted for positive queue cases; an all-native
+run cannot claim positive queue qualification. Existing UI/resume gates remain.
 
 The driver checks formatting, harness neutrality, peer wire compatibility (`scripts/check-wire-compat`), both clippy feature variants and default features; prebuilds tests and release-proof fixtures; runs the full suite alone with its five-minute budget and unconditional run-scoped leak check; and builds the candidate. Afterward the upstream inventory check and Herdr matrix run alongside the wake driver's self-test and authenticated wake against the newest listed Herdr. The isolated package lifecycle gate and exact CI Python installer commands plus shell installer harness run afterward, avoiding competition with timing-sensitive tests. Every branch has a short private scratch root, state directory and run ID; logs, matrix/wake evidence and `summary.json` are retained. A failed candidate build blocks live wake and binary installers while independent checks continue. Any failed or blocked step makes the driver fail; inspect every failure and retain its evidence.
 

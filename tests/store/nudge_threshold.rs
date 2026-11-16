@@ -214,6 +214,7 @@ fn direct_candidate(store: &SqliteStore) -> WakeCandidate {
         &SeatId::new("s"),
         &scan.attention,
         scan.decision_seq,
+        crate::protocol::time::UtcMillis(100),
     )
     .unwrap()
 }

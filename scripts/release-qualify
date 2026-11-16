@@ -10,6 +10,8 @@ import argparse
 import concurrent.futures
 import json
 import os
+import selectors
+import signal
 import shutil
 from pathlib import Path
 import subprocess
@@ -26,6 +28,83 @@ def newest_release(table: Path) -> str:
     versions = {line.split('\t')[0] for line in table.read_text().splitlines()
                 if line.strip() and not line.startswith('#')}
     return max(versions, key=lambda v: tuple(map(int, v.split('.'))))
+
+
+DOCTOR_PROBE_TIMEOUT = 5.0
+DOCTOR_OUTPUT_LIMIT = 256 * 1024
+
+def _unique_object(pairs):
+    result = {}
+    for key, value in pairs:
+        if key in result:
+            raise ValueError('ambiguous duplicate JSON key')
+        result[key] = value
+    return result
+
+
+def _doctor_report(command=None):
+    """Private bounded read-only probe; never retain its raw output or paths."""
+    command = command or [str(ROOT / 'bin/herdr-threads'), 'doctor', '--json']
+    child = subprocess.Popen(command, cwd=ROOT, env=os.environ.copy(), stdin=subprocess.DEVNULL,
+                             stdout=subprocess.PIPE, stderr=subprocess.DEVNULL, start_new_session=True)
+    output = bytearray()
+    deadline = time.monotonic() + DOCTOR_PROBE_TIMEOUT
+    selector = selectors.DefaultSelector()
+    selector.register(child.stdout, selectors.EVENT_READ)
+    try:
+        while True:
+            left = deadline - time.monotonic()
+            if left <= 0:
+                raise RuntimeError('queue mode canonical probe timed out')
+            if not selector.select(left):
+                raise RuntimeError('queue mode canonical probe timed out')
+            chunk = os.read(child.stdout.fileno(), min(65536, DOCTOR_OUTPUT_LIMIT + 1 - len(output)))
+            if not chunk:
+                break
+            output.extend(chunk)
+            if len(output) > DOCTOR_OUTPUT_LIMIT:
+                raise RuntimeError('queue mode canonical output bound exceeded')
+        try:
+            child.wait(timeout=max(0.001, deadline - time.monotonic()))
+        except subprocess.TimeoutExpired:
+            raise RuntimeError('queue mode canonical probe timed out') from None
+        try:
+            return json.loads(output, object_pairs_hook=_unique_object)
+        except (ValueError, UnicodeError):
+            raise RuntimeError('queue mode canonical probe returned invalid JSON') from None
+    finally:
+        selector.close()
+        child.stdout.close()
+        if child.poll() is None:
+            try:
+                os.killpg(child.pid, signal.SIGKILL)
+            except ProcessLookupError:
+                pass
+            child.wait(timeout=2)
+
+
+def operator_programmatic_wake():
+    report = _doctor_report()
+    doctor = report.get('doctor') if isinstance(report, dict) else None
+    node = doctor.get('node_dir') if isinstance(doctor, dict) else None
+    if not isinstance(node, str) or not Path(node).is_absolute():
+        raise RuntimeError('queue mode canonical node directory unresolved')
+    try:
+        with (Path(node) / 'settings.json').open('rb') as settings:
+            raw = settings.read(4097)
+    except FileNotFoundError:
+        return False
+    except (OSError, ValueError):
+        raise RuntimeError('queue mode operator settings unreadable') from None
+    if len(raw) > 4096:
+        raise RuntimeError('queue mode operator settings bound exceeded')
+    try:
+        settings = json.loads(raw, object_pairs_hook=_unique_object)
+    except (ValueError, UnicodeError):
+        raise RuntimeError('queue mode operator settings invalid JSON') from None
+    if not isinstance(settings, dict) or type(settings.get('programmatic_wake', False)) is not bool:
+        raise RuntimeError('queue mode programmatic_wake must be a boolean')
+    return settings.get('programmatic_wake', False)
 
 
 def qualify(evidence: Path, self_test: bool, queue_proof: bool = False) -> int:
@@ -90,9 +169,8 @@ def qualify(evidence: Path, self_test: bool, queue_proof: bool = False) -> int:
         leak('suite', suite_env)
     candidate_ok = step('candidate', ['nice', 'scripts/build.sh'], env)
 
-    def blocked(name):
-        results.append(dict(step=name, command=[], exit=1, seconds=0, status='BLOCKED',
-                            error='candidate build failed'))
+    def blocked(name, reason='candidate build failed'):
+        results.append(dict(step=name, command=[], exit=1, seconds=0, status='BLOCKED', error=reason))
 
     def matrix():
         branch = environment('matrix')
@@ -104,14 +182,30 @@ def qualify(evidence: Path, self_test: bool, queue_proof: bool = False) -> int:
             leak('matrix', branch)
 
     def wake():
+        # Resolve under the untouched operator environment, before the isolated
+        # branch gets its own state/XDG roots. Explicit proof never reads config.
+        required = queue_proof
+        mode_ok = True
+        if not self_test and candidate_ok and not queue_proof and sys.platform == 'linux':
+            started = time.monotonic()
+            try:
+                required = operator_programmatic_wake()
+                results.append(dict(step='queue-mode', command=[], exit=0, seconds=round(time.monotonic()-started, 3),
+                                    status='PASS', source='operator settings', programmatic_wake=required))
+            except (OSError, RuntimeError) as error:
+                mode_ok = False
+                results.append(dict(step='queue-mode', command=[], exit=1, seconds=round(time.monotonic()-started, 3),
+                                    status='FAIL', error=str(error) if isinstance(error, RuntimeError) else 'queue mode canonical probe unavailable'))
         branch = environment('wake')
         try:
             ready = step('wake-self-test', ['python3', 'scripts/wake-e2e.py', '--self-test'], branch)
             if not self_test and not candidate_ok:
                 blocked('wake')
+            elif not self_test and not mode_ok:
+                blocked('wake', 'queue mode selection failed')
             elif not self_test and ready:
                 step('wake', ['scripts/wake-e2e-herdr', newest_release(ROOT / 'tests/herdr-releases.tsv'),
-                              '--evidence-dir', str(evidence / 'wake')] + (['--queue-proof'] if queue_proof else []), branch)
+                              '--evidence-dir', str(evidence / 'wake')] + (['--queue-proof'] if required else []), branch)
         finally:
             leak('wake', branch)
 

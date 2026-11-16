@@ -276,7 +276,7 @@ pub(super) fn arm(
     },|tx,at,native| {
         let Some(native)=native else{return Ok(None)};
         let next=revision.checked_add(1).ok_or_else(corrupt)?;
-        let changed=tx.execute("UPDATE wake_intents SET phase='armed',revision=?3,arm_nonce=?4,updated_at=?5,arm_native_id=?7,arm_native_ordinal=?8,add_helper_json=helper_json WHERE instance_id=?1 AND attempt=?2 AND phase='prepared' AND revision=?6",params![store.instance,r.attempt.as_str(),signed(next)?,nonce.to_string(),at.utc.0,signed(revision)?,native.id.as_str(),signed(native.ordinal)?]).map_err(store_error)?;
+        let changed=tx.execute("UPDATE wake_intents SET phase='armed',revision=?3,arm_nonce=?4,updated_at=?5,arm_native_id=?7,arm_native_ordinal=?8,add_helper_json=helper_json,armed_at_utc=?5 WHERE instance_id=?1 AND attempt=?2 AND phase='prepared' AND revision=?6",params![store.instance,r.attempt.as_str(),signed(next)?,nonce.to_string(),at.utc.0,signed(revision)?,native.id.as_str(),signed(native.ordinal)?]).map_err(store_error)?;
         Ok((changed==1).then(||WakeArmTicket {attempt:r.attempt.clone(),revision:next,owner_boot:r.daemon_boot,nonce}))
     })
 }
@@ -497,3 +497,8 @@ pub(super) use activation::*;
 
 mod selection;
 pub(super) use selection::queue_wake_selection;
+
+pub(crate) mod native_fallback;
+pub(crate) use native_fallback::{
+    claim as claim_native_fallback, degraded_at_for_seat, finish as finish_native_fallback,
+};

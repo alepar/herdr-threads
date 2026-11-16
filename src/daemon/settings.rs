@@ -19,6 +19,8 @@
 //!   spacing between wake attempts.
 //! - `"wake_batch_delay_ms"` (default 0, zero disables): initial
 //!   ordinary attention batching, separate from retry spacing.
+//! - `"programmatic_wake"` (default false): enable new programmatic wake
+//!   attempts. Retained effect fences and cleanup remain active when false.
 //! - `"auto_archive_after_ms"` (default 3600000, zero disables): quiet-channel grace.
 //! - `"mod_delivery": "on" | "off"` (default `on`): `off` refuses mod watch
 //!   registrations (`disabled`); delivery stays on hooks plus native wake.
@@ -73,6 +75,7 @@ pub struct InstanceSettings {
     pub receipt_default_ms: u64,
     pub minimum_wake_delay_ms: u64,
     pub wake_batch_delay_ms: u64,
+    pub programmatic_wake: bool,
     #[serde(rename = "auto_archive_after_ms")]
     pub archive_after_ms: u64,
     pub mod_delivery: crate::protocol::watch::ModDeliverySetting,
@@ -109,6 +112,7 @@ impl Default for InstanceSettings {
             receipt_default_ms: DEFAULT_RECEIPT_MS,
             minimum_wake_delay_ms: DEFAULT_MINIMUM_WAKE_DELAY_MS,
             wake_batch_delay_ms: DEFAULT_WAKE_BATCH_DELAY_MS,
+            programmatic_wake: false,
             archive_after_ms: crate::store::archival::DEFAULT_AFTER_MS,
             mod_delivery: crate::protocol::watch::ModDeliverySetting::default(),
             summary: crate::protocol::summary::SummarySettings::default(),
@@ -209,6 +213,25 @@ mod tests {
         }
     }
 
+    #[test]
+    fn programmatic_wake_accepts_explicit_booleans_only() {
+        let absent = parse(b"{}").unwrap();
+        assert!(!absent.programmatic_wake);
+        assert!(
+            !crate::service::config::ServiceConfig::from_settings(&absent)
+                .unwrap()
+                .programmatic_wake()
+        );
+        let enabled = parse(br#"{"programmatic_wake":true}"#).unwrap();
+        assert!(enabled.programmatic_wake);
+        assert!(
+            crate::service::config::ServiceConfig::from_settings(&enabled)
+                .unwrap()
+                .programmatic_wake()
+        );
+        assert!(parse(br#"{"programmatic_wake":false}"#).is_ok());
+        assert!(parse(br#"{"programmatic_wake":"on"}"#).is_err());
+    }
     #[test]
     fn wake_batch_delay_is_separate_and_zero_disables() {
         let defaults = load(dir_with(Some("{}")).path()).unwrap();

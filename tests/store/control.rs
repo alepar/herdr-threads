@@ -13539,6 +13539,7 @@ fn invitation_origin_wake_after_notice_offer(mod_path: bool, discovery_path: boo
             discovery_high,
             100,
             &|| Ok(()),
+            crate::protocol::time::UtcMillis(100),
         )
         .unwrap();
         assert!(
@@ -13575,6 +13576,7 @@ fn invitation_origin_wake_after_notice_offer(mod_path: bool, discovery_path: boo
             &origin,
             &scan.attention,
             scan.decision_seq,
+            crate::protocol::time::UtcMillis(100),
         )
         .unwrap();
         assert!(
@@ -13651,6 +13653,7 @@ fn invitation_origin_wake_after_notice_offer(mod_path: bool, discovery_path: boo
             discovery_high,
             100,
             &|| Ok(()),
+            crate::protocol::time::UtcMillis(100),
         )
         .unwrap();
         assert!(

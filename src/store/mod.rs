@@ -1228,6 +1228,8 @@ pub(crate) struct WakeDiscovery {
 /// transaction: walk live non-human seats after `after` up to `high_water`,
 /// probe each for pending rows, examine only seats with a hit (one unit of the
 /// 100-unit cap each) and emit those whose candidate has actionable work.
+// Keep pagination bounds separate from the explicit observation clock and budget check.
+#[allow(clippy::too_many_arguments)]
 pub(crate) fn discover_wake_candidates(
     db: &Connection,
     instance: &str,
@@ -1236,6 +1238,7 @@ pub(crate) fn discover_wake_candidates(
     high_water: u64,
     limit: usize,
     check_budget: &dyn Fn() -> Result<(), ApiError>,
+    now: UtcMillis,
 ) -> Result<WakeDiscovery, ApiError> {
     let mut items = Vec::new();
     let mut item_positions = Vec::new();
@@ -1272,6 +1275,7 @@ pub(crate) fn discover_wake_candidates(
             &SeatId::new(&seat_raw),
             &wake_attention.attention,
             wake_attention.decision_seq,
+            now,
         )?;
         if candidate.has_actionable_work() {
             if items.len() >= limit {
@@ -1352,6 +1356,7 @@ fn wake_candidates_page(
         high_water,
         usize::from(page.limit),
         &|| wake_discovery_budget_check(budget, context.clock()),
+        context.clock().utc_now(),
     )?;
     page_fit::fit_internal(
         page.max_bytes as usize,
@@ -2188,6 +2193,7 @@ impl StorePort for SqliteStore {
             &claim.seat,
             &wake_attention.attention,
             wake_attention.decision_seq,
+            self.context.clock().utc_now(),
         )?
         .owes_turn_end())
     }
@@ -3571,6 +3577,23 @@ impl StorePort for SqliteStore {
         budget: &CallBudget,
     ) -> Result<Option<crate::ports::NativeTurnState>, ApiError> {
         native_turn::state(self, binding, budget)
+    }
+    fn claim_native_wake_fallback(
+        &self,
+        reservation: &crate::ports::WakeReservation,
+        ticket: uuid::Uuid,
+        budget: &CallBudget,
+    ) -> Result<bool, ApiError> {
+        wake_intents::claim_native_fallback(self, reservation, ticket, budget)
+    }
+    fn finish_native_wake_fallback(
+        &self,
+        reservation: &crate::ports::WakeReservation,
+        ticket: uuid::Uuid,
+        outcome: crate::ports::NativeFallbackOutcome,
+        budget: &CallBudget,
+    ) -> Result<bool, ApiError> {
+        wake_intents::finish_native_fallback(self, reservation, ticket, outcome, budget)
     }
     fn queue_wake_selection(
         &self,

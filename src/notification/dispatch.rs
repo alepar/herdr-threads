@@ -679,6 +679,7 @@ impl<H: HostPort + ?Sized, C: ReservationCheck + ?Sized> NativeWakeDispatcher<'_
             self.check
                 .owes_wake(&reservation, &reached, &context.budget)
         };
+        let mut native_fallback = None;
         if let Some(queue) = self.queue {
             // Retain Queue before the external call: an unwinding adapter may have submitted.
             // Never start an effect when its transport cannot be retained for the scheduler.
@@ -710,7 +711,15 @@ impl<H: HostPort + ?Sized, C: ReservationCheck + ?Sized> NativeWakeDispatcher<'_
                 &still_owed,
                 context,
             ) {
-                Ok(crate::notification::queue::QueueDispatch::Native) => {
+                Ok(
+                    dispatch @ (crate::notification::queue::QueueDispatch::Native
+                    | crate::notification::queue::QueueDispatch::NativeFallback(_)),
+                ) => {
+                    if let crate::notification::queue::QueueDispatch::NativeFallback(ticket) =
+                        dispatch
+                    {
+                        native_fallback = Some(ticket);
+                    }
                     let Ok(mut transports) = self.transports.lock() else {
                         return refuse(RefusalCause::Unavailable, WakeOutcome::Unavailable, None);
                     };
@@ -736,6 +745,21 @@ impl<H: HostPort + ?Sized, C: ReservationCheck + ?Sized> NativeWakeDispatcher<'_
         let submitted =
             self.host
                 .submit_prompt_if_owed(&target, text, &prompt_context, &still_owed);
+        if let (Some(ticket), Some(queue)) = (native_fallback, self.queue) {
+            // Capture the actual host boundary before composer verification can
+            // normalize Submitted into OutcomeUnknown. Errors are never NoEffect.
+            let result = match &submitted {
+                Ok(None) => crate::ports::NativeFallbackOutcome::NoEffect,
+                Ok(Some(PromptOutcome::Submitted)) => {
+                    crate::ports::NativeFallbackOutcome::Submitted
+                }
+                Ok(Some(PromptOutcome::OutcomeUnknown)) | Err(_) => {
+                    crate::ports::NativeFallbackOutcome::Unknown
+                }
+            };
+            // A failed bounded completion leaves the durable claim spent.
+            let _ = queue.finish_native_fallback(&reservation, ticket, result);
+        }
         let diagnostic = None;
         let submitted = match submitted {
             Ok(Some(submitted)) => submitted,

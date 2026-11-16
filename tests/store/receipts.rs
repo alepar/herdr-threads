@@ -3969,6 +3969,7 @@ fn receipt_discovery_coalesced_origins_survive_offers_departure_and_partial_ack(
         high,
         100,
         &|| Ok(()),
+        crate::protocol::time::UtcMillis(100),
     )
     .unwrap();
     for seat in ["a", "b"] {
@@ -4001,6 +4002,7 @@ fn receipt_discovery_coalesced_origins_survive_offers_departure_and_partial_ack(
             high,
             100,
             &|| Ok(()),
+            crate::protocol::time::UtcMillis(100),
         )
         .unwrap();
         let refreshed = refreshed
@@ -4139,6 +4141,7 @@ fn receipt_discovery_coalesced_origins_survive_offers_departure_and_partial_ack(
             high,
             100,
             &|| Ok(()),
+            crate::protocol::time::UtcMillis(100),
         )
         .unwrap();
         for seat in ["a", "b"] {
@@ -4154,6 +4157,7 @@ fn receipt_discovery_coalesced_origins_survive_offers_departure_and_partial_ack(
                 &SeatId::new(seat),
                 &waking.attention,
                 waking.decision_seq,
+                crate::protocol::time::UtcMillis(100),
             )
             .unwrap();
             assert_eq!(
@@ -4592,6 +4596,7 @@ fn receipt_discovery_orphan_wrong_audience_and_service_markers_cannot_invent_ori
         high,
         100,
         &|| Ok(()),
+        crate::protocol::time::UtcMillis(100),
     )
     .unwrap();
     assert!(

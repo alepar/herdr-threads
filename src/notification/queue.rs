@@ -19,11 +19,20 @@ use std::{path::PathBuf, sync::Arc};
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum QueueDispatch {
     Native,
+    NativeFallback(uuid::Uuid),
     Refused,
     Submitted,
     Unknown,
 }
 pub trait QueueWakePort: Send + Sync {
+    fn finish_native_fallback(
+        &self,
+        _reservation: &WakeReservation,
+        _ticket: uuid::Uuid,
+        _outcome: NativeFallbackOutcome,
+    ) -> Result<(), ApiError> {
+        Ok(())
+    }
     #[allow(clippy::too_many_arguments)]
     fn attempt(
         &self,
@@ -36,6 +45,7 @@ pub trait QueueWakePort: Send + Sync {
     ) -> Result<QueueDispatch, ApiError>;
 }
 pub struct QueueWakeRuntime {
+    programmatic_wake: bool,
     store: Arc<dyn StorePort>,
     writer: Arc<FairWriter>,
     clock: Arc<dyn Clock>,
@@ -60,6 +70,7 @@ impl QueueWakeRuntime {
         recovery: Arc<QueueRecovery>,
     ) -> Self {
         Self {
+            programmatic_wake: false,
             store,
             writer,
             clock,
@@ -69,6 +80,10 @@ impl QueueWakeRuntime {
             recovery,
             error_log: Arc::new(crate::daemon::logs::NoopLaneErrorLog),
         }
+    }
+    pub fn with_programmatic_wake(mut self, enabled: bool) -> Self {
+        self.programmatic_wake = enabled;
+        self
     }
     pub fn with_error_log(mut self, error_log: Arc<dyn crate::daemon::logs::LaneErrorLog>) -> Self {
         self.error_log = error_log;
@@ -275,6 +290,18 @@ impl QueueWakeRuntime {
     }
 }
 impl QueueWakePort for QueueWakeRuntime {
+    fn finish_native_fallback(
+        &self,
+        reservation: &WakeReservation,
+        ticket: uuid::Uuid,
+        outcome: NativeFallbackOutcome,
+    ) -> Result<(), ApiError> {
+        let budget = self.completion_budget();
+        self.write(&budget, |store| {
+            store.finish_native_wake_fallback(reservation, ticket, outcome, &budget)
+        })
+        .map(|_| ())
+    }
     fn attempt(
         &self,
         r: &WakeReservation,
@@ -294,9 +321,21 @@ impl QueueWakePort for QueueWakeRuntime {
         // Fences are checked before capture, including unsupported native-only paths.
         let selection = self.store.queue_wake_selection(r, &context.budget)?;
         if selection.blockers.native {
-            return Ok(QueueDispatch::Refused);
+            guard()?;
+            if !owed()? {
+                return Ok(QueueDispatch::Refused);
+            }
+            let ticket = uuid::Uuid::new_v4();
+            let granted = self.write(&context.budget, |store| {
+                store.claim_native_wake_fallback(r, ticket, &context.budget)
+            })?;
+            return Ok(if granted {
+                QueueDispatch::NativeFallback(ticket)
+            } else {
+                QueueDispatch::Refused
+            });
         }
-        if !use_queue || selection.blockers.programmatic {
+        if !use_queue || !self.programmatic_wake || selection.blockers.programmatic {
             return Ok(QueueDispatch::Native);
         }
         let Some(binding) = selection.binding else {

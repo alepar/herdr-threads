@@ -1,5 +1,7 @@
 //! Transport selection must not apply composer heuristics to queue effects.
 use super::*;
+use crate::protocol::results::ErrorCode;
+use crate::scheduler::SubmissionVerification;
 use crate::{
     notification::{
         dispatch::MAX_ACTIVE_PROMPTS,
@@ -24,7 +26,17 @@ impl Clock for QueueClock {
         MonoInstant(self.0.load(Ordering::SeqCst))
     }
 }
+#[derive(Clone, Copy, Default)]
+enum NativeBoundary {
+    #[default]
+    Normal,
+    NoEffect,
+    Error,
+    Unknown,
+    Cancelled,
+}
 struct QueueHost {
+    boundary: NativeBoundary,
     inner: TextRecordingHost,
     guards: Mutex<Vec<u64>>,
     prompts: Mutex<Vec<u64>>,
@@ -34,6 +46,7 @@ struct QueueHost {
 impl QueueHost {
     fn new() -> Self {
         Self {
+            boundary: NativeBoundary::Normal,
             inner: TextRecordingHost {
                 observation: observation(false),
                 host_bound_harness: None,
@@ -108,6 +121,24 @@ impl HostPort for QueueHost {
         if !owed()? {
             return Ok(None);
         }
+        match self.boundary {
+            NativeBoundary::NoEffect => return Ok(None),
+            NativeBoundary::Error => {
+                return Err(ApiError::new(
+                    ErrorCode::HostUnavailable,
+                    "host boundary error",
+                ));
+            }
+            NativeBoundary::Unknown => return Ok(Some(PromptOutcome::OutcomeUnknown)),
+            NativeBoundary::Cancelled => {
+                ctx.budget.cancellation.cancel();
+                return Err(ApiError::new(
+                    ErrorCode::Cancelled,
+                    "cancelled host boundary",
+                ));
+            }
+            NativeBoundary::Normal => {}
+        }
         self.submit_prompt(target, text, ctx).map(Some)
     }
     fn send_submit_key(
@@ -143,6 +174,7 @@ impl HostPort for QueueHost {
     }
 }
 struct Queue {
+    fallback_finished: Mutex<Vec<(uuid::Uuid, crate::ports::NativeFallbackOutcome)>>,
     dispatch: QueueDispatch,
     calls: Mutex<Vec<bool>>,
     clock: Arc<QueueClock>,
@@ -152,6 +184,7 @@ struct Queue {
 impl Queue {
     fn new(dispatch: QueueDispatch, clock: &Arc<QueueClock>) -> Self {
         Self {
+            fallback_finished: Mutex::new(Vec::new()),
             dispatch,
             calls: Mutex::new(Vec::new()),
             clock: clock.clone(),
@@ -161,6 +194,18 @@ impl Queue {
     }
 }
 impl QueueWakePort for Queue {
+    fn finish_native_fallback(
+        &self,
+        _: &WakeReservation,
+        ticket: uuid::Uuid,
+        outcome: crate::ports::NativeFallbackOutcome,
+    ) -> Result<(), ApiError> {
+        self.fallback_finished
+            .lock()
+            .unwrap()
+            .push((ticket, outcome));
+        Ok(())
+    }
     fn attempt(
         &self,
         _: &WakeReservation,
@@ -420,3 +465,43 @@ fn queue_transport_native_fallback_keeps_final_host_owed_check() {
     assert_eq!(*host.guards.lock().unwrap(), [5_000, 2_000]);
     assert!(host.inner.typed.lock().unwrap().is_empty());
 }
+
+#[test]
+fn native_fallback_completion_uses_exact_host_boundary_before_verification() {
+    use crate::ports::NativeFallbackOutcome;
+    for (boundary, expected) in [
+        (NativeBoundary::Normal, NativeFallbackOutcome::Submitted),
+        (NativeBoundary::NoEffect, NativeFallbackOutcome::NoEffect),
+        (NativeBoundary::Error, NativeFallbackOutcome::Unknown),
+        (NativeBoundary::Unknown, NativeFallbackOutcome::Unknown),
+        (NativeBoundary::Cancelled, NativeFallbackOutcome::Unknown),
+    ] {
+        let clock = Arc::new(QueueClock::default());
+        let mut host = QueueHost::new();
+        host.boundary = boundary;
+        let ticket = uuid::Uuid::new_v4();
+        let queue = Queue::new(QueueDispatch::NativeFallback(ticket), &clock);
+        let dispatcher = NativeWakeDispatcher::new(&host, &CurrentReservation, clock.as_ref())
+            .with_queue(&queue);
+        let r = hooked();
+        let _ = dispatcher.attempt_wake(r.clone(), &context());
+        assert_eq!(
+            *queue.fallback_finished.lock().unwrap(),
+            [(ticket, expected)]
+        );
+        assert_eq!(
+            dispatcher.take_transport(&r.attempt),
+            WakeTransport::Composer
+        );
+        if matches!(boundary, NativeBoundary::Normal) {
+            assert_eq!(host.verified.load(Ordering::SeqCst), 1);
+            assert_eq!(
+                dispatcher.take_verification(&r.seat),
+                Some(SubmissionVerification::Unsubmitted)
+            );
+        }
+    }
+}
+
+#[path = "queue_fallback_lazy.rs"]
+mod fallback_lazy;

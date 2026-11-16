@@ -6,6 +6,15 @@ use crate::harness::{
 };
 use serde::{Deserialize, Serialize};
 
+/// Actual host boundary result, before verification normalization. Generic errors
+/// and cancellation are Unknown, never proof that nothing was submitted.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum NativeFallbackOutcome {
+    NoEffect,
+    Submitted,
+    Unknown,
+}
+
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct WakeIntentPreparation {
     pub adapter: AgentHarnessId,

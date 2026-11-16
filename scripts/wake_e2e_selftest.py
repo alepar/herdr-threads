@@ -2042,10 +2042,10 @@ class HarnessMode(TempDir):
             self.assertEqual(parsed_args(["--harness-mode", mode, "--codex-args", "-s read-only"]).codex_args,
                              "-s read-only")
 
-    def scratch_run(self, mode, harness=("claude", "codex")):
+    def scratch_run(self, mode, harness=("claude", "codex"), queue_proof=False):
         calls = []
         r = object.__new__(W.Run)
-        r.args = SimpleNamespace(harness=list(harness), harness_mode=mode, codex_auth_home=str(self.tmp / "src"))
+        r.args = SimpleNamespace(harness=list(harness), harness_mode=mode, codex_auth_home=str(self.tmp / "src"), queue_proof=queue_proof)
         r.root = self.tmp / "root"
         r.state, r.home, r.claude_cfg = r.root / "state", r.root / "home", r.root / "claude-config"
         r.codex_home, r.bindir, r.bin, r.endpoint, r.cwd = r.root / "codex-home", r.root / "bin", "/fake/ht", "/s", "/repo"
@@ -2057,12 +2057,26 @@ class HarnessMode(TempDir):
             if argv[:2] == ("daemon", "ensure"):
                 settings = json.loads((r.state / "node/settings.json").read_text())
                 self.assertIs(settings["sync"]["discover"], False)
+                self.assertIs(settings["programmatic_wake"], bool(queue_proof))
                 self.assertEqual(stat.S_IMODE((r.state / "node/settings.json").stat().st_mode), 0o600)
             calls.append((argv, dict(env or {})))
             return ""
         r.ht = fake_ht
         r.scratch()
         return r, calls
+
+    def test_required_queue_proof_enables_only_owned_settings_before_daemon(self):
+        operator = self.tmp / "operator/node/settings.json"
+        operator.parent.mkdir(parents=True)
+        original = b'{"programmatic_wake":false,"sentinel":"operator-private"}'
+        operator.write_bytes(original)
+        with mock.patch.dict(os.environ, {"HERDR_PLUGIN_STATE_DIR": str(operator.parent.parent)}):
+            r, calls = self.scratch_run("macos", harness=("codex",), queue_proof=True)
+        self.assertEqual(operator.read_bytes(), original)
+        settings = json.loads((r.state / "node/settings.json").read_text())
+        self.assertIs(settings.get("programmatic_wake"), True)
+        self.assertNotIn("sentinel", settings)
+        self.assertTrue(any(argv[:2] == ("daemon", "ensure") for argv, _ in calls))
 
     def test_shim_logs_each_call_for_the_extra_inbox_check(self):
         with Env(ANTHROPIC_API_KEY=FAKE_API_KEY):

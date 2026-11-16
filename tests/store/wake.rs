@@ -900,6 +900,7 @@ fn unresolved_recovery_hold_blocks_candidate_continuity_even_with_fresh_target()
         &SeatId::new("s"),
         &attention,
         1,
+        crate::protocol::time::UtcMillis(100),
     )
     .unwrap();
     assert!(!candidate.continuity_resolved);
@@ -958,6 +959,7 @@ fn candidate_binding_is_the_newest_connected_top_level_binding() {
         &SeatId::new("s"),
         &attention,
         1,
+        crate::protocol::time::UtcMillis(100),
     )
     .unwrap();
     assert_eq!(candidate.binding_generation, Some(1));

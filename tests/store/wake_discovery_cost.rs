@@ -162,6 +162,7 @@ fn pass(db: &Connection) -> (u64, usize) {
             high as u64,
             100,
             &|| Ok(()),
+            crate::protocol::time::UtcMillis(100),
         )
         .unwrap()
     });

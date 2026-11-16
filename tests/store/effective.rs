@@ -1092,3 +1092,6 @@ fn unpublished_staging_is_invisible_and_first_later_anchor_is_immutable() {
     assert_eq!(after.deadline_at, Some(1300));
     assert_eq!(after.state, EffectiveReceiptState::Pending);
 }
+
+#[path = "effective_queue_warning.rs"]
+mod queue_warning;

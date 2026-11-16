@@ -80,13 +80,14 @@ impl<'a> AttentionSnapshot<'a> {
                 && !candidate.warning_offered_for_current_occupant(),
         };
         // A delivery row whose priority the seat's nudge threshold admits (p <= T; every
-        // priority when T < 0) and that is unreserved is eligible work on its
-        // own (DP8); it selects no prompt class, so the rest stays as is.
+        // priority when T < 0) is eligible when unreserved, or when a retained
+        // queue intent makes guarded native fallback due. It selects no prompt class.
         (selected.invites
             || selected.ordinary
             || selected.warnings
-            || candidate.has_unreserved_lazy())
-        .then_some(selected)
+            || candidate.has_unreserved_lazy()
+            || candidate.programmatic_fallback_due)
+            .then_some(selected)
     }
 }
 

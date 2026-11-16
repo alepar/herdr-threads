@@ -558,3 +558,18 @@ Herdr has no shutdown hook, so disabling or uninstalling does not stop the daemo
 3. Unlink or uninstall the plugin in Herdr.
 
 State is preserved. There is no data-deletion command.
+
+### Opt in to programmatic wake
+
+Queue-backed wake is off by default. Set `"programmatic_wake": true` alongside
+the existing keys in the selected install's `<state>/node/settings.json` to opt
+in; false or an absent key keeps native typed wake. Like other node settings,
+the value is read at the next daemon start. This changes only new programmatic
+adds. Existing intent fences and recovery remain active when off, and cleanup
+may still run helpers for previously queued work. Bodies and ACKs still arrive
+through the normal hooks.
+
+`--queue-proof` enables queue wake only in the release driver's owned isolated
+qualification instance; it does not edit the operator's settings or restart the
+operator's daemon. The release driver also selects that proof when the selected
+install has opted in.

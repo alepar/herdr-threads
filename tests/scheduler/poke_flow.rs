@@ -1157,6 +1157,7 @@ fn receipt_discovery_original_senders_use_actual_native_guard_and_recovery_path(
             high,
             100,
             &|| Ok(()),
+            crate::protocol::time::UtcMillis(100),
         )
         .unwrap();
         for (seat, session) in [("s", "session"), ("s2", "session2")] {
@@ -1180,6 +1181,7 @@ fn receipt_discovery_original_senders_use_actual_native_guard_and_recovery_path(
                 &SeatId::new(seat),
                 &attention.attention,
                 attention.decision_seq,
+                crate::protocol::time::UtcMillis(100),
             )
             .unwrap();
             assert!(!loaded.has_actionable_work());

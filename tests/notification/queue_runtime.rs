@@ -43,7 +43,14 @@ impl ProcessInfo for MissingProcess {
 }
 #[test]
 fn queue_runtime_checks_fences_before_capture_and_never_helpers_a_known_busy_binding() {
-    for (blocked, busy) in [(true, false), (false, true), (false, false)] {
+    for (enabled, blocked, busy) in [
+        (Some(true), true, false),
+        (Some(true), false, true),
+        (Some(true), false, false),
+        (Some(false), false, false),
+        (None, false, false),
+        (Some(false), true, false),
+    ] {
         let (store, _path, r, p) = super::wake_intents::fixture();
         let budget = super::wake_intents::budget();
         for edge in [TurnEdge::Busy, TurnEdge::Idle] {
@@ -95,6 +102,10 @@ fn queue_runtime_checks_fences_before_capture_and_never_helpers_a_known_busy_bin
             book,
             recovery,
         );
+        let runtime = match enabled {
+            Some(enabled) => runtime.with_programmatic_wake(enabled),
+            None => runtime,
+        };
         let target = SafeWakeTarget {
             seat: r.seat.clone(),
             target: r.target.clone(),
@@ -117,7 +128,7 @@ fn queue_runtime_checks_fences_before_capture_and_never_helpers_a_known_busy_bin
             .unwrap();
         assert_eq!(
             result,
-            if blocked || busy {
+            if blocked || (enabled == Some(true) && busy) {
                 QueueDispatch::Refused
             } else {
                 QueueDispatch::Native
@@ -125,7 +136,7 @@ fn queue_runtime_checks_fences_before_capture_and_never_helpers_a_known_busy_bin
         );
         assert_eq!(
             processes.calls.load(Ordering::SeqCst),
-            usize::from(!blocked && !busy),
+            usize::from(enabled == Some(true) && !blocked && !busy),
             "fences and known Busy must precede physical capture"
         );
         assert_eq!(
@@ -144,3 +155,6 @@ fn queue_runtime_checks_fences_before_capture_and_never_helpers_a_known_busy_bin
         std::fs::remove_dir_all(root).unwrap();
     }
 }
+
+#[path = "native_fallback_runtime.rs"]
+mod native_fallback_runtime;
