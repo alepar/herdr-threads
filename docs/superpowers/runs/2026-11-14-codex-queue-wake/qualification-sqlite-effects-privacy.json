@@ -1,0 +1,11 @@
+{
+  "kind": "evidence-only privacy redaction; not a rerun",
+  "requested_by": "main dOumbRbLRU4#65",
+  "historical_probe_sha256": "4b81af798e29b7c2b8ebdec93607db3d3ceb20723d1cfe70eda7d797615c97a2",
+  "preserved_probe_sha256": "0aa209fc2cc34b690d3d09523c1a01352bf8261898450a2c958751b106b0e20e",
+  "aggregate_sha256": "eb36cdfb3a28f8214599506a3b1237eef452ab121a5eccc45abac7c8598df9cf",
+  "initial_failure_sha256": "5f31c6322056f52ec4f752a8e2739469a6da76d1391c048e5c45e057862756b7",
+  "change": "Namespace alias /tmp/ht-effect under existing private tmpfs; real-home mask derived from Path.home() at runtime. No literal operator home.",
+  "validation": "Python AST parse; exact replacement-only comparison; no helper execution or new experiment",
+  "runtime_qualified_source": "7090d18af6996f7fdaed96717fef1f16c77883ba"
+}

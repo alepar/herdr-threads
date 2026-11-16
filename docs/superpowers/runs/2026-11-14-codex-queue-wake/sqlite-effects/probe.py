@@ -48,10 +48,10 @@ try:
  # Copied receiver ID only addresses its private metadata; correlations are generated.
  for cycle in range(3):
   home=scratch/f'home-{cycle}';home.mkdir(mode=0o700)
-  env={'PATH':'/usr/bin:/bin','HOME':f'/var/home/alepar/ht-effect/home-{cycle}','CODEX_HOME':f'/var/home/alepar/ht-effect/home-{cycle}','CODEX_SQLITE_HOME':'/var/home/alepar/ht-effect/databases','CODEX_EXEC_SERVER_URL':'','XDG_CONFIG_HOME':f'/var/home/alepar/ht-effect/home-{cycle}/config','XDG_STATE_HOME':f'/var/home/alepar/ht-effect/home-{cycle}/state','XDG_CACHE_HOME':f'/var/home/alepar/ht-effect/home-{cycle}/cache','HT_LEAK_RUN_ID':run_id,'HT_TEST_OWNER':str(os.getpid())}
-  argv=['/usr/bin/bwrap','--die-with-parent','--unshare-net','--unshare-pid','--ro-bind','/','/','--tmpfs','/var/home/alepar','--tmpfs','/run/user','--tmpfs','/tmp','--bind',str(scratch),'/var/home/alepar/ht-effect','--ro-bind',str(exe),'/tmp/helper','--proc','/proc','--dev','/dev','--clearenv']
+  env={'PATH':'/usr/bin:/bin','HOME':f'/tmp/ht-effect/home-{cycle}','CODEX_HOME':f'/tmp/ht-effect/home-{cycle}','CODEX_SQLITE_HOME':'/tmp/ht-effect/databases','CODEX_EXEC_SERVER_URL':'','XDG_CONFIG_HOME':f'/tmp/ht-effect/home-{cycle}/config','XDG_STATE_HOME':f'/tmp/ht-effect/home-{cycle}/state','XDG_CACHE_HOME':f'/tmp/ht-effect/home-{cycle}/cache','HT_LEAK_RUN_ID':run_id,'HT_TEST_OWNER':str(os.getpid())}
+  argv=['/usr/bin/bwrap','--die-with-parent','--unshare-net','--unshare-pid','--ro-bind','/','/','--tmpfs',str(pathlib.Path.home()),'--tmpfs','/run/user','--tmpfs','/tmp','--bind',str(scratch),'/tmp/ht-effect','--ro-bind',str(exe),'/tmp/helper','--proc','/proc','--dev','/dev','--clearenv']
   for k,v in env.items():argv+=['--setenv',k,v]
-  argv+=['--chdir',f'/var/home/alepar/ht-effect/home-{cycle}','/tmp/helper','-c','sqlite_home="/var/home/alepar/ht-effect/databases"','app-server','--listen','stdio://']
+  argv+=['--chdir',f'/tmp/ht-effect/home-{cycle}','/tmp/helper','-c','sqlite_home="/tmp/ht-effect/databases"','app-server','--listen','stdio://']
   child=subprocess.Popen(argv,env={'PATH':'/usr/bin:/bin','HT_LEAK_RUN_ID':run_id,'HT_TEST_OWNER':str(os.getpid())},stdin=subprocess.PIPE,stdout=subprocess.PIPE,stderr=subprocess.DEVNULL,start_new_session=True);children.add(child);started=time.monotonic();buf=b'';seq=0;opened_names=set();calls=[]
   for pipe in [child.stdout,child.stdin]:os.set_blocking(pipe.fileno(),False)
   def call(method,params):
