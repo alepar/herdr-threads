@@ -1,0 +1,34 @@
+{
+  "source_sha": "6ca86d79a853350410534617013e7379e7deccda",
+  "tree": "060578bc929650187130289b3523636391cbb5c3",
+  "main": "4dabf06ef90c8c9e8c459b524b509af3a2e98b31",
+  "run_id": "eedcb7d6-336f-4bf1-bc76-d2cd0ca2630e",
+  "exit_code": 100,
+  "cleanup_exit_code": 0,
+  "tests": 9779,
+  "passed": 9778,
+  "failed": 1,
+  "profile_skipped": 64,
+  "execution_seconds": 925.402,
+  "compile_seconds": 0.03,
+  "wall_seconds": 926.305,
+  "junit_sha256": "b7ec11e922aad55a0c097c2a3f30c2c13e12d072520aff597744ad59b4bad578",
+  "raw_log_sha256": {
+    "target/queue-qualification/fixed-tree-suite.log": "4d77f37c7da8d4b1d85d36e91504df2565dcc18bec545c30aab690a5750aff12",
+    "target/queue-qualification/fixed-tree-time.json": "df286685f62823d0f5ca11a0ab84c6b9264c3c2b737185b17f96842de916960a",
+    "target/queue-qualification/fixed-tree-junit.xml": "b7ec11e922aad55a0c097c2a3f30c2c13e12d072520aff597744ad59b4bad578",
+    "target/queue-qualification/fixed-tree-cleanup.log": "0b3a49cfa062a5b1922b797205d07f7cdc12b25c525d50f4bc60dcd04bb97f50",
+    "target/queue-qualification/fixed-tree-qualification.py": "a8655a487abe0706b34b989e1faef3c1349901509638b299ddbd0e837994cc5b"
+  },
+  "report_sha256": "53802d48a4fb60d0d0af18c4274bf52e3d33eb321c68634fff51b263110e8c19",
+  "failure": "real legacy-edge/hint-admission coupling masked by recorded:false assertion",
+  "disposition": "Astra268 narrow correction; main corrected full-run authorization relayed Astra269; no automatic blind repeat",
+  "performance_budget_met": false,
+  "host_sample_count": 459,
+  "observed_global_host_process_maxima": {
+    "cargo": 2,
+    "cargo-nextest": 1,
+    "rustc": 2,
+    "clippy-driver": 0
+  }
+}

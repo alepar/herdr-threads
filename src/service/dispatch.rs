@@ -1459,7 +1459,7 @@ impl DomainService {
             ));
         }
         // Keep store observation and memory projection ordered under one short writer turn.
-        let (recorded, valid) = {
+        let (recorded, hint_eligible) = {
             let _turn = writer.enter_foreground(budget, self.clock.as_ref())?;
             let update = self.store.record_native_turn(request, budget)?;
             let key = Self::turn_key(&request.claim);
@@ -1480,11 +1480,11 @@ impl DomainService {
             } else {
                 false
             };
-            (recorded, update.edge.is_some())
+            (recorded, update.hint_eligible)
         };
         // The hint belongs to the binding: verify it for the harness process the claim names,
         // not for the hook that carried it.
-        if valid
+        if hint_eligible
             && let Some(hint) = &request.tmux_hint
             && let Some(pid) = wake_hint_subject(&request.claim, peer.pid())
         {

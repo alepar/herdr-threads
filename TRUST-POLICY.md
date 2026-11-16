@@ -4118,6 +4118,11 @@ allowance and remain suppressed. This conservative reminder limit leaves ordinar
 fallback for genuinely newer attention and the sender's overdue warnings intact;
 no publication or frontier is fabricated to authorize another poke.
 
+Cooperative legacy activity may refresh the process-local turn book without
+canonical queue qualification. It does not authorize host wake hints: hint
+eligibility requires the separately accepted canonical binding edge. Unregistered,
+wrong-host, held and subagent claims gain no hint publication from legacy refresh.
+
 A qualified same-scope EndFirst for a different native turn ID beyond the arm
 observation ordinal may fulfill logical wake purpose when its Start was lost.
 It is completed activity evidence, not a receipt and not a matched Start/End

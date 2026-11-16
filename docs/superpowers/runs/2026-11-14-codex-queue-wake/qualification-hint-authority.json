@@ -1,0 +1,57 @@
+{
+  "basis": "6ca86d79a853350410534617013e7379e7deccda",
+  "authorization": [
+    "Astra268 explicit hint-authority correction",
+    "main corrected full-run disposition relayed Astra269"
+  ],
+  "files_sha256": {
+    "TRUST-POLICY.md": "bd3a011c7ab77667a8c9b6d19c9193286b1fc559f757afd5b6811ade605b5d2b",
+    "src/ports.rs": "39371ba189709cb33aea6b234c3e5cf8ccbb53d64545463d88c998f4f9f20ca3",
+    "src/ports/native_turn.rs": "2e6f887bdcfcb90ebd327e084e1389328ce3f00330aeaf5b9a647b83f2df3374",
+    "src/service/dispatch.rs": "8a97ed2c51101448ff1b611a28822131818858c54fb47e0abc1ca90979a66a3b",
+    "src/store/native_turn.rs": "e4070240f3eb46482ed4444683fe03b258ca3d0a4eaf3cc11cbb0c80d0cde8f9",
+    "tests/daemon/launch_gate_guards.rs": "5a348003bf96d29b1cfad8d4b8c51a379dcfd5b4ea67bcca42e56888fb77d6b6",
+    "tests/store/wake_intents.rs": "44f03586f818975354225a9555cc16457d1b243bfc84bbcaf021da778ae02050"
+  },
+  "report_sha256": "f94bd98671848c8468eaf404ae43f2ae074eb4b18965e055b0f5c239d14485f2",
+  "raw_log_sha256": {
+    "target/queue-qualification/hint-authority-red.log": "e2c88a9bed2730f434211939f06549ee0b840198176f2a152b910a940f9743cd",
+    "target/queue-qualification/hint-authority-red-cleanup.log": "0b3a49cfa062a5b1922b797205d07f7cdc12b25c525d50f4bc60dcd04bb97f50",
+    "target/queue-qualification/hint-authority-focused.log": "187bc263586a217232681f82586b44af50fe7c8901daa543e20a7e79a488b3ed",
+    "target/queue-qualification/hint-authority-focused-cleanup.log": "0b3a49cfa062a5b1922b797205d07f7cdc12b25c525d50f4bc60dcd04bb97f50",
+    "target/queue-qualification/hint-authority-focused-junit.xml": "32f829a370b75a89033a81e3bc8e8718fa6d38f191487366a7e075677a07cf44",
+    "target/queue-qualification/hint-authority-clippy.log": "d58a67b4fd30490097ddc97f211af64dcd7f1b055de781d48f67251f16164be8",
+    "target/queue-qualification/hint-authority-default.log": "95b3350af6465fcda3c9b9514d4df764fc2ca67846591bad20c11fec943b760e",
+    "target/queue-qualification/hint-authority-neutral.log": "0571ae932197d03bf87cac7e8fedc30f5b77a20bf576eb8a12db528b6525b7a3",
+    "target/queue-qualification/hint-authority-wire.log": "7dec4953c122c2b8b603f833295b91eaf35a4bc851f8abfb671f285445a50c2f",
+    "target/queue-qualification/hint-authority-docs.log": "2282d4c00ffbd8dfbe883e28d794eb367f0861caf928069054e006d36e7b7a87",
+    "target/queue-qualification/hint-authority-format.log": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+    "target/queue-qualification/hint-authority-diff.log": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+  },
+  "red": {
+    "tests": 1,
+    "failed": 1,
+    "seconds": 0.83,
+    "failure": "actual unregistered hint publication after preserving Busy memory"
+  },
+  "focused": {
+    "passed": 59,
+    "seconds": 4.091,
+    "compile_seconds": 196,
+    "run_id": "e9d4713b-a9ac-4093-bcdb-e23a653b520b",
+    "cleanup": "first scoped process and temp files clean"
+  },
+  "checks": {
+    "clippy-all-targets-all-features": "PASS",
+    "default-features": "PASS",
+    "fmt": "PASS",
+    "neutral": "PASS",
+    "wire": "PASS",
+    "docs": "PASS",
+    "diff": "PASS"
+  },
+  "clippy_seconds": 23.52,
+  "model_visible_added_bytes": 0,
+  "known_follow_up": "P1 ht-d2jq.8 unchanged; separate documented pre-arm failure gap",
+  "status": "narrow acceptance pending; corrected unfiltered suite not started"
+}

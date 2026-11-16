@@ -22,6 +22,9 @@ pub struct NativeTurnState {
 pub struct NativeTurnUpdate {
     /// A validated edge for the process-local book; None for refused or stale observations.
     pub edge: Option<TurnEdge>,
+    /// Canonical accepted binding evidence permits host hint publication.
+    /// A cooperative legacy activity edge alone never grants it.
+    pub hint_eligible: bool,
     /// A fresh accepted observation should refresh process-local activity;
     /// this does not imply a durable queue-qualified state change.
     pub changed: bool,

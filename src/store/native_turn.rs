@@ -95,7 +95,11 @@ fn canonical(
     Ok(Some(Canonical { binding, scope }))
 }
 fn update(edge: Option<TurnEdge>, changed: bool) -> NativeTurnUpdate {
-    NativeTurnUpdate { edge, changed }
+    NativeTurnUpdate {
+        hint_eligible: edge.is_some(),
+        edge,
+        changed,
+    }
 }
 pub(super) fn record(
     store: &SqliteStore,
@@ -107,7 +111,7 @@ pub(super) fn record(
         let Some(canonical)=canonical else {
             // Queue qualification does not gate cooperative legacy activity.
             let legacy=request.claim.instance==store.instance && request.claim.role==CallerRole::TopLevel && !request.claim.is_subagent();
-            return Ok(update(legacy.then_some(request.edge),legacy))
+            return Ok(NativeTurnUpdate {edge:legacy.then_some(request.edge),changed:legacy,hint_eligible:false})
         };
         let old=load(tx,&store.instance,&canonical.binding)?;
         let Some(id)=request.native_turn_id.as_ref().filter(|_|matches!(request.edge,TurnEdge::Busy|TurnEdge::Idle)).filter(|_|canonical.scope.is_some()) else {

@@ -1675,6 +1675,12 @@ fn canonical_absence_preserves_top_level_legacy_memory_edges_without_queue_quali
             (TurnEdge::Idle, TurnState::Idle),
         ] {
             report.edge = edge;
+            let update = store.record_native_turn(&report, &budget()).unwrap();
+            assert!(
+                !update.hint_eligible,
+                "legacy activity is not canonical hint authority"
+            );
+
             assert!(matches!(
                 service
                     .handle(

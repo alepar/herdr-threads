@@ -257,7 +257,19 @@ fn turn_state_hands_the_hint_to_the_host_for_the_harness_process() {
             77
         )
         .unwrap(),
-        CommandResult::TurnState { recorded: false }
+        CommandResult::TurnState { recorded: true }
+    );
+    assert_eq!(
+        f.service
+            .turn_state()
+            .state(&crate::service::turn_state::TurnKey {
+                seat: SeatId::new("s"),
+                generation: 1,
+                harness: "claude".into(),
+                native_session: NativeSessionId::new("sess")
+            }),
+        crate::service::turn_state::TurnState::Busy,
+        "legacy activity must remain recorded"
     );
     assert!(
         stub.hints().is_empty(),
@@ -282,6 +294,26 @@ fn turn_state_hands_the_hint_to_the_host_for_the_harness_process() {
         vec![("alice".to_owned(), 4242, hint.to_owned())],
         "the harness process, not the hook (77)"
     );
+
+    let mut wrong_host = claim(CallerRole::TopLevel, Some(harness));
+    wrong_host.host = HostLocator::parse("/different.sock").unwrap();
+    turn_state(&f, wrong_host, Some(hint), 77).expect("legacy activity on a noncanonical host");
+    assert_eq!(
+        stub.hints().len(),
+        1,
+        "wrong-host activity cannot publish a hint"
+    );
+
+    f.db.execute_batch("INSERT INTO recovery_holds(host_id,target_id,baseline_boot,baseline_epoch,reason) VALUES((SELECT host_id FROM herdr_hosts WHERE kind='named'),'alice','b',1,'test');").unwrap();
+    turn_state(
+        &f,
+        claim(CallerRole::TopLevel, Some(harness)),
+        Some(hint),
+        77,
+    )
+    .expect("held claim still reports legacy activity");
+    assert_eq!(stub.hints().len(), 1, "held activity cannot publish a hint");
+    f.db.execute("DELETE FROM recovery_holds", []).unwrap();
 
     turn_state(
         &f,

@@ -4372,6 +4372,7 @@ pub trait StorePort: ModStoreReads + Send + Sync {
     ) -> Result<NativeTurnUpdate, ApiError> {
         Ok(NativeTurnUpdate {
             edge: None,
+            hint_eligible: false,
             changed: false,
         })
     }
