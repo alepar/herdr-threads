@@ -1,0 +1,250 @@
+{
+  "source": {
+    "base": "4dabf06ef90c8c9e8c459b524b509af3a2e98b31",
+    "head": "a89dd07c07bc13467bd2f40a4cf15b162f3140d5",
+    "feature_worktree_status": "clean; head unchanged at final source check"
+  },
+  "independence": "same-family (OpenAI Codex) \u2014 seat-differentiated panel \u00b7 rung: manual fan-out",
+  "profile": "Production local same-user cooperative messaging tool. Wake mistakes cost user attention and quota; durable migration or receipt corruption is material. Same-user cooperative trust is explicit; adversarial caller hardening is out of scope.",
+  "engine_sha256": "7703e94bb50e4bcf1d4a7283a1c30583818dae83c3daa16c907ba1e06daa2d1e",
+  "config": {
+    "remainderCap": 50,
+    "iterationCap": 3,
+    "coreLanes": [
+      "correctness",
+      "security",
+      "premortem",
+      "simplicity-design",
+      "hot-path-perf",
+      "concurrency-async",
+      "regression"
+    ],
+    "models": {
+      "triage": "sonnet",
+      "scout": "opus",
+      "dedupe": "fable",
+      "judge": "sonnet",
+      "reporter": "fable"
+    }
+  },
+  "result": {
+    "verdict": "clean (0 nits) [converged]",
+    "reportMarkdown": "super-roast verdict: clean (0 nits) [converged]\nmode: pr        iteration: 3 of 3\nprofile (assumed): Production local same-user cooperative messaging tool. Wake mistakes cost user attention and quota; durable migration or receipt corruption is material. Same-user cooperative trust is explicit; adversarial caller hardening is out of scope.\ninputs: feat/codex-queue-control@a89dd07c0 vs main@4dabf06ef\ndelta vs prior: 0 new confirmed (0 Blocking) \u00b7 0 carried (0 Blocking) \u00b7 1 resolved \u00b7 0 regressed (0 Blocking) \u00b7 0 punch-listed (open)\ncoverage: scouts 16/16 (correctness, security, premortem, simplicity-design, hot-path-perf, concurrency-async, regression, data-migrations, deploy-safety, api-contract, observability, testing, test-causality-lifecycle, test-isolation-environment, test-suite-cost, hygiene-docs) \u00b7 raw 0 \u2192 deduped 0 \u2192 panel 0 \u00b7 spot 0 \u00b7 promoted 0 \u00b7 judge completion n/a (no panels) \u00b7 remainder-capped: 0 \u00b7 review readiness: coverage complete, provenance available \u2014 basis: \"Captured immutable heada89dd07c0 and base4dabf06ef, full source/diff in owned detached worktree, prior formal report and qualification-reap-ownership source manifests plus historical full/live evidence available.\"\nindependence: same-family (OpenAI Codex) \u2014 seat-differentiated panel \u00b7 rung: manual fan-out\nlane-yield (found/confirmed/unique/refuted): correctness 0/0/0/0 \u00b7 security 0/0/0/0 \u00b7 premortem 0/0/0/0 \u00b7 simplicity-design 0/0/0/0 \u00b7 hot-path-perf 0/0/0/0 \u00b7 concurrency-async 0/0/0/0 \u00b7 regression 0/0/0/0 \u00b7 data-migrations 0/0/0/0 \u00b7 deploy-safety 0/0/0/0 \u00b7 api-contract 0/0/0/0 \u00b7 observability 0/0/0/0 \u00b7 testing 0/0/0/0 \u00b7 test-causality-lifecycle 0/0/0/0 \u00b7 test-isolation-environment 0/0/0/0 \u00b7 test-suite-cost 0/0/0/0 \u00b7 hygiene-docs 0/0/0/0\n\nAll 16 scouts returned zero findings. No judge panels or spot checks were warranted. This round used static review only; it ran no new build, live reproduction or full test suite. Historical qualification evidence was available but does not qualify the current frozen tree. The parent owns the final frozen-tree suite gate; this clean review is not release qualification.\n\nResolved by absence-based tracking: src/harness/codex/wake/control.rs:221 \u2014 the prior Blocking finding concerning abandoned direct-child reap ownership did not resurface and was not punch-listed. The regression lane checked the current fix and returned no findings. This status does not claim a new runtime reproduction of the fix.\n\n## Confirmed findings\n\n- none\n\n## Not verified (beyond panel cap)\n\n- none\n\n## Not verified (dedupe failed or judge lost)\n\n- none\n\n## Beyond remainder cap (count only)\n\n- none\n\n## Rejected (with reason)\n\n- none\n\n## Unverified nits (spot-checked)\n\n- none\n\n## Escalations (need human)\n\n- none\n",
+    "confirmedCount": 0,
+    "escalations": [],
+    "reporterFailed": false,
+    "enforcement": [
+      "header: lane-yield inserted"
+    ],
+    "fixRegressions": [],
+    "coverage": {
+      "triageDead": false,
+      "scoutsDispatched": 16,
+      "scoutsDead": 0,
+      "unknownLanes": [],
+      "domainsDropped": [],
+      "rawFindings": 0,
+      "dedupedFindings": 0,
+      "dedupeOrphans": 0,
+      "beyondCap": 0,
+      "beyondPanelCap": 0,
+      "dedupeDead": false,
+      "panelCount": 0,
+      "spotCount": 0,
+      "promotedCount": 0,
+      "judgeLost": 0,
+      "spotLost": 0,
+      "laneYield": {
+        "correctness": {
+          "found": 0,
+          "confirmed": 0,
+          "unique": 0,
+          "refuted": 0
+        },
+        "security": {
+          "found": 0,
+          "confirmed": 0,
+          "unique": 0,
+          "refuted": 0
+        },
+        "premortem": {
+          "found": 0,
+          "confirmed": 0,
+          "unique": 0,
+          "refuted": 0
+        },
+        "simplicity-design": {
+          "found": 0,
+          "confirmed": 0,
+          "unique": 0,
+          "refuted": 0
+        },
+        "hot-path-perf": {
+          "found": 0,
+          "confirmed": 0,
+          "unique": 0,
+          "refuted": 0
+        },
+        "concurrency-async": {
+          "found": 0,
+          "confirmed": 0,
+          "unique": 0,
+          "refuted": 0
+        },
+        "regression": {
+          "found": 0,
+          "confirmed": 0,
+          "unique": 0,
+          "refuted": 0
+        },
+        "data-migrations": {
+          "found": 0,
+          "confirmed": 0,
+          "unique": 0,
+          "refuted": 0
+        },
+        "deploy-safety": {
+          "found": 0,
+          "confirmed": 0,
+          "unique": 0,
+          "refuted": 0
+        },
+        "api-contract": {
+          "found": 0,
+          "confirmed": 0,
+          "unique": 0,
+          "refuted": 0
+        },
+        "observability": {
+          "found": 0,
+          "confirmed": 0,
+          "unique": 0,
+          "refuted": 0
+        },
+        "testing": {
+          "found": 0,
+          "confirmed": 0,
+          "unique": 0,
+          "refuted": 0
+        },
+        "test-causality-lifecycle": {
+          "found": 0,
+          "confirmed": 0,
+          "unique": 0,
+          "refuted": 0
+        },
+        "test-isolation-environment": {
+          "found": 0,
+          "confirmed": 0,
+          "unique": 0,
+          "refuted": 0
+        },
+        "test-suite-cost": {
+          "found": 0,
+          "confirmed": 0,
+          "unique": 0,
+          "refuted": 0
+        },
+        "hygiene-docs": {
+          "found": 0,
+          "confirmed": 0,
+          "unique": 0,
+          "refuted": 0
+        }
+      },
+      "judgeCompletionPct": 0,
+      "lowCoverage": false,
+      "panelCappedTag": "",
+      "emptyLateRound": true,
+      "reviewReadiness": {
+        "coverage": "complete",
+        "provenance": "available",
+        "basis": "Captured immutable heada89dd07c0 and base4dabf06ef, full source/diff in owned detached worktree, prior formal report and qualification-reap-ownership source manifests plus historical full/live evidence available."
+      },
+      "convergenceEligible": true
+    },
+    "routeCounts": {},
+    "seatAgreement": ""
+  },
+  "responses": {
+    "scout:correctness": {
+      "findings": []
+    },
+    "triage": {
+      "lanes": [
+        "data-migrations",
+        "deploy-safety",
+        "api-contract",
+        "observability",
+        "testing",
+        "test-causality-lifecycle",
+        "test-isolation-environment",
+        "test-suite-cost",
+        "hygiene-docs"
+      ],
+      "domains": []
+    },
+    "scout:api-contract": {
+      "findings": []
+    },
+    "scout:concurrency-async": {
+      "findings": []
+    },
+    "scout:data-migrations": {
+      "findings": []
+    },
+    "scout:deploy-safety": {
+      "findings": []
+    },
+    "scout:hot-path-perf": {
+      "findings": []
+    },
+    "scout:observability": {
+      "findings": []
+    },
+    "scout:premortem": {
+      "findings": []
+    },
+    "scout:regression": {
+      "findings": []
+    },
+    "scout:security": {
+      "findings": []
+    },
+    "scout:simplicity-design": {
+      "findings": []
+    },
+    "scout:testing": {
+      "findings": []
+    },
+    "scout:hygiene-docs": {
+      "findings": []
+    },
+    "scout:test-causality-lifecycle": {
+      "findings": []
+    },
+    "scout:test-isolation-environment": {
+      "findings": []
+    },
+    "scout:test-suite-cost": {
+      "findings": []
+    },
+    "reporter": {
+      "verdict": "clean (0 nits) [converged]",
+      "reportMarkdown": "super-roast verdict: clean (0 nits) [converged]\nmode: pr        iteration: 3 of 3\nprofile (assumed): Production local same-user cooperative messaging tool. Wake mistakes cost user attention and quota; durable migration or receipt corruption is material. Same-user cooperative trust is explicit; adversarial caller hardening is out of scope.\ninputs: feat/codex-queue-control@a89dd07c0 vs main@4dabf06ef\ndelta vs prior: 0 new confirmed (0 Blocking) \u00b7 0 carried (0 Blocking) \u00b7 1 resolved \u00b7 0 regressed (0 Blocking) \u00b7 0 punch-listed (open)\ncoverage: scouts 16/16 (correctness, security, premortem, simplicity-design, hot-path-perf, concurrency-async, regression, data-migrations, deploy-safety, api-contract, observability, testing, test-causality-lifecycle, test-isolation-environment, test-suite-cost, hygiene-docs) \u00b7 raw 0 \u2192 deduped 0 \u2192 panel 0 \u00b7 spot 0 \u00b7 promoted 0 \u00b7 judge completion n/a (no panels) \u00b7 remainder-capped: 0 \u00b7 review readiness: coverage complete, provenance available \u2014 basis: \"Captured immutable heada89dd07c0 and base4dabf06ef, full source/diff in owned detached worktree, prior formal report and qualification-reap-ownership source manifests plus historical full/live evidence available.\"\nindependence: same-family (OpenAI Codex) \u2014 seat-differentiated panel \u00b7 rung: manual fan-out\n\nAll 16 scouts returned zero findings. No judge panels or spot checks were warranted. This round used static review only; it ran no new build, live reproduction or full test suite. Historical qualification evidence was available but does not qualify the current frozen tree. The parent owns the final frozen-tree suite gate; this clean review is not release qualification.\n\nResolved by absence-based tracking: src/harness/codex/wake/control.rs:221 \u2014 the prior Blocking finding concerning abandoned direct-child reap ownership did not resurface and was not punch-listed. The regression lane checked the current fix and returned no findings. This status does not claim a new runtime reproduction of the fix.\n\n## Confirmed findings\n\n- none\n\n## Not verified (beyond panel cap)\n\n- none\n\n## Not verified (dedupe failed or judge lost)\n\n- none\n\n## Beyond remainder cap (count only)\n\n- none\n\n## Rejected (with reason)\n\n- none\n\n## Unverified nits (spot-checked)\n\n- none\n\n## Escalations (need human)\n\n- none\n",
+      "confirmedCount": 0,
+      "escalations": []
+    }
+  },
+  "report_sha256": "a1938d7754ea54fa1070329f7735869cecbfacefd8b4dff82216c9de0b66f1d8",
+  "format_check": {
+    "exit": 0,
+    "repair": false
+  },
+  "evidence_note": "Exact native agent JSON results retained. All16scouts returned no findings, so dedupe/judges were not warranted. Static source review only; no new build/live/full tests. Parent owns final frozen-tree qualification gate.",
+  "friction": [
+    "Workflow unavailable; manual fan-out with unchanged engine over cached exact native-agent outputs.",
+    "Configured model aliases unavailable; actual workers inherited OpenAI Codex, same-family.",
+    "Initial assembler child git spawn denied by sandbox EPERM; read-only assembly succeeded with reviewed escalation."
+  ]
+}
