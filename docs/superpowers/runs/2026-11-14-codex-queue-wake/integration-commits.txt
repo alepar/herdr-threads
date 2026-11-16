@@ -1,0 +1,48 @@
+b79f94ca89d553a7074c9cb257ff090c3aebcc54 docs: accept observed-idle queue wake races
+179b2ad406023b5ef987ea7a2f4fa195a53fbc20 docs: specify initial queue wake control adapter
+cc90d5c10fecc05c6bc003afb8e24edeb4504859 docs: settle queue target observation contract
+01c7741a8fb1ee9246f6473e11627ac7b9a66c2d feat(codex): add inactive programmatic wake control
+6de580e63226e26db355d6306d970c368d13e0dd docs: specify durable queue wake attempt ledger
+19ca65ca1e9c9aa7d7b8839af0ef4bd88354dc04 feat(wake): retain programmatic wake attempt ledger
+17203b6f1750d9b7a006665e4b825b5579e75e36 docs: define bounded queue wake activity observations
+43f8c10dbffe6df7c505c83d2cd7c1b77c2e1a56 feat(wake): record canonical turns and typed cleanup evidence
+8f67ad6a951825b0f2ddca501e567371c6196a62 fix(wake): defer idle state to the checked turn end
+c8aa00a4058a5564bb2f8d0f94ff800507ccaab8 docs: settle queue wake activation recovery contract
+7311e16a4917fb30ab5ab234ab90027ce3551457 docs: cover uninitialized cleanup helper recovery
+3c124cbd16fa912e516d98d69ea9c0e7fa467cff feat(wake): persist helper ownership and logical retirement
+cf468c4a69b342a46ca3af805e9620b28c9edd73 feat(wake): activate observed-idle queue transport and node cleanup
+0d979b9352847b73f75f341b619c90313efb304b docs(wake): record activation invariants and verification evidence
+0a1963a46593e7fba7fdb1678bb8304305736484 fix(wake): preserve positive helper cleanup across recovery
+111c78581c90c74682dd5892f3d383a2eea88bcf docs: define integrated queue wake qualification
+23eb3a8dbec325e413a7a4d55039b44d3ef6852a fix(wake): pace node cleanup and complete qualification guards
+944f8a86e41d80f267f62566148746a4baab4ac3 test(wake): qualify queue transport with bounded canonical evidence
+2938bbe7078572ab34d05f217cb3a6f36d916995 Isolate Codex qualification SQLite home
+3e3f71c8dde9596f9f731cea723d13d5e2423a6d Tighten queue qualification scope and lifecycle assertions
+ca849bff639911f903b8de401c3a16678a012049 Measure queue wake qualification latency
+2013500f21ecd92df2333199c2cb2e8d2e8b6976 Record failed queue wake latency qualification
+498cb246dc2c1b26c3049ec1b6dd794c73463654 docs: record accepted queue polling latency
+022e1c105588d2583062180efb67b3792a12f3f4 Apply accepted queue wake qualification latency
+6202c5db9cb8b58a01d31e7fca2ec7e6307acb61 Record accepted queue baseline and timing boundaries
+7b08a445ed11be00852c2b66106a92d53a9faa82 Preserve first complete queue qualification matrix
+dcb3f88a71d0d80e759342d09e6689d108beb9e3 Correct UI queue-wake evidence for stale viewports
+1b6837b6ecb98cf8819095b0b6124186ce005883 Bind UI evidence to individual message frames
+da8462b997f316b83fb69bbbee13b63788258c23 Decode captured inbox peer data in UI evidence
+837c822c635f4b43ce2b876a0aadaf4a38aca3e4 Record all72 live queue wake qualification passes
+f6cfe70daf5004cfd65ab2e99640f7bc6ab526d6 Record corrected full-suite qualification and timing limits
+de1c8ab897b60e28b3f909acd3566a6465dfe319 Route explicit Linux release qualification through queue proof
+6e4d55cbaf488a33e9e700f6e371760c089606be Verify rebased queue feature and clarify default qualification
+7fb8694a7c7f8f7be7b4c5b22bbc265ee0ff32ba docs: record formal Codex queue wake review
+cdf8de5ca6bbf610aea85f75f706f3490ac46bb9 Add queue migration work and schema preservation regressions
+7861afb58f175cdcbfee5bc796869314882a2fa5 Record exact unfiltered queue merge-tree qualification
+a8abe0c43aa7a4b0d6412a8458a0d86080e39e79 Fix queue-wake formal review findings
+73add4c73545b7f9d2f4ebb2182dc2e040de74d5 docs: record second formal queue wake review
+54c7505c28677b157886ee5b251947f11df64865 Avoid unused historical schema snapshots on current-store audits
+a89dd07c07bc13467bd2f40a4cf15b162f3140d5 fix(codex): retain child reap ownership past cleanup deadlines
+15fd697ba980420ac4ef812b3de072b6af045409 docs: record clean final queue wake review
+694ed886367b939fe63beb9fae0280aad6a35b27 Record frozen suite failure before integration corrections
+bb0cc218c021aca428c533c8005a1506410c67cf Fix independent wake eligibility and resource-fence regressions
+2bc6f9713d0805ddd3473d83e40af2c17139fa95 Qualify Linux wake timing from observed transport automatically
+056d63893e2d4c8f4fd83298693d359cb82baa85 fix: bound retained queue wakes and default new adds off
+94b43c2b0f83227a38bd2b88fbd637dedc219850 fix: reject non-JSON constants in release mode probes
+6ca86d79a853350410534617013e7379e7deccda fix: retry completed wake results and preserve native activity
+7090d18af6996f7fdaed96717fef1f16c77883ba fix: separate canonical wake hints from legacy activity
