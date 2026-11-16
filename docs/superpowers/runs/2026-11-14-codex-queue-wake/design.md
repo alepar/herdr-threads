@@ -59,6 +59,14 @@ Test both List and Delete crash gaps, lost witness-commit replies (the durable
 witness controls), and refusal for Active or witnessed cases. Owner-lease
 revocation requirements are unchanged.
 
+### Retained control-child parenthood (2026-11-15)
+
+The Linux adapter owns a fixed process-lifetime pool of 32 child slots. An empty slot is reserved with a nonblocking lock before spawning; the exact `Child` is placed there immediately. The active operation borrows that slot. A cleanup deadline, early pipe/readiness error or uncertain wait releases the borrow while retaining the child, rather than abandoning reaping. Full capacity refuses before spawn/effect. Locked or uncertain slots count pending/unavailable; no uncertain child is overwritten. Successful `try_wait` or ECHILD may release exact-handle bookkeeping, but ECHILD alone is not quiescence evidence.
+
+Defaulted neutral maintenance/pending hooks let the existing five-second node recovery pass poll those handles once per slot without blocking, signaling or issuing queue I/O. Pool occupancy participates in idle-exit activity even with no durable witness/rows. Existing 250ms control cleanup and Unknown/replay fences remain unchanged. No thread, detached task, new lane, configuration switch or general process supervisor is added.
+
+Node shutdown joins existing operation work and makes one bounded bookkeeping pass even when its cancellation budget is exhausted. Remaining exact handles stay owned by the adapter's process-lifetime pool; a later node in that process can reap them. Actual process exit delegates parentage to the OS. This process owner outlives node OwnerLock solely to reap: it retains no metadata callback or wake authority and sends no new signals after the operation ends. Durable quarantine remains canonical; ordinary exact fingerprint/group observation and store recovery must still prove helper quiescence. This resource admission bound adds no accepted wake/receipt limit.
+
 ### Logical purpose and submission results
 
 Keep logical Active/Fulfilled/ScopeEnded orthogonal to physical phase, owned IDs

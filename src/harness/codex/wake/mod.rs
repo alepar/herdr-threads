@@ -15,6 +15,8 @@ mod capture;
 mod control;
 #[cfg(target_os = "linux")]
 mod helper;
+#[cfg(target_os = "linux")]
+mod reap;
 
 #[cfg(target_os = "linux")]
 mod implementation {
@@ -116,6 +118,12 @@ mod implementation {
         Ok(d)
     }
     impl WakeControl for Control {
+        fn reap_owned_helpers(&self) {
+            super::reap::OWNED.reap();
+        }
+        fn has_owned_helpers(&self) -> bool {
+            super::reap::OWNED.pending()
+        }
         fn probe_helper(
             &self,
             witness: &crate::harness::wake::WakeHelperWitness,

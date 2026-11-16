@@ -33,7 +33,7 @@ impl Drop for Home {
     }
 }
 struct Peer<'a> {
-    child: Child,
+    child: super::reap::Slot<'static>,
     input: ChildStdin,
     output: ChildStdout,
     stderr: ChildStderr,
@@ -64,6 +64,9 @@ fn nonblocking(pipe: &impl AsRawFd) -> Result<(), ApiError> {
     }
 }
 impl<'a> Peer<'a> {
+    fn child_id(&self) -> u32 {
+        self.child.as_ref().expect("owned queue helper").id()
+    }
     fn start(
         d: &Descriptor,
         context: &'a WakeControlContext<'a>,
@@ -114,12 +117,16 @@ impl<'a> Peer<'a> {
             .process_group(0);
         #[cfg(feature = "test-support")]
         crate::test_support::spawn::tag(&mut command);
-        let mut child = command
-            .spawn()
-            .map_err(|_| error("queue helper could not start"))?;
-        let input = child.stdin.take().expect("piped input");
-        let output = child.stdout.take().expect("piped output");
-        let stderr = child.stderr.take().expect("piped stderr");
+        let mut child = super::reap::OWNED.reserve()?;
+        *child = Some(
+            command
+                .spawn()
+                .map_err(|_| error("queue helper could not start"))?,
+        );
+        let spawned = child.as_mut().expect("reserved child");
+        let input = spawned.stdin.take().expect("piped input");
+        let output = spawned.stdout.take().expect("piped output");
+        let stderr = spawned.stderr.take().expect("piped stderr");
         let mut peer = Self {
             child,
             input,
@@ -139,7 +146,7 @@ impl<'a> Peer<'a> {
         };
         let readiness = (|| {
             if let Some(observer) = context.helper_observer {
-                let witness = super::helper::witness(peer.child.id())?;
+                let witness = super::helper::witness(peer.child_id())?;
                 observer.started(&witness)?;
             }
             nonblocking(&peer.input)?;
@@ -160,22 +167,38 @@ impl<'a> Peer<'a> {
         if self.cleanup_done {
             return None;
         }
+        let pipes_nonblocking =
+            nonblocking(&self.output).is_ok() && nonblocking(&self.stderr).is_ok();
+        self.finish_with(pipes_nonblocking, Child::try_wait)
+    }
+    fn finish_with(
+        &mut self,
+        pipes_nonblocking: bool,
+        poll: impl FnMut(&mut Child) -> std::io::Result<Option<std::process::ExitStatus>>,
+    ) -> Option<ApiError> {
+        if self.cleanup_done {
+            return None;
+        }
         self.cleanup_done = true;
-        let cleanup = self.finish_process();
+        let cleanup = self.finish_process(pipes_nonblocking, poll);
         let completion = self
             .context
             .helper_observer
             .and_then(|observer| observer.completed(cleanup.is_none()).err());
         cleanup.or(completion)
     }
-    fn finish_process(&mut self) -> Option<ApiError> {
+    fn finish_process(
+        &mut self,
+        pipes_nonblocking: bool,
+        mut poll: impl FnMut(&mut Child) -> std::io::Result<Option<std::process::ExitStatus>>,
+    ) -> Option<ApiError> {
         let until = (Instant::now() + Duration::from_millis(250))
             .min(self.deadline + Duration::from_millis(250));
         // This group is exclusively ours. Never block in wait(): quiescence must be observed.
-        let signal = unsafe { libc::kill(-(self.child.id() as i32), libc::SIGKILL) };
+        let signal = unsafe { libc::kill(-(self.child_id() as i32), libc::SIGKILL) };
         let signal_failed =
             signal < 0 && std::io::Error::last_os_error().raw_os_error() != Some(libc::ESRCH);
-        let child_pid = self.child.id();
+        let child_pid = self.child_id();
         let failed = || {
             Some(error(&format!(
                 "queue helper cleanup unconfirmed pid={}",
@@ -184,17 +207,23 @@ impl<'a> Peer<'a> {
         };
         let mut reaped = false;
         let mut scratch = [0u8; 8192];
-        let pipes_nonblocking =
-            nonblocking(&self.output).is_ok() && nonblocking(&self.stderr).is_ok();
         if !pipes_nonblocking {
             return failed();
         }
         loop {
             if !reaped {
-                match self.child.try_wait() {
-                    Ok(Some(_)) => reaped = true,
+                match poll(self.child.as_mut().expect("owned queue helper")) {
+                    Ok(Some(_)) => {
+                        reaped = true;
+                        *self.child = None;
+                    }
                     Ok(None) => (),
-                    Err(_) => return failed(),
+                    Err(error) => {
+                        if error.raw_os_error() == Some(libc::ECHILD) {
+                            *self.child = None;
+                        }
+                        return failed();
+                    }
                 }
             }
             for (pipe, eof) in [
@@ -270,7 +299,7 @@ impl<'a> Peer<'a> {
     fn verify_database(&self, d: &Descriptor) -> Result<(), ApiError> {
         let start = Instant::now();
         let mut found = std::collections::BTreeSet::new();
-        for (i, entry) in fs::read_dir(format!("/proc/{}/fd", self.child.id()))
+        for (i, entry) in fs::read_dir(format!("/proc/{}/fd", self.child_id()))
             .map_err(|_| error("queue helper files unavailable"))?
             .enumerate()
         {

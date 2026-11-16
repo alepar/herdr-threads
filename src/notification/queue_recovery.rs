@@ -27,6 +27,21 @@ use std::{
 };
 use uuid::Uuid;
 
+fn reap_owned_helpers() {
+    for registration in builtins().registrations() {
+        if let Some(control) = registration.wake_control() {
+            control.reap_owned_helpers();
+        }
+    }
+}
+fn owned_helpers_pending() -> bool {
+    builtins()
+        .registrations()
+        .iter()
+        .filter_map(|registration| registration.wake_control())
+        .any(|control| control.has_owned_helpers())
+}
+
 fn refused(detail: &str) -> ApiError {
     ApiError::new(ErrorCode::TargetUnsafe, detail)
 }
@@ -177,9 +192,11 @@ impl QueueRecovery {
                 break;
             }
         }
+        // Cancellation must not skip this bounded exact-child bookkeeping pass.
+        reap_owned_helpers();
     }
     pub fn has_work(&self) -> bool {
-        self.work.load(Ordering::Acquire)
+        self.work.load(Ordering::Acquire) || owned_helpers_pending()
     }
     pub fn begin_helper(
         &self,
@@ -250,6 +267,7 @@ impl QueueRecovery {
             ));
         }
         sweep.last = Some(now);
+        reap_owned_helpers();
         let page = self
             .store
             .wake_intent_recovery_page(sweep.after, 32, budget)?;

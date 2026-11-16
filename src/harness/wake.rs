@@ -119,6 +119,12 @@ impl WakeReplayScope {
     }
 }
 pub trait WakeControl: Send + Sync {
+    /// Reap only exact owned child handles, without waiting or performing queue I/O.
+    fn reap_owned_helpers(&self) {}
+    /// Includes locked or uncertain retained ownership; never grants wake authority.
+    fn has_owned_helpers(&self) -> bool {
+        false
+    }
     /// Pure cohort derivation before physical capture, granting no wake authority.
     fn replay_scope_for_session(
         &self,

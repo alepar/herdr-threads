@@ -1,0 +1,46 @@
+{
+  "basis": "54c7505c2 (reviewed cache fix atop formal round2 artifacts)",
+  "authorization": "Astra205, main36/40",
+  "files_sha256": {
+    "docs/superpowers/runs/2026-11-14-codex-queue-wake/design.md": "e3b1e64e78c07b490921165a4859d56259f13f32b4e91897f4023d77aadb1604",
+    "src/harness/codex/wake/control.rs": "2729e330e8b7ac1c4b5ba05c71b477478feea5a6d61decc3a83de8918266fe33",
+    "src/harness/codex/wake/mod.rs": "d959322bfcbc2a926b0225113cf28ab7096fa3c9c95c436abde28b68a55ddfa1",
+    "src/harness/codex/wake/reap.rs": "9fd302dc6112b2110cbdee7714e23110882ed4d1d9b82a741899001d2ef81733",
+    "src/harness/wake.rs": "69b2eec0e38d6ff899cae0aa31b51f71cc8deb7ad7a7295af8bc5758a9977ef2",
+    "src/notification/queue_recovery.rs": "d713074e599a2391f6241d60ea31998966a4e41cfadd22ea4a4d9bdc6f9fcd57",
+    "tests/harness/codex_wake_control.rs": "739f15eb30bcea7b50f827c234fe5c0e55fd92b22bcee4b948fbc2498a223e77",
+    "tests/harness/codex_wake_reap.rs": "dc64e9f671c3f48ef925383b242eee74421a05a836b3f945c4800de2ec83c32f",
+    "src/store/schema.rs": "aa69937d1dcecf74fd2c288354788a9c2ace9a6f29f3e81e661d230b837f0f6d",
+    "tests/store/schema.rs": "642c7e145ec64801b0c209fb208718e079861670b413b426d61e855e232f7428"
+  },
+  "report_sha256": "8d2c3ce6dd043a51aa02af946967b344dd8dd0a6b8c93eb4b534b90fe38f64e4",
+  "rust": {
+    "passed": 323,
+    "seconds": 22.832,
+    "compile_seconds": 74,
+    "run_id": "b5c50c46-6b8a-4b90-9861-9de78af6a5bb",
+    "cleanup": "processes and temp files clean"
+  },
+  "regression": "old code left actual unreaped PID after deterministic deadline suspension; new maintenance reaps before ordinary canonical recovery",
+  "checks": {
+    "clippy": "PASS warm 0.10s",
+    "default_features": "PASS",
+    "fmt": "PASS",
+    "neutral": "PASS",
+    "wire": "PASS",
+    "diff": "PASS",
+    "docs": "DOCS_TEST_PASS"
+  },
+  "model_visible_added_bytes": 0,
+  "refusal_detail_bytes": 45,
+  "limits": [
+    "round3 pending",
+    "final unfiltered suite deferred until round3 settles",
+    "no new live run; historical evidence retains original source identity"
+  ],
+  "raw_log_sha256": {
+    "target/queue-qualification/reap-red.log": "c3509ec1bc886ef6e404f8b7fe8c7152244cbf5da9053422ad17dedc4cd1aad0",
+    "target/queue-qualification/reap-focused.log": "ed46635b1bf57db8bb71ac49087c7556fb5ee6e9223796bbadbf6ac8fcfd4b70",
+    "target/queue-qualification/reap-cache-focused.log": "d5d986e02ef56bb7fe33e65b9c6669aea76b0b0a308811371fd6e089de16c484"
+  }
+}

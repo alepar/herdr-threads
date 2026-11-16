@@ -803,3 +803,88 @@ fn parsed_add_response_with_wrong_or_missing_correlation_or_invalid_id_is_unknow
         );
     }
 }
+
+#[test]
+fn deadline_and_early_pipe_failure_keep_child_reap_ownership() {
+    use crate::harness::wake::WakeControl;
+    if crate::test_support::spawn::ran_in_own_process(
+        module_path!(),
+        "deadline_and_early_pipe_failure_keep_child_reap_ownership",
+    ) {
+        return;
+    }
+    for early_pipe_failure in [false, true] {
+        let f = Fixture::new("ok");
+        let context = f.context();
+        let mut peer = Peer::start(&f.descriptor, &context).unwrap();
+        let pid = peer.child_id();
+        let witness = super::super::helper::witness(pid).unwrap();
+        let failed = if early_pipe_failure {
+            peer.finish_with(false, Child::try_wait)
+        } else {
+            peer.deadline = Instant::now();
+            // Model a pending poll followed by scheduler suspension while SIGKILL exits the child.
+            peer.finish_with(true, |_| {
+                std::thread::sleep(Duration::from_millis(300));
+                Ok(None)
+            })
+        };
+        assert!(failed.is_some());
+        drop(peer);
+        let until = Instant::now() + Duration::from_secs(2);
+        while Instant::now() < until {
+            let state = fs::read_to_string(format!("/proc/{pid}/stat"))
+                .ok()
+                .and_then(|s| {
+                    s.rsplit_once(')')
+                        .map(|(_, tail)| tail.trim_start().starts_with('Z'))
+                });
+            if state.is_none() || state == Some(true) {
+                break;
+            }
+            std::thread::sleep(Duration::from_millis(1));
+        }
+        super::super::CONTROL.reap_owned_helpers();
+        let mut status = 0;
+        let reaped_here = unsafe { libc::waitpid(pid as i32, &mut status, libc::WNOHANG) };
+        assert_eq!(
+            reaped_here, -1,
+            "child was abandoned unreaped after failure, early_pipe_failure={early_pipe_failure}"
+        );
+        assert_eq!(
+            std::io::Error::last_os_error().raw_os_error(),
+            Some(libc::ECHILD)
+        );
+        assert!(matches!(
+            super::super::helper::probe(&witness, &context).unwrap(),
+            crate::harness::wake::WakeHelperPresence::Quiescent(_)
+        ));
+    }
+}
+
+#[test]
+fn reap_capacity_exhaustion_refuses_before_starting_helper() {
+    if crate::test_support::spawn::ran_in_own_process(
+        module_path!(),
+        "reap_capacity_exhaustion_refuses_before_starting_helper",
+    ) {
+        return;
+    }
+    let f = Fixture::new("ok");
+    let mut reservations = Vec::new();
+    for _ in 0..super::super::reap::LIMIT {
+        reservations.push(super::super::reap::OWNED.reserve().unwrap());
+    }
+    assert!(matches!(
+        f.add(true),
+        WakeAddOutcome::RefusedBeforeEffect(_)
+    ));
+    assert!(
+        f.trace().is_empty(),
+        "capacity admission must precede spawn"
+    );
+    drop(reservations.pop());
+    assert!(matches!(f.add(true), WakeAddOutcome::Accepted { .. }));
+    drop(reservations);
+    assert!(!super::super::reap::OWNED.pending());
+}
