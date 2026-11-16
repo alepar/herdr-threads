@@ -27,7 +27,11 @@ class Qualification(unittest.TestCase):
         def run(argv, **kwargs):
             calls.append((argv, kwargs['env']))
             return type('Result', (), {'returncode': int(any(x in argv for x in fail))})()
-        with tempfile.TemporaryDirectory() as evidence, patch.object(module.subprocess, 'run', run), contextlib.redirect_stdout(io.StringIO()):
+        # The live branch on Linux probes the operator's queue-wake setting through the candidate's
+        # `doctor --json`; there is no candidate here, so the probe answers "off" at that boundary.
+        with tempfile.TemporaryDirectory() as evidence, patch.object(module.subprocess, 'run', run), \
+                patch.object(module, 'operator_programmatic_wake', lambda: False), \
+                contextlib.redirect_stdout(io.StringIO()):
             rc = module.qualify(Path(evidence), self_test)
             summary = (Path(evidence) / 'summary.json').read_text()
         self.assertTrue(all(not Path(e['TMPDIR']).exists() for _, e in calls))
