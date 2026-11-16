@@ -1,6 +1,8 @@
 # Changelog
 
-## Unreleased
+## v3.3.0
+
+Minor release: optional queue wake for Codex (off by default).
 
 One-way store upgrade to node schema 18. Older binaries that support at most schema 17 refuse an upgraded store.
 
