@@ -1,0 +1,91 @@
+{
+  "source_sha": "6e4d55cbaf488a33e9e700f6e371760c089606be",
+  "main_sha": "4dabf06ef90c8c9e8c459b524b509af3a2e98b31",
+  "merge_tree": "49b41807e606ba985d580943dbe93c935c35f4c4",
+  "run_id": "1da426b8-3b76-4c89-9954-e1e088f732b9",
+  "start_utc": "2026-11-16T00:59:00.084325+00:00",
+  "profile": "ci",
+  "test_threads": 4,
+  "build_jobs": 4,
+  "nice": 19,
+  "group_config_sha256": "f5be54ee4a75cd2aa33d80d7ea321a262545226b76c6f25b3948a534f80742dd",
+  "unfiltered": true,
+  "phase": "complete",
+  "exit_code": 0,
+  "command_wall_seconds": 1267.081,
+  "end_utc": "2026-11-16T01:20:07.165543+00:00",
+  "observed_max_process_counts": {
+    "cargo": 3,
+    "cargo-nextest": 2,
+    "rustc": 6,
+    "clippy-driver": 4
+  },
+  "tests": 9737,
+  "failures": 0,
+  "skipped": 64,
+  "execution_seconds": 1260.418,
+  "compile_seconds": 0.03,
+  "host_sample_count": 626,
+  "junit_sha256": "1bf1807f8ac8390cca25a0a4c1dff85f6a001d5fe4af1bc96456a2081828efa9",
+  "total_test_seconds": 4876.82,
+  "top_tests": [
+    {
+      "binary": "herdr-threads::package",
+      "name": "manifest::failpoints_are_compiled_out_of_release_builds",
+      "seconds": 233.425
+    },
+    {
+      "binary": "herdr-threads::integration",
+      "name": "trust_policy::a_wake_with_no_session_contact_before_its_retry_is_unreceived_and_not_retyped",
+      "seconds": 35.024
+    },
+    {
+      "binary": "herdr-threads::multinode",
+      "name": "config_wipe::cold_start_after_the_deadline_holds_overdue_until_a_round_completes",
+      "seconds": 32.291
+    },
+    {
+      "binary": "herdr-threads::clone_identity_sweep",
+      "name": "agent_exit_with_pane_open_keeps_the_seat",
+      "seconds": 27.54
+    },
+    {
+      "binary": "herdr-threads::multinode",
+      "name": "remote_addresses::remote_launch_runs_on_the_target_machine_once",
+      "seconds": 26.933
+    },
+    {
+      "binary": "herdr-threads::integration",
+      "name": "lanes_latency::herdr_stopped_freezes_wake_lane",
+      "seconds": 22.342
+    },
+    {
+      "binary": "herdr-threads::integration",
+      "name": "session_bindings_e2e::a_one_shot_adds_sends_exits_and_a_later_call_reconnects_until_its_process_exits",
+      "seconds": 21.165
+    },
+    {
+      "binary": "herdr-threads::multinode",
+      "name": "handoff_atomic::overdue_while_partitioned",
+      "seconds": 19.524
+    },
+    {
+      "binary": "herdr-threads",
+      "name": "store::attention::tests::pending_receipts_past_the_count_cap_cost_the_same",
+      "seconds": 18.41
+    },
+    {
+      "binary": "herdr-threads",
+      "name": "store::attention::tests::pending_invitations_past_the_count_cap_cost_the_same",
+      "seconds": 18.184
+    }
+  ],
+  "qualification_scope": "Unfiltered current main merge tree at6e4, before formal-roast fixes; no claim findings resolved",
+  "performance": "Over300s; main relayed user decision separates performance from feature integration",
+  "host_limit": "Concurrent main baseline rebuild/run by suite-perf; observed process counts do not attribute causation",
+  "cleanup": {
+    "run_id": "1da426b8-3b76-4c89-9954-e1e088f732b9",
+    "processes": "clean",
+    "temp_files": "clean"
+  }
+}

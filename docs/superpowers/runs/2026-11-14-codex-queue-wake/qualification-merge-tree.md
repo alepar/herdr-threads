@@ -1,0 +1,9 @@
+# Unfiltered merge-tree qualification before formal corrections
+
+Frozen feature `6e4d55cbaf488a33e9e700f6e371760c089606be` and its merge with main `4dabf06ef90c8c9e8c459b524b509af3a2e98b31` both have tree `49b41807e606ba985d580943dbe93c935c35f4c4`. The release coordinator requested this unfiltered integrated run after the timing disposition. Tracked source stayed clean throughout.
+
+All 9,737 executed tests passed; 64 were skipped. Execution took 1,260.418 seconds, compilation 0.030 seconds and command wall time 1,267.081 seconds. The command remained `cargo nextest run --locked --all-targets --all-features --profile ci -j 4` through the existing shared wrapper, nice19/four build and test workers, with unchanged nextest groups. Fresh run-scoped process and temporary-file checks were clean. The retained JUnit hash, exact source, timings and top tests are in [the normalized evidence](qualification-merge-tree.json); raw JUnit/log/host samples remain local.
+
+The run is over the five-minute budget. The main owner relayed the user's explicit decision to handle performance separately rather than block feature integration; this is not a passing performance result. The separate performance lane was rebuilding/running main concurrently. Aggregate host observations do not establish causal attribution. Its focused migration-fold measurement improved wall time only about2%, so the final unreleased CREATE form is not claimed to resolve the suite slowdown.
+
+The [formal round1 review](../../reviews/2026-11-15-codex-queue-wake-roast-pr-1.md) subsequently requires three Should-fix corrections and one Nit. This test pass does not clear those findings: it remains exact pre-correction6e4 evidence. Bounded correction tests/guards and a fresh whole-artifact round2 review are separate requirements. No blanket full-suite or authenticated-live rerun is implied; historical [72-case live evidence](qualification-live-final.md) retains its original source scope.
