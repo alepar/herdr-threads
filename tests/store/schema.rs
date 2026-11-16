@@ -5912,6 +5912,48 @@ fn production_deltas_upgrade_baseline_and_reopen_without_losing_data() {
 }
 
 #[test]
+fn latest_schema_audit_then_older_upgrade_preserves_data_and_checks_old_shape() {
+    let latest = Connection::open_in_memory().unwrap();
+    open_with(&latest, schema::NODE_DELTAS).unwrap();
+    schema::verify_baseline(&latest).unwrap();
+
+    let prior: &[schema::NodeDelta] = &[];
+    let older = Connection::open_in_memory().unwrap();
+    open_with(&older, prior).unwrap();
+    older
+        .execute("UPDATE local_node SET created_at=123", [])
+        .unwrap();
+    schema::initialize(
+        &older,
+        || UtcMillis(0),
+        &crate::test_support::test_node_seed(),
+    )
+    .unwrap();
+    assert_eq!(user_version(&older), schema::NODE_LATEST_SCHEMA_VERSION);
+    assert_eq!(
+        older
+            .query_row("SELECT created_at FROM local_node", [], |r| r
+                .get::<_, i64>(0))
+            .unwrap(),
+        123
+    );
+    schema::verify_baseline(&older).unwrap();
+
+    let tampered = Connection::open_in_memory().unwrap();
+    open_with(&tampered, prior).unwrap();
+    tampered
+        .execute_batch("CREATE TABLE unexpected_object(x INTEGER)")
+        .unwrap();
+    let detail = incompatible_detail(schema::initialize(
+        &tampered,
+        || UtcMillis(0),
+        &crate::test_support::test_node_seed(),
+    ));
+    assert!(detail.contains("unexpected_object"), "{detail}");
+    assert_eq!(user_version(&tampered), schema::NODE_SCHEMA_VERSION);
+}
+
+#[test]
 fn test_delta_upgrades_baseline_store() {
     let db = Connection::open_in_memory().unwrap();
     open_with(&db, &[]).unwrap();

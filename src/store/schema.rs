@@ -621,9 +621,9 @@ fn schema_objects(conn: &Connection) -> rusqlite::Result<Vec<SchemaObject>> {
 }
 
 /// The objects `NODE_BASELINE` plus `deltas[..version - 1]` create, read from an
-/// in-memory database. With `cache` (the production list only) one replay of the
-/// baseline and every delta fills the cache for every version at once, so a process
-/// (each test is one) pays one replay however many deltas a fresh store steps through.
+/// in-memory database. During an upgrade, one replay fills the production cache
+/// for every version the store will step through. An audit of a current store
+/// collects only its requested shape, avoiding unused historical snapshots.
 fn expected_objects(
     deltas: &[NodeDelta],
     version: i64,
@@ -637,14 +637,15 @@ fn expected_objects(
     memory
         .execute_batch(NODE_BASELINE)
         .expect("NODE_BASELINE applies to an empty database");
-    // Without `cache` only `version` is wanted; with it, every version of `deltas`.
-    let last = if cache {
+    // Upgrades need each intermediate shape; current-store audits need only one.
+    let collect_all = cache && version < latest_version(deltas);
+    let last = if collect_all {
         latest_version(deltas)
     } else {
         version
     };
     let mut built: BTreeMap<i64, Arc<Vec<SchemaObject>>> = BTreeMap::new();
-    if cache || version == NODE_SCHEMA_VERSION {
+    if collect_all || version == NODE_SCHEMA_VERSION {
         built.insert(
             NODE_SCHEMA_VERSION,
             Arc::new(schema_objects(&memory).map_err(store_error)?),
@@ -665,7 +666,7 @@ fn expected_objects(
                 .execute_batch(rebuild.sql_after)
                 .map_err(does_not_apply)?;
         }
-        if cache || delta.version == version {
+        if collect_all || delta.version == version {
             built.insert(
                 delta.version,
                 Arc::new(schema_objects(&memory).map_err(store_error)?),
