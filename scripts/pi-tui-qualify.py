@@ -619,9 +619,10 @@ class Run:
         self.verify_notice_sink()
         return {"native_context": proof, "canonical_settlement": state, "sink_receipt_still_pending": True}
 
-    def recover_notice_sink(self, cause):
-        # Only after all notice assertions: let the real sink process the body,
-        # so the next case cannot reuse this coalesced warning condition.
+    def recover_notice_sink(self, cause, *, rearm=False):
+        # Only after all notice assertions: let the real sink process the body.
+        # Mid-HOL recovery needs another guard; standalone terminal cleanup does
+        # not type a new draft into an idle pane while a wake may still be owed.
         sink = self.sink
         self.verify_notice_sink()
         before = sum(r["event"] == "agent_settled" for r in self.probe_rows(sink["probe"]))
@@ -632,8 +633,9 @@ class Run:
                    for r in self.probe_rows(sink["probe"])), "sink recovery lacked actual native body delivery"
         cause["recovered"] = True
         sink["starts"] = sum(r["event"] == "before_agent_start" for r in self.probe_rows(sink["probe"]))
-        self.herdr("pane", "send-text", sink["pane"], SINK_DRAFT)
-        self.verify_notice_sink()
+        if rearm:
+            self.herdr("pane", "send-text", sink["pane"], SINK_DRAFT)
+            self.verify_notice_sink()
 
     def finish_notice_cause(self, cause):
         self.recover_notice_sink(cause)
@@ -829,7 +831,7 @@ class Run:
                       and r['state']['sid'] == self.main_sid for r in self.rows()[seed_since:]))
             self.hold_notice_editor()
             report['phase'] = 'recover_sink'
-            self.recover_notice_sink(seed)  # No source cleanup turn: preserve the clear page.
+            self.recover_notice_sink(seed, rearm=True)  # No source cleanup turn: preserve the clear page.
             report['phase'] = 'park_old_clear'
             clear = self.stage_notice_hol_clear(seed)
             assert not self.notice_context(clear['warning'], clear['body']), 'old clear was already presented'
@@ -1613,6 +1615,60 @@ read -r _ || true
 
 
 class DriverTests(unittest.TestCase):
+    def test_owned_shell_sender_does_not_inherit_agent_session_or_secret_environment(self):
+        inherited = {'CODEX_THREAD_ID': 'synthetic-thread', 'CODEX_SANDBOX': 'synthetic',
+                     'CLAUDE_PID': '123', 'CLAUDE_CODE_SESSION_ID': 'synthetic-session',
+                     'HERMES_SESSION_ID': 'synthetic-session', 'PI_CODING_AGENT_DIR': '/synthetic/profile',
+                     'HERDR_PANE_ID': 'parent-pane', 'HERDR_THREADS_SEAT_NAME': 'parent-seat',
+                     'OPENROUTER_API_KEY': 'synthetic-not-a-credential'}
+        with tempfile.TemporaryDirectory(prefix='ht-pi-sender-env-') as evidence, mock.patch.dict(os.environ, inherited):
+            args = argparse.Namespace(bin=sys.executable, modules=MODULES, pi=None,
+                                      evidence_dir=evidence, live=False)
+            run = Run(args)
+            self.assertFalse(set(inherited) & set(run.base))
+            self.assertEqual(run.env, run.base)
+            self.assertEqual(set(run.base), {'PATH', 'TERM', 'LANG', 'SHELL', 'USER', 'LOGNAME',
+                                            'HT_TEST_OWNER', 'HT_LEAK_RUN_ID', 'CARGO_BUILD_JOBS',
+                                            'NEXTEST_TEST_THREADS', 'RUST_TEST_THREADS'})
+
+    def test_terminal_notice_cleanup_leaves_recovered_sink_without_a_new_draft(self):
+        run, cause, actions = self.notice_recovery_fixture()
+        run.finish_notice_cause(cause)
+        self.assertEqual(actions, ['verify-draft', 'enter', 'primary-cleanup-turn'])
+        self.assertTrue(cause['recovered'])
+
+    def test_continuing_notice_recovery_restores_its_required_sink_guard(self):
+        run, cause, actions = self.notice_recovery_fixture()
+        run.recover_notice_sink(cause, rearm=True)
+        self.assertEqual(actions, ['verify-draft', 'enter', ('type', SINK_DRAFT), 'verify-draft'])
+        self.assertTrue(cause['recovered'])
+        self.assertEqual(run.sink['starts'], 1)
+
+    def notice_recovery_fixture(self):
+        # Exercise recovery itself; only native/public I/O is substituted.
+        run = Run.__new__(Run)
+        run.sink = {'pane': 'sink-pane', 'sid': 'sink-sid', 'seat': 'sink-seat', 'probe': Path('/owned/sink')}
+        cause = {'message': 'cause-id', 'cause_body': 'EXACT CAUSE BODY'}
+        actions, rows = [], [{'event': 'before_agent_start', 'state': {'sid': 'sink-sid'}}]
+        run.verify_notice_sink = lambda: actions.append('verify-draft')
+        run.probe_rows = lambda _path: rows
+        def keys(key, *, pane):
+            self.assertEqual((key, pane), ('enter', 'sink-pane'))
+            actions.append('enter')
+            rows.extend([{'event': 'context', 'state': {'sid': 'sink-sid'}, 'data': 'EXACT CAUSE BODY'},
+                         {'event': 'agent_settled', 'state': {'sid': 'sink-sid'}}])
+        run.keys = keys
+        def wait(label, predicate):
+            result = predicate(); self.assertTrue(result, label); return result
+        run.wait = wait
+        run.recipient_receipt = lambda mid, seat: {'effective_status': 'acknowledged'} if (mid, seat) == ('cause-id', 'sink-seat') else None
+        def herdr(*args):
+            self.assertEqual(args[:3], ('pane', 'send-text', 'sink-pane'))
+            actions.append(('type', args[3]))
+        run.herdr = herdr
+        run.turn = lambda _prompt: actions.append('primary-cleanup-turn')
+        return run, cause, actions
+
     def test_hol_trigger_observes_real_lazy_recipient_without_receipt_obligation(self):
         # Producer-shaped SQLite rows test the actual read-only observer query;
         # they are not canonical/native delivery evidence.
@@ -1716,7 +1772,7 @@ class DriverTests(unittest.TestCase):
         run.rows = lambda: [{'event': 'agent_settled', 'state': {'sid': 'main'}}]
         run.keys = lambda key: actions.append(key)
         run.assert_notice_settled = lambda *_args: {'actual_seed_context': True}
-        run.recover_notice_sink = lambda _cause: None
+        run.recover_notice_sink = lambda _cause, *, rearm: self.assertTrue(rearm)
         def parked(_cause):
             if 'notice_hol' in run.facts:
                 run.facts['notice_hol']['old_clear_observation'] = {'rows': [{'warning': 'clear'}], 'seed_snapshot': None}

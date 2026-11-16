@@ -5977,6 +5977,110 @@ pub(crate) mod tests {
         assert_eq!(*methods.lock().unwrap(), ["pane.get", "agent.get"]);
     }
 
+    /// Characterizes the shared Native check/type gap, not a repaired safety property or the
+    /// cause of a native qualification incident. The endpoint records an RPC, not UI typing.
+    #[cfg(any(target_os = "macos", target_os = "linux"))]
+    #[test]
+    fn cooperative_wake_can_prompt_after_a_draft_arrives_during_the_owed_check() {
+        let draft = CODEX_EMPTY.replace("› Ask Codex to do anything", "› H");
+        let composer = |screen: &str| {
+            crate::harness::composer::read_composer(Harness::Codex, screen, Some(120))
+        };
+        assert_eq!(composer(&draft), ComposerRead::Text("H".into()));
+
+        // The same draft present at the actual composer read is refused before the owed check.
+        let (result, methods) = cooperative_wake_submit(
+            registry::builtins(),
+            vec![
+                recheck_exchange(wake_agent("idle", Some("codex"), "term_1")),
+                detection_exchange(draft.clone()),
+            ],
+            None,
+            |target, _| target.bound_harness = Some("codex".into()),
+            |cli, target, context, _| {
+                cli.submit_prompt_if_owed(target, "wake marker", context, &|| {
+                    panic!("a pre-existing draft must refuse before still_owed")
+                })
+            },
+        );
+        assert_eq!(result.unwrap_err().code, ErrorCode::TargetUnsafe);
+        assert_eq!(
+            *methods.lock().unwrap(),
+            ["pane.get", "agent.get", "agent.read"]
+        );
+
+        let screen = Arc::new(std::sync::Mutex::new(CODEX_EMPTY.to_owned()));
+        let read_screen = Arc::clone(&screen);
+        let prompt_screen = Arc::clone(&screen);
+        let read: Exchange = Box::new(move |stream, request| {
+            let screen = read_screen.lock().unwrap().clone();
+            assert_eq!(composer(&screen), ComposerRead::Empty);
+            detection_exchange(screen)(stream, request);
+        });
+        let prompt: Exchange = Box::new(move |stream, request| {
+            assert_eq!(request["method"], "agent.prompt");
+            assert_eq!(
+                request["params"],
+                json!({"target":"w4:p1","text":"wake marker"})
+            );
+            assert_eq!(
+                composer(&prompt_screen.lock().unwrap()),
+                ComposerRead::Text("H".into())
+            );
+            answer(
+                stream,
+                &request,
+                json!({"type":"agent_prompted","agent":wake_agent("idle", Some("codex"), "term_1")}),
+            );
+        });
+        let (result, methods) = cooperative_wake_submit(
+            registry::builtins(),
+            vec![
+                recheck_exchange(wake_agent("idle", Some("codex"), "term_1")),
+                read,
+                prompt,
+            ],
+            None,
+            |target, _| target.bound_harness = Some("codex".into()),
+            |cli, target, context, methods| {
+                let (blocked, wait_blocked) = std::sync::mpsc::sync_channel(1);
+                let (release, wait_release) = std::sync::mpsc::sync_channel(1);
+                thread::scope(|scope| {
+                    let editor_methods = Arc::clone(methods);
+                    let editor = scope.spawn(move || {
+                        wait_blocked.recv_timeout(Duration::from_secs(2)).unwrap();
+                        assert_eq!(composer(&screen.lock().unwrap()), ComposerRead::Empty);
+                        *screen.lock().unwrap() = draft;
+                        editor_methods.lock().unwrap().push("draft_arrived".into());
+                        release.send(()).unwrap();
+                    });
+                    let result = cli.submit_prompt_if_owed(target, "wake marker", context, &|| {
+                        methods.lock().unwrap().push("still_owed_blocked".into());
+                        blocked.send(()).unwrap();
+                        wait_release.recv_timeout(Duration::from_secs(2)).unwrap();
+                        methods.lock().unwrap().push("still_owed_released".into());
+                        Ok(true)
+                    });
+                    editor.join().unwrap();
+                    result
+                })
+            },
+        );
+        assert_eq!(result.unwrap(), Some(ports::PromptOutcome::Submitted));
+        assert_eq!(
+            *methods.lock().unwrap(),
+            [
+                "pane.get",
+                "agent.get",
+                "agent.read",
+                "still_owed_blocked",
+                "draft_arrived",
+                "still_owed_released",
+                "agent.prompt"
+            ]
+        );
+    }
+
     /// TRUST-POLICY A4 wake rule: the pane's detected agent kind must equal
     /// the seat's bound harness; a different kind (both directions) or no
     /// detected kind refuses before any prompt, a matching kind is prompted.
