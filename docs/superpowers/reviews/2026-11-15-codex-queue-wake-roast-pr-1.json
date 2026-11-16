@@ -1,0 +1,374 @@
+{
+  "source": {
+    "base": "4dabf06ef90c8c9e8c459b524b509af3a2e98b31",
+    "head": "6e4d55cbaf488a33e9e700f6e371760c089606be"
+  },
+  "independence": "same-family (OpenAI Codex) \u2014 seat-differentiated panel \u00b7 rung: manual fan-out",
+  "engine_sha256": "7703e94bb50e4bcf1d4a7283a1c30583818dae83c3daa16c907ba1e06daa2d1e",
+  "config": {
+    "remainderCap": 50,
+    "iterationCap": 3,
+    "coreLanes": [
+      "correctness",
+      "security",
+      "premortem",
+      "simplicity-design",
+      "hot-path-perf",
+      "concurrency-async"
+    ],
+    "models": {
+      "triage": "sonnet",
+      "scout": "opus",
+      "dedupe": "fable",
+      "judge": "sonnet",
+      "reporter": "fable"
+    }
+  },
+  "result": {
+    "verdict": "Should-fix (4 confirmed)",
+    "reportMarkdown": "---\nsuper-roast verdict: Should-fix (4 confirmed)\nmode: pr        iteration: 1 of 3\nprofile (assumed): Production local same-user cooperative messaging tool. Wake mistakes cost user attention and quota; durable migration or message/receipt corruption is material. Same-user cooperative trust is explicit; adversarial caller hardening is outside this profile.\ninputs: feat/codex-queue-control@6e4d55cba vs main@4dabf06ef\ncoverage: scouts 15/15 (correctness, security, premortem, simplicity-design, hot-path-perf, concurrency-async, data-migrations, deploy-safety, api-contract, observability, testing, test-causality-lifecycle, test-isolation-environment, test-suite-cost, hygiene-docs) \u00b7 raw 5 \u2192 deduped 4 \u2192 panel 4 \u00b7 spot 0 \u00b7 promoted 0 \u00b7 judge completion 100% \u00b7 remainder-capped: 0 \u00b7 review readiness: coverage complete, provenance available \u2014 basis: \"Captured immutable full branch6e4d55cba and base4dabf06ef; complete git diff and repository available in dedicated detached worktree; historical scoped/full/live evidence and post-rebase mapping in docs/superpowers/runs/2026-11-14-codex-queue-wake.\"\nindependence: same-family (OpenAI Codex) \u2014 seat-differentiated panel \u00b7 rung: manual fan-out\nseat-agreement: panels 4 \u00b7 rr 1.00 \u00b7 rg 1.00 \u00b7 fg 1.00 \u00b7 unanimous 1.00 \u00b7 ground-loo 1.00 (n=4) \u00b7 reproduce 4/0/0 \u00b7 refute 4/0/0 \u00b7 ground 4/0/0\nlane-yield (found/confirmed/unique/refuted): correctness 0/0/0/0 \u00b7 security 0/0/0/0 \u00b7 premortem 0/0/0/0 \u00b7 simplicity-design 0/0/0/0 \u00b7 hot-path-perf 1/1/0/0 \u00b7 concurrency-async 1/1/0/0 \u00b7 data-migrations 0/0/0/0 \u00b7 deploy-safety 0/0/0/0 \u00b7 api-contract 0/0/0/0 \u00b7 observability 1/1/1/0 \u00b7 testing 1/1/1/0 \u00b7 test-causality-lifecycle 1/1/1/0 \u00b7 test-isolation-environment 0/0/0/0 \u00b7 test-suite-cost 0/0/0/0 \u00b7 hygiene-docs 0/0/0/0\n\nThe panel used static review and in-memory models. It did not rerun the full tests or reproduce these timing paths live.\n\n## Confirmed findings\n\n- [Should-fix] src/notification/queue_recovery.rs:280; src/notification/queue_recovery.rs:278 \u2014 Repeated pagination of fully cleaned wake-intent history can prevent daemon idle exit indefinitely. [lanes: hot-path-perf, concurrency-async]\n  verdict: confirmed (reproduce \u2713 / refute \u2717-survived / ground \u2713)\n  evidence: All seats confirmed that recovery selects retained history, sets work=true on every nonfinal page, and resets the cursor after the last page. With 97 cleaned rows, four five-second pages repeat true,true,true,false. ActivityProbe consumes this flag and the 30-second IdleTimer samples can repeatedly reset its ten-minute window. Pruning occurs only on a subsequent prepare. The reproduce seat's in-memory transcription showed no idle exit over a simulated hour; this was not a live daemon reproduction.\n  fix-shape hint: Separate pagination progress from pending cleanup activity so completed history cannot keep resetting idle exit.\n\n- [Should-fix] scripts/wake-e2e.py:1944 \u2014 Queue qualification can fail a successful wake when cleanup replaces its required Add-helper witness before the sampler observes it. [lanes: test-causality-lifecycle]\n  verdict: confirmed (reproduce \u2713 / refute \u2717-survived / ground \u2713)\n  evidence: The 100 ms sampler is unsynchronized with Add, Accepted, native Start, and cleanup. activation.rs:65-85 permits the current helper witness to be replaced, and src/notification/queue_recovery.rs:437-443 starts List cleanup. The independently timed five-second sweep gives the Add witness no minimum lifetime. The reproduce seat executed queue_proof in memory: equivalent accepted/fulfilled evidence failed with no_correlated_accepted_with_baseline_and_add_witness when the earlier Add snapshot was omitted. No live failure frequency was established.\n  fix-shape hint: Preserve immutable Add-attempt evidence or an ordered event stream that qualification can inspect after cleanup.\n\n- [Should-fix] src/harness/codex/wake/control.rs:502 \u2014 The Add-response ownership boundary lacks negative behavioral coverage for unrelated or missing correlation and invalid returned IDs. [lanes: testing]\n  verdict: confirmed (reproduce \u2713 / refute \u2717-survived / ground \u2713)\n  evidence: All seats found that control.rs:496-508 currently validates the returned ID and exact correlation correctly. tests/fixtures/codex_queue_helper.py:39 always supplies a valid ID and echoes the requested correlation. Existing failure modes do not exercise parsed negative Add responses, and List ownership tests cover a separate predicate. Accepted IDs become durable owned_ids and cleanup deletion targets. The claim that removing the equality check would escape coverage is a static inference, not an executed mutation test; no current production ownership defect was found.\n  fix-shape hint: Add parsed Add-response cases with mismatched correlation, missing correlation, and invalid IDs; assert Unknown and no accepted ownership.\n\n- [Nit] src/notification/queue.rs:228 \u2014 A failed result transaction after a possible queue effect discards the database error, leaving an unexplained unresolved intent. [lanes: observability]\n  verdict: confirmed (reproduce \u2713 / refute \u2717-survived / ground \u2713)\n  evidence: The existing accepted_effect_with_result_write_failure_is_unknown_and_never_native fault test shows Armed state, absent owned IDs, and both transport fences after result persistence fails. Err(_) if possible_effect discards the error. Same-boot Armed recovery returns successfully, so its cleanup logger supplies no cause. All seats confirm the missing diagnostic; reproduce and refute rate it Nit, while ground rates it Should-fix. The conservative Unknown behavior preserves safety.\n  severity basis: Nit follows the two-seat assessment of limited troubleshooting impact in this local cooperative tool; no profile-driven demotion from their severity is applied.\n  fix-shape hint: Emit a bounded diagnostic for the failed result write while preserving Unknown and both transport fences.\n\n## Not verified (beyond panel cap)\n\n- none\n\n## Not verified (dedupe failed or judge lost)\n\n- none\n\n## Beyond remainder cap (count only)\n\n- none\n\n## Rejected (with reason)\n\n- none\n\n## Unverified nits (spot-checked)\n\n- none\n\n## Escalations (need human)\n\n- none\n---",
+    "confirmedCount": 4,
+    "escalations": [],
+    "reporterFailed": false,
+    "enforcement": [
+      "lanes: 4 confirmed entries tagged",
+      "header: lane-yield inserted"
+    ],
+    "fixRegressions": [],
+    "coverage": {
+      "triageDead": false,
+      "scoutsDispatched": 15,
+      "scoutsDead": 0,
+      "unknownLanes": [],
+      "domainsDropped": [],
+      "rawFindings": 5,
+      "dedupedFindings": 4,
+      "dedupeOrphans": 0,
+      "beyondCap": 0,
+      "beyondPanelCap": 0,
+      "dedupeDead": false,
+      "panelCount": 4,
+      "spotCount": 0,
+      "promotedCount": 0,
+      "judgeLost": 0,
+      "spotLost": 0,
+      "laneYield": {
+        "correctness": {
+          "found": 0,
+          "confirmed": 0,
+          "unique": 0,
+          "refuted": 0
+        },
+        "security": {
+          "found": 0,
+          "confirmed": 0,
+          "unique": 0,
+          "refuted": 0
+        },
+        "premortem": {
+          "found": 0,
+          "confirmed": 0,
+          "unique": 0,
+          "refuted": 0
+        },
+        "simplicity-design": {
+          "found": 0,
+          "confirmed": 0,
+          "unique": 0,
+          "refuted": 0
+        },
+        "hot-path-perf": {
+          "found": 1,
+          "confirmed": 1,
+          "unique": 0,
+          "refuted": 0
+        },
+        "concurrency-async": {
+          "found": 1,
+          "confirmed": 1,
+          "unique": 0,
+          "refuted": 0
+        },
+        "data-migrations": {
+          "found": 0,
+          "confirmed": 0,
+          "unique": 0,
+          "refuted": 0
+        },
+        "deploy-safety": {
+          "found": 0,
+          "confirmed": 0,
+          "unique": 0,
+          "refuted": 0
+        },
+        "api-contract": {
+          "found": 0,
+          "confirmed": 0,
+          "unique": 0,
+          "refuted": 0
+        },
+        "observability": {
+          "found": 1,
+          "confirmed": 1,
+          "unique": 1,
+          "refuted": 0
+        },
+        "testing": {
+          "found": 1,
+          "confirmed": 1,
+          "unique": 1,
+          "refuted": 0
+        },
+        "test-causality-lifecycle": {
+          "found": 1,
+          "confirmed": 1,
+          "unique": 1,
+          "refuted": 0
+        },
+        "test-isolation-environment": {
+          "found": 0,
+          "confirmed": 0,
+          "unique": 0,
+          "refuted": 0
+        },
+        "test-suite-cost": {
+          "found": 0,
+          "confirmed": 0,
+          "unique": 0,
+          "refuted": 0
+        },
+        "hygiene-docs": {
+          "found": 0,
+          "confirmed": 0,
+          "unique": 0,
+          "refuted": 0
+        }
+      },
+      "judgeCompletionPct": 100,
+      "lowCoverage": false,
+      "panelCappedTag": "",
+      "emptyLateRound": false,
+      "reviewReadiness": {
+        "coverage": "complete",
+        "provenance": "available",
+        "basis": "Captured immutable full branch6e4d55cba and base4dabf06ef; complete git diff and repository available in dedicated detached worktree; historical scoped/full/live evidence and post-rebase mapping in docs/superpowers/runs/2026-11-14-codex-queue-wake."
+      },
+      "convergenceEligible": false
+    },
+    "routeCounts": {
+      "confirmed": 4
+    },
+    "seatAgreement": "seat-agreement: panels 4 \u00b7 rr 1.00 \u00b7 rg 1.00 \u00b7 fg 1.00 \u00b7 unanimous 1.00 \u00b7 ground-loo 1.00 (n=4) \u00b7 reproduce 4/0/0 \u00b7 refute 4/0/0 \u00b7 ground 4/0/0"
+  },
+  "responses": {
+    "triage": {
+      "lanes": [
+        "data-migrations",
+        "deploy-safety",
+        "api-contract",
+        "observability",
+        "testing",
+        "test-causality-lifecycle",
+        "test-isolation-environment",
+        "test-suite-cost",
+        "hygiene-docs"
+      ]
+    },
+    "scout:correctness": {
+      "findings": []
+    },
+    "scout:security": {
+      "findings": []
+    },
+    "scout:premortem": {
+      "findings": []
+    },
+    "scout:simplicity-design": {
+      "findings": []
+    },
+    "scout:hot-path-perf": {
+      "findings": [
+        {
+          "claim": "Paginating completed wake-intent history repeatedly marks the daemon active and can prevent idle exit indefinitely after cleanup finishes.",
+          "location": "src/notification/queue_recovery.rs:280",
+          "category": "hot-path-perf",
+          "external": false,
+          "evidence": "Recovery page selects all retained rows (selection=\"1\"), including fully cleaned history. Every nonfinal page sets self.work=true; final page resets sweep.after=0 so next five-second tick repeats. With 97 completed rows each four-page sweep advertises active for three ticks despite visits returning false. ActivityProbe consumes has_work; IdleTimer resets its ten-minute window on any active sample (30s sample). Completed rows prune only on subsequent prepare. A burst then cleanup then no submissions reaches this state.",
+          "kind": "ISSUE"
+        }
+      ]
+    },
+    "scout:concurrency-async": {
+      "findings": [
+        {
+          "claim": "Paginating fully cleaned wake-intent history can keep an otherwise idle daemon alive indefinitely.",
+          "location": "src/notification/queue_recovery.rs:278",
+          "category": "concurrency-async",
+          "external": false,
+          "evidence": "next_after unconditionally sets work=true; final page resets after=0. Recovery selection=\"1\" includes terminal fully cleaned rows; pruning only prepare. With65 retained intents retiring and cleanup finishing then no prepare, three five-second ticks report true,true,false repeatedly. IdleExit samples every30s, so a true phase can repeatedly clear idle_since. has_work is unconditional ActivityProbe input.",
+          "kind": "ISSUE"
+        }
+      ]
+    },
+    "scout:data-migrations": {
+      "findings": []
+    },
+    "scout:deploy-safety": {
+      "findings": []
+    },
+    "scout:api-contract": {
+      "findings": []
+    },
+    "scout:observability": {
+      "findings": [
+        {
+          "claim": "A failed result transaction after a possible queue effect silently discards the database error, leaving no diagnostic explaining the unresolved wake intent.",
+          "location": "src/notification/queue.rs:228",
+          "category": "observability",
+          "external": false,
+          "evidence": "Err(_) if possible_effect returns QueueDispatch::Unknown without logging or preserving error. accepted_effect_with_result_write_failure_is_unknown_and_never_native demonstrates intent remains Armed, owned IDs absent, blocks both transports. Diagnostic initially empty; failed transaction would populate it. Recovery only recovers Armed rows from another daemon boot and otherwise returns without error, so queue cleanup logger does not report it. Conservative Unknown is correct; transaction error needs operator diagnostic.",
+          "kind": "ISSUE"
+        }
+      ]
+    },
+    "scout:testing": {
+      "findings": [
+        {
+          "claim": "The add-response ownership check has no negative behavioral test, leaving acceptance of an unrelated queue entry undetected by the new control tests.",
+          "location": "src/harness/codex/wake/control.rs:502",
+          "category": "testing",
+          "external": false,
+          "evidence": "enqueue only accepts returned ID when queuedSubmission.clientUserMessageId matches correlation; otherwise Unknown. tests/fixtures/codex_queue_helper.py:39 always echoes requested correlation. Control tests cover lost/oversized replies and init failures, never different/absent correlation or invalid returned ID. Removing equality leaves tests passing. Accepted IDs become durable owned_ids and cleanup deletion targets. Add mismatched/missing correlation and malformed IDs asserting Unknown.",
+          "kind": "ISSUE"
+        }
+      ]
+    },
+    "scout:test-causality-lifecycle": {
+      "findings": [
+        {
+          "claim": "Queue qualification can fail a successful wake because its required Add-helper witness can be overwritten before the polling sampler observes it.",
+          "location": "scripts/wake-e2e.py:1944",
+          "category": "test-causality-lifecycle",
+          "external": false,
+          "evidence": "Proved missing observation prerequisite, not reproduced live failure. QueueCaseEvidence samples every100ms without synchronizing transitions. queue_proof requires observed helper purpose add even when Accepted and owned ID remain. Between snapshots: commit Add witness, accept, native Start fulfills, already-due cleanup sweep starts List helper (queue_recovery.rs:437-443); activation.rs:65-85 permits replacement of helper_json. Later samples cannot recover Add witness and return no_correlated_accepted_with_baseline_and_add_witness. Five-second sweep independent clock gives no minimum witness lifetime. Preserve immutable Add evidence or ordered stream.",
+          "kind": "ISSUE"
+        }
+      ]
+    },
+    "scout:test-isolation-environment": {
+      "findings": []
+    },
+    "scout:test-suite-cost": {
+      "findings": []
+    },
+    "scout:hygiene-docs": {
+      "findings": []
+    },
+    "dedupe": {
+      "groups": [
+        {
+          "ids": [
+            0,
+            1
+          ],
+          "suggestedSeverity": "Should-fix",
+          "rank": 1,
+          "mergedClaim": "Repeated pagination of fully cleaned wake-intent history marks the daemon active and can prevent idle exit indefinitely."
+        },
+        {
+          "ids": [
+            4
+          ],
+          "suggestedSeverity": "Should-fix",
+          "rank": 2
+        },
+        {
+          "ids": [
+            2
+          ],
+          "suggestedSeverity": "Should-fix",
+          "rank": 3
+        },
+        {
+          "ids": [
+            3
+          ],
+          "suggestedSeverity": "Should-fix",
+          "rank": 4
+        }
+      ]
+    },
+    "judge:reproduce#0": {
+      "verdict": "CONFIRM",
+      "severity": "Should-fix",
+      "evidence": "Captured head6e4d55cba versus base4dab. Recovery page(None) selects all retained rows; tick:278-286 sets has_work on nonfinal pages and resets cursor at final.97 separate unresolved cohorts then retirement/cleanup leaves97 completed rows below4096 cap; pruning only subsequent prepare. Four pages repeat true,true,true,false every5s. ActivityProbe consumes it; IdleTimer clears600s window on any active30s sample. Standalone in-memory transcription produced120 active samples and no idle exit over simulated hour; periodic state repeats. Violates finite cleanup liveness comment and tests/notification/queue_recovery.rs:85. New diff. Static plus model, not compiled/live reproduction; accepted latency/race limits unrelated."
+    },
+    "judge:refute#0": {
+      "verdict": "CONFIRM",
+      "severity": "Should-fix",
+      "evidence": "Static captured base/head review. No equivalent mechanism: page(None) selection1 includes cleaned history; prune only prepare, not retention worker/recovery. next_after true publishes work; final resets cursor.97 retained completed rows within4096cap feasible after unresolved batch retires/cleans. Four-page5s sweep true,true,true,false;30s samples alternate phases including true, resetting600s timer forever. Idle-exit finite cleanup comment contradicts behavior. Accepted latency/extra-turn limits unrelated. New implementation/input absent base. Not linter territory. No live reproduction."
+    },
+    "judge:ground#0": {
+      "verdict": "CONFIRM",
+      "severity": "Should-fix",
+      "evidence": "Static captured head/base. wake_intents.rs:444 selects all retained rows,32/page. queue_recovery.rs:278-285 unconditional work=true nonfinal, final resets after0.97 clean rows repeat true,true,true,false although visits false; daemon/idle_exit.rs:54-57 consumes flag and observe clears idle_since.30s sampling can continually reset10min. prepare:242 alone prunes; completed history reachable within4096cap. Own test:85 asserts finished finite cleanup permits idle exit. Newly introduced, accepted residual turns/latency do not waive. No builds/live reproduction."
+    },
+    "judge:reproduce#1": {
+      "verdict": "CONFIRM",
+      "severity": "Should-fix",
+      "evidence": "Structurally confirmed plus execution of actual queue_proof function in memory, no live timing failure.100ms sampler lacks transition ordering. Between samples Add witness, arm, Accepted+ownedID, qualified Start fulfills, already-due recovery List overwrites helper_json via activation.rs:65-85.5s sweep clock independent. Actual oracle returned true with prior Add snapshot, false/no_correlated_accepted_with_baseline_and_add_witness when omitted despite equivalent Accepted/fulfilled evidence. record:3678-3690 turns caseFAIL; UI qualified_activity also unavailable. Design integrated qualification and RELEASE queue-proof require canonical transport evidence. New diff; accepted15s/races unrelated. Preserve durable evidence/ordered stream, faster polling no guarantee."
+    },
+    "judge:refute#1": {
+      "verdict": "CONFIRM",
+      "severity": "Should-fix",
+      "evidence": "Static, no live failure. Prior sample retention only helps if observed: existing test_earlier_add_witness_survives_later_cleanup_and_native_start explicitly asserts later Accepted/List snapshot alone fails.100ms polling unsynchronized; qualified Start then recovery List replaces helper_json.Independent5s cadence imposes no retention floor. Remaining accepted/owned/fulfilled evidence cannot recover witness, record makesFAIL. Valid possible false failure, frequency not established. Accepted15s/extra-turn limits unrelated. New diff, not linter issue."
+    },
+    "judge:ground#1": {
+      "verdict": "CONFIRM",
+      "severity": "Should-fix",
+      "evidence": "Static head6e4d55c. QueueCaseEvidence waits0.1 before sample; queue_proof requires same-attempt Add witness despite Accepted/baseline/nonce/ownedID. activation65-85 replaces helper_json after fulfillment+confirmed cleanup; recovery437-443 List.Independent5s cadence gives no minimum witness lifetime. Schema only current slot. Existing test covers already-observed Add, not missing observation. record makesFAIL; material mandatory live qualification. New machinery absent base; limits unrelated; no live reproduction/builds."
+    },
+    "judge:reproduce#2": {
+      "verdict": "CONFIRM",
+      "severity": "Nit",
+      "evidence": "Static concrete existing fault test: AcceptingControl installs trigger rejecting Accepted phase update after simulated effect(queue.rs397-403). record_result ownedID+phase/diagnostic transaction fails, leaves Armed/noIDs/empty diagnostic. Test asserts both fences. queue.rs228 discards DBerror, dispatch mapsUnknown without cause. Recovery same-bootArmed successful no error, only other boot recoverable. Design bounded diagnostics/doctor evidence conflict. Conservative fence correct, limited troubleshooting impact, not unsafe replay/data loss. New module. No tests run."
+    },
+    "judge:refute#2": {
+      "verdict": "CONFIRM",
+      "severity": "Nit",
+      "evidence": "Static. No equivalent surviving cause: queue.rs228 discards error; dispatch OutcomeUnknown diagnosticNone; empty ledger diagnostic cannot update failed transaction. Same-ownerArmed recovery success means cleanup logger cannot recover error. Existing failure test shows Armed/noID/both fences. Design accepts conservative uncertainty, not absent explanation; bounded existing diagnostics in scope. Impact troubleshooting only, safety correct. New diff, not linter territory; no live tests."
+    },
+    "judge:ground#2": {
+      "verdict": "CONFIRM",
+      "severity": "Should-fix",
+      "evidence": "Static. Result-write error discarded queue.rs228 and dispatch. prepare diagnostic empty; failed record_result transaction only update. Existing fault test shows Armed/noIDs/both fences; same-bootArmed recovery returns successfully, so cleanup-error logger silent. Operationally significant unexplained wake fence conflicts bounded doctor/wake diagnostic requirement. Qualification: clean Accepted itself has empty diagnostic, so successful persistence would not record DBerror either; explicit error reporting needed while preservingUnknown. New diff; no runtime reproduction."
+    },
+    "judge:reproduce#3": {
+      "verdict": "CONFIRM",
+      "severity": "Should-fix",
+      "evidence": "Testing gap, not production defect. control496-508 correctly validates ID and matching correlation. Sole fake add constructor fixture39 always validqueue-owned-1+echo correlation; other modes exit/overflow/hang before parsed result. All tests searched, no mismatched/missing correlation or malformedID. List negative test separate predicate. Removing add equality observationally indistinguishable for deterministic inputs. UnrelatedID then Accepted->queue193->store290-306 persisted->recovery438-490 deletion. Violates exact owned entries/design254,374 protection if regression. Static only, no executed mutation-suite claim."
+    },
+    "judge:ground#3": {
+      "verdict": "CONFIRM",
+      "severity": "Should-fix",
+      "evidence": "Static head. control497-508 correctly validates returnedID+exactcorrelation; fixture39 always validID+echo. Complete tests have no negative add response correlation/ID case; unrelated list case separate branch. AcceptedID persisted store290-306 then recovery438-491 exactID deletion. Material ownership boundary without negative regression coverage against design254 cancel only exact owned entries. New files; accepted race limits unrelated. No mutation/test executed; equality-deletion claim supported by fixture/control inspection only."
+    },
+    "judge:refute#3": {
+      "verdict": "CONFIRM",
+      "severity": "Should-fix",
+      "evidence": "Static review, no mutation/test run. No equivalent negative add response coverage: fixture39 validID+echo; list ownership separate parser, malformed preflight/oversizedinput not ownership. Accepted race limits do not waive design254 exact owned entries and262 fault injection ambiguity tests. Current control497-508 correctly rejects invalidID/unrelated or missingcorrelation asUnknown, but tests cannot detect equality removal. AcceptedID flows notification->store290->recovery exact deletion target. New control/fixture absentbase, behavioral not linter. Mutation claim inferred from inputs/paths, not executed. Add mismatched/missing correlation/invalidID cases."
+    },
+    "reporter": {
+      "verdict": "Should-fix (4 confirmed)",
+      "reportMarkdown": "---\nsuper-roast verdict: Should-fix (4 confirmed)\nmode: pr        iteration: 1 of 3\nprofile (assumed): Production local same-user cooperative messaging tool. Wake mistakes cost user attention and quota; durable migration or message/receipt corruption is material. Same-user cooperative trust is explicit; adversarial caller hardening is outside this profile.\ninputs: feat/codex-queue-control@6e4d55cba vs main@4dabf06ef\ncoverage: scouts 15/15 (correctness, security, premortem, simplicity-design, hot-path-perf, concurrency-async, data-migrations, deploy-safety, api-contract, observability, testing, test-causality-lifecycle, test-isolation-environment, test-suite-cost, hygiene-docs) \u00b7 raw 5 \u2192 deduped 4 \u2192 panel 4 \u00b7 spot 0 \u00b7 promoted 0 \u00b7 judge completion 100% \u00b7 remainder-capped: 0 \u00b7 review readiness: coverage complete, provenance available \u2014 basis: \"Captured immutable full branch6e4d55cba and base4dabf06ef; complete git diff and repository available in dedicated detached worktree; historical scoped/full/live evidence and post-rebase mapping in docs/superpowers/runs/2026-11-14-codex-queue-wake.\"\nindependence: same-family (OpenAI Codex) \u2014 seat-differentiated panel \u00b7 rung: manual fan-out\nseat-agreement: panels 4 \u00b7 rr 1.00 \u00b7 rg 1.00 \u00b7 fg 1.00 \u00b7 unanimous 1.00 \u00b7 ground-loo 1.00 (n=4) \u00b7 reproduce 4/0/0 \u00b7 refute 4/0/0 \u00b7 ground 4/0/0\n\nThe panel used static review and in-memory models. It did not rerun the full tests or reproduce these timing paths live.\n\n## Confirmed findings\n\n- [Should-fix] src/notification/queue_recovery.rs:280; src/notification/queue_recovery.rs:278 \u2014 Repeated pagination of fully cleaned wake-intent history can prevent daemon idle exit indefinitely.\n  verdict: confirmed (reproduce \u2713 / refute \u2717-survived / ground \u2713)\n  evidence: All seats confirmed that recovery selects retained history, sets work=true on every nonfinal page, and resets the cursor after the last page. With 97 cleaned rows, four five-second pages repeat true,true,true,false. ActivityProbe consumes this flag and the 30-second IdleTimer samples can repeatedly reset its ten-minute window. Pruning occurs only on a subsequent prepare. The reproduce seat's in-memory transcription showed no idle exit over a simulated hour; this was not a live daemon reproduction.\n  fix-shape hint: Separate pagination progress from pending cleanup activity so completed history cannot keep resetting idle exit.\n\n- [Should-fix] scripts/wake-e2e.py:1944 \u2014 Queue qualification can fail a successful wake when cleanup replaces its required Add-helper witness before the sampler observes it.\n  verdict: confirmed (reproduce \u2713 / refute \u2717-survived / ground \u2713)\n  evidence: The 100 ms sampler is unsynchronized with Add, Accepted, native Start, and cleanup. activation.rs:65-85 permits the current helper witness to be replaced, and src/notification/queue_recovery.rs:437-443 starts List cleanup. The independently timed five-second sweep gives the Add witness no minimum lifetime. The reproduce seat executed queue_proof in memory: equivalent accepted/fulfilled evidence failed with no_correlated_accepted_with_baseline_and_add_witness when the earlier Add snapshot was omitted. No live failure frequency was established.\n  fix-shape hint: Preserve immutable Add-attempt evidence or an ordered event stream that qualification can inspect after cleanup.\n\n- [Should-fix] src/harness/codex/wake/control.rs:502 \u2014 The Add-response ownership boundary lacks negative behavioral coverage for unrelated or missing correlation and invalid returned IDs.\n  verdict: confirmed (reproduce \u2713 / refute \u2717-survived / ground \u2713)\n  evidence: All seats found that control.rs:496-508 currently validates the returned ID and exact correlation correctly. tests/fixtures/codex_queue_helper.py:39 always supplies a valid ID and echoes the requested correlation. Existing failure modes do not exercise parsed negative Add responses, and List ownership tests cover a separate predicate. Accepted IDs become durable owned_ids and cleanup deletion targets. The claim that removing the equality check would escape coverage is a static inference, not an executed mutation test; no current production ownership defect was found.\n  fix-shape hint: Add parsed Add-response cases with mismatched correlation, missing correlation, and invalid IDs; assert Unknown and no accepted ownership.\n\n- [Nit] src/notification/queue.rs:228 \u2014 A failed result transaction after a possible queue effect discards the database error, leaving an unexplained unresolved intent.\n  verdict: confirmed (reproduce \u2713 / refute \u2717-survived / ground \u2713)\n  evidence: The existing accepted_effect_with_result_write_failure_is_unknown_and_never_native fault test shows Armed state, absent owned IDs, and both transport fences after result persistence fails. Err(_) if possible_effect discards the error. Same-boot Armed recovery returns successfully, so its cleanup logger supplies no cause. All seats confirm the missing diagnostic; reproduce and refute rate it Nit, while ground rates it Should-fix. The conservative Unknown behavior preserves safety.\n  severity basis: Nit follows the two-seat assessment of limited troubleshooting impact in this local cooperative tool; no profile-driven demotion from their severity is applied.\n  fix-shape hint: Emit a bounded diagnostic for the failed result write while preserving Unknown and both transport fences.\n\n## Not verified (beyond panel cap)\n\n- none\n\n## Not verified (dedupe failed or judge lost)\n\n- none\n\n## Beyond remainder cap (count only)\n\n- none\n\n## Rejected (with reason)\n\n- none\n\n## Unverified nits (spot-checked)\n\n- none\n\n## Escalations (need human)\n\n- none\n---",
+      "confirmedCount": 4,
+      "escalations": []
+    }
+  },
+  "evidence_note": "Scout and judge evidence is compactly transcribed from native agent responses; reporter response is retained verbatim. No compiled or live reproductions by review panel. The original report stands because the one permitted format repair failed header preservation.",
+  "friction": [
+    "Workflow tool unavailable; used manual fan-out and unchanged engine via cached native-agent responses.",
+    "Configured model aliases unavailable; actual agents inherited OpenAI Codex, same-family seat-differentiated.",
+    "Original format check exit4: trailing horizontal rule parsed as finding text after none in Escalations. One reporter repair removed both wrapping rules; repair-check exit4: header lines differ. Per skill the original stands; no second repair."
+  ]
+}
