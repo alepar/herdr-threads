@@ -1,0 +1,44 @@
+{
+  "source_sha": "15fd697ba980420ac4ef812b3de072b6af045409",
+  "main_sha": "4dabf06ef90c8c9e8c459b524b509af3a2e98b31",
+  "merge_tree": "5ab1a672cd78dbaf41e2dd1854be8156d5d06f52",
+  "run_id": "be8fd356-e625-48a5-aa37-d9386358c2fb",
+  "start_utc": "2026-11-16T02:49:22.902388+00:00",
+  "profile": "ci",
+  "test_threads": 4,
+  "build_jobs": 4,
+  "nice": 19,
+  "group_config_sha256": "f5be54ee4a75cd2aa33d80d7ea321a262545226b76c6f25b3948a534f80742dd",
+  "unfiltered": true,
+  "phase": "complete",
+  "exit_code": 100,
+  "command_wall_seconds": 932.366,
+  "end_utc": "2026-11-16T03:04:55.267993+00:00",
+  "observed_max_process_counts": {
+    "cargo": 2,
+    "cargo-nextest": 1,
+    "rustc": 2,
+    "clippy-driver": 0
+  },
+  "execution_seconds": 930.812,
+  "compile_seconds": 0.03,
+  "passed": 9749,
+  "failed": 1,
+  "skipped": 64,
+  "tests_run": 9750,
+  "failed_tests": [
+    {
+      "classname": "herdr-threads::integration",
+      "name": "no_leaks::every_test_spawn_site_is_owned"
+    }
+  ],
+  "scoped_cleanup": "processes and temp files clean",
+  "status": "historical FAIL; main independent review correction hold",
+  "raw_sha256": {
+    "final-tree-junit.xml": "df9a4f0d4ac1f0d24c1dbe79506f902303e33adda208c4b3451eb458ec7ec5b6",
+    "final-tree-suite.log": "70b0ebee85641e062e20f57e423662b4f9191e4caf6de7b1f64e7a0713e4e17f",
+    "final-tree-time.json": "fa0e657cf067554308662caddfd7597b26689abd932f511d3114cfad9a2a3c9a",
+    "final-tree-qualification.py": "16c607f48d30e57605c45ee3241a0086167a6a79d6ed2b12d22e37653185ead5"
+  },
+  "report_sha256": "f3852c5bd4fc68f1f116e9492491e581b4d6935cbeab5b331f959c219ec557c4"
+}
