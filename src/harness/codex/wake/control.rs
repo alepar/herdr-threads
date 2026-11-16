@@ -27,9 +27,6 @@ struct Home(PathBuf);
 impl Drop for Home {
     fn drop(&mut self) {
         let _ = fs::remove_dir_all(&self.0);
-        if let Some(parent) = self.0.parent() {
-            let _ = fs::remove_dir(parent);
-        }
     }
 }
 struct Peer<'a> {
@@ -79,6 +76,13 @@ impl<'a> Peer<'a> {
         if left < 500 || context.budget.is_exhausted(context.clock) {
             return Err(error("insufficient queue helper budget").into());
         }
+        let sqlite = d
+            .database
+            .path
+            .parent()
+            .and_then(|path| path.to_str())
+            .ok_or_else(|| error("invalid queue storage encoding"))?;
+        let config = format!("sqlite_home={}", toml_edit::Value::from(sqlite));
         let started = Instant::now();
         let deadline = started + Duration::from_millis(left.min(2000).saturating_sub(250));
         let parent = context.state_dir.join("queue-control");
@@ -89,15 +93,6 @@ impl<'a> Peer<'a> {
             .create(&path)
             .map_err(|_| error("queue helper scratch unavailable"))?;
         let home = Home(path);
-        let sqlite = d
-            .database
-            .path
-            .parent()
-            .ok_or_else(|| error("invalid queue storage"))?;
-        let config = format!(
-            "sqlite_home={}",
-            toml_edit::Value::from(sqlite.to_string_lossy().into_owned())
-        );
         let mut command = Command::new(&d.executable.path);
         command
             .args(["-c", &config, "app-server", "--listen", "stdio://"])

@@ -4037,6 +4037,13 @@ helper-uncertain rows remain retained; logically retired, quiescent rows may be
 pruned after bounded best-effort cancellation and removal of wake-work references.
 See the design's Activation contract for the complete bounds and CAS rules.
 
+A same-owner refusal CAS that moves an unarmed Prepared intent to NoEffect also
+revokes its add authority. If its exact Add operation has no committed witness,
+freshly guarded native fallback may proceed while cleanup remains quarantined
+and programmatic retry remains fenced. This is resource uncertainty only, not
+proof of reaping or permission to prune. A committed witness, even when its
+callback reply was lost, excludes this unwitnessed exception.
+
 The native-only resource exception also covers a logically retired intent whose
 List/Delete helper remains SpawnPending without a committed witness after
 canonical owner revocation. The uninitialized cleanup helper cannot submit an

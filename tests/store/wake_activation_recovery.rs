@@ -1024,3 +1024,49 @@ fn armed_recovery_preserves_pinned_add_witness_bytes() {
         .unwrap();
     assert_eq!(after, pinned);
 }
+
+#[test]
+fn refused_unarmed_unwitnessed_add_allows_native_only_without_claiming_cleanup() {
+    for witnessed in [false, true] {
+        let (store, _path, r, p) = fixture();
+        if witnessed {
+            prepare(&store, &r, &p);
+        } else {
+            prepare_raw(&store, &r, &p);
+            assert!(begin(&store, &r, &op(&r, &p, WakeHelperPurpose::Add, None)));
+        }
+        let before = row(&store, &r);
+        assert!(
+            StorePort::refuse_prepared_wake_intent(
+                &store,
+                &r.attempt,
+                before.revision,
+                false,
+                "unconfirmed pre-arm cleanup",
+                &budget()
+            )
+            .unwrap()
+        );
+        let refused = row(&store, &r);
+        assert_eq!(refused.phase, WakeIntentPhase::NoEffect);
+        assert!(refused.cleanup_quarantined);
+        assert_eq!(refused.native_no_add_exception, !witnessed);
+        assert_eq!(refused.helper, before.helper);
+        assert!(
+            StorePort::arm_wake_intent(
+                &store,
+                &r,
+                before.revision,
+                uuid::Uuid::new_v4(),
+                &budget()
+            )
+            .unwrap()
+            .is_none()
+        );
+        let blockers =
+            StorePort::wake_intent_blockers(&store, &r.seat, p.adapter, &p.replay_scope, &budget())
+                .unwrap();
+        assert!(blockers.programmatic);
+        assert_eq!(blockers.native, witnessed);
+    }
+}

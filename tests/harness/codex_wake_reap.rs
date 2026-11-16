@@ -38,6 +38,7 @@ fn gated_child(pool: &Children) -> (u32, Gate, crate::harness::wake::WakeHelperW
         .stdout(Stdio::null())
         .stderr(Stdio::null())
         .process_group(0);
+    // leak-guard: spawn::command tags it; exact pool slot and Cleanup own kill/reap.
     *slot = Some(command.spawn().unwrap());
     let child = slot.as_mut().unwrap();
     let pid = child.id();

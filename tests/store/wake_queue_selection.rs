@@ -113,22 +113,19 @@ fn end_first_and_stale_reservation_cannot_authorize_selection() {
         .unwrap()
         .execute("DELETE FROM wake_work", [])
         .unwrap();
-    assert_eq!(
-        StorePort::queue_wake_selection(&store, &reservation, &budget())
-            .unwrap_err()
-            .code,
-        herdr_threads::protocol::results::ErrorCode::TargetUnsafe
-    );
+    let selection = StorePort::queue_wake_selection(&store, &reservation, &budget()).unwrap();
+    assert!(selection.binding.is_none());
+    assert!(!selection.blockers.native);
 }
 
 #[test]
-fn incomplete_binding_census_fails_both_transports_closed() {
+fn large_binding_population_does_not_manufacture_effect_fences() {
     let (store, _path, reservation, _preparation) = fixture();
     store.context().open_writer().unwrap().execute_batch("WITH RECURSIVE n(x) AS (SELECT 1 UNION ALL SELECT x+1 FROM n WHERE x<64) INSERT INTO occupant_bindings(seat_id,generation,target_generation,target_id,host_boot,host_epoch,harness,native_session,execution_id,observation_provenance,observed_at,registered_at,terminal_id,incarnation,binding_id) SELECT 's',1,1,'pane','host',0,'codex','extra-'||x,'extra-'||x,'cooperative_top_level',0,0,'term-pane','inc','extra-'||x FROM n;").unwrap();
     let selected = StorePort::queue_wake_selection(&store, &reservation, &budget()).unwrap();
     assert!(selected.binding.is_none());
-    assert!(selected.blockers.programmatic);
-    assert!(selected.blockers.native);
+    assert!(!selected.blockers.programmatic);
+    assert!(!selected.blockers.native);
 }
 
 #[test]
@@ -147,4 +144,23 @@ fn ended_binding_history_does_not_saturate_current_cohort_census() {
     assert_eq!(selected.binding.unwrap().scope, preparation.target.scope);
     assert!(!selected.blockers.programmatic);
     assert!(!selected.blockers.native);
+}
+
+#[test]
+fn native_only_large_population_preserves_real_origin_fence() {
+    for pending in [false, true] {
+        let (store, _path, reservation, preparation) = fixture();
+        if pending {
+            prepare_raw(&store, &reservation, &preparation);
+        }
+        let db = store.context().open_writer().unwrap();
+        db.execute("UPDATE occupant_bindings SET harness='claude'", [])
+            .unwrap();
+        db.execute_batch("WITH RECURSIVE n(x) AS (SELECT 1 UNION ALL SELECT x+1 FROM n WHERE x<100) INSERT INTO occupant_bindings(seat_id,generation,target_generation,target_id,host_boot,host_epoch,harness,native_session,execution_id,observation_provenance,observed_at,registered_at,terminal_id,incarnation,binding_id) SELECT 's',1,1,'pane','host',0,'claude','historical-'||x,'historical-'||x,'cooperative_top_level',0,0,'term-pane','inc','historical-'||x FROM n;").unwrap();
+        drop(db);
+        let selected = StorePort::queue_wake_selection(&store, &reservation, &budget()).unwrap();
+        assert!(selected.binding.is_none());
+        assert_eq!(selected.blockers.native, pending);
+        assert_eq!(selected.blockers.programmatic, pending);
+    }
 }

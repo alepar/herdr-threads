@@ -16,6 +16,14 @@ pub(super) struct Descriptor {
     pub session_lock: FileIdentity,
 }
 pub(super) fn files(process: &Path, session: &str, deadline: Instant) -> Option<Descriptor> {
+    files_with(process, session, deadline, |path| std::fs::read_link(path))
+}
+fn files_with(
+    process: &Path,
+    session: &str,
+    deadline: Instant,
+    mut read_link: impl FnMut(&Path) -> std::io::Result<PathBuf>,
+) -> Option<Descriptor> {
     use std::{collections::BTreeMap, fs, io::Read, os::unix::fs::MetadataExt};
     if uuid::Uuid::parse_str(session).ok()?.to_string() != session {
         return None;
@@ -43,8 +51,16 @@ pub(super) fn files(process: &Path, session: &str, deadline: Instant) -> Option<
         if count >= 1024 || Instant::now() >= deadline {
             return None;
         }
-        let entry = entry.ok()?;
-        let path = fs::read_link(entry.path()).ok()?;
+        let entry = match entry {
+            Ok(entry) => entry,
+            Err(error) if error.raw_os_error() == Some(libc::ENOENT) => continue,
+            Err(_) => return None,
+        };
+        let path = match read_link(&entry.path()) {
+            Ok(path) => path,
+            Err(error) if error.raw_os_error() == Some(libc::ENOENT) => continue,
+            Err(_) => return None,
+        };
         if !path.is_absolute() {
             continue;
         }

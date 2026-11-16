@@ -9,7 +9,6 @@ use crate::{
     },
 };
 
-const BINDING_LIMIT: usize = 64;
 struct Binding {
     id: String,
     adapter: String,
@@ -49,15 +48,6 @@ pub(crate) fn queue_wake_selection(
 ) -> Result<WakeQueueSelection, ApiError> {
     let db = store.context.open_query(budget.clone())?;
     let tx = db.unchecked_transaction().map_err(store_error)?;
-    if store.settings.daemon_boot != Some(reservation.daemon_boot)
-        || store.context.clock().monotonic_now() > reservation.lease_until
-        || !wake::validate_reservation(&tx, &store.instance, reservation)?
-    {
-        return Err(api_error(
-            ErrorCode::TargetUnsafe,
-            "wake reservation is not current",
-        ));
-    }
     // The origin fence exists even when no current binding can name a cohort.
     let mut blocked = blockers(
         &tx,
@@ -65,8 +55,38 @@ pub(crate) fn queue_wake_selection(
         "origin_seat=?2",
         &[reservation.seat.as_str()],
     )?;
+    // Cohort fences are independent of eligibility and binding population. The
+    // query budget bounds this streaming census; cardinality never invents effects.
+    let registry = builtins();
+    {
+        let mut statement = tx.prepare_cached("SELECT DISTINCT harness,native_session FROM occupant_bindings INDEXED BY occupant_bindings_open WHERE seat_id=?1 AND ended_at IS NULL").map_err(store_error)?;
+        let cohorts = statement
+            .query_map([reservation.seat.as_str()], |r| {
+                Ok((r.get::<_, String>(0)?, r.get::<_, String>(1)?))
+            })
+            .map_err(store_error)?;
+        for row in cohorts {
+            let (adapter, session) = row.map_err(store_error)?;
+            let Ok(adapter) = registry.agent(&adapter) else {
+                continue;
+            };
+            let registration = registry.by_id(adapter).map_err(|_| corrupt())?;
+            let Some(cohort) = registration.wake_replay_scope(&NativeSessionId::new(session))
+            else {
+                continue;
+            };
+            let fence = blockers(
+                &tx,
+                &store.instance,
+                "adapter=?2 AND replay_scope=?3",
+                &[adapter.as_str(), cohort.as_str()],
+            )?;
+            blocked.programmatic |= fence.programmatic;
+            blocked.native |= fence.native;
+        }
+    }
     let rows = {
-        let mut statement = tx.prepare_cached("SELECT binding_id,harness,native_session,execution_id,generation,liveness_pid,liveness_start,liveness_boot,(ended_at IS NULL AND liveness='connected' AND role='top_level'),(agent_id='' AND registered_at IS NOT NULL AND observation_provenance='cooperative_top_level') FROM occupant_bindings INDEXED BY occupant_bindings_open WHERE seat_id=?1 AND ended_at IS NULL ORDER BY ordinal DESC LIMIT 65").map_err(store_error)?;
+        let mut statement = tx.prepare_cached("SELECT binding_id,harness,native_session,execution_id,generation,liveness_pid,liveness_start,liveness_boot,(ended_at IS NULL AND liveness='connected' AND role='top_level'),(agent_id='' AND registered_at IS NOT NULL AND observation_provenance='cooperative_top_level') FROM occupant_bindings INDEXED BY occupant_bindings_open WHERE seat_id=?1 AND ended_at IS NULL AND liveness='connected' AND role='top_level' ORDER BY ordinal DESC LIMIT 2").map_err(store_error)?;
         statement
             .query_map([reservation.seat.as_str()], |r| {
                 Ok(Binding {
@@ -86,41 +106,19 @@ pub(crate) fn queue_wake_selection(
             .collect::<Result<Vec<_>, _>>()
             .map_err(store_error)?
     };
-    // An incomplete cohort census cannot authorize either transport.
-    if rows.len() > BINDING_LIMIT {
-        return Ok(WakeQueueSelection {
-            binding: None,
-            blockers: WakeIntentBlockers {
-                programmatic: true,
-                native: true,
-            },
-        });
-    }
-    let registry = builtins();
-    for row in &rows {
-        let Ok(adapter) = registry.agent(&row.adapter) else {
-            continue;
-        };
-        let registration = registry.by_id(adapter).map_err(|_| corrupt())?;
-        let Some(cohort) = registration.wake_replay_scope(&NativeSessionId::new(&row.session))
-        else {
-            continue;
-        };
-        let fence = blockers(
-            &tx,
-            &store.instance,
-            "adapter=?2 AND replay_scope=?3",
-            &[adapter.as_str(), cohort.as_str()],
-        )?;
-        blocked.programmatic |= fence.programmatic;
-        blocked.native |= fence.native;
-    }
     let mut connected = rows.iter().filter(|row| row.connected_top);
     let unique = connected.next().filter(|_| connected.next().is_none());
-    let selected = unique
-        .map(|row| select_binding(store, &tx, reservation, row))
-        .transpose()?
-        .flatten();
+    let current = store.settings.daemon_boot == Some(reservation.daemon_boot)
+        && store.context.clock().monotonic_now() <= reservation.lease_until
+        && wake::validate_reservation(&tx, &store.instance, reservation)?;
+    let selected = if current {
+        unique
+            .map(|row| select_binding(store, &tx, reservation, row))
+            .transpose()?
+            .flatten()
+    } else {
+        None
+    };
     tx.rollback().map_err(store_error)?;
     store.live_budget(budget)?;
     Ok(WakeQueueSelection {

@@ -1,0 +1,47 @@
+{
+  "basis": "694ed8863, Astra213-224/227 approved bounded independent corrections",
+  "files_sha256": {
+    "TRUST-POLICY.md": "2f0b73a1f066477e9b291cb1dceaaaaf8c96e9835058a2a7fd3df2b9b2c5fea9",
+    "src/harness/codex/wake/capture.rs": "cf44be533baadfc59eeb57f10f291932c3bd8899898dcbae56eacaeba7ac7d57",
+    "src/harness/codex/wake/control.rs": "a467f79a019f41fbe196af05b4a5bb2c8d1841950fa4bc3ea683d6a7b2aa14c8",
+    "src/store/native_turn.rs": "bded5c3028f253c98d6e3038e6a92362bb94371e17e7ef5a42626114606db2e0",
+    "src/store/wake_intents.rs": "e094eb1eca0309b130a877a38245ef418cf6c5b20a9ce56c95e684908dcd5347",
+    "src/store/wake_intents/selection.rs": "3e6101283b1d93a1d909f485adb13b1583bb2b4a97b77e1e7e6a88be76e08e73",
+    "tests/harness/codex_wake_capture.rs": "c4791a13c2f7b48f9d30b021c447582242edef316ce09ba530a8dc914922b004",
+    "tests/harness/codex_wake_control.rs": "5c85fc69532d46d159303c7734a8e7d2d26c996c065f3a9da9cfa48a599412ab",
+    "tests/harness/codex_wake_reap.rs": "a62c703e4613cc1cae9017c648b9709ea13965c5c1d5090d5af5141fd8dbb416",
+    "tests/store/wake_activation_recovery.rs": "8d798ffb7230da7cee65d76906bfea9448de7ba57ccfc3d901ff3f0f41cd3700",
+    "tests/store/wake_intents.rs": "8908a2fae8b786eaead53883ae940a2c067515af0a590b3dd26cfb85b131bcb2",
+    "tests/store/wake_queue_selection.rs": "ba9210c0a5cab8453a9f506d9c970b15004cacac4d6d77748a7628a806f8e6a1",
+    "docs/superpowers/runs/2026-11-14-codex-queue-wake/design.md": "6fd1d8f0f68a5fad3c8c37d0d8ff834920ff7886dd9c74710c3c53f2ebd6d140"
+  },
+  "rust": {
+    "passed": 133,
+    "seconds": 6.301,
+    "compile_seconds": 46.79,
+    "run_id": "065d1b11-e401-41fb-9f73-1dbac9dff802",
+    "cleanup": "processes and temp files clean"
+  },
+  "red": "three independent failures then two unwitnessed/FD failures reproduced; final133PASS after updating two superseded assertions without weakening invalid claims",
+  "checks": {
+    "clippy": "PASS19.51s",
+    "default_features": "PASS warm repeat after unavailable terminal result",
+    "fmt": "PASS",
+    "neutral": "PASS",
+    "wire": "PASS",
+    "diff": "PASS",
+    "release_docs": "DOCS_TEST_PASS"
+  },
+  "model_visible_added_bytes": 0,
+  "sqlite_effects_files_sha256": {
+    "docs/superpowers/runs/2026-11-14-codex-queue-wake/sqlite-effects/aggregate.json": "eb36cdfb3a28f8214599506a3b1237eef452ab121a5eccc45abac7c8598df9cf",
+    "docs/superpowers/runs/2026-11-14-codex-queue-wake/sqlite-effects/initial-failure.json": "5f31c6322056f52ec4f752a8e2739469a6da76d1391c048e5c45e057862756b7",
+    "docs/superpowers/runs/2026-11-14-codex-queue-wake/sqlite-effects/probe.py": "4b81af798e29b7c2b8ebdec93607db3d3ceb20723d1cfe70eda7d797615c97a2"
+  },
+  "limits": [
+    "S1 fallback accounting remains unimplemented",
+    "S5 automatic transport evidence remains unimplemented",
+    "neutral queue setting/default remains pending",
+    "no final fixed-tree full or new live run"
+  ]
+}

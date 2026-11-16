@@ -997,7 +997,7 @@ fn native_turn_first_end_has_no_matched_cycle_and_counter_cannot_wrap() {
     );
 }
 #[test]
-fn native_turn_refuses_host_hold_child_and_missing_live_scope() {
+fn native_turn_refuses_invalid_claims_but_keeps_legacy_edge_without_queue_scope() {
     use herdr_threads::{harness::adapter::TurnEdge, protocol::authority::CallerRole};
     let (store, _path, r, p) = fixture();
     let good = native_report(&store, &r, &p, "a", TurnEdge::Busy);
@@ -1012,11 +1012,11 @@ fn native_turn_refuses_host_hold_child_and_missing_live_scope() {
             2 => bad.claim.liveness = None,
             _ => bad.claim.agent_id = Some(herdr_threads::protocol::ids::AgentId::new("child")),
         }
-        assert!(
+        assert_eq!(
             StorePort::record_native_turn(&store, &bad, &budget())
                 .unwrap()
-                .edge
-                .is_none()
+                .edge,
+            (index == 2).then_some(TurnEdge::Busy),
         );
     }
     let db = store.context().open_writer().unwrap();
@@ -1030,10 +1030,15 @@ fn native_turn_refuses_host_hold_child_and_missing_live_scope() {
     db.execute("DELETE FROM recovery_holds", []).unwrap();
     db.execute("UPDATE node_kernel_boot SET boot='different'", [])
         .unwrap();
-    assert!(
+    assert_eq!(
         StorePort::record_native_turn(&store, &good, &budget())
             .unwrap()
-            .edge
+            .edge,
+        Some(TurnEdge::Busy)
+    );
+    assert!(
+        StorePort::native_turn_state(&store, &p.target.scope.binding, &budget())
+            .unwrap()
             .is_none()
     );
 }
@@ -1574,4 +1579,51 @@ fn activation_recovered_spawn_pending_is_no_effect_with_native_exception_only() 
             .unwrap();
     assert!(blockers.programmatic);
     assert!(!blockers.native);
+}
+
+#[test]
+fn native_turn_without_queue_scope_keeps_legacy_edges_and_invalidates_qualification() {
+    use herdr_threads::{harness::adapter::TurnEdge, ports::NativeTurnPhase};
+    for missing in ["registration", "fingerprint", "boot"] {
+        let (store, _path, r, p) = fixture();
+        let mut report = native_report(&store, &r, &p, "baseline", TurnEdge::Busy);
+        StorePort::record_native_turn(&store, &report, &budget()).unwrap();
+        report.edge = TurnEdge::Idle;
+        StorePort::record_native_turn(&store, &report, &budget()).unwrap();
+        match missing {
+            "registration" => {
+                store.context().open_writer().unwrap().execute("UPDATE occupant_bindings SET registered_at=NULL WHERE binding_id='binding'", []).unwrap();
+            }
+            "fingerprint" => report.claim.liveness = None,
+            "boot" => {
+                store
+                    .context()
+                    .open_writer()
+                    .unwrap()
+                    .execute(
+                        "UPDATE node_kernel_boot SET boot='different-boot' WHERE id=1",
+                        [],
+                    )
+                    .unwrap();
+            }
+            _ => unreachable!(),
+        }
+        for edge in [TurnEdge::Busy, TurnEdge::Idle] {
+            report.edge = edge;
+            let update = StorePort::record_native_turn(&store, &report, &budget()).unwrap();
+            assert_eq!(update.edge, Some(edge), "legacy {missing} edge lost");
+        }
+        let state = StorePort::native_turn_state(&store, &p.target.scope.binding, &budget())
+            .unwrap()
+            .unwrap();
+        assert_eq!(state.phase, NativeTurnPhase::Unknown);
+        assert_eq!(state.id.as_str(), "baseline");
+        assert_eq!(state.ordinal, 3);
+        assert!(
+            StorePort::queue_wake_selection(&store, &r, &budget())
+                .unwrap()
+                .binding
+                .is_none()
+        );
+    }
 }

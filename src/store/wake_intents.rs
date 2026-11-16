@@ -381,9 +381,17 @@ pub(super) fn refuse_prepared(
             // Helperless legacy uncertainty has no such per-operation evidence.
             let quarantine = !cleanup_confirmed
                 && (row.helper.is_none() || row.cleanup_quarantined);
+            // This CAS revokes unarmed authority. An uninitialized Add helper is
+            // resource uncertainty only; never erase quarantine or a committed witness.
+            let native_exception = quarantine && row.arm_nonce.is_none()
+                && row.helper.as_ref().is_some_and(|helper| {
+                    helper.purpose == crate::harness::wake::WakeHelperPurpose::Add
+                        && helper.witness.is_none()
+                        && helper.owner_boot == row.owner_boot
+                });
             tx.execute(
-                "UPDATE wake_intents SET phase='no_effect',revision=revision+1,cleanup_quarantined=?3,diagnostic=?4,updated_at=?5 WHERE instance_id=?1 AND attempt=?2",
-                params![store.instance, attempt.as_str(), quarantine, diagnostic, at.utc.0],
+                "UPDATE wake_intents SET phase='no_effect',revision=revision+1,cleanup_quarantined=?3,diagnostic=?4,updated_at=?5,native_no_add_exception=?6 WHERE instance_id=?1 AND attempt=?2",
+                params![store.instance, attempt.as_str(), quarantine, diagnostic, at.utc.0, native_exception],
             ).map_err(store_error)?;
             Ok(true)
         },

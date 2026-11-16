@@ -1,0 +1,925 @@
+{
+  "experiment": "populated independent read-only backups; network and real home masked",
+  "atomic_cross_database_snapshot": false,
+  "model_or_load_resume_requests": 0,
+  "auth_or_config_copied": false,
+  "run_id": "8475f025-ee34-49e3-9aca-2c950750255d",
+  "executable_sha256": "cdcb45aaa01d0f14e298985e09465aebccd47f64ecd298aea44814af7b62bbda",
+  "cycles": [
+    {
+      "calls": [
+        {
+          "method": "initialize",
+          "ok": true
+        },
+        {
+          "method": "thread/queue/list",
+          "ok": true
+        },
+        {
+          "method": "thread/queue/add",
+          "ok": true
+        },
+        {
+          "method": "thread/queue/list",
+          "ok": true
+        },
+        {
+          "method": "thread/queue/delete",
+          "ok": true
+        }
+      ],
+      "opened_database_filenames": [
+        "goals_1.sqlite",
+        "goals_1.sqlite-shm",
+        "goals_1.sqlite-wal",
+        "logs_2.sqlite",
+        "logs_2.sqlite-shm",
+        "logs_2.sqlite-wal",
+        "memories_1.sqlite",
+        "memories_1.sqlite-shm",
+        "memories_1.sqlite-wal",
+        "queue_1.sqlite",
+        "queue_1.sqlite-shm",
+        "queue_1.sqlite-wal",
+        "state_5.sqlite",
+        "state_5.sqlite-shm",
+        "state_5.sqlite-wal"
+      ],
+      "seconds": 0.766
+    },
+    {
+      "calls": [
+        {
+          "method": "initialize",
+          "ok": true
+        },
+        {
+          "method": "thread/queue/list",
+          "ok": true
+        },
+        {
+          "method": "thread/queue/add",
+          "ok": true
+        },
+        {
+          "method": "thread/queue/list",
+          "ok": true
+        },
+        {
+          "method": "thread/queue/delete",
+          "ok": true
+        }
+      ],
+      "opened_database_filenames": [
+        "goals_1.sqlite",
+        "goals_1.sqlite-shm",
+        "goals_1.sqlite-wal",
+        "logs_2.sqlite",
+        "logs_2.sqlite-shm",
+        "logs_2.sqlite-wal",
+        "memories_1.sqlite",
+        "memories_1.sqlite-shm",
+        "memories_1.sqlite-wal",
+        "queue_1.sqlite",
+        "queue_1.sqlite-shm",
+        "queue_1.sqlite-wal",
+        "state_5.sqlite",
+        "state_5.sqlite-shm",
+        "state_5.sqlite-wal"
+      ],
+      "seconds": 0.757
+    },
+    {
+      "calls": [
+        {
+          "method": "initialize",
+          "ok": true
+        },
+        {
+          "method": "thread/queue/list",
+          "ok": true
+        },
+        {
+          "method": "thread/queue/add",
+          "ok": true
+        },
+        {
+          "method": "thread/queue/list",
+          "ok": true
+        },
+        {
+          "method": "thread/queue/delete",
+          "ok": true
+        }
+      ],
+      "opened_database_filenames": [
+        "goals_1.sqlite",
+        "goals_1.sqlite-shm",
+        "goals_1.sqlite-wal",
+        "logs_2.sqlite",
+        "logs_2.sqlite-shm",
+        "logs_2.sqlite-wal",
+        "memories_1.sqlite",
+        "memories_1.sqlite-shm",
+        "memories_1.sqlite-wal",
+        "queue_1.sqlite",
+        "queue_1.sqlite-shm",
+        "queue_1.sqlite-wal",
+        "state_5.sqlite",
+        "state_5.sqlite-shm",
+        "state_5.sqlite-wal"
+      ],
+      "seconds": 0.758
+    }
+  ],
+  "before": {
+    "goals_1.sqlite": {
+      "schema_sha256": "874a81002943f8843b31eaa96fdbcc40d4613fc0697b2e77f9453f476b459430",
+      "tables": {
+        "_sqlx_migrations": {
+          "rows": 2,
+          "sha256": "3327de60b379227849b5b7318ec6b6bd8f8c5f40e8083704dcec904324e2cc2c"
+        },
+        "thread_goal_continuation_deferrals": {
+          "rows": 0,
+          "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+        },
+        "thread_goals": {
+          "rows": 0,
+          "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+        }
+      }
+    },
+    "logs_2.sqlite": {
+      "schema_sha256": "e446746d79787813e02be585e35018f2ccdea2d0228b2cc0f9f459442202fe69",
+      "tables": {
+        "_sqlx_migrations": {
+          "rows": 2,
+          "sha256": "21193c1aa2dab4a9c33114a27e80fe745d78a396d9d51778b17490b8c9a8a933"
+        },
+        "logs": {
+          "rows": 28924,
+          "sha256": "f830bc5052d861f06d9786e4b7a7878f80091bf1923cc0cc8adc5817a1b18ea7"
+        },
+        "sqlite_sequence": {
+          "rows": 1,
+          "sha256": "4bf3467350415d638d1b891c8b9dab06641e6e87c40762b2996b9aad4ffbc4e7"
+        }
+      }
+    },
+    "memories_1.sqlite": {
+      "schema_sha256": "b3b17939d958da7d023d4861cd68d4d87c38219ade7aa3b743e1b8a3d1f47af6",
+      "tables": {
+        "_sqlx_migrations": {
+          "rows": 2,
+          "sha256": "7559b4b9d9509680e629f43bc99a2e242e84cb3c16d7fe6e99c660ea0620de06"
+        },
+        "consolidation_progress": {
+          "rows": 1,
+          "sha256": "04fa8d5943d5fd7faad59da8c0a7ed1689b6685c13017f95e940ab17a495c595"
+        },
+        "jobs": {
+          "rows": 0,
+          "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+        },
+        "stage1_outputs": {
+          "rows": 0,
+          "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+        }
+      }
+    },
+    "queue_1.sqlite": {
+      "schema_sha256": "3d77e6994a6b8f2aa025dfc5321176a8c5045043da46d6e69e3d9a4530369b1f",
+      "tables": {
+        "_sqlx_migrations": {
+          "rows": 2,
+          "sha256": "a9d064b846326125bbb1b142ed3c3d1f4756a738b7f6a499b2fb08a7b484a600"
+        },
+        "queued_items": {
+          "rows": 0,
+          "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+        },
+        "queued_thread_revisions": {
+          "rows": 0,
+          "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+        },
+        "sqlite_sequence": {
+          "rows": 1,
+          "sha256": "4e332043c8ddbcdf5da712892efae32e019092d054695d3983bb207ac16665f1"
+        }
+      }
+    },
+    "state_5.sqlite": {
+      "schema_sha256": "4a1e00697391c4444b77a6a1b71f13ce5e3a2de44a43f20cbf2074d2b792235b",
+      "tables": {
+        "_sqlx_migrations": {
+          "rows": 62,
+          "sha256": "7fb9cf5da63427f9d3b89ce0d7b831ee71696350ddd552f378e75e1ee3f4255f"
+        },
+        "backfill_state": {
+          "rows": 1,
+          "sha256": "88292e40a7b75dd193fa145f88996edc5e519a32ee4f30e383d3d76b7b7bd782"
+        },
+        "external_agent_config_imports": {
+          "rows": 0,
+          "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+        },
+        "guardian_review_feedback": {
+          "rows": 3,
+          "sha256": "a9b9822cf174a4f2f039220b3f37a2402768696e11bd9028f4f112c082c8bb14"
+        },
+        "project_idempotency_keys": {
+          "rows": 0,
+          "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+        },
+        "project_roots": {
+          "rows": 0,
+          "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+        },
+        "projects": {
+          "rows": 0,
+          "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+        },
+        "remote_control_enrollments": {
+          "rows": 0,
+          "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+        },
+        "rollout_migration_skipped_rollouts": {
+          "rows": 0,
+          "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+        },
+        "rollout_migration_state": {
+          "rows": 0,
+          "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+        },
+        "sqlite_sequence": {
+          "rows": 0,
+          "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+        },
+        "thread_attachments": {
+          "rows": 10,
+          "sha256": "6932f9f806dc8526f3cb58b615fecae5a7450d9be637a0291433b490bda2ae68"
+        },
+        "thread_dynamic_tools": {
+          "rows": 0,
+          "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+        },
+        "thread_read_receipts": {
+          "rows": 20,
+          "sha256": "e6386f4afca8dfe629de26ddd9f1f2ab962e746d538b000ba64d27ccaf700097"
+        },
+        "thread_sections": {
+          "rows": 1,
+          "sha256": "117e6af3ce0b3e6fed01cb5148d33c53f2427979ea1cdfdc45078dc13d0bc4af"
+        },
+        "thread_spawn_edges": {
+          "rows": 4398,
+          "sha256": "c32b0109ce8a0e127f697ee6027cdf3d3891fdfc5b5bfad35b95f2298d4504b2"
+        },
+        "threads": {
+          "rows": 7765,
+          "sha256": "5153d653e3848d4a941d5191e37d1870d9708b1af415615ad29069d995c139be"
+        }
+      }
+    },
+    "thread_history_1.sqlite": {
+      "schema_sha256": "64b8dbcbf60dfa4f373719df99178a4dec245eb1a08104d47c5e43c7416bfd34",
+      "tables": {
+        "_sqlx_migrations": {
+          "rows": 8,
+          "sha256": "49d8018b9807bc08455ba047f576d0e1e87e39140240969e8d046fb1175bfb22"
+        },
+        "thread_history_projection_state": {
+          "rows": 1119,
+          "sha256": "5de162035d37b88db30a6e6c0c84363fbf5b9a1ab5ad24686a19c8dfad2535e8"
+        },
+        "thread_items": {
+          "rows": 59257,
+          "sha256": "ba1fa31b613aa971e4cdab84032350a35bc1970693973d0a32db6521df1a5bc2"
+        },
+        "thread_realtime_items": {
+          "rows": 0,
+          "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+        },
+        "thread_turns": {
+          "rows": 4770,
+          "sha256": "19ac2e35d15ec7060a8f816e00827e2ded82411d4162fed6e3e11768c0b65d67"
+        }
+      }
+    }
+  },
+  "after_cycle_1": {
+    "goals_1.sqlite": {
+      "schema_sha256": "874a81002943f8843b31eaa96fdbcc40d4613fc0697b2e77f9453f476b459430",
+      "tables": {
+        "_sqlx_migrations": {
+          "rows": 2,
+          "sha256": "3327de60b379227849b5b7318ec6b6bd8f8c5f40e8083704dcec904324e2cc2c"
+        },
+        "thread_goal_continuation_deferrals": {
+          "rows": 0,
+          "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+        },
+        "thread_goals": {
+          "rows": 0,
+          "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+        }
+      }
+    },
+    "logs_2.sqlite": {
+      "schema_sha256": "e446746d79787813e02be585e35018f2ccdea2d0228b2cc0f9f459442202fe69",
+      "tables": {
+        "_sqlx_migrations": {
+          "rows": 2,
+          "sha256": "21193c1aa2dab4a9c33114a27e80fe745d78a396d9d51778b17490b8c9a8a933"
+        },
+        "logs": {
+          "rows": 28924,
+          "sha256": "f830bc5052d861f06d9786e4b7a7878f80091bf1923cc0cc8adc5817a1b18ea7"
+        },
+        "sqlite_sequence": {
+          "rows": 1,
+          "sha256": "4bf3467350415d638d1b891c8b9dab06641e6e87c40762b2996b9aad4ffbc4e7"
+        }
+      }
+    },
+    "memories_1.sqlite": {
+      "schema_sha256": "b3b17939d958da7d023d4861cd68d4d87c38219ade7aa3b743e1b8a3d1f47af6",
+      "tables": {
+        "_sqlx_migrations": {
+          "rows": 2,
+          "sha256": "7559b4b9d9509680e629f43bc99a2e242e84cb3c16d7fe6e99c660ea0620de06"
+        },
+        "consolidation_progress": {
+          "rows": 1,
+          "sha256": "04fa8d5943d5fd7faad59da8c0a7ed1689b6685c13017f95e940ab17a495c595"
+        },
+        "jobs": {
+          "rows": 0,
+          "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+        },
+        "stage1_outputs": {
+          "rows": 0,
+          "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+        }
+      }
+    },
+    "queue_1.sqlite": {
+      "schema_sha256": "3d77e6994a6b8f2aa025dfc5321176a8c5045043da46d6e69e3d9a4530369b1f",
+      "tables": {
+        "_sqlx_migrations": {
+          "rows": 2,
+          "sha256": "a9d064b846326125bbb1b142ed3c3d1f4756a738b7f6a499b2fb08a7b484a600"
+        },
+        "queued_items": {
+          "rows": 0,
+          "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+        },
+        "queued_thread_revisions": {
+          "rows": 1,
+          "sha256": "6da68b7cd68a8f66b95e4a4fde620b1804822e2c6a8c32d600dff504daae42db"
+        },
+        "sqlite_sequence": {
+          "rows": 1,
+          "sha256": "98bf19e2238ff8f9dc68f77e93845bb912acc937b01d16de1aa37a4760f9e794"
+        }
+      }
+    },
+    "state_5.sqlite": {
+      "schema_sha256": "4a1e00697391c4444b77a6a1b71f13ce5e3a2de44a43f20cbf2074d2b792235b",
+      "tables": {
+        "_sqlx_migrations": {
+          "rows": 62,
+          "sha256": "7fb9cf5da63427f9d3b89ce0d7b831ee71696350ddd552f378e75e1ee3f4255f"
+        },
+        "backfill_state": {
+          "rows": 1,
+          "sha256": "88292e40a7b75dd193fa145f88996edc5e519a32ee4f30e383d3d76b7b7bd782"
+        },
+        "external_agent_config_imports": {
+          "rows": 0,
+          "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+        },
+        "guardian_review_feedback": {
+          "rows": 3,
+          "sha256": "a9b9822cf174a4f2f039220b3f37a2402768696e11bd9028f4f112c082c8bb14"
+        },
+        "project_idempotency_keys": {
+          "rows": 0,
+          "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+        },
+        "project_roots": {
+          "rows": 0,
+          "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+        },
+        "projects": {
+          "rows": 0,
+          "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+        },
+        "remote_control_enrollments": {
+          "rows": 0,
+          "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+        },
+        "rollout_migration_skipped_rollouts": {
+          "rows": 0,
+          "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+        },
+        "rollout_migration_state": {
+          "rows": 0,
+          "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+        },
+        "sqlite_sequence": {
+          "rows": 0,
+          "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+        },
+        "thread_attachments": {
+          "rows": 10,
+          "sha256": "6932f9f806dc8526f3cb58b615fecae5a7450d9be637a0291433b490bda2ae68"
+        },
+        "thread_dynamic_tools": {
+          "rows": 0,
+          "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+        },
+        "thread_read_receipts": {
+          "rows": 20,
+          "sha256": "e6386f4afca8dfe629de26ddd9f1f2ab962e746d538b000ba64d27ccaf700097"
+        },
+        "thread_sections": {
+          "rows": 1,
+          "sha256": "117e6af3ce0b3e6fed01cb5148d33c53f2427979ea1cdfdc45078dc13d0bc4af"
+        },
+        "thread_spawn_edges": {
+          "rows": 4398,
+          "sha256": "c32b0109ce8a0e127f697ee6027cdf3d3891fdfc5b5bfad35b95f2298d4504b2"
+        },
+        "threads": {
+          "rows": 7765,
+          "sha256": "5153d653e3848d4a941d5191e37d1870d9708b1af415615ad29069d995c139be"
+        }
+      }
+    },
+    "thread_history_1.sqlite": {
+      "schema_sha256": "64b8dbcbf60dfa4f373719df99178a4dec245eb1a08104d47c5e43c7416bfd34",
+      "tables": {
+        "_sqlx_migrations": {
+          "rows": 8,
+          "sha256": "49d8018b9807bc08455ba047f576d0e1e87e39140240969e8d046fb1175bfb22"
+        },
+        "thread_history_projection_state": {
+          "rows": 1119,
+          "sha256": "5de162035d37b88db30a6e6c0c84363fbf5b9a1ab5ad24686a19c8dfad2535e8"
+        },
+        "thread_items": {
+          "rows": 59257,
+          "sha256": "ba1fa31b613aa971e4cdab84032350a35bc1970693973d0a32db6521df1a5bc2"
+        },
+        "thread_realtime_items": {
+          "rows": 0,
+          "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+        },
+        "thread_turns": {
+          "rows": 4770,
+          "sha256": "19ac2e35d15ec7060a8f816e00827e2ded82411d4162fed6e3e11768c0b65d67"
+        }
+      }
+    }
+  },
+  "after_cycle_2": {
+    "goals_1.sqlite": {
+      "schema_sha256": "874a81002943f8843b31eaa96fdbcc40d4613fc0697b2e77f9453f476b459430",
+      "tables": {
+        "_sqlx_migrations": {
+          "rows": 2,
+          "sha256": "3327de60b379227849b5b7318ec6b6bd8f8c5f40e8083704dcec904324e2cc2c"
+        },
+        "thread_goal_continuation_deferrals": {
+          "rows": 0,
+          "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+        },
+        "thread_goals": {
+          "rows": 0,
+          "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+        }
+      }
+    },
+    "logs_2.sqlite": {
+      "schema_sha256": "e446746d79787813e02be585e35018f2ccdea2d0228b2cc0f9f459442202fe69",
+      "tables": {
+        "_sqlx_migrations": {
+          "rows": 2,
+          "sha256": "21193c1aa2dab4a9c33114a27e80fe745d78a396d9d51778b17490b8c9a8a933"
+        },
+        "logs": {
+          "rows": 28924,
+          "sha256": "f830bc5052d861f06d9786e4b7a7878f80091bf1923cc0cc8adc5817a1b18ea7"
+        },
+        "sqlite_sequence": {
+          "rows": 1,
+          "sha256": "4bf3467350415d638d1b891c8b9dab06641e6e87c40762b2996b9aad4ffbc4e7"
+        }
+      }
+    },
+    "memories_1.sqlite": {
+      "schema_sha256": "b3b17939d958da7d023d4861cd68d4d87c38219ade7aa3b743e1b8a3d1f47af6",
+      "tables": {
+        "_sqlx_migrations": {
+          "rows": 2,
+          "sha256": "7559b4b9d9509680e629f43bc99a2e242e84cb3c16d7fe6e99c660ea0620de06"
+        },
+        "consolidation_progress": {
+          "rows": 1,
+          "sha256": "04fa8d5943d5fd7faad59da8c0a7ed1689b6685c13017f95e940ab17a495c595"
+        },
+        "jobs": {
+          "rows": 0,
+          "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+        },
+        "stage1_outputs": {
+          "rows": 0,
+          "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+        }
+      }
+    },
+    "queue_1.sqlite": {
+      "schema_sha256": "3d77e6994a6b8f2aa025dfc5321176a8c5045043da46d6e69e3d9a4530369b1f",
+      "tables": {
+        "_sqlx_migrations": {
+          "rows": 2,
+          "sha256": "a9d064b846326125bbb1b142ed3c3d1f4756a738b7f6a499b2fb08a7b484a600"
+        },
+        "queued_items": {
+          "rows": 0,
+          "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+        },
+        "queued_thread_revisions": {
+          "rows": 1,
+          "sha256": "b809b5c742b7f49e2f6d218000e3f3a692fc39eb38bb907b3faf065333e0bd3c"
+        },
+        "sqlite_sequence": {
+          "rows": 1,
+          "sha256": "c03ef5470b2c20d723eaa7c1028540686bde2bd23dc4b93d9e75af46b4c4c2e2"
+        }
+      }
+    },
+    "state_5.sqlite": {
+      "schema_sha256": "4a1e00697391c4444b77a6a1b71f13ce5e3a2de44a43f20cbf2074d2b792235b",
+      "tables": {
+        "_sqlx_migrations": {
+          "rows": 62,
+          "sha256": "7fb9cf5da63427f9d3b89ce0d7b831ee71696350ddd552f378e75e1ee3f4255f"
+        },
+        "backfill_state": {
+          "rows": 1,
+          "sha256": "88292e40a7b75dd193fa145f88996edc5e519a32ee4f30e383d3d76b7b7bd782"
+        },
+        "external_agent_config_imports": {
+          "rows": 0,
+          "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+        },
+        "guardian_review_feedback": {
+          "rows": 3,
+          "sha256": "a9b9822cf174a4f2f039220b3f37a2402768696e11bd9028f4f112c082c8bb14"
+        },
+        "project_idempotency_keys": {
+          "rows": 0,
+          "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+        },
+        "project_roots": {
+          "rows": 0,
+          "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+        },
+        "projects": {
+          "rows": 0,
+          "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+        },
+        "remote_control_enrollments": {
+          "rows": 0,
+          "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+        },
+        "rollout_migration_skipped_rollouts": {
+          "rows": 0,
+          "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+        },
+        "rollout_migration_state": {
+          "rows": 0,
+          "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+        },
+        "sqlite_sequence": {
+          "rows": 0,
+          "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+        },
+        "thread_attachments": {
+          "rows": 10,
+          "sha256": "6932f9f806dc8526f3cb58b615fecae5a7450d9be637a0291433b490bda2ae68"
+        },
+        "thread_dynamic_tools": {
+          "rows": 0,
+          "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+        },
+        "thread_read_receipts": {
+          "rows": 20,
+          "sha256": "e6386f4afca8dfe629de26ddd9f1f2ab962e746d538b000ba64d27ccaf700097"
+        },
+        "thread_sections": {
+          "rows": 1,
+          "sha256": "117e6af3ce0b3e6fed01cb5148d33c53f2427979ea1cdfdc45078dc13d0bc4af"
+        },
+        "thread_spawn_edges": {
+          "rows": 4398,
+          "sha256": "c32b0109ce8a0e127f697ee6027cdf3d3891fdfc5b5bfad35b95f2298d4504b2"
+        },
+        "threads": {
+          "rows": 7765,
+          "sha256": "5153d653e3848d4a941d5191e37d1870d9708b1af415615ad29069d995c139be"
+        }
+      }
+    },
+    "thread_history_1.sqlite": {
+      "schema_sha256": "64b8dbcbf60dfa4f373719df99178a4dec245eb1a08104d47c5e43c7416bfd34",
+      "tables": {
+        "_sqlx_migrations": {
+          "rows": 8,
+          "sha256": "49d8018b9807bc08455ba047f576d0e1e87e39140240969e8d046fb1175bfb22"
+        },
+        "thread_history_projection_state": {
+          "rows": 1119,
+          "sha256": "5de162035d37b88db30a6e6c0c84363fbf5b9a1ab5ad24686a19c8dfad2535e8"
+        },
+        "thread_items": {
+          "rows": 59257,
+          "sha256": "ba1fa31b613aa971e4cdab84032350a35bc1970693973d0a32db6521df1a5bc2"
+        },
+        "thread_realtime_items": {
+          "rows": 0,
+          "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+        },
+        "thread_turns": {
+          "rows": 4770,
+          "sha256": "19ac2e35d15ec7060a8f816e00827e2ded82411d4162fed6e3e11768c0b65d67"
+        }
+      }
+    }
+  },
+  "after_cycle_3": {
+    "goals_1.sqlite": {
+      "schema_sha256": "874a81002943f8843b31eaa96fdbcc40d4613fc0697b2e77f9453f476b459430",
+      "tables": {
+        "_sqlx_migrations": {
+          "rows": 2,
+          "sha256": "3327de60b379227849b5b7318ec6b6bd8f8c5f40e8083704dcec904324e2cc2c"
+        },
+        "thread_goal_continuation_deferrals": {
+          "rows": 0,
+          "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+        },
+        "thread_goals": {
+          "rows": 0,
+          "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+        }
+      }
+    },
+    "logs_2.sqlite": {
+      "schema_sha256": "e446746d79787813e02be585e35018f2ccdea2d0228b2cc0f9f459442202fe69",
+      "tables": {
+        "_sqlx_migrations": {
+          "rows": 2,
+          "sha256": "21193c1aa2dab4a9c33114a27e80fe745d78a396d9d51778b17490b8c9a8a933"
+        },
+        "logs": {
+          "rows": 28924,
+          "sha256": "f830bc5052d861f06d9786e4b7a7878f80091bf1923cc0cc8adc5817a1b18ea7"
+        },
+        "sqlite_sequence": {
+          "rows": 1,
+          "sha256": "4bf3467350415d638d1b891c8b9dab06641e6e87c40762b2996b9aad4ffbc4e7"
+        }
+      }
+    },
+    "memories_1.sqlite": {
+      "schema_sha256": "b3b17939d958da7d023d4861cd68d4d87c38219ade7aa3b743e1b8a3d1f47af6",
+      "tables": {
+        "_sqlx_migrations": {
+          "rows": 2,
+          "sha256": "7559b4b9d9509680e629f43bc99a2e242e84cb3c16d7fe6e99c660ea0620de06"
+        },
+        "consolidation_progress": {
+          "rows": 1,
+          "sha256": "04fa8d5943d5fd7faad59da8c0a7ed1689b6685c13017f95e940ab17a495c595"
+        },
+        "jobs": {
+          "rows": 0,
+          "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+        },
+        "stage1_outputs": {
+          "rows": 0,
+          "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+        }
+      }
+    },
+    "queue_1.sqlite": {
+      "schema_sha256": "3d77e6994a6b8f2aa025dfc5321176a8c5045043da46d6e69e3d9a4530369b1f",
+      "tables": {
+        "_sqlx_migrations": {
+          "rows": 2,
+          "sha256": "a9d064b846326125bbb1b142ed3c3d1f4756a738b7f6a499b2fb08a7b484a600"
+        },
+        "queued_items": {
+          "rows": 0,
+          "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+        },
+        "queued_thread_revisions": {
+          "rows": 1,
+          "sha256": "da58c273b81e43db31738647b2aa690e87e44b4d3c6b3c3645b07c42e3bff5a4"
+        },
+        "sqlite_sequence": {
+          "rows": 1,
+          "sha256": "da7b820a5fec2462b735b0af15650a2c273ab6099f2745c51e85dd75122d1701"
+        }
+      }
+    },
+    "state_5.sqlite": {
+      "schema_sha256": "4a1e00697391c4444b77a6a1b71f13ce5e3a2de44a43f20cbf2074d2b792235b",
+      "tables": {
+        "_sqlx_migrations": {
+          "rows": 62,
+          "sha256": "7fb9cf5da63427f9d3b89ce0d7b831ee71696350ddd552f378e75e1ee3f4255f"
+        },
+        "backfill_state": {
+          "rows": 1,
+          "sha256": "88292e40a7b75dd193fa145f88996edc5e519a32ee4f30e383d3d76b7b7bd782"
+        },
+        "external_agent_config_imports": {
+          "rows": 0,
+          "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+        },
+        "guardian_review_feedback": {
+          "rows": 3,
+          "sha256": "a9b9822cf174a4f2f039220b3f37a2402768696e11bd9028f4f112c082c8bb14"
+        },
+        "project_idempotency_keys": {
+          "rows": 0,
+          "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+        },
+        "project_roots": {
+          "rows": 0,
+          "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+        },
+        "projects": {
+          "rows": 0,
+          "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+        },
+        "remote_control_enrollments": {
+          "rows": 0,
+          "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+        },
+        "rollout_migration_skipped_rollouts": {
+          "rows": 0,
+          "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+        },
+        "rollout_migration_state": {
+          "rows": 0,
+          "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+        },
+        "sqlite_sequence": {
+          "rows": 0,
+          "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+        },
+        "thread_attachments": {
+          "rows": 10,
+          "sha256": "6932f9f806dc8526f3cb58b615fecae5a7450d9be637a0291433b490bda2ae68"
+        },
+        "thread_dynamic_tools": {
+          "rows": 0,
+          "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+        },
+        "thread_read_receipts": {
+          "rows": 20,
+          "sha256": "e6386f4afca8dfe629de26ddd9f1f2ab962e746d538b000ba64d27ccaf700097"
+        },
+        "thread_sections": {
+          "rows": 1,
+          "sha256": "117e6af3ce0b3e6fed01cb5148d33c53f2427979ea1cdfdc45078dc13d0bc4af"
+        },
+        "thread_spawn_edges": {
+          "rows": 4398,
+          "sha256": "c32b0109ce8a0e127f697ee6027cdf3d3891fdfc5b5bfad35b95f2298d4504b2"
+        },
+        "threads": {
+          "rows": 7765,
+          "sha256": "5153d653e3848d4a941d5191e37d1870d9708b1af415615ad29069d995c139be"
+        }
+      }
+    },
+    "thread_history_1.sqlite": {
+      "schema_sha256": "64b8dbcbf60dfa4f373719df99178a4dec245eb1a08104d47c5e43c7416bfd34",
+      "tables": {
+        "_sqlx_migrations": {
+          "rows": 8,
+          "sha256": "49d8018b9807bc08455ba047f576d0e1e87e39140240969e8d046fb1175bfb22"
+        },
+        "thread_history_projection_state": {
+          "rows": 1119,
+          "sha256": "5de162035d37b88db30a6e6c0c84363fbf5b9a1ab5ad24686a19c8dfad2535e8"
+        },
+        "thread_items": {
+          "rows": 59257,
+          "sha256": "ba1fa31b613aa971e4cdab84032350a35bc1970693973d0a32db6521df1a5bc2"
+        },
+        "thread_realtime_items": {
+          "rows": 0,
+          "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+        },
+        "thread_turns": {
+          "rows": 4770,
+          "sha256": "19ac2e35d15ec7060a8f816e00827e2ded82411d4162fed6e3e11768c0b65d67"
+        }
+      }
+    }
+  },
+  "complete": true,
+  "private_copy_removed": true,
+  "summary_changes": {
+    "after_cycle_1": {
+      "queue_1.sqlite": {
+        "schema_changed": false,
+        "tables": {
+          "queued_thread_revisions": {
+            "before": {
+              "rows": 0,
+              "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+            },
+            "after": {
+              "rows": 1,
+              "sha256": "6da68b7cd68a8f66b95e4a4fde620b1804822e2c6a8c32d600dff504daae42db"
+            }
+          },
+          "sqlite_sequence": {
+            "before": {
+              "rows": 1,
+              "sha256": "4e332043c8ddbcdf5da712892efae32e019092d054695d3983bb207ac16665f1"
+            },
+            "after": {
+              "rows": 1,
+              "sha256": "98bf19e2238ff8f9dc68f77e93845bb912acc937b01d16de1aa37a4760f9e794"
+            }
+          }
+        }
+      }
+    },
+    "after_cycle_2": {
+      "queue_1.sqlite": {
+        "schema_changed": false,
+        "tables": {
+          "queued_thread_revisions": {
+            "before": {
+              "rows": 0,
+              "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+            },
+            "after": {
+              "rows": 1,
+              "sha256": "b809b5c742b7f49e2f6d218000e3f3a692fc39eb38bb907b3faf065333e0bd3c"
+            }
+          },
+          "sqlite_sequence": {
+            "before": {
+              "rows": 1,
+              "sha256": "4e332043c8ddbcdf5da712892efae32e019092d054695d3983bb207ac16665f1"
+            },
+            "after": {
+              "rows": 1,
+              "sha256": "c03ef5470b2c20d723eaa7c1028540686bde2bd23dc4b93d9e75af46b4c4c2e2"
+            }
+          }
+        }
+      }
+    },
+    "after_cycle_3": {
+      "queue_1.sqlite": {
+        "schema_changed": false,
+        "tables": {
+          "queued_thread_revisions": {
+            "before": {
+              "rows": 0,
+              "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+            },
+            "after": {
+              "rows": 1,
+              "sha256": "da58c273b81e43db31738647b2aa690e87e44b4d3c6b3c3645b07c42e3bff5a4"
+            }
+          },
+          "sqlite_sequence": {
+            "before": {
+              "rows": 1,
+              "sha256": "4e332043c8ddbcdf5da712892efae32e019092d054695d3983bb207ac16665f1"
+            },
+            "after": {
+              "rows": 1,
+              "sha256": "da7b820a5fec2462b735b0af15650a2c273ab6099f2745c51e85dd75122d1701"
+            }
+          }
+        }
+      }
+    }
+  }
+}

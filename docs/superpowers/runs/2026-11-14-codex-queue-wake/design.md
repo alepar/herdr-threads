@@ -448,3 +448,35 @@ Reopening requires evidence of a supported mechanism that identifies an owned su
 The design-owner quality review accepts the evidence as a bounded negative qualification. It makes no universal claim that every present or future Codex programmatic wake route is impossible. Production tasks stay blocked; the design and evidence should be retained through normal repository integration. No further live experiments are assigned.
 
 Integrated evidence: [initial spike report](evidence/report.md), [admission qualification](evidence/admission-qualification.md).
+
+### Independent integration corrections (2026-11-16)
+
+Origin/cohort effect fences are read independently of programmatic eligibility.
+Open session cohorts stream under the existing SQLite call budget through the
+adapter registry; binding population cannot manufacture effects or suppress
+native wake. Eligibility considers at most two connected top-level bindings,
+retaining sibling ambiguity. Stale queue eligibility does not make a pure fence
+read fail; final native reservation/idle/owed guards remain authoritative, and
+store errors never become evidence that effect fences are absent.
+
+A valid canonical binding without queue scope retains its legacy activity edge
+and invalidates stale queue qualification. This fallback cannot qualify or
+fulfill an intent. Exact unarmed unwitnessed Add refusal may grant only the
+native resource exception described in TRUST-POLICY; quarantine and programmatic
+fences persist. Helper storage encoding is checked before scratch/spawn, vanished
+preclassification ENOENT entries may be skipped while recognized identity and
+other I/O ambiguity fail closed, and each helper removes only its private home.
+
+### Helper SQLite effects qualification (2026-11-16)
+
+The full app-server helper opens goals, logs, memories and state databases as well
+as the queue under the captured sqlite_home; runtime startup may migrate schemas
+or perform maintenance. Queue FD identity verification constrains the queue
+address, not every other opened database. Three short successful control cycles
+against independent read-only backups of six populated receiver databases opened
+those five families; all nonqueue schemas/counts/multiset hashes, including
+backfill state and log rows, remained unchanged. No log writes were observed.
+This is bounded source-version evidence, not a universal queue-only or future
+migration guarantee. The experiment masked the real home, disabled network and
+PID visibility, used no credentials or model/load/resume calls and removed all
+private copies. See qualification-sqlite-effects.md for exact provenance/limits.

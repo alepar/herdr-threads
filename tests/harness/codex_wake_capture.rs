@@ -121,3 +121,25 @@ fn deleted_queue_descriptor_alongside_live_database_refuses_capture() {
         "a surviving old queue connection makes the storage scope ambiguous"
     );
 }
+
+#[test]
+fn vanished_unclassified_fd_is_skipped_but_other_read_errors_refuse() {
+    use std::io::Error;
+    let f = Fixture::new();
+    symlink(&f.database, f.proc.join("fd/4")).unwrap();
+    for (kind, qualifies) in [(libc::ENOENT, true), (libc::EACCES, false)] {
+        let result = files_with(
+            &f.proc,
+            "00000000-0000-0000-0000-000000000001",
+            Instant::now() + Duration::from_millis(100),
+            |path| {
+                if path.file_name().unwrap() == "4" {
+                    Err(Error::from_raw_os_error(kind))
+                } else {
+                    fs::read_link(path)
+                }
+            },
+        );
+        assert_eq!(result.is_some(), qualifies, "{kind:?}");
+    }
+}

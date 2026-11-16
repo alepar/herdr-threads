@@ -106,8 +106,8 @@ pub(super) fn record(
     store.context.execute_budgeted_decision(&mut writer,budget,|tx|canonical(tx,&store.instance,&request.claim),|tx,_,canonical| {
         let Some(canonical)=canonical else{return Ok(update(None,false))};
         let old=load(tx,&store.instance,&canonical.binding)?;
-        let Some(id)=request.native_turn_id.as_ref().filter(|_|matches!(request.edge,TurnEdge::Busy|TurnEdge::Idle)) else {
-            // Missing new metadata retains the legacy edge, but cannot qualify a queue wake.
+        let Some(id)=request.native_turn_id.as_ref().filter(|_|matches!(request.edge,TurnEdge::Busy|TurnEdge::Idle)).filter(|_|canonical.scope.is_some()) else {
+            // Missing metadata or queue scope retains the legacy edge without queue qualification.
             let changed=old.as_ref().is_some_and(|row|row.phase!=NativeTurnPhase::Unknown);
             if let Some(old)=old.filter(|row|row.phase!=NativeTurnPhase::Unknown) {
                 let next=old.ordinal.checked_add(1).and_then(|v|i64::try_from(v).ok()).ok_or_else(corrupt)?;

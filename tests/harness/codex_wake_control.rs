@@ -312,7 +312,10 @@ fn accepted_effect_remains_accepted_while_descendants_are_stopped() {
             }
         }
     }
-    assert!(!f.root.join("queue-control").exists());
+    assert_eq!(
+        fs::read_dir(f.root.join("queue-control")).unwrap().count(),
+        0
+    );
 }
 
 #[test]
@@ -887,4 +890,39 @@ fn reap_capacity_exhaustion_refuses_before_starting_helper() {
     assert!(matches!(f.add(true), WakeAddOutcome::Accepted { .. }));
     drop(reservations);
     assert!(!super::super::reap::OWNED.pending());
+}
+
+#[test]
+fn non_utf8_sqlite_parent_is_refused_before_helper_spawn() {
+    use std::{ffi::OsString, os::unix::ffi::OsStringExt};
+    let mut f = Fixture::new("ok");
+    f.descriptor.database.path = f
+        .root
+        .join(OsString::from_vec(b"invalid-\xff".to_vec()))
+        .join("queue_1.sqlite");
+    let context = f.context();
+    let failure = match Peer::start(&f.descriptor, &context) {
+        Ok(_) => panic!("non-UTF-8 storage spawned helper"),
+        Err(failure) => failure,
+    };
+    assert_eq!(failure.error.detail, "invalid queue storage encoding");
+    assert!(
+        !f.root.join("queue-control").exists(),
+        "path refusal must precede scratch/spawn"
+    );
+    assert!(f.trace().is_empty());
+}
+
+#[test]
+fn dropping_private_helper_home_preserves_shared_parent() {
+    let f = Fixture::new("ok");
+    let parent = f.root.join("queue-control");
+    let child = parent.join("owned");
+    fs::create_dir_all(&child).unwrap();
+    drop(Home(child.clone()));
+    assert!(!child.exists());
+    assert!(
+        parent.is_dir(),
+        "shared parent must outlive individual helper homes"
+    );
 }

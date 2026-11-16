@@ -1,0 +1,196 @@
+{
+  "experiment": "populated independent read-only backups; network and real home masked",
+  "atomic_cross_database_snapshot": false,
+  "model_or_load_resume_requests": 0,
+  "auth_or_config_copied": false,
+  "run_id": "85009b9e-d7ec-4fda-bd1c-5ec1a70a3bbb",
+  "executable_sha256": "cdcb45aaa01d0f14e298985e09465aebccd47f64ecd298aea44814af7b62bbda",
+  "cycles": [
+    {
+      "calls": [],
+      "opened_database_filenames": [],
+      "seconds": 0.004
+    }
+  ],
+  "before": {
+    "goals_1.sqlite": {
+      "schema_sha256": "874a81002943f8843b31eaa96fdbcc40d4613fc0697b2e77f9453f476b459430",
+      "tables": {
+        "_sqlx_migrations": {
+          "rows": 2,
+          "sha256": "3327de60b379227849b5b7318ec6b6bd8f8c5f40e8083704dcec904324e2cc2c"
+        },
+        "thread_goal_continuation_deferrals": {
+          "rows": 0,
+          "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+        },
+        "thread_goals": {
+          "rows": 0,
+          "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+        }
+      }
+    },
+    "logs_2.sqlite": {
+      "schema_sha256": "e446746d79787813e02be585e35018f2ccdea2d0228b2cc0f9f459442202fe69",
+      "tables": {
+        "_sqlx_migrations": {
+          "rows": 2,
+          "sha256": "21193c1aa2dab4a9c33114a27e80fe745d78a396d9d51778b17490b8c9a8a933"
+        },
+        "logs": {
+          "rows": 28818,
+          "sha256": "11fe6579c5ef0238d35217a6cda9c81f11da80f0e94f3546b07d70ec1cd522ff"
+        },
+        "sqlite_sequence": {
+          "rows": 1,
+          "sha256": "6834627eb7071a76833d22193b6744c56e85938bde2e6b93c50dab3d6ccbde12"
+        }
+      }
+    },
+    "memories_1.sqlite": {
+      "schema_sha256": "b3b17939d958da7d023d4861cd68d4d87c38219ade7aa3b743e1b8a3d1f47af6",
+      "tables": {
+        "_sqlx_migrations": {
+          "rows": 2,
+          "sha256": "7559b4b9d9509680e629f43bc99a2e242e84cb3c16d7fe6e99c660ea0620de06"
+        },
+        "consolidation_progress": {
+          "rows": 1,
+          "sha256": "04fa8d5943d5fd7faad59da8c0a7ed1689b6685c13017f95e940ab17a495c595"
+        },
+        "jobs": {
+          "rows": 0,
+          "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+        },
+        "stage1_outputs": {
+          "rows": 0,
+          "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+        }
+      }
+    },
+    "queue_1.sqlite": {
+      "schema_sha256": "3d77e6994a6b8f2aa025dfc5321176a8c5045043da46d6e69e3d9a4530369b1f",
+      "tables": {
+        "_sqlx_migrations": {
+          "rows": 2,
+          "sha256": "a9d064b846326125bbb1b142ed3c3d1f4756a738b7f6a499b2fb08a7b484a600"
+        },
+        "queued_items": {
+          "rows": 0,
+          "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+        },
+        "queued_thread_revisions": {
+          "rows": 0,
+          "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+        },
+        "sqlite_sequence": {
+          "rows": 1,
+          "sha256": "4e332043c8ddbcdf5da712892efae32e019092d054695d3983bb207ac16665f1"
+        }
+      }
+    },
+    "state_5.sqlite": {
+      "schema_sha256": "4a1e00697391c4444b77a6a1b71f13ce5e3a2de44a43f20cbf2074d2b792235b",
+      "tables": {
+        "_sqlx_migrations": {
+          "rows": 62,
+          "sha256": "7fb9cf5da63427f9d3b89ce0d7b831ee71696350ddd552f378e75e1ee3f4255f"
+        },
+        "backfill_state": {
+          "rows": 1,
+          "sha256": "88292e40a7b75dd193fa145f88996edc5e519a32ee4f30e383d3d76b7b7bd782"
+        },
+        "external_agent_config_imports": {
+          "rows": 0,
+          "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+        },
+        "guardian_review_feedback": {
+          "rows": 3,
+          "sha256": "a9b9822cf174a4f2f039220b3f37a2402768696e11bd9028f4f112c082c8bb14"
+        },
+        "project_idempotency_keys": {
+          "rows": 0,
+          "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+        },
+        "project_roots": {
+          "rows": 0,
+          "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+        },
+        "projects": {
+          "rows": 0,
+          "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+        },
+        "remote_control_enrollments": {
+          "rows": 0,
+          "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+        },
+        "rollout_migration_skipped_rollouts": {
+          "rows": 0,
+          "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+        },
+        "rollout_migration_state": {
+          "rows": 0,
+          "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+        },
+        "sqlite_sequence": {
+          "rows": 0,
+          "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+        },
+        "thread_attachments": {
+          "rows": 10,
+          "sha256": "6932f9f806dc8526f3cb58b615fecae5a7450d9be637a0291433b490bda2ae68"
+        },
+        "thread_dynamic_tools": {
+          "rows": 0,
+          "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+        },
+        "thread_read_receipts": {
+          "rows": 20,
+          "sha256": "e6386f4afca8dfe629de26ddd9f1f2ab962e746d538b000ba64d27ccaf700097"
+        },
+        "thread_sections": {
+          "rows": 1,
+          "sha256": "117e6af3ce0b3e6fed01cb5148d33c53f2427979ea1cdfdc45078dc13d0bc4af"
+        },
+        "thread_spawn_edges": {
+          "rows": 4398,
+          "sha256": "c32b0109ce8a0e127f697ee6027cdf3d3891fdfc5b5bfad35b95f2298d4504b2"
+        },
+        "threads": {
+          "rows": 7765,
+          "sha256": "dc2d0a15dcfd1c0992d894bb8f8bc634fa051013fea79721100fccc867efb9ed"
+        }
+      }
+    },
+    "thread_history_1.sqlite": {
+      "schema_sha256": "64b8dbcbf60dfa4f373719df99178a4dec245eb1a08104d47c5e43c7416bfd34",
+      "tables": {
+        "_sqlx_migrations": {
+          "rows": 8,
+          "sha256": "49d8018b9807bc08455ba047f576d0e1e87e39140240969e8d046fb1175bfb22"
+        },
+        "thread_history_projection_state": {
+          "rows": 1119,
+          "sha256": "c4e38bad1cb89df109d2b3dc66dc570f5769cab23223f2444d3e619d1811a4a0"
+        },
+        "thread_items": {
+          "rows": 59219,
+          "sha256": "452b0c8d548dfa036c36498b555454d57bcb0826a362a377322b7bf77bfc2da0"
+        },
+        "thread_realtime_items": {
+          "rows": 0,
+          "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+        },
+        "thread_turns": {
+          "rows": 4763,
+          "sha256": "5d11aaa79d29269e62e7f55456d6ec4d35669fa64465bff8574f2fb26d162ab5"
+        }
+      }
+    }
+  },
+  "complete": false,
+  "error_type": "RuntimeError",
+  "error_stage": "protocol EOF",
+  "private_copy_removed": true,
+  "summary_changes": {}
+}
