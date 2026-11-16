@@ -164,3 +164,23 @@ fn native_only_large_population_preserves_real_origin_fence() {
         assert_eq!(selected.blockers.programmatic, pending);
     }
 }
+
+#[test]
+fn large_valid_cohort_census_preserves_old_disconnected_cross_origin_fence() {
+    for pending in [false, true] {
+        let (store, _path, reservation, preparation) = fixture();
+        if pending {
+            prepare_raw(&store, &reservation, &preparation);
+        }
+        let db = store.context().open_writer().unwrap();
+        db.execute("UPDATE wake_intents SET origin_seat='different-origin'", [])
+            .unwrap();
+        db.execute("UPDATE occupant_bindings SET liveness='disconnected',disconnected_at=100,disconnect_reason='liveness_process_exit' WHERE binding_id='binding'", []).unwrap();
+        db.execute_batch("WITH RECURSIVE n(x) AS (SELECT 2 UNION ALL SELECT x+1 FROM n WHERE x<101) INSERT INTO occupant_bindings(seat_id,generation,target_generation,target_id,host_boot,host_epoch,harness,native_session,execution_id,observation_provenance,observed_at,registered_at,terminal_id,incarnation,binding_id) SELECT 's',1,1,'pane','host',0,'codex','00000000-0000-0000-0000-'||printf('%012d',x),'valid-'||x,'cooperative_top_level',0,0,'term-pane','inc','valid-'||x FROM n;").unwrap();
+        drop(db);
+        let selected = StorePort::queue_wake_selection(&store, &reservation, &budget()).unwrap();
+        assert!(selected.binding.is_none());
+        assert_eq!(selected.blockers.native, pending);
+        assert_eq!(selected.blockers.programmatic, pending);
+    }
+}

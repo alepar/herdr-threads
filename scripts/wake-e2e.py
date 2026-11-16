@@ -827,6 +827,10 @@ class Stopped(Exception):
 
 
 class Run:
+    @property
+    def observe_queue(self):
+        return sys.platform.startswith("linux") or bool(getattr(self.args, "queue_proof", False))
+
     def __init__(self, args):
         self.args = args
         self.run_id = time.strftime("%H%M%S") + "-" + uuid.uuid4().hex[:4]
@@ -1006,7 +1010,8 @@ class Run:
         self.facts = {"run_id": self.run_id, "sha": sha, "dirty": dirty, "versions": versions,
                       "harness_mode": self.args.harness_mode, "codex_args": self.args.codex_args,
                       "bin": self.bin, "bin_sha256": file_sha256(self.bin), "root": str(self.root),
-                      "started_utc": utc(), "queue_proof": bool(getattr(self.args, "queue_proof", False))}
+                      "started_utc": utc(), "queue_proof": bool(getattr(self.args, "queue_proof", False)),
+                      "queue_observation": self.observe_queue}
         print(f"wake-e2e {self.run_id}: sha {sha[:12]}{' (dirty)' if dirty else ''}, root {self.root}", flush=True)
         for k, v in versions.items():
             print(f"  {k}: {v}", flush=True)
@@ -2016,6 +2021,21 @@ class QueueCaseEvidence:
         else:
             expectation = "accepted" if row.get("expect_wake") else "none"
         result = queue_proof(self.before, self.samples, expectation)
+        required = bool(getattr(getattr(self.recipient.run, "args", None), "queue_proof", False))
+        if expectation == "accepted" and not required and not result["passed"]:
+            # Native fallback may follow a refusal before any effect even when the
+            # publication was eligible. No possible/unknown effect can take this path.
+            native = queue_proof(self.before, self.samples, "none")
+            if native["passed"]:
+                result = dict(native, expectation="native",
+                              transport_inference="compositional native after no queue effect; external wake check required")
+        result["accepted_wake_window_s"] = QUEUE_WAKE_WINDOW_S if result.get("attempts") else WAKE_WINDOW_S
+        if (result.get("expectation") == "native" and row.get("expect_wake")
+                and self.case not in WAKE_BLOCK_CASES + RESUME_CASES + SIDE_CASES):
+            delay = row.get("t_wake_s")
+            if not isinstance(delay, (int, float)) or delay > WAKE_WINDOW_S:
+                result["passed"] = False
+                result["reasons"].append("native wake exceeds unchanged six-second window")
         result["before"] = self.before
         result["published"] = self.published
         result["sample_bytes"] = self.bytes
@@ -2025,7 +2045,7 @@ class QueueCaseEvidence:
             result["passed"] = False
             result["reasons"].append(self.error or ("canonical evidence bound exceeded" if self.overflow
                                                    else "no publication checkpoint"))
-        if self.case.startswith("busy-"):
+        if self.case.startswith("busy-") and (required or eligible_scope(self.before, "started") is not None):
             result["known_busy_started"] = eligible_scope(self.before, "started") is not None
             if not result["known_busy_started"]:
                 result["passed"] = False
@@ -2054,7 +2074,7 @@ class QueueCaseEvidence:
             attempt for attempt in proved
             if any(i.get("attempt") == attempt and i.get("logical_status") == "fulfilled" for i in intents)
             and any(i.get("attempt") == attempt and i.get("cleanup_list_attempted") for i in intents))
-        if self.case in WAKE_BLOCK_CASES:
+        if self.case in WAKE_BLOCK_CASES and (required or result.get("attempts")):
             from wake_e2e_queue import queue_activity_intervals
             result["release_interval_ms"] = self.release_interval_ms
             result["gate_retry_window_s"] = WAKE_BLOCK_WAIT_S
@@ -3487,7 +3507,8 @@ class Recipient:
                 try:
                     if case.split("/")[0] not in ("invite", "pair-open"):
                         self.ensure_channel(case.split("/")[1])
-                    if getattr(getattr(self.run, "args", None), "queue_proof", False) and self.harness == "codex":
+                    if (getattr(self.run, "observe_queue", getattr(getattr(self.run, "args", None), "queue_proof", False))
+                            and self.harness == "codex"):
                         proof = QueueCaseEvidence(self, case)
                         self.queue_evidence = proof
                         with proof:

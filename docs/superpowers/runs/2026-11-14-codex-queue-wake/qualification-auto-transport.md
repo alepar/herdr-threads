@@ -1,0 +1,11 @@
+# Automatic transport-aware release evidence
+
+Astra233 approved automatic bounded evidence for Linux Codex independently of --queue-proof. Production queue selection is unaffected by this driver change. Actual runs enable observations on Linux; the flag still requests positive Accepted proof and retains the existing off-Linux release-wrapper refusal.
+
+A pending queue-eligible observation may wait up to15seconds. Final positive proof requires an actual Accepted intent with immutable Add witness; Unknown remains failure. A measured interval with no queue effect may establish compositional native fallback, and its ordinary wake must meet the unchanged6second bound. Existing UI release/resume/side spacing gates remain separate. Native UI no longer falsely requires queue activity, and an all-native run still cannot satisfy explicitly required positive queue cases.
+
+Five new offline tests cover automatic unflagged collection, native5second pass/native8second failure, observed Accepted15second acceptance, Unknown rejection and explicit require-proof failure without Accepted. All297 offline driver tests passed101.571seconds after fixing five lightweight preflight objects that bypassed Run.__init__ (observation is now a derived property) and explicitly labeling legacy strict-proof fixtures. The failed intermediate297-test result remains in target/queue-qualification/automatic-queue-all.log; no authenticated run occurred.
+
+Astra231 requested added coverage for more than64VALID historical replay cohorts. The new causal case places the only pending effect under another origin and its old disconnected binding behind100newer valid UUID sessions; its no-effect control proves population alone does not create either fence. Test passed0.744seconds, scoped process/temp checks clean for6ec58d02-6fcd-4f9d-a743-924c8d9cdfa4.
+
+Required Clippy all-target/all-feature19.38seconds, default features, formatting, harness neutrality, wire compatibility, release docs,4offline routing tests and Python3.9 grammar checks pass. Offline Python run had no HT_LEAK_RUN_ID and no temp-file ledger; separate read-only owned-worktree process audit found no leaks. S1durable fallback and final queue-default setting remain outstanding, so this is not integration clearance or final fixed-tree full qualification. New routine model-visible text0bytes.

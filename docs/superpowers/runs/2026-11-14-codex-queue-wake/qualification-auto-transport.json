@@ -1,0 +1,46 @@
+{
+  "basis": "bb0cc218c, Astra231/233",
+  "files_sha256": {
+    "RELEASE.md": "db49903b574e147e03d6f1fcdb0b8fb443593321ba75a564dcd99b723b4147d1",
+    "scripts/wake-e2e.py": "49227974d57a530f62abb9333cfc381bb4d71cae4150d567cf86c164f2922657",
+    "scripts/wake_e2e_selftest.py": "7bfc74d6ef828e98b3bc98bd01bb5d57d1b52a42a9cb1caedcf82af28d5dd395",
+    "tests/store/wake_queue_selection.rs": "1ca716575434cd9b473cd411a24d33a38dc09a0ae8cde269e986cf30b65e4b98"
+  },
+  "report_sha256": "c2a1419fb445aaca6455ee99485051de9d622e10f1c87eab3714d8a326c6ee08",
+  "driver": {
+    "passed": 297,
+    "seconds": 101.571,
+    "run_tag": null,
+    "cleanup": "owned-worktree process audit clean; no temp ledger"
+  },
+  "coverage_test": {
+    "passed": 1,
+    "seconds": 0.744,
+    "run_id": "6ec58d02-6fcd-4f9d-a743-924c8d9cdfa4",
+    "cleanup": "processes and temp files clean"
+  },
+  "checks": {
+    "clippy": "PASS19.38s",
+    "default": "PASS",
+    "fmt": "PASS",
+    "neutral": "PASS",
+    "wire": "PASS",
+    "docs": "DOCS_TEST_PASS",
+    "routing": "4PASS",
+    "python39": "PASS"
+  },
+  "raw_logs_sha256": {
+    "automatic-queue-red.log": "7b74735d39e16285a1c6b22e3425074b2d4016e147376f77e66d6a1614abd2c2",
+    "automatic-queue-focused.log": "dac8e990d8da412680525aa36362f545676a498b98f255d5ea285a1751d64658",
+    "automatic-queue-all.log": "ae9a7c4e0522070a7ce74a12b3b14c9a18e38baf417e3903d0e5796f4d390f64",
+    "automatic-queue-final.log": "e57fdfc5ecee2c4521eb46aaa846a321f94e1bec31d25204a1fc7b72b8855562",
+    "integration-valid-cohorts.log": "235fbb1efdd2d0c37aae15725cb9a42ad261b2f4a7555eb864d9a439ebe25df9"
+  },
+  "model_visible_added_bytes": 0,
+  "limits": [
+    "S1 fallback accounting outstanding",
+    "neutral queue setting/default outstanding",
+    "final fixed-tree full outstanding",
+    "no new authenticated run"
+  ]
+}

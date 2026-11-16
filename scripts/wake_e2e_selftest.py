@@ -3397,7 +3397,7 @@ class QueueSamplerLifetime(TempDir):
         patcher = mock.patch("wake_e2e_queue.queue_snapshot", side_effect=read)
         patcher.start()
         self.addCleanup(patcher.stop)
-        return SimpleNamespace(run=SimpleNamespace(state=self.tmp), seat="seat", name="co-t0")
+        return SimpleNamespace(run=SimpleNamespace(state=self.tmp, args=SimpleNamespace(queue_proof=True)), seat="seat", name="co-t0")
 
     def test_publication_freezes_watermark_and_finish_joins_sampler(self):
         recipient = self.recipient()
@@ -3719,3 +3719,69 @@ class QueueQualificationParsing(unittest.TestCase):
         with self.assertRaises(SystemExit) as refused:
             parsed_args(["--queue-proof", "--harness", "claude"])
         self.assertEqual(refused.exception.code, 2)
+
+class AutomaticQueueQualification(TempDir):
+    snapshot = QueueSamplerLifetime.snapshot
+    recipient = QueueSamplerLifetime.recipient
+
+    def test_unflagged_linux_run_collects_queue_evidence(self):
+        self.recipient()
+        run = SimpleNamespace(state=self.tmp, ev=self.tmp, run_id="test", observe_queue=True,
+                              args=SimpleNamespace(queue_proof=False), stopping=threading.Event(),
+                              lock=threading.Lock(), results=[], secrets=())
+        run.record = lambda row: W.record(run, row)
+        r = W.Recipient(run, "co-t0", "codex", 0, "pane", "seat")
+        run.recipients = [r]
+        r.start = lambda: None
+        r.screen, r.save_calls = lambda *args: "", lambda: None
+        r.ensure_channel = lambda channel: None
+        def case(name):
+            r.queue_evidence.publication()
+            run.record({"case": name, "harness": "codex", "threshold": 0, "recipient": r.name,
+                        "expect_wake": False, "woke": False, "result": "PASS", "checks": {}})
+        r.case = case
+        W.Recipient.run_cases(r, ["send-p1/group"])
+        self.assertEqual(run.results[0]["result"], "PASS")
+        self.assertIsNotNone(run.results[0].get("queue_evidence"))
+
+    def test_unflagged_native_acceptance_keeps_six_second_bound(self):
+        for delay, passed in [(5.0, True), (8.0, False)]:
+            recipient = self.recipient()
+            recipient.run.args = SimpleNamespace(queue_proof=False)
+            proof = W.QueueCaseEvidence(recipient, "send-p0/group")
+            proof.publication()
+            result = proof.finish({"expect_wake": True, "t_wake_s": delay})
+            self.assertEqual(result["passed"], passed, result)
+            self.assertEqual(result["expectation"], "native")
+            self.assertEqual(result["accepted_wake_window_s"], 6.0)
+
+    def test_explicit_proof_still_requires_positive_accepted(self):
+        recipient = self.recipient()
+        recipient.run.args = SimpleNamespace(queue_proof=True)
+        proof = W.QueueCaseEvidence(recipient, "send-p0/group")
+        proof.publication()
+        self.assertFalse(proof.finish({"expect_wake": True, "t_wake_s": 5.0})["passed"])
+
+    def test_unflagged_unknown_does_not_gain_positive_fifteen_second_acceptance(self):
+        recipient = self.recipient()
+        recipient.run.args = SimpleNamespace(queue_proof=False)
+        proof = W.QueueCaseEvidence(recipient, "send-p0/group")
+        proof.publication()
+        judged = {"passed": False, "expectation": "accepted", "reasons": ["unknown_is_not_positive_evidence"],
+                  "attempts": [], "observed": {"unknown": 1}}
+        with mock.patch("wake_e2e_queue.queue_proof", return_value=judged):
+            result = proof.finish({"expect_wake": True, "t_wake_s": 8.0})
+        self.assertFalse(result["passed"])
+        self.assertEqual(result["accepted_wake_window_s"], 6.0)
+
+    def test_unflagged_observed_accepted_queue_retains_fifteen_seconds(self):
+        recipient = self.recipient()
+        recipient.run.args = SimpleNamespace(queue_proof=False)
+        proof = W.QueueCaseEvidence(recipient, "send-p0/group")
+        proof.publication()
+        judged = {"passed": True, "expectation": "accepted", "reasons": [],
+                  "attempts": [{"attempt": "accepted"}], "observed": {"unknown": 0}}
+        with mock.patch("wake_e2e_queue.queue_proof", return_value=judged):
+            result = proof.finish({"expect_wake": True, "t_wake_s": 12.0})
+        self.assertTrue(result["passed"])
+        self.assertEqual(result["accepted_wake_window_s"], 15.0)
