@@ -42,6 +42,10 @@ def _unique_object(pairs):
     return result
 
 
+def _reject_constant(_value):
+    raise ValueError('non-JSON numeric constant')
+
+
 def _doctor_report(command=None):
     """Private bounded read-only probe; never retain its raw output or paths."""
     command = command or [str(ROOT / 'bin/herdr-threads'), 'doctor', '--json']
@@ -69,7 +73,7 @@ def _doctor_report(command=None):
         except subprocess.TimeoutExpired:
             raise RuntimeError('queue mode canonical probe timed out') from None
         try:
-            return json.loads(output, object_pairs_hook=_unique_object)
+            return json.loads(output, object_pairs_hook=_unique_object, parse_constant=_reject_constant)
         except (ValueError, UnicodeError):
             raise RuntimeError('queue mode canonical probe returned invalid JSON') from None
     finally:
@@ -99,7 +103,7 @@ def operator_programmatic_wake():
     if len(raw) > 4096:
         raise RuntimeError('queue mode operator settings bound exceeded')
     try:
-        settings = json.loads(raw, object_pairs_hook=_unique_object)
+        settings = json.loads(raw, object_pairs_hook=_unique_object, parse_constant=_reject_constant)
     except (ValueError, UnicodeError):
         raise RuntimeError('queue mode operator settings invalid JSON') from None
     if not isinstance(settings, dict) or type(settings.get('programmatic_wake', False)) is not bool:

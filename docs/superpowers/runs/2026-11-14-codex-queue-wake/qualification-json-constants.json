@@ -1,0 +1,47 @@
+{
+  "basis": "056d63893e2d4c8f4fd83298693d359cb82baa85",
+  "review": "Astra250 mnSGg73Zbn5o; only strict numeric-constant correction requested; all other reviewed material accepted",
+  "parent_manifest": "docs/superpowers/runs/2026-11-14-codex-queue-wake/qualification-native-fallback-default.json",
+  "parent_manifest_sha256": "cc28c4a4b645a4d34a0e7e132ce1f629e9bbe151ebe8b2e25d85a9236db37944",
+  "unchanged_parent_source_hashes_verified": 43,
+  "files_sha256": {
+    "scripts/release-qualify": "004e9a6558f60582126b9ca8df863b246cb6912ed989e1a056d6e0101bdb9047",
+    "tests/release/release_qualify_test.py": "18c2dbef1dd80097ada8a388d2fa700b6a593096f844c4da6a80dfc05a518bd4"
+  },
+  "report_sha256": "e6c12c5943d4f38bd945673198827053031288f90b8c1dab31f67173268ce60b",
+  "raw_log_sha256": {
+    "target/queue-qualification/release-constants-red.log": "0d9d4f5c24342d25cf1a31d0f77d017f75723a6c82915a0ec7636e1b27da1389",
+    "target/queue-qualification/release-constants-green.log": "27d9932d4e96fae7c616c1d74847bb6e4e4e7dfc422d016048429c248bc1444d",
+    "target/queue-qualification/release-constants-cleanup.log": "c76a220d106e69e698432855a5646f0811630a5404fe5509b28b21d9f43315e4",
+    "target/queue-qualification/release-constants-clippy.log": "23a5c6c77eca6b54ed0e9312dbd49c2479f7509fd3a01e296c0ac940ed4cdefe",
+    "target/queue-qualification/release-constants-default.log": "e9f96abd6210d3bdf20c7a85d4ed01f625f1e5f02767ec3b5eb28fb4fc228fa5",
+    "target/queue-qualification/release-constants-neutral.log": "0571ae932197d03bf87cac7e8fedc30f5b77a20bf576eb8a12db528b6525b7a3",
+    "target/queue-qualification/release-constants-wire.log": "7dec4953c122c2b8b603f833295b91eaf35a4bc851f8abfb671f285445a50c2f",
+    "target/queue-qualification/release-constants-docs.log": "2282d4c00ffbd8dfbe883e28d794eb367f0861caf928069054e006d36e7b7a87",
+    "target/queue-qualification/release-constants-format.log": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+    "target/queue-qualification/release-constants-syntax.log": "1127c2ce330359be4f0cacaf5e4d58444bf40102e1d1360dcb12c2783b24eab4"
+  },
+  "red": {
+    "tests": 2,
+    "subcase_failures": 9,
+    "seconds": 0.041
+  },
+  "green": {
+    "tests": 16,
+    "seconds": 0.218,
+    "run_id": "734e158a-6521-4f78-bc3e-9c42d47feb25",
+    "cleanup": "no leaked processes; no temp ledger"
+  },
+  "checks": {
+    "clippy-all-targets-all-features": "PASS",
+    "default-features": "PASS",
+    "fmt": "PASS",
+    "harness-neutral": "PASS",
+    "wire": "PASS",
+    "docs": "PASS",
+    "python3.9": "PASS",
+    "diff": "PASS"
+  },
+  "model_visible_added_bytes": 0,
+  "scope": "No schema/runtime/core Rust change; no Rust test repeat/live/full suite. Final full awaits review settlement."
+}

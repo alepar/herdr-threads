@@ -101,6 +101,19 @@ class OperatorQueueMode(unittest.TestCase):
             release._doctor_report([sys.executable,'-c',
                 'import sys;sys.stdout.write(' + repr('{"doctor":{"node_dir":"/first","node_dir":"/second"}}') + ')'])
 
+    def test_settings_reject_non_json_numeric_constants_before_selecting_mode(self):
+        for constant in ('NaN', 'Infinity', '-Infinity'):
+            for enabled in ('false', 'true'):
+                raw = ('{"minimum_wake_delay_ms":' + constant + ',"programmatic_wake":' + enabled + '}').encode()
+                with self.subTest(constant=constant, enabled=enabled), self.assertRaisesRegex(RuntimeError, 'invalid JSON'):
+                    self.configured(raw)
+
+    def test_doctor_rejects_non_json_numeric_constants(self):
+        for constant in ('NaN', 'Infinity', '-Infinity'):
+            raw = '{"doctor":{"node_dir":"/valid","extra":' + constant + '}}'
+            with self.subTest(constant=constant), self.assertRaisesRegex(RuntimeError, 'invalid JSON'):
+                release._doctor_report([sys.executable, '-c', 'import sys;sys.stdout.write(' + repr(raw) + ')'])
+
     def test_selected_install_on_routes_required_queue_proof(self):
         with mock.patch.object(sys,'platform','linux'):
             argv,_=QueueProofRouting().wake_command(install_enabled=True)
