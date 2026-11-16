@@ -1398,6 +1398,15 @@ model open work, and summary closure never changes receipt state or installs glo
     Ordinary native wakes also require an empty composer, checked after their final
     identity/status recheck. A missing registered composer provider, nonempty composer or unreadable composer refuses delivery before input is sent;
     pending attention and receipt obligations remain intact and the prior retry ladder is restored.
+    This is an observed-empty admission, not an atomic composer reservation. In the shared Native
+    path, the composer read, canonical `still_owed` check and separate host prompt submission are
+    distinct operations; the prompt has no compare-and-set against the observed composer. Concurrent
+    typing after the read can therefore receive an appended wake marker and be submitted with it.
+    This host-level limit applies to every Native harness, not only Pi. The final canonical check
+    protects whether the wake is still owed; it does not revalidate the editor buffer atomically.
+    Separate P2 follow-ups outside the Pi epic are `ht-gkvv`, an upstream conditional prompt that
+    submits only if the composer still matches the read, and `ht-1g1c`, a neutral last-moment reread
+    that narrows but cannot eliminate the check-to-send gap.
     Unfocused empty panes may wake immediately. Focused panes require a minute of observed empty
     composer samples, measured with the daemon's monotonic clock. Qualification is process-local,
     bound to seat/target/terminal/harness/server identity, bounded to 1024 windows, and restarts after
@@ -3063,7 +3072,8 @@ These are decisions, not bugs. Each is safe to rely on only as stated.
   drew typed text that way would read as empty, and a wake or poke would be typed after that draft
   (captured: Claude Code 2.1.309 draws typed text unstyled, `docs/evidence/ansi-composer/`).
 - **Native attention uses sampled composer/focus guards.** Check-to-send focus or input races are
-  accepted: a user may type or change focus after the final read. Empty samples do not establish an
+  accepted: a user may type or change focus after the final read. The separate host prompt can append
+  the wake to newly typed text; no atomic conditional-prompt operation closes this gap. Empty samples do not establish an
   absence of keystrokes, cursor moves, or type/delete activity between samples. Focus is Herdr's pane
   selection, not every attached client's physical attention; on tmux it is the session's current window and pane with
   any client attached, so a control-mode client counts, several clients read as one, and it says nothing about where
