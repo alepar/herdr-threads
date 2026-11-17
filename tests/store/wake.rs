@@ -3027,8 +3027,8 @@ fn root_composer_choice_matches_one_seat_spanning_target_of_the_root_harness() {
 /// Kills: a composer predicate that guesses (latest touch, first row) instead of requiring
 /// exactly one connected top-level binding whose fingerprint pid is the foreground pid. This is
 /// the production pair: `wake_targets` filters, `ReservedWakeAuthority::composer_choice` decides.
-/// A resumed harness that runs no hook until its first turn: the seat's process-exited binding is
-/// the wake's target, placed on the observed terminal, for a composer wake and nothing else.
+/// A resumed harness that runs no hook until its first turn: the seat's process-exited or
+/// end-evented binding is the wake's target, placed on the observed terminal, for a composer wake and nothing else.
 #[test]
 fn a_dormant_binding_is_a_cooperative_wake_target_on_its_own_terminal() {
     use crate::ports::{ComposerChoice, ReservedWakeAuthority};
@@ -3109,21 +3109,46 @@ fn a_dormant_binding_is_a_cooperative_wake_target_on_its_own_terminal() {
     let _ = std::fs::remove_file(path);
     // A new terminal and an empty shell stay unwoken: a fresh store for each, as the reservation
     // above would refuse everything after it.
-    for change in [
-        "UPDATE observed_targets SET terminal_id='term-new'",
-        "UPDATE observed_targets SET occupancy='empty_shell'",
+    // A pane left at a shell after `/quit` is the same: never typed into.
+    for reason in ["liveness_process_exit", "liveness_end_event"] {
+        for change in [
+            "UPDATE observed_targets SET terminal_id='term-new'",
+            "UPDATE observed_targets SET occupancy='empty_shell'",
+        ] {
+            let (store, path) = open(reason);
+            set(&store, change);
+            assert!(reserve(&store).is_none(), "{reason}: {change}");
+            drop(store);
+            let _ = std::fs::remove_file(path);
+        }
+    }
+    // An end event (Codex `/quit` sends SessionEnd) leaves the session resumable in the pane: it
+    // is woken like a process exit, on its pane's foreground alone.
+    let (store, path) = open("liveness_end_event");
+    let reservation = reserve(&store).expect("the session resumed after /quit is woken");
+    let ReservedWakeAuthority::Cooperative { targets, .. } = &reservation.authority else {
+        panic!("{:?}", reservation.authority);
+    };
+    assert!(targets.len() == 1 && targets[0].dormant);
+    assert!(matches!(
+        reservation.authority.composer_choice(&[9999]),
+        ComposerChoice::Binding(found) if found.dormant
+    ));
+    drop(store);
+    let _ = std::fs::remove_file(path);
+    // Every other disconnect leaves nothing to wake.
+    for reason in [
+        "superseded",
+        "replaced",
+        "seat_retired",
+        "seat_unresolved",
+        "migrated",
     ] {
-        let (store, path) = open("liveness_process_exit");
-        set(&store, change);
-        assert!(reserve(&store).is_none(), "{change}");
+        let (store, path) = open(reason);
+        assert!(reserve(&store).is_none(), "{reason}");
         drop(store);
         let _ = std::fs::remove_file(path);
     }
-    // An end event says the session is over: no wake (today's rule).
-    let (store, path) = open("liveness_end_event");
-    assert!(reserve(&store).is_none());
-    drop(store);
-    let _ = std::fs::remove_file(path);
 }
 
 /// A named seat's tmux binding ends with its process and hc has no composer wake: the process exit

@@ -865,12 +865,87 @@ fn a_binding_the_seats_mapping_moved_past_is_not_dormant() {
     assert_eq!(wake_frontier(&db, "s", NudgeThreshold::ALL).unwrap(), None);
 }
 
+/// A harness end event (Codex `/quit` sends SessionEnd) does not end the session for good: the same
+/// session can be resumed in the pane and runs no hook until its first turn, so it is as dormant
+/// as a process exit and only its threshold decides.
 #[test]
-fn only_a_process_exit_makes_a_binding_dormant() {
+fn an_end_event_leaves_a_dormant_binding_like_a_process_exit() {
+    let t0 = NudgeThreshold::new(0).unwrap();
+    let seat = SeatId::new("s");
+    let mut db = placed_db();
+    let a = enroll_binding(&db, "sess-A", None);
+    disconnect(&db, &a, DisconnectReason::EndEvent);
+    assert_eq!(
+        dormant_top_level(&db, "s").unwrap(),
+        Some(a.as_str().to_owned())
+    );
+    publish(&mut db, 3);
+    assert_eq!(wake_frontier(&db, "s", t0).unwrap(), None, "p1 at T=0");
+    assert!(
+        crate::store::wake::wake_targets(&db, &seat, false)
+            .unwrap()
+            .is_empty()
+    );
+    publish_p0(&mut db, 4);
+    assert_eq!(wake_frontier(&db, "s", t0).unwrap(), Some(4));
+    let targets = crate::store::wake::wake_targets(&db, &seat, false).unwrap();
+    assert_eq!(targets.len(), 1);
+    assert_eq!(targets[0].binding, a);
+    assert!(targets[0].dormant);
+    // The resumed session's own check-in reconnects it: no longer dormant.
+    reconnect(&db, &a);
+    assert_eq!(dormant_top_level(&db, "s").unwrap(), None);
+    // An ended binding (seat retirement or unresolve end every open binding) is never dormant.
+    disconnect(&db, &a, DisconnectReason::EndEvent);
+    db.execute("UPDATE occupant_bindings SET ended_at=7", [])
+        .unwrap();
+    assert_eq!(dormant_top_level(&db, "s").unwrap(), None);
+    assert_eq!(wake_frontier(&db, "s", t0).unwrap(), None);
+}
+
+/// A successor session in the pane (a new session after the end event, as Claude's `/clear`
+/// starts one) is the only target while connected, and after it exits too only the newest
+/// disconnected binding is dormant: the seat is never woken twice.
+#[test]
+fn an_end_evented_binding_is_never_targeted_beside_its_successor() {
+    let seat = SeatId::new("s");
+    let mut db = placed_db();
+    let a = enroll_binding(&db, "sess-A", None);
+    disconnect(&db, &a, DisconnectReason::EndEvent);
+    let b = enroll_binding(&db, "sess-B", None);
+    publish_p0(&mut db, 3);
+    assert_eq!(dormant_top_level(&db, "s").unwrap(), None);
+    let targets = crate::store::wake::wake_targets(&db, &seat, true).unwrap();
+    assert_eq!(
+        targets
+            .iter()
+            .map(|t| (&t.binding, t.dormant))
+            .collect::<Vec<_>>(),
+        [(&b, false)]
+    );
+    db.execute(
+        "UPDATE occupant_bindings SET liveness='disconnected',disconnected_at=?2,disconnect_reason='liveness_process_exit' WHERE binding_id=?1",
+        params![b.as_str(), i64::MAX],
+    )
+    .unwrap();
+    let targets = crate::store::wake::wake_targets(&db, &seat, true).unwrap();
+    assert_eq!(
+        targets
+            .iter()
+            .map(|t| (&t.binding, t.dormant))
+            .collect::<Vec<_>>(),
+        [(&b, true)]
+    );
+}
+
+#[test]
+fn only_a_process_exit_or_end_event_makes_a_binding_dormant() {
     for reason in [
-        DisconnectReason::EndEvent,
         DisconnectReason::Superseded,
         DisconnectReason::Replaced,
+        DisconnectReason::SeatRetired,
+        DisconnectReason::SeatUnresolved,
+        DisconnectReason::Migrated,
     ] {
         let mut db = placed_db();
         let a = enroll_binding(&db, "sess-A", None);
@@ -908,7 +983,7 @@ fn db_with_subagent_only() -> Connection {
     let db = placed_db();
     let parent = enroll_binding(&db, "sess-P", None);
     let child = enroll_binding(&db, "sess-P", Some(&parent));
-    disconnect(&db, &parent, DisconnectReason::EndEvent);
+    disconnect(&db, &parent, DisconnectReason::Superseded);
     disconnect(&db, &child, DisconnectReason::ProcessExit);
     db
 }

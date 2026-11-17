@@ -243,16 +243,18 @@ pub(crate) fn connected_top_level(conn: &Connection, seat: &str) -> Result<Vec<S
 }
 
 /// The seat's dormant binding: with no top-level binding connected, its last disconnected top-level
-/// agent binding when a process exit ended it. A harness may run no hook until its first turn, so a
-/// resumed session sits idle in the pane unknown to the daemon, and this row is all that names it
-/// (TRUST-POLICY A4 *Wake*). It authorizes a wake prompt only; no view is held for it. An end event
-/// says the session is over and a fork (`concurrent_session`) has no successor of its own. A row the
+/// agent binding when a process exit or a harness end event disconnected it. A harness may run no
+/// hook until its first turn, so a resumed session sits idle in the pane unknown to the daemon, and
+/// this row is all that names it (TRUST-POLICY A4 *Wake*). An end event (Codex `/quit` sends
+/// SessionEnd) does not stop the same session being resumed in the pane. It authorizes a wake prompt
+/// only; no view is held for it, and the native recheck keeps it off a pane whose agent is not its
+/// harness awaiting input. A fork (`concurrent_session`) has no successor of its own. A row the
 /// seat's mapping has moved past names no occupant of the seat's pane, so it is not dormant. A binding
 /// is dormant only where the host can wake a target with no live process (`HostKind::wakes_dormant_target`).
 pub(crate) fn dormant_top_level(conn: &Connection, seat: &str) -> Result<Option<String>, ApiError> {
     let row: Option<(Option<String>, Option<String>)> = conn
         .prepare_cached(
-            "SELECT CASE WHEN b.disconnect_reason='liveness_process_exit' THEN b.binding_id END, h.kind FROM occupant_bindings b JOIN seats s ON s.id=b.seat_id \
+            "SELECT CASE WHEN b.disconnect_reason IN ('liveness_process_exit','liveness_end_event') THEN b.binding_id END, h.kind FROM occupant_bindings b JOIN seats s ON s.id=b.seat_id \
              LEFT JOIN herdr_hosts h ON h.host_id=s.host_id \
              WHERE b.seat_id=?1 AND b.ended_at IS NULL AND b.role='top_level' AND b.harness<>'human' AND b.concurrent_session=0 AND b.liveness='disconnected' \
              AND b.generation=s.generation AND b.target_generation=s.target_generation AND b.target_id=s.target_id \

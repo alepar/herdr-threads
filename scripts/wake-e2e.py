@@ -223,7 +223,10 @@ RACE_DONE_LINE = re.compile(r"^[^\w\n]*RACE-DONE.*$", re.M)
 RACE_PROMPT_END = "RACE-DONE."
 # Opt-in, Codex at T=0 only (ht-unmk): Codex is killed and resumed in the same pane. A resumed Codex runs no hook until
 # its first turn, so its seat stays unavailable while it sits idle; a p1 still leaves it idle, and a p0 wakes it.
-RESUME_CASES = ("resume-idle/group",)
+# resume-quit leaves Codex through `/quit` instead, so its SessionEnd hook disconnects the binding as an end event
+# (`liveness_end_event`) before the same session is resumed: it must wake the same way.
+RESUME_CASES = ("resume-idle/group", "resume-quit/group")
+QUIT_EXIT_S = 30
 RESUME_QUIET_S = 15
 SIDE_DEADLINE_S = 45
 # Opt-in cases (ht-kqrt.61, N2-e2e), never in the default matrix and gated on no version: a named seat
@@ -1797,6 +1800,16 @@ def is_wake_line(text):
     return text in ("herdr-threads: wake up", CHANNEL_WAKE_UP) or text.startswith("herdr-threads: attention pending")
 
 
+def _pid_alive(pid):
+    try:
+        os.kill(pid, 0)
+    except ProcessLookupError:
+        return False
+    except PermissionError:
+        return True
+    return True
+
+
 def wake_count(text):
     # Match whole prompt/body lines; an explanation mentioning "wake up" is not a wake.
     return sum(is_wake_line(line) for line in text.splitlines())
@@ -3063,7 +3076,8 @@ class Recipient:
         return (self.seat_inspect().get("summary") or {}).get("availability", "")
 
     def resume_case(self, case):
-        """resume-idle: a killed and resumed Codex, idle and unknown to the daemon, wakes on p0 and only on p0."""
+        """resume-idle / resume-quit: a Codex killed (or quit with `/quit`) and resumed, idle and unknown to the
+        daemon, wakes on p0 and only on p0."""
         tag = f"{case} {self.run.run_id}"
         checks = {}
         gap = SPACING_S - (time.time() - self.last_wake)
@@ -3077,13 +3091,26 @@ class Recipient:
         pids = [p["pid"] for p in info["foreground_processes"] if any("codex" in a for a in (p.get("argv") or [])[:2])]
         if not pids:
             raise RuntimeError(f"{self.name}: no foreground codex process: {info}")
-        for pid in pids:  # no SessionEnd hook: a process exit, not an end event
-            with contextlib.suppress(ProcessLookupError):
-                os.kill(pid, signal.SIGKILL)
+        quit_ = case.startswith("resume-quit")
+        if quit_:  # SessionEnd runs: an end event, then the process exits
+            self.run.herdr("pane", "send-text", self.pane, "/quit")
+            time.sleep(1)
+            self.run.herdr("agent", "send-keys", self.pane, "enter", check=False)
+            end = time.time() + QUIT_EXIT_S
+            while time.time() < end and any(_pid_alive(pid) for pid in pids):
+                time.sleep(0.5)
+            checks["quit_exited"] = not any(_pid_alive(pid) for pid in pids)
+        else:
+            for pid in pids:  # no SessionEnd hook: a process exit, not an end event
+                with contextlib.suppress(ProcessLookupError):
+                    os.kill(pid, signal.SIGKILL)
         end = time.time() + 30
         while time.time() < end and not self.availability().startswith("unavailable"):
             time.sleep(0.5)
         checks["unavailable_after_exit"] = self.availability().startswith("unavailable")
+        reasons = self.store_rows("SELECT disconnect_reason FROM occupant_bindings WHERE seat_id=? AND native_session=? "
+                                  "AND role='top_level' AND ended_at IS NULL", (self.seat, session))
+        checks["disconnect_reason"] = reasons[0][0] if reasons else None
         self.run.resumes = getattr(self.run, "resumes", 0) + 1
         line = self.run.launch_line(self.harness) + " resume " + shlex.quote(session)
         self.run.herdr("pane", "run", self.pane, line)
@@ -3119,7 +3146,9 @@ class Recipient:
             self.wait_idle()
         checks["delivered"] = all(self.on_screen(m) for m in (silent, urgent) if m)
         checks["available_after"] = self.availability() == "available"
+        expected_reason = "liveness_end_event" if quit_ else "liveness_process_exit"
         passed = (checks["unavailable_after_exit"] and checks["unavailable_while_idle"]
+                  and checks.get("quit_exited", True) and checks["disconnect_reason"] == expected_reason
                   and checks["wakes_on_p1"] == 0 and woke
                   and checks["delivered"] and checks["available_after"])
         self.settled()

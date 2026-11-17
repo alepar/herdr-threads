@@ -1254,7 +1254,7 @@ model open work, and summary closure never changes receipt state or installs glo
   binding is never woken. One exception, the *dormant* binding (ht-unmk): a harness may run no hook until its first
   turn, so a session resumed in the pane sits idle unknown to the daemon. With no top-level binding of the seat
   connected, the last disconnected top-level agent binding (not a fork, `concurrent_session`) is a target when a
-  process exit disconnected it (`liveness_process_exit`) and it has something to act on at the seat's threshold,
+  process exit or a harness end event disconnected it (`liveness_process_exit`, `liveness_end_event`: an end event such as Codex's SessionEnd on `/quit` does not stop the same session being resumed in the pane) and it has something to act on at the seat's threshold,
   placed on the observed terminal and seat generation like any target, and only on a host that can wake a target with no live
   process (`HostKind::wakes_dormant_target`, today Herdr): a named seat's verified tmux binding ends with its process and hc
   has no composer wake, so such a seat gets no dormant target and its sender reads `wake=no_wake`. It authorizes nothing but an ordinary wake
@@ -1265,7 +1265,7 @@ model open work, and summary closure never changes receipt state or installs glo
   item buried under that many silent ones no longer wakes the seat, and still arrives on its next turn. Its pid is stale, so the composer wake takes it on any Herdr-reported foreground
   process of its own pane (no foreground report, no wake) and the native recheck requires Herdr's agent kind there
   to be its harness and awaiting input. An accepted limit: another session of that harness in the pane, which the
-  seat would enroll anyway, gets the wake. An end event never leaves a dormant binding. A target whose writable mod channel is live and not stalled is woken through that channel
+  seat would enroll anyway, gets the wake; so does a pane whose session ended for good and that holds another session of the harness. A pane left at a shell after an end event is never typed into (no foreground agent, or `empty_shell` occupancy) and its refused wake retries on the dormant ladder. A target whose writable mod channel is live and not stalled is woken through that channel
   and is never also typed to. The composer wake (typing into the pane) goes at most once per seat per wake:
   only to the one target whose fingerprint pid is among Herdr's pane foreground processes (the non-shell
   entries of `pane.process_info`; a harness launcher and its native child, and any helper the harness
