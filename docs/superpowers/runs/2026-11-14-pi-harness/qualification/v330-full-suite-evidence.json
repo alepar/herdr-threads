@@ -1,0 +1,180 @@
+{
+  "status": "FAILED; completed once without retry",
+  "rust_source": "9f69b8d02b1244a7e21be8df9d368b380f887764",
+  "start_head": "ef8b36efee85cfec95baa9e36479aff39bab33c6",
+  "end_head": "59686a8f9e9831dc36f9092d4f017ca9e1147451",
+  "run_id": "66baa96c-e392-4ba5-89bc-07292da03187",
+  "nextest_run_id": "a187b8fe-d312-4745-b680-1eb81604baed",
+  "command": [
+    "cargo",
+    "nextest",
+    "run",
+    "--locked",
+    "--all-targets",
+    "--all-features"
+  ],
+  "caps": 4,
+  "exit_code": 100,
+  "counts": {
+    "run": 9855,
+    "passed": 9853,
+    "failed": 2,
+    "skipped": 67,
+    "slow": 1,
+    "binaries": 19
+  },
+  "timing": {
+    "cargo_reported_compile": "7m 18s",
+    "nextest_seconds": 927.245,
+    "total_seconds": 1366.38,
+    "budget_seconds": 300,
+    "budget_missed": true
+  },
+  "failures": [
+    {
+      "test": "service::loop_inventory::every_timed_wait_is_on_a_pacer_or_allowlisted_with_a_reason",
+      "binary": "herdr-threads",
+      "cause": "Two cfg(test) characterization recv_timeout rendezvous lack justified exact ALLOWLIST entries."
+    },
+    {
+      "test": "golden_surfaces::help_texts",
+      "binary": "herdr-threads::combined",
+      "cause": "Handoff help fixture line162 wraps downstream differently from current N4 HANDOFF_TEMPLATE; no changed words identified."
+    }
+  ],
+  "slow_test": {
+    "test": "manifest::failpoints_are_compiled_out_of_release_builds",
+    "seconds": 327.023,
+    "result": "PASS"
+  },
+  "logs": {
+    "full-suite.log": "43139b81d47d80de8d8d9f6b843eda89b070381f0e69b5ee5d10e5dd321343d4",
+    "full-suite-builder-leaks.log": "d040d9ad83397b501b9cdc0ac269430d7440c9ce7d1d756b82ba6e61b446ade6",
+    "full-suite-host-leaks.log": "c76a220d106e69e698432855a5646f0811630a5404fe5509b28b21d9f43315e4"
+  },
+  "disposition": "Main explicitly authorized (mnSGlopMCqRw) focused correction validation instead of a second local full run because the only failures required test-only changes. Focused validation passed; original full attempt remains FAILED. CI sharded full suite remains outstanding as merge full gate.",
+  "scope": "One unfiltered local run, no automatic retry. All9855 selected tests completed;67 skipped, not passed. No production source change during run.",
+  "source_drift": [
+    "docs/superpowers/runs/2026-11-14-pi-harness/qualification/v330-native-evidence.json",
+    "docs/superpowers/runs/2026-11-14-pi-harness/qualification/v330-native.md"
+  ],
+  "profiles": {
+    "native_dev": {
+      "path": "target/debug/deps/herdr_threads-ee429b642d86e164",
+      "sha256": "a63ac7a7629f29c117d1968523d65f8253aaaa1a1bfbe5e66b29e0b81ac06ea4",
+      "fingerprint": 4923293383976553682,
+      "version": "3.3.0",
+      "features": [
+        "test-support"
+      ],
+      "preserved_after_suite": true
+    },
+    "test": {
+      "common_path": "target/debug/herdr-threads",
+      "path": "target/debug/deps/herdr_threads-2042840da67c16bb",
+      "sha256": "0d084c5f9356b81e382e28c5422e76b5fb02817dd913da0c55e2c253679e0810",
+      "fingerprint": 3057891792897344596,
+      "version": "3.3.0",
+      "features": [
+        "test-support"
+      ]
+    }
+  },
+  "cleanup": {
+    "builder_exit": 0,
+    "host_exit": 0,
+    "run_id": "66baa96c-e392-4ba5-89bc-07292da03187",
+    "processes": "clean",
+    "temporary_files": "clean",
+    "removed_secondary_targets": [
+      {
+        "path": "target/failpoints-control",
+        "size": "3.4G\ttarget/failpoints-control"
+      },
+      {
+        "path": "target/failpoints-release",
+        "size": "1.8G\ttarget/failpoints-release"
+      }
+    ],
+    "disk_available_before_cleanup": "382G",
+    "disk_available_after_cleanup": "385G",
+    "tmp_used": "14G/32G (42%)",
+    "main_target_debug": "preserved",
+    "order": "Both scans ran after terminal suite; secondary targets removed only afterward."
+  },
+  "correction_review": {
+    "patch_sha256": "f84ef86c1e92a074fa33d207f47ce42bc3c7800f00eacd40da1d5f03e9ff53df",
+    "files": [
+      "tests/service/loop_inventory.rs",
+      "tests/fixtures/golden/help/handoff.txt"
+    ],
+    "result": "Source and execution review approved; exact frozen two-file correction committed with19/19 focused tests and all required guards/scans passing."
+  },
+  "focused_correction": {
+    "commit": "55401e27c56a9e3f990206c550ec6f42ea61e510",
+    "files": [
+      "tests/service/loop_inventory.rs",
+      "tests/fixtures/golden/help/handoff.txt"
+    ],
+    "production_delta": false,
+    "run_id": "d6ea75bd-3b4e-4f44-87dd-4a48670a3ccd",
+    "nextest_run_id": "69da0ea9-7dc1-4b53-a2e2-67bca020c275",
+    "command": "cargo nextest run --locked --all-features --lib --test combined -E 'test(service::loop_inventory::) | test(cooperative_wake_can_prompt_after_a_draft_arrives_during_the_owed_check) | test(golden_surfaces::)'",
+    "wrapper": "heavy tb /usr/bin/time -p",
+    "caps": 4,
+    "exit": 0,
+    "counts": {
+      "passed": 19,
+      "failed": 0,
+      "skipped_by_selection_or_ignore": 9110,
+      "binaries": 2,
+      "inventory": 3,
+      "characterization": 1,
+      "golden_surfaces": 15
+    },
+    "timing": {
+      "cargo_compile_seconds": 33.45,
+      "test_seconds": 5.958,
+      "total_seconds": 39.54
+    },
+    "gates": {
+      "fmt": {
+        "exit": 0,
+        "seconds": 6.56
+      },
+      "clippy": {
+        "exit": 0,
+        "seconds": 20.22
+      },
+      "default": {
+        "exit": 0,
+        "seconds": 13.06
+      },
+      "neutral": {
+        "exit": 0,
+        "seconds": 1.31
+      },
+      "wire": {
+        "exit": 0,
+        "seconds": 0.09
+      }
+    },
+    "cleanup": {
+      "builder_exit": 0,
+      "host_exit": 0,
+      "processes": "clean",
+      "temporary_files": "builder clean; host no ledger after builder consumed it"
+    },
+    "log_sha256": {
+      "focused.log": "85f396dfe8a37bc12d0042aa2db6cc95484fbcd6f18d097f09c25f275154c590",
+      "fmt.log": "3ec3c9c22ebc17afa90852e81a31627f5d17587f1e8254f827b91670e8c90cea",
+      "neutral.log": "3bf1be903b633a8e4d3eaef128dd083dd2680384ed74ad97539c0868daf49cc9",
+      "wire.log": "bbe6b0d95d2b74f6158e877105008174c6ec282ca1d5dead9dbcd7be0e4fdfb0",
+      "clippy.log": "c07026a6121637bc4ca7dcbb0ce0b196f67d9f03ab7bd229bc7e52e39d6a482a",
+      "default.log": "771f41a4ad5551a178d109c6e545c8004d6094526203454a987088eb5c1908d3",
+      "builder-leaks.log": "9017ef41ce05a3c9ee0b32d0c598c56a98b422226e2d09ea4d96a99a5ba20503",
+      "host-leaks.log": "d35e87b78992a62791743f00926796c50bd9cec63dbf643875ae7142e1426377"
+    },
+    "independent_review": "Frozen exact patch, file hashes, and all eight validation log hashes verified; source and execution approved."
+  }
+}
