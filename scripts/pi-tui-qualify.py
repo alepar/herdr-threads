@@ -156,6 +156,7 @@ class Run:
         self.host = self.root = self.workspace = self.recipient = self.sender = self.seat = None
         self.main_sid = None
         self.sink = None
+        self.hol_seed_sink = None
         self.notice_causes = []
         self.tmux_socket = None
         self.secrets = []
@@ -301,7 +302,7 @@ class Run:
               AND b.liveness='connected' AND b.registered_at IS NOT NULL
               AND b.observation_provenance='cooperative_top_level'
               AND b.target_id=s.target_id AND b.target_generation=s.target_generation""",
-            (cause["message"], self.sink["seat"], self.seat, self.main_sid, self.recipient))
+            (cause["message"], cause["sink"]["seat"], self.seat, self.main_sid, self.recipient))
         assert len(rows) <= 1, "notice observer found ambiguous current binding"
         if not rows:
             return None
@@ -349,12 +350,18 @@ class Run:
             request.unlink(missing_ok=True)
         self.keys("enter", pane=pane)
 
-    def start_notice_sink(self):
-        if self.sink:
+    def start_notice_sink(self, *, successor=False):
+        if successor:
+            assert self.sink and self.sink.get('sid') and not self.hol_seed_sink, 'HOL permits exactly one successor sink'
+            self.hol_seed_sink, self.sink = self.sink, None
+            self.facts['notice_seed_sink'] = self.facts['notice_sink']
+            self.facts['installed_extensions']['seed_sink'] = self.facts['installed_extensions']['sink']
+        elif self.sink:
             return
         assert not self.args.live and self.provider == "ht-fixture", "notice sink requires credential-free scripted provider"
-        probe = self.root / "notice-sink"
+        probe = self.root / ("notice-sink-successor" if successor else "notice-sink")
         profile = probe / "agent"
+        self.sink = {"probe": probe, "profile": profile}
         (probe / "bin").mkdir(mode=0o700, parents=True)
         profile.mkdir(mode=0o700)
         (probe / "home").mkdir(mode=0o700)
@@ -377,22 +384,35 @@ class Run:
             "path": str(extension), "sha256": hashlib.sha256(extension.read_bytes()).hexdigest()}
         flags = sum((["--env", k + "=" + v] for k, v in env.items()), [])
         tab = self.herdr("tab", "create", "--workspace", self.workspace, "--cwd", str(self.root / "project"),
-                         "--label", "pi-notice-sink", "--no-focus", *flags)
-        self.sink = {"probe": probe, "profile": profile, "pane": tab["result"]["root_pane"]["pane_id"]}
+                         "--label", "pi-notice-sink-successor" if successor else "pi-notice-sink", "--no-focus", *flags)
+        self.sink["pane"] = tab["result"]["root_pane"]["pane_id"]
         launch = self.ht("launch", "--kind", "pi", "--pane", self.sink["pane"], "--harness-binary", str(shim),
                          "--", *options, extra_env=extra)
         assert launch["launch"]["outcome"] == "started", "notice sink public launch did not start"
         self.sink["seat"] = launch["launch"]["seat"]
         row = self.wait("notice sink native startup", lambda: next((r for r in self.probe_rows(probe) if r["event"] == "session_start"), None))
         self.sink["sid"] = row["state"]["sid"]
+        if successor:
+            assert all(self.sink[key] != self.hol_seed_sink[key] for key in ('seat', 'sid', 'pane', 'probe', 'profile')), 'successor reused seed sink identity'
         self.herdr("pane", "send-text", self.sink["pane"], "Owned notice sink baseline; reply READY without tools.")
         self.keys("enter", pane=self.sink["pane"])
         self.wait("notice sink baseline settled", lambda: any(r["event"] == "agent_settled" and r["state"]["sid"] == self.sink["sid"] for r in self.probe_rows(probe)))
+        self.assert_notice_sink_unaddressed()
         self.herdr("pane", "send-text", self.sink["pane"], SINK_DRAFT)
         self.sink["starts"] = sum(r["event"] == "before_agent_start" for r in self.probe_rows(probe))
         self.verify_notice_sink()
         self.facts["notice_sink"] = {"seat": self.sink["seat"], "sid": self.sink["sid"], "launch": launch,
-                                     "binding": self.sink["binding"], "draft": SINK_DRAFT}
+                                     "binding": self.sink["binding"], "draft": SINK_DRAFT,
+                                     "no_addressed_work_before_guard": True}
+
+    def assert_notice_sink_unaddressed(self):
+        rows = self.canonical_read("""SELECT 'receipt_state' source FROM receipt_state WHERE seat_id=?1
+            UNION ALL SELECT 'receipts' FROM receipts WHERE seat_id=?1
+            UNION ALL SELECT 'lazy_recipients' FROM lazy_recipients WHERE seat_id=?1
+            UNION ALL SELECT 'prepared_recipients' FROM prepared_recipients WHERE seat_id=?1
+            UNION ALL SELECT 'invitations' FROM invitations WHERE seat_id=?1 AND state='pending'
+            UNION ALL SELECT 'warnings' FROM digest_programmatic_warnings WHERE seat_id=?1 LIMIT 1""", (self.sink['seat'],))
+        assert not rows, 'new sink already has pending or previously addressed work before its first guard'
 
     def verify_notice_sink(self):
         sink = self.sink
@@ -471,7 +491,7 @@ class Run:
                 terminal_guard = self.restore_fixture_draft(label, NOTICE_DRAFT, starts, post_capture, deadline=deadline)
         cause = {"message": mid, "cause_body": body, "initial_receipt": receipt, "deadline": deadline, "event": row,
                  "run_starts_before_send": starts, "before_send": before, "terminal_guard": terminal_guard,
-                 "request_nonce": nonce}
+                 "request_nonce": nonce, "sink": {key: str(self.sink[key]) for key in ('seat', 'sid', 'pane', 'probe')}}
         self.notice_causes.append(cause)
         return cause
 
@@ -551,7 +571,7 @@ class Run:
     def notice_failure_diagnostics(self, cause):
         # Observe before cleanup. No CLI command, pull, ACK, re-admission or
         # confirmation runs here; volatile live lease remains unobserved.
-        mid, target = cause["message"], self.sink["seat"]
+        mid, target = cause["message"], cause["sink"]["seat"]
         result = {"at": time.time(), "read_consistency": "sequential read-only statements",
                   "presentation_lease": "unobserved: not exposed by read-only canonical rows"}
         queries = {
@@ -615,15 +635,16 @@ class Run:
         proof = self.wait("exact canonical Notice frame in actual native branch and context",
                           lambda: self.notice_context(cause["warning"], cause["body"], since))
         state = self.wait("canonical notice frontier advanced", lambda: (lambda s: s if s and s["frontier"] >= cause["ordinal"] else None)(self.notice_snapshot(cause)))
-        assert self.recipient_receipt(cause["message"], self.sink["seat"])["effective_status"] == "pending", "notice presentation unexpectedly settled the sink's distinct ACK"
+        assert self.recipient_receipt(cause["message"], cause["sink"]["seat"])["effective_status"] == "pending", "notice presentation unexpectedly settled the sink's distinct ACK"
         self.verify_notice_sink()
         return {"native_context": proof, "canonical_settlement": state, "sink_receipt_still_pending": True}
 
-    def recover_notice_sink(self, cause, *, rearm=False):
+    def recover_notice_sink(self, cause):
         # Only after all notice assertions: let the real sink process the body.
-        # Mid-HOL recovery needs another guard; standalone terminal cleanup does
-        # not type a new draft into an idle pane while a wake may still be owed.
+        # Never type a new draft into this recovered idle pane: a wake may still
+        # be owed. HOL uses a distinct fresh guarded sink for its successor.
         sink = self.sink
+        assert all(str(sink[key]) == cause['sink'][key] for key in ('seat', 'sid', 'pane', 'probe')), 'recovery selected a different cause sink'
         self.verify_notice_sink()
         before = sum(r["event"] == "agent_settled" for r in self.probe_rows(sink["probe"]))
         self.keys("enter", pane=sink["pane"])
@@ -633,9 +654,6 @@ class Run:
                    for r in self.probe_rows(sink["probe"])), "sink recovery lacked actual native body delivery"
         cause["recovered"] = True
         sink["starts"] = sum(r["event"] == "before_agent_start" for r in self.probe_rows(sink["probe"]))
-        if rearm:
-            self.herdr("pane", "send-text", sink["pane"], SINK_DRAFT)
-            self.verify_notice_sink()
 
     def finish_notice_cause(self, cause):
         self.recover_notice_sink(cause)
@@ -831,10 +849,12 @@ class Run:
                       and r['state']['sid'] == self.main_sid for r in self.rows()[seed_since:]))
             self.hold_notice_editor()
             report['phase'] = 'recover_sink'
-            self.recover_notice_sink(seed, rearm=True)  # No source cleanup turn: preserve the clear page.
+            self.recover_notice_sink(seed)  # No source cleanup turn: preserve the clear page.
             report['phase'] = 'park_old_clear'
             clear = self.stage_notice_hol_clear(seed)
             assert not self.notice_context(clear['warning'], clear['body']), 'old clear was already presented'
+            report['phase'] = 'create_successor_sink'
+            self.start_notice_sink(successor=True)
             report['phase'] = 'create_successor'
             cause = self.new_notice_cause('hol-newer', timer=True)
             report.update(current_cause=cause, phase='pending_successor')
@@ -887,7 +907,7 @@ class Run:
                 return None
             report['progress'] = self.wait('automatic old then new HOL progress', progressed, HOL_PROGRESS_SECONDS)
             report['proved_at'] = time.time()
-            assert self.recipient_receipt(cause['message'], self.sink['seat'])['effective_status'] == 'pending', 'notice progress ACKed the distinct unread sink receipt'
+            assert self.recipient_receipt(cause['message'], cause['sink']['seat'])['effective_status'] == 'pending', 'notice progress ACKed the distinct unread sink receipt'
             self.verify_notice_sink()
         except BaseException as failure:
             report['error'] = type(failure).__name__ + ': ' + str(failure)
@@ -1551,17 +1571,22 @@ read -r _ || true
             except BaseException as exc:
                 errors[name] = type(exc).__name__ + ": " + str(exc)
                 return None
-        sink_trace = ""
-        if self.sink:
-            pane = self.sink["pane"]
-            attempt("sink_capture", lambda: self.capture("notice-sink-final", pane=pane))
-            attempt("sink_clear", lambda: self.herdr("pane", "send-keys", pane, "ctrl+c"))
-            attempt("sink_quit_text", lambda: self.herdr("pane", "send-text", pane, "/quit"))
-            attempt("sink_quit_submit", lambda: self.herdr("pane", "send-keys", pane, "enter"))
-            path = self.sink["probe"] / "native.jsonl"
+        sink_traces = {}
+        for suffix, sink in (("-seed", self.hol_seed_sink), ("", self.sink)):
+            if not sink:
+                continue
+            prefix = "seed_sink" if suffix else "sink"
+            pane = sink.get("pane")
+            if pane:
+                attempt(prefix + "_capture", lambda: self.capture("notice-sink" + suffix + "-final", pane=pane))
+                attempt(prefix + "_clear", lambda: self.herdr("pane", "send-keys", pane, "ctrl+c"))
+                attempt(prefix + "_quit_text", lambda: self.herdr("pane", "send-text", pane, "/quit"))
+                attempt(prefix + "_quit_submit", lambda: self.herdr("pane", "send-keys", pane, "enter"))
+            path = sink["probe"] / "native.jsonl"
+            sink_traces[suffix] = ""
             if path.exists():
-                sink_trace = attempt("sink_trace_read", path.read_text) or ""
-                cleanup.pop("sink_trace_read", None)
+                sink_traces[suffix] = attempt(prefix + "_trace_read", path.read_text) or ""
+            cleanup.pop(prefix + "_trace_read", None)
         if self.recipient:
             attempt("final_capture", lambda: self.capture("final"))
             attempt("recipient_quit", lambda: (self.keys("esc"), self.keys("ctrl+c"), self.prompt("/quit")))
@@ -1605,8 +1630,8 @@ read -r _ || true
         for name, value in (("manifest.json", self.facts), ("results.json", self.results), ("commands.json", self.commands), ("captures.json", self.captures)):
             (self.ev / name).write_text(self.clean(json.dumps(value, indent=2)) + "\n")
         (self.ev / "native.jsonl").write_text(self.clean(trace))
-        if self.sink:
-            (self.ev / "native-sink.jsonl").write_text(self.clean(sink_trace))
+        for suffix, sink_trace in sink_traces.items():
+            (self.ev / ("native-sink" + suffix + ".jsonl")).write_text(self.clean(sink_trace))
         for secret in self.secrets:
             if any(secret in path.read_text() for path in self.ev.iterdir() if path.is_file()):
                 shutil.rmtree(self.ev)
@@ -1637,18 +1662,62 @@ class DriverTests(unittest.TestCase):
         self.assertEqual(actions, ['verify-draft', 'enter', 'primary-cleanup-turn'])
         self.assertTrue(cause['recovered'])
 
-    def test_continuing_notice_recovery_restores_its_required_sink_guard(self):
+    def test_recovery_refuses_a_different_sink_before_submitting(self):
         run, cause, actions = self.notice_recovery_fixture()
-        run.recover_notice_sink(cause, rearm=True)
-        self.assertEqual(actions, ['verify-draft', 'enter', ('type', SINK_DRAFT), 'verify-draft'])
-        self.assertTrue(cause['recovered'])
-        self.assertEqual(run.sink['starts'], 1)
+        run.sink['sid'] = 'successor-sid'
+        with self.assertRaisesRegex(AssertionError, 'different cause sink'):
+            run.recover_notice_sink(cause)
+        self.assertEqual(actions, [])
+
+    def test_fresh_sink_guard_checks_actual_canonical_audience_tables(self):
+        with tempfile.TemporaryDirectory(prefix='ht-pi-fresh-sink-') as root:
+            path = Path(root) / 'state/node/herdr-threads.db'; path.parent.mkdir(parents=True)
+            db = sqlite3.connect(path)
+            tables = ('receipt_state', 'receipts', 'lazy_recipients', 'prepared_recipients', 'digest_programmatic_warnings')
+            for table in tables:
+                db.execute(f'CREATE TABLE {table}(seat_id TEXT)')
+            db.execute('CREATE TABLE invitations(seat_id TEXT,state TEXT)'); db.commit()
+            run = Run.__new__(Run); run.root = Path(root); run.sink = {'seat': 'fresh'}
+            run.assert_notice_sink_unaddressed()
+            for table in (*tables, 'invitations'):
+                values = ('fresh', 'pending') if table == 'invitations' else ('fresh',)
+                db.execute(f'INSERT INTO {table} VALUES({",".join("?" for _ in values)})', values); db.commit()
+                with self.assertRaisesRegex(AssertionError, 'already has'):
+                    run.assert_notice_sink_unaddressed()
+                db.execute(f'DELETE FROM {table}'); db.commit()
+                other = ('seed', 'pending') if table == 'invitations' else ('seed',)
+                db.execute(f'INSERT INTO {table} VALUES({",".join("?" for _ in other)})', other); db.commit()
+                run.assert_notice_sink_unaddressed()
+            db.close()
+            # Also run the exact query against the repository's complete
+            # canonical DDL, not only the producer-shaped negative fixtures.
+            path.unlink()
+            db = sqlite3.connect(path)
+            db.executescript((REPO / 'migrations/node/0001_node_baseline.sql').read_text())
+            db.commit()
+            run.assert_notice_sink_unaddressed()
+            db.close()
+
+    def test_seed_failure_diagnostics_keep_cause_target_after_rotation(self):
+        with tempfile.TemporaryDirectory(prefix='ht-pi-seed-diagnostic-') as root:
+            path = Path(root) / 'state/node/herdr-threads.db'; path.parent.mkdir(parents=True)
+            db = sqlite3.connect(path)
+            db.executescript("""CREATE TABLE receipt_state(message_id,seat_id,state,deadline_at,warning_message_id,acked_at);
+                CREATE TABLE receipts(message_id,seat_id,state,deadline_at,warning_message_id,acked_at);
+                INSERT INTO receipt_state VALUES('seed-cause','seed','acked',123,'seed-warning',456);""")
+            db.commit()
+            run = Run.__new__(Run); run.root = Path(root); run.sink = {'seat': 'successor'}; run.seat = 'primary'; run.main_sid = 'main'
+            evidence = run.notice_failure_diagnostics({'message': 'seed-cause', 'sink': {'seat': 'seed'}})
+            self.assertEqual(evidence['receipts'], [{'storage': 'receipt_state', 'state': 'acked', 'deadline_at': 123,
+                                                   'warning_message_id': 'seed-warning', 'acked_at': 456}])
+            db.close()
 
     def notice_recovery_fixture(self):
         # Exercise recovery itself; only native/public I/O is substituted.
         run = Run.__new__(Run)
         run.sink = {'pane': 'sink-pane', 'sid': 'sink-sid', 'seat': 'sink-seat', 'probe': Path('/owned/sink')}
-        cause = {'message': 'cause-id', 'cause_body': 'EXACT CAUSE BODY'}
+        cause = {'message': 'cause-id', 'cause_body': 'EXACT CAUSE BODY',
+                 'sink': {key: str(run.sink[key]) for key in ('seat', 'sid', 'pane', 'probe')}}
         actions, rows = [], [{'event': 'before_agent_start', 'state': {'sid': 'sink-sid'}}]
         run.verify_notice_sink = lambda: actions.append('verify-draft')
         run.probe_rows = lambda _path: rows
@@ -1772,7 +1841,7 @@ class DriverTests(unittest.TestCase):
         run.rows = lambda: [{'event': 'agent_settled', 'state': {'sid': 'main'}}]
         run.keys = lambda key: actions.append(key)
         run.assert_notice_settled = lambda *_args: {'actual_seed_context': True}
-        run.recover_notice_sink = lambda _cause, *, rearm: self.assertTrue(rearm)
+        run.recover_notice_sink = lambda _cause: None
         def parked(_cause):
             if 'notice_hol' in run.facts:
                 run.facts['notice_hol']['old_clear_observation'] = {'rows': [{'warning': 'clear'}], 'seed_snapshot': None}
@@ -1866,7 +1935,7 @@ class DriverTests(unittest.TestCase):
     def test_driver_timer_request_uses_fresh_owner_and_never_types_or_leaves_request(self):
         for refuse in (False, True):
             with tempfile.TemporaryDirectory(prefix='ht-pi-controller-request-') as root:
-                run = Run.__new__(Run); run.root = Path(root); run.main_sid = 'main'; run.recipient = 'owned'; run.sink = {'seat': 'sink'}
+                run = Run.__new__(Run); run.root = Path(root); run.main_sid = 'main'; run.recipient = 'owned'; run.sink = {'seat': 'sink', 'sid': 'sink-sid', 'pane': 'sink-pane', 'probe': Path(root) / 'sink'}
                 run.facts = {}; run.notice_causes = []; events = []
                 run.start_notice_sink = run.verify_notice_sink = lambda: None
                 run.rows = lambda: events; run.count = lambda _event: 0
@@ -1993,7 +2062,7 @@ assert.ok(!rows().some(r=>r.event==='before_agent_start'||r.event==='context'))
         # Simulate the observed public setter: API H, rendered editor empty.
         # These are fixture-controller tests, not canonical/native proof.
         def trial(bad_binding=False, wake_step=None, expired_step=None):
-            run = Run.__new__(Run); run.main_sid = "main"; run.recipient = "owned-pane"; run.sink = {"seat": "sink"}
+            run = Run.__new__(Run); run.main_sid = "main"; run.recipient = "owned-pane"; run.sink = {"seat": "sink", "sid": "sink-sid", "pane": "sink-pane", "probe": Path('/owned/sink')}
             run.facts = {}; run.notice_causes = []; events, actions, captures = [], [], {}
             state = {"api": NOTICE_DRAFT, "rendered": NOTICE_DRAFT, "cursor": len(NOTICE_DRAFT), "starts": 0, "now": 1}
             run.start_notice_sink = run.verify_notice_sink = lambda: None
@@ -2152,6 +2221,27 @@ assert.ok(!rows().some(r=>r.event==='before_agent_start'||r.event==='context'))
             self.assertEqual(installed.read_text(), original, "identity capture changed the installation")
             self.assertEqual(run.facts["installed_extensions"]["sink"], {
                 "path": str(installed), "sha256": hashlib.sha256(original.encode()).hexdigest()})
+            # A successor's ownership record must exist even if setup fails
+            # before a pane or native session can be allocated.
+            seed = run.sink
+            seed.update(seat='seed-seat', sid='seed-sid')
+            run.hol_seed_sink = None
+            run.facts['notice_sink'] = {'seat': 'seed-seat', 'sid': 'seed-sid'}
+            def interrupted_setup(*args, **kwargs):
+                self.assertEqual(args[0], 'setup')
+                self.assertEqual(kwargs['extra_env']['PI_CODING_AGENT_DIR'], str(run.root / 'notice-sink-successor/agent'))
+                raise InterruptedError('synthetic partial successor setup')
+            run.ht = interrupted_setup
+            with self.assertRaisesRegex(InterruptedError, 'partial successor'):
+                run.start_notice_sink(successor=True)
+            self.assertIs(run.hol_seed_sink, seed)
+            self.assertEqual(run.sink['probe'], run.root / 'notice-sink-successor')
+            self.assertEqual(run.sink['profile'], run.root / 'notice-sink-successor/agent')
+            self.assertNotIn('pane', run.sink)
+            self.assertEqual(run.facts['notice_seed_sink']['sid'], 'seed-sid')
+            self.assertEqual(run.facts['installed_extensions']['seed_sink']['sha256'], hashlib.sha256(original.encode()).hexdigest())
+            with self.assertRaisesRegex(AssertionError, 'exactly one successor'):
+                run.start_notice_sink(successor=True)
 
     def test_notice_wake_captures_pending_before_clearing_exact_owned_draft(self):
         run = Run.__new__(Run); run.main_sid = "main"; run.facts = {}
@@ -2266,21 +2356,23 @@ assert.ok(!rows.some(r=>r.event==='context'||r.event==='provider_request'))
                 INSERT INTO invitation_presentation_consumers VALUES('binding','watch',1,'exec','instance','primary','token','[]',0);
             """)
             db.commit()
-            run = Run.__new__(Run); run.root = Path(root); run.sink = {"seat": "sink"}; run.seat = "primary"; run.main_sid = "main"; run.recipient = "pane"
-            self.assertTrue(run.notice_snapshot({"message": "cause"})["pending"])
+            run = Run.__new__(Run); run.root = Path(root); run.sink = {"seat": "successor"}; run.seat = "primary"; run.main_sid = "main"; run.recipient = "pane"
+            cause = {"message": "cause", "sink": {"seat": "sink"}}
+            self.assertIsNotNone(run.notice_snapshot(cause), "sink rotation lost the seed's canonical warning")
+            self.assertTrue(run.notice_snapshot(cause)["pending"])
             for table, field, value, original in (("seats", "state", "unresolved", "resolved"), ("occupant_bindings", "liveness", "disconnected", "connected"),
                                                 ("occupant_bindings", "target_generation", 1, 2), ("occupant_bindings", "registered_at", None, 1)):
                 db.execute(f"UPDATE {table} SET {field}=?", (value,)); db.commit()
-                self.assertIsNone(run.notice_snapshot({"message": "cause"}), field)
+                self.assertIsNone(run.notice_snapshot(cause), field)
                 db.execute(f"UPDATE {table} SET {field}=?", (original,)); db.commit()
             db.execute("UPDATE invitation_presentation_consumers SET execution='stale'"); db.commit()
-            with self.assertRaisesRegex(AssertionError, "stale"): run.notice_snapshot({"message": "cause"})
+            with self.assertRaisesRegex(AssertionError, "stale"): run.notice_snapshot(cause)
             db.close()
 
     def test_notice_send_requires_fresh_sink_guard_before_public_cause(self):
         with tempfile.TemporaryDirectory(prefix="ht-pi-cause-order-") as root:
             run = Run.__new__(Run); run.root = Path(root); run.main_sid = "main"; run.facts = {}; run.notice_causes = []
-            run.sink = {"seat": "sink"}; observed, order = [], []
+            run.sink = {"seat": "sink", "sid": "sink-sid", "pane": "sink-pane", "probe": Path(root) / 'sink'}; observed, order = [], []
             starts = [0]
             run.rows = lambda: observed
             run.count = lambda _event: starts[0]
@@ -2299,6 +2391,9 @@ assert.ok(!rows.some(r=>r.event==='context'||r.event==='provider_request'))
             with mock.patch.object(time, "time", return_value=1):
                 cause = run.new_notice_cause("test")
             self.assertEqual(cause["message"], "cause"); self.assertEqual(order, ["admitted", "draft-verified", "public-send", "draft-verified"])
+            run.sink['seat'] = 'successor'
+            self.assertEqual(cause['sink']['seat'], 'sink', 'cause identity changed with the active sink')
+            run.sink['seat'] = 'sink'
             run.recipient_receipt = lambda _mid, _seat: {"seat": "sink", "effective_status": "not_required", "deadline": None}
             with mock.patch.object(time, "time", return_value=1), self.assertRaisesRegex(AssertionError, "pending agent receipt"):
                 run.new_notice_cause("invalid-person-like-result")
@@ -2312,6 +2407,9 @@ assert.ok(!rows.some(r=>r.event==='context'||r.event==='provider_request'))
 
     def test_partial_second_recipient_is_cleaned_after_interruption(self):
         self.cleanup_failure_fixture(KeyboardInterrupt(), capture_failure=True, second_recipient=True)
+
+    def test_partial_successor_before_pane_preserves_seed_cleanup_and_trace(self):
+        self.cleanup_failure_fixture(KeyboardInterrupt(), capture_failure=True, second_recipient='before-pane')
 
     def test_notice_cause_requires_agent_binding_and_future_pending_receipt(self):
         binding = {"binding_id": "binding", "native_session": "sink-sid", "harness": "pi", "role": "top_level", "connected": True, "provenance": "cooperative_top_level"}
@@ -2338,7 +2436,7 @@ assert.ok(!rows.some(r=>r.event==='context'||r.event==='provider_request'))
                 "consumer_generation": 1, "consumer_execution": "exec", "consumer_instance": "instance", "consumer_seat": "primary", "instance_id": "instance"}
         run = Run.__new__(Run); run.sink = {"seat": "sink"}; run.seat = "primary"; run.main_sid = "main"; run.recipient = "pane"
         run.canonical_read = lambda *_args: [dict(good)]
-        cause = {"message": "cause", "body": "FULL BODY"}
+        cause = {"message": "cause", "body": "FULL BODY", "sink": {"seat": "sink"}}
         self.assertEqual(run.notice_snapshot(cause)["notice_descriptor"], descriptor)
         for field, value in (("consumer_generation", 0), ("consumer_execution", "old"), ("consumer_instance", "other"), ("consumer_seat", "other")):
             run.canonical_read = lambda *_args, field=field, value=value: [{**good, field: value}]
@@ -2630,6 +2728,10 @@ while True: time.sleep(.05)
             if second_recipient:
                 probe = root / "sink"; probe.mkdir(); (probe / "native.jsonl").write_text('{"event":"fixture_loaded"}\n')
                 run.sink = {"pane": "owned-sink-pane", "probe": probe}
+                if second_recipient == 'before-pane':
+                    del run.sink['pane']
+                seed = root / "seed"; seed.mkdir(); (seed / "native.jsonl").write_text('{"event":"seed_loaded"}\n')
+                run.hol_seed_sink = {"pane": "owned-seed-pane", "probe": seed}
             if capture_failure:
                 run.recipient, run.workspace = "owned-fixture-pane", "owned-fixture-workspace"
                 def fail_capture(_label):
@@ -2658,9 +2760,13 @@ while True: time.sleep(.05)
                     self.assertIn(("workspace", "close", "owned-fixture-workspace"), actions)
                     self.assertIn(("daemon", "stop"), actions)
                 if second_recipient:
-                    self.assertIn(("pane", "send-keys", "owned-sink-pane", "ctrl+c"), actions)
-                    self.assertIn(("pane", "send-text", "owned-sink-pane", "/quit"), actions)
+                    if second_recipient != 'before-pane':
+                        self.assertIn(("pane", "send-keys", "owned-sink-pane", "ctrl+c"), actions)
+                        self.assertIn(("pane", "send-text", "owned-sink-pane", "/quit"), actions)
                     self.assertTrue((run.ev / "native-sink.jsonl").exists())
+                    self.assertIn(("pane", "send-keys", "owned-seed-pane", "ctrl+c"), actions)
+                    self.assertIn(("pane", "send-text", "owned-seed-pane", "/quit"), actions)
+                    self.assertIn('seed_loaded', (run.ev / "native-sink-seed.jsonl").read_text())
                 if ignore_term:
                     self.assertEqual(helper.returncode, -signal.SIGKILL)
             finally:
