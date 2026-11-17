@@ -1206,7 +1206,7 @@ fn config3_hermes_interactive_and_a_one_shot_in_a_claude_pane() {
     let _ = peer_seat;
 
     // The wake lane still targets an interactive Hermes binding after its per-turn
-    // `on_session_end`, and stops once its teardown disconnects it. A pane of its own, so the
+    // `on_session_end`; its teardown leaves it only a dormant target, never typed into a shell. A pane of its own, so the
     // Hermes binding is the only connected one; a shell pane never accepts the nudge itself
     // (`unsafe`), but each attempt moves `wake_work.completed_at_utc`.
     let lone_pane = smoke.pane();
@@ -1264,7 +1264,7 @@ fn config3_hermes_interactive_and_a_one_shot_in_a_claude_pane() {
     smoke.hermes(&lone, "session_finalize", "finalize-lone");
     // An attempt reserved before the teardown may still complete (as unsafe)
     // after it; on a short lane tick a retry of the first send can be that
-    // attempt. Let it settle, then no new attempt may be reserved or completed.
+    // attempt. Let it settle, then no later attempt may submit.
     let in_flight = || {
         smoke
             .db()
@@ -1275,23 +1275,12 @@ fn config3_hermes_interactive_and_a_one_shot_in_a_claude_pane() {
             )
             .unwrap_or(false)
     };
-    let last_reserved = || {
-        smoke
-            .db()
-            .query_row(
-                "SELECT COALESCE(last_reserved_at_utc,0) FROM wake_work WHERE seat_id=?1",
-                [&lone_seat],
-                |r| r.get::<_, i64>(0),
-            )
-            .unwrap_or(0)
-    };
     wait_until(
         "the lone seat's in-flight wake attempt to settle",
         Duration::from_secs(20),
         || !in_flight(),
     );
     let mark = last_attempt();
-    let reserved_mark = last_reserved();
     smoke
         .cli(
             &peer,
@@ -1306,9 +1295,27 @@ fn config3_hermes_interactive_and_a_one_shot_in_a_claude_pane() {
         )
         .data();
     std::thread::sleep(Duration::from_secs(3));
+    // The teardown leaves a dormant binding (TRUST-POLICY A4 *Wake*): the same session may be
+    // resumed in the pane, so the seat may still be attempted, but a shell pane is never typed
+    // into and the binding reconnects only through its own check-in.
+    let outcome: Option<String> = smoke
+        .db()
+        .query_row(
+            "SELECT last_outcome FROM wake_work WHERE seat_id=?1",
+            [&lone_seat],
+            |r| r.get(0),
+        )
+        .unwrap_or(None);
     assert!(
-        !attempted(mark) && !in_flight() && last_reserved() == reserved_mark,
-        "a disconnected binding is not a wake target"
+        !attempted(mark) || outcome.as_deref() != Some("submitted"),
+        "a dormant wake never submits into a shell pane: {outcome:?}"
+    );
+    let lone_after = smoke.binding(&lone_seat, "hermes", "herm-lone", "");
+    assert_eq!(lone_after.liveness, "disconnected", "{lone_after:?}");
+    assert_eq!(
+        lone_after.reason.as_deref(),
+        Some("liveness_end_event"),
+        "{lone_after:?}"
     );
 }
 
