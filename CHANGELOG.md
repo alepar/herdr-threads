@@ -1,6 +1,8 @@
 # Changelog
 
-## Unreleased
+## v3.4.0
+
+Minor release: a new harness (pi). No store schema or peer wire change.
 
 ### Added
 
