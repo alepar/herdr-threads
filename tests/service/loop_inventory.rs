@@ -30,6 +30,20 @@ const ALLOWLIST: &[(&str, &str, &str)] = &[
          Herdr socket answers past the read's limit once; not daemon code",
     ),
     (
+        "src/host/native.rs",
+        "wait_blocked.recv_timeout(Duration::from_secs(2)).unwrap();",
+        "cfg(test)-only Native check/type-gap characterization: the scoped editor \
+         waits once for the owed-check rendezvous, capped at 2 s; not daemon code \
+         or a periodic loop",
+    ),
+    (
+        "src/host/native.rs",
+        "wait_release.recv_timeout(Duration::from_secs(2)).unwrap();",
+        "cfg(test)-only Native check/type-gap characterization: the owed callback \
+         waits once for the scoped editor's draft change, capped at 2 s; the \
+         editor is joined, not a periodic daemon loop",
+    ),
+    (
         "src/test_support/spawn.rs",
         "std::thread::sleep(Duration::from_millis(20))",
         "test-support only (ht-p03.131): OwnedChild::stop's bounded wait \

@@ -159,9 +159,10 @@ structural evidence and ordinary guards; labels are not ownership evidence.
 Not-created asserts inspected noncreation and quiescence. Cancellation asserts
 quiescence and administrative abandonment, not completion; reason is nonblank and
 at most 4096 UTF-8 bytes. A known in-flight invocation refuses conflicting recovery;
-snapshots or guessed process IDs do not prove quiescence. Recovery never launches downstream
-work. Bootstrap cancellation refuses while an exact legacy child fence or live hint
-remains; that child may stay protected indefinitely after pane loss or retirement.
+snapshots or guessed process IDs do not prove quiescence. Recovery never launches
+downstream work. Bootstrap cancellation refuses while an exact legacy child fence
+or live hint remains; that child may stay protected indefinitely after pane loss
+or retirement.
 Recovery replay presents its exact recorded decision, never authorizes a newer
 attempt. Product cleanup never closes created topology.
 
