@@ -38,14 +38,16 @@ const OLDEST_SEEK_SQL: &str = view_seek_sql!("m.decision_at", "ASC");
 const LEGACY_OLDEST_SQL: &str = legacy_seek_sql!("m.decision_at", "ASC");
 const ANY_SEEK_SQL: &str = view_seek_sql!("1", "ASC");
 const LEGACY_ANY_SQL: &str = legacy_seek_sql!("1", "ASC");
-/// How many of a seat's newest pending rows a dormant binding's walk reads. A process-exited binding
-/// keeps its rows pending and no index orders them by priority, so a seat left in a shell under silent
+/// How many of a seat's newest pending rows a dormant binding's walk reads. A dormant seat's rows stay
+/// pending (nothing connected displays them) and no index orders them by priority, so a seat left in a shell under silent
 /// mail would otherwise cost a growing scan per discovery walk. An admitted row is the newest when it
 /// is published, so the bound only loses one that this many silent rows have since buried.
 pub(crate) const DORMANT_WINDOW: i64 = 4096;
 /// The rows behind `DORMANT_PENDING_SQL` and `DORMANT_ANY_SQL`. A dormant binding (`?1`, of seat `?2`;
-/// `dormant_top_level`) holds no view, so these are the seat's pending rows (`seat_owes_display_sql!`
-/// keeps them pending for it) in the admitted priorities `?3..=?4`.
+/// `dormant_top_level`) holds no view, so these are the seat's pending rows in the admitted priorities
+/// `?3..=?4`: rows published while nothing is connected stay pending, and `seat_owes_display_sql!`
+/// also keeps a process-exited binding's older unread rows pending. A row another top-level binding
+/// displayed before an end event is not walked for an end-evented one; the seat was shown it.
 macro_rules! dormant_rows_sql {
     () => {
         concat!(

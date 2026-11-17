@@ -3100,6 +3100,9 @@ class Recipient:
             while time.time() < end and any(_pid_alive(pid) for pid in pids):
                 time.sleep(0.5)
             checks["quit_exited"] = not any(_pid_alive(pid) for pid in pids)
+            for pid in pids:  # never leave the pane to later cases with Codex still in it
+                with contextlib.suppress(ProcessLookupError):
+                    os.kill(pid, signal.SIGKILL)
         else:
             for pid in pids:  # no SessionEnd hook: a process exit, not an end event
                 with contextlib.suppress(ProcessLookupError):
