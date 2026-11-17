@@ -1,8 +1,8 @@
 {
   "schema_version": 2,
-  "generated_from": "harness-canary 4f2a32d3a1fb9bd5991f6d1cb13fb345b99f1da5",
-  "generated_at": "2026-11-16T15:52:14Z",
-  "latest_release": "3.3.0",
+  "generated_from": "harness-canary b117ce6f8d64fec2e60640c86d043978c60de308",
+  "generated_at": "2026-11-17T16:17:23Z",
+  "latest_release": "3.4.0",
   "contracts": {
     "claude": "59c0d06240ed2ce9",
     "codex": "80e2f1c9b6b255fa"
@@ -151,6 +151,21 @@
       "contract_id": "59c0d06240ed2ce9",
       "source": "canary",
       "supported_since": "3.1.1",
+      "broken_event": null,
+      "broken_field": null,
+      "last_working": null,
+      "issue_url": null,
+      "recipe": null,
+      "known_broken": []
+    },
+    {
+      "harness": "claude",
+      "version": "2.1.326",
+      "status": "verified",
+      "evidence": "no_model",
+      "contract_id": "59c0d06240ed2ce9",
+      "source": "canary",
+      "supported_since": "3.4.0",
       "broken_event": null,
       "broken_field": null,
       "last_working": null,
@@ -539,6 +554,65 @@
           },
           {
             "event": "Stop",
+            "milestone": null,
+            "always_send": false
+          }
+        ],
+        "required_milestones": [
+          "lifecycle"
+        ]
+      }
+    ],
+    "opencode": [
+      {
+        "domain": "native_payload",
+        "origin": "native_payload",
+        "id": "ed777dbd65a1039e",
+        "events": [
+          {
+            "event": "SessionStart",
+            "milestone": "lifecycle",
+            "always_send": true
+          },
+          {
+            "event": "UserPromptSubmit",
+            "milestone": "turn",
+            "always_send": false
+          },
+          {
+            "event": "SubagentStart",
+            "milestone": null,
+            "always_send": false
+          }
+        ],
+        "required_milestones": [
+          "lifecycle"
+        ]
+      }
+    ],
+    "pi": [
+      {
+        "domain": "native_payload",
+        "origin": "native_payload",
+        "id": "cf020c6786a6819b",
+        "events": [
+          {
+            "event": "SessionStart",
+            "milestone": "lifecycle",
+            "always_send": true
+          },
+          {
+            "event": "TurnStart",
+            "milestone": "turn",
+            "always_send": false
+          },
+          {
+            "event": "SessionEnd",
+            "milestone": null,
+            "always_send": false
+          },
+          {
+            "event": "TurnEnd",
             "milestone": null,
             "always_send": false
           }
