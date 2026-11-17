@@ -1399,10 +1399,11 @@ model open work, and summary closure never changes receipt state or installs glo
     identity/status recheck. A missing registered composer provider, nonempty composer or unreadable composer refuses delivery before input is sent;
     pending attention and receipt obligations remain intact and the prior retry ladder is restored.
     This is an observed-empty admission, not an atomic composer reservation. In the shared Native
-    path, the composer read, canonical `still_owed` check and separate host prompt submission are
+    composer path, the composer read, canonical `still_owed` check and separate host prompt submission are
     distinct operations; the prompt has no compare-and-set against the observed composer. Concurrent
     typing after the read can therefore receive an appended wake marker and be submitted with it.
-    This host-level limit applies to every Native harness, not only Pi. The final canonical check
+    This host-level limit applies to Native composer submission, including fallback, not the
+    programmatic queue transport. It is not Pi-specific. The final canonical check
     protects whether the wake is still owed; it does not revalidate the editor buffer atomically.
     Separate P2 follow-ups outside the Pi epic are `ht-gkvv`, an upstream conditional prompt that
     submits only if the composer still matches the read, and `ht-1g1c`, a neutral last-moment reread

@@ -65,13 +65,14 @@ The goal is token efficiency. Sessions that are done and idle stay idle, spinnin
 4. A nudge wakes a session only when it is idle. A session that is generating, or running a tool, gets no nudge; it is served by in-turn delivery.
 5. ACK requests, invitations and actionable warnings are always priority 0, so they wake at every T (`--nudge` is `-p 0`); except on a host with no wake (a named seat without a live mod channel, or a harness woken only by its own channel while that channel is down), where they arrive on the next turn.
 6. Who performs an idle wake is the only per-harness variation (a host with no wake has none, and its seat is never nudged; rules 1-4 hold):
-   - `Native`: the host (Herdr, or tmux for a verified named seat) types the wake marker into a composer observed empty;
+   - `Native`: the daemon selects an adapter-declared programmatic transport when enabled and eligible, otherwise the host (Herdr, or tmux for a verified named seat) types the wake marker into a composer observed empty;
    - `Channel`: the harness wakes itself, as Claude's mod or the opencode plugin submits a turn.
 
-Native wake admission is sampled, not an atomic editor reservation. The shared composer read,
+Native composer admission is sampled, not an atomic editor reservation. The shared composer read,
 canonical `still_owed` check and host prompt submission are separate; concurrent typing between
 check and send can receive an appended wake marker and be submitted with it. This accepted
-host-level limit applies to every Native harness. A last-moment reread could narrow this gap;
+host-level limit applies whenever a Native harness uses composer submission, including native
+fallback; it is not a claim about the programmatic queue transport. A last-moment reread could narrow this gap;
 only a host operation conditioned on the composer still matching the read can close it.
 Separate open P2 follow-ups outside the Pi epic: `ht-gkvv` for the upstream conditional prompt,
 `ht-1g1c` for the neutral last-moment reread (narrowing only).
