@@ -1,0 +1,104 @@
+{
+  "status": "per-change checks and dev build passed; cleanup clean",
+  "run_id": "efdec623-9303-48f6-9e45-d24bb6d7a761",
+  "caps": 4,
+  "sequence": [
+    "cargo fmt --all -- --check",
+    "cargo clippy --locked --all-targets --all-features -- -D warnings",
+    "scripts/check-default-features",
+    "scripts/check-harness-neutral",
+    "scripts/check-wire-compat",
+    "cargo build --locked --all-features --bin herdr-threads"
+  ],
+  "source": "9f69b8d02b1244a7e21be8df9d368b380f887764",
+  "source_parent": "d642412ceeaa00218ad219279b6cdf28e49890d7",
+  "source_patch_sha256": "9038ddc3c70be909dd0e0082fde384317a50d7484f7a2392d72dd3170f89272e",
+  "started_at": "2026-11-17T04:22:02.539336+00:00",
+  "completed_at": "2026-11-17T04:27:26.354378+00:00",
+  "end_head": "64bcfabee6a45f0e86f4fdcd07c994e1d37ed759",
+  "docs_only_drift": [
+    "AGENTS.md",
+    "TRUST-POLICY.md",
+    "docs/superpowers/runs/2026-11-14-pi-harness/qualification/v330-rebase-evidence.json",
+    "docs/superpowers/runs/2026-11-14-pi-harness/qualification/v330-rebase.md"
+  ],
+  "gates": {
+    "fmt": {
+      "exit": 0,
+      "seconds": 7.56
+    },
+    "clippy": {
+      "exit": 0,
+      "seconds": 100.21,
+      "budget_seconds": 60,
+      "budget_missed": true
+    },
+    "default": {
+      "exit": 0,
+      "seconds": 68.79
+    },
+    "neutral": {
+      "exit": 0,
+      "seconds": 1.36
+    },
+    "wire": {
+      "exit": 0,
+      "seconds": 0.1
+    },
+    "dev_build": {
+      "exit": 0,
+      "seconds": 66.63
+    },
+    "builder_leaks": {
+      "exit": 0
+    },
+    "host_leaks": {
+      "exit": 0
+    }
+  },
+  "overrides": {},
+  "logs": {
+    "builder-leaks.log": "a2b40360bd496024498b6ca42efcb9ae42a764668a3df79528e5475e08448d0e",
+    "clippy.log": "bb7671add422a45fa1f563ab7b6dbcdbb3ca4cb67b15c73437efa7fa330f8672",
+    "default.log": "89bdc223f6e297e602f4426fa982fd8f8efab017cd9755c2973f3fd768069a79",
+    "dev-build.log": "bb58f0eb3f65682d43dd5d7c8309094e8af0567029b1eaa9e459f58ad5ecd5c2",
+    "fmt.log": "c6126f4d4e48708d962dd16a9d37803c698b9ffdd830a97b7ed7be61e308e1db",
+    "host-leaks.log": "c76a220d106e69e698432855a5646f0811630a5404fe5509b28b21d9f43315e4",
+    "neutral.log": "10f00249dd01c27eec6a13cf24582d5f4427719ee2816a44e1c10ebd3390d988",
+    "wire.log": "9f521c86b40ac9385e590860ba7b8de0d752df076146ace8d4b203425cb63c92"
+  },
+  "source_audit": {
+    "queue_defaults": "InstanceSettings default false (settings.rs115), service Config default false (config.rs53), QueueWakeRuntime default false (queue.rs73).",
+    "pi_control": "PiAdapter does not override wake_control/wake_replay_scope. HarnessAdapter default wake_control=None (adapter.rs257); default replay scope derives through control (262). Missing control returns Native (queue.rs377-383).",
+    "limit": "Shared canonical queue fences still run before native-only selection (queue.rs335); queue-off is not a claim that shared upstream dispatch has no effect."
+  },
+  "base": "4f2a32d3a1fb9bd5991f6d1cb13fb345b99f1da5",
+  "hashes": {
+    "src/harness/pi/decode.rs": "4f53ff3625eb7b6339c8386b97e5a590432169f87acd5b9819be84f92bb54dac",
+    "Cargo.toml": "80506d7b2f4771ffb5545b359559ff9abf8019b04f81400cfb3736d708f24f64",
+    "Cargo.lock": "c60a18de912a0c9ef8439089ac79dba02208100cbc5a74b9df10964f4aecf7f9",
+    ".config/nextest.toml": "f5be54ee4a75cd2aa33d80d7ea321a262545226b76c6f25b3948a534f80742dd",
+    "heavy": "8984c39e9e24dc9e6e94fd743fd0ae097b7d8c2acb68b905a2d724df52f72cdd",
+    "tb": "54feea6d5cbdb8bf1889d405f91b3554046b5ecd4fd5779ac30e46ec56211d93"
+  },
+  "binary": {
+    "version": "herdr-threads 3.3.0",
+    "sha256": "a63ac7a7629f29c117d1968523d65f8253aaaa1a1bfbe5e66b29e0b81ac06ea4",
+    "profile": "dev",
+    "fingerprint_path": "target/debug/.fingerprint/herdr-threads-ee429b642d86e164/bin-herdr-threads.json",
+    "fingerprint": {
+      "rustc": 11835527281324007204,
+      "features": "[\"test-support\"]",
+      "profile": 4923293383976553682,
+      "rustflags": [],
+      "config": 9396254390672932401,
+      "compile_kind": 0
+    },
+    "common_path": "target/debug/herdr-threads",
+    "stable_same_inode_path": "target/debug/deps/herdr_threads-ee429b642d86e164"
+  },
+  "native": "Authorized and active; no result claimed at publication.",
+  "full_suite": "Pending separate coordinator GO after native; future test-profile artifact is distinct from dev binary.",
+  "private_evidence": ".superpowers/sdd/implementation-plan/final-gates/v330-final-gates",
+  "checks_build_result_sha256": "955fb4bde4190624a1582e0f1afe8759552f7c512d735f7f342a4b905603b433"
+}
