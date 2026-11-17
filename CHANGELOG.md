@@ -1,5 +1,13 @@
 # Changelog
 
+## v3.4.1
+
+Fixes only; no store schema or peer wire change.
+
+### Fixed
+
+- **A session ended with `/quit` and resumed in the same pane is woken again.** An end event (Codex `/quit`, a Hermes or pi session end) left the seat with no wake target, so a p0 or ACK request to the resumed but still hook-less session read `recipient_unavailable` and never woke it. An end-evented top-level binding is now a dormant wake target like a process exit; the native recheck still refuses a pane whose foreground is not that harness awaiting input, so a pane left at a shell is never typed into.
+
 ## v3.4.0
 
 Minor release: a new harness (pi). No store schema or peer wire change.
