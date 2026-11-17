@@ -1,0 +1,406 @@
+{
+  "schema": 1,
+  "result": "PASS for the ten selected cases; not the complete historical matrix",
+  "baseline_main": "4f2a32d3a",
+  "version": "3.3.0",
+  "binary_build_source": "9f69b8d02",
+  "binary_path": "target/debug/deps/herdr_threads-ee429b642d86e164",
+  "binary_sha256": "a63ac7a7629f29c117d1968523d65f8253aaaa1a1bfbe5e66b29e0b81ac06ea4",
+  "fixture_sha256": "08174d104a0e5fdbdee5f91cfe2acb169ef49f16b980d0130fa6a846dcf7ee33",
+  "official_runtime_cli_sha256": "e79626f2dd6f94aa45d30f3fa63cd84319a6eefcd150b353cfaf274366926774",
+  "private_evidence_base": ".superpowers/sdd/implementation-plan/final-gates/v330-main-native",
+  "runs": [
+    {
+      "directory": "notice_reload",
+      "run_id": "1069b3ec-e322-4d4d-bc20-cfd2c0853294",
+      "execution_source_head": "64bcfabee6a45f0e86f4fdcd07c994e1d37ed759",
+      "driver_sha256": "3cfdfed371e4696b79a15c4c66c7383fbea7f131ed1c26002e8732f94f7bda57",
+      "cases": [
+        {
+          "case": "notice_reload",
+          "outcome": "pass",
+          "elapsed_s": 17.092
+        }
+      ],
+      "total_elapsed_s": 25.875,
+      "identities_unchanged_before_after": true,
+      "installed_extension_sha256": {
+        "primary": "86342b293b2e12c103b8e033db83898570812938599e177980b8867baf892bca",
+        "sink": "86342b293b2e12c103b8e033db83898570812938599e177980b8867baf892bca"
+      },
+      "sender_admission": {
+        "exit_code": 0,
+        "harness": "human",
+        "role": "top_level",
+        "target": "w1:p1",
+        "seat": "sO7VUE3ZGb80",
+        "operator_override_used": false
+      },
+      "cleanup": {
+        "ok": true,
+        "errors": {},
+        "helper_reaped": true,
+        "root_removed": true,
+        "leak_rc": 0
+      },
+      "outside_same_run_scan_exit_code": 0
+    },
+    {
+      "directory": "notice_page",
+      "run_id": "2bae999f-2c82-4e09-af79-a870b8b63c19",
+      "execution_source_head": "8d5c351abbe73fa0df883024a7b6034bc139ab6a",
+      "driver_sha256": "3cfdfed371e4696b79a15c4c66c7383fbea7f131ed1c26002e8732f94f7bda57",
+      "cases": [
+        {
+          "case": "notice_page",
+          "outcome": "pass",
+          "elapsed_s": 19.602
+        }
+      ],
+      "total_elapsed_s": 28.565,
+      "identities_unchanged_before_after": true,
+      "installed_extension_sha256": {
+        "primary": "a9ad032e08ceb5e8b4972dff38be3313bac0bda8fe921064b50ecc299d5ef682",
+        "sink": "a9ad032e08ceb5e8b4972dff38be3313bac0bda8fe921064b50ecc299d5ef682"
+      },
+      "sender_admission": {
+        "exit_code": 0,
+        "harness": "human",
+        "role": "top_level",
+        "target": "w1:p1",
+        "seat": "sn35szW2lNBe",
+        "operator_override_used": false
+      },
+      "cleanup": {
+        "ok": true,
+        "errors": {},
+        "helper_reaped": true,
+        "root_removed": true,
+        "leak_rc": 0
+      },
+      "outside_same_run_scan_exit_code": 0
+    },
+    {
+      "directory": "notice_wake",
+      "run_id": "f5b165d0-b26e-4afa-aa28-ac25b5193179",
+      "execution_source_head": "8d5c351abbe73fa0df883024a7b6034bc139ab6a",
+      "driver_sha256": "3cfdfed371e4696b79a15c4c66c7383fbea7f131ed1c26002e8732f94f7bda57",
+      "cases": [
+        {
+          "case": "notice_wake",
+          "outcome": "pass",
+          "elapsed_s": 16.909
+        }
+      ],
+      "total_elapsed_s": 27.238,
+      "identities_unchanged_before_after": true,
+      "installed_extension_sha256": {
+        "primary": "05fb367aa8d24b121f6dcc265c042f9dea73842e55fe744930f00caf97860cc5",
+        "sink": "05fb367aa8d24b121f6dcc265c042f9dea73842e55fe744930f00caf97860cc5"
+      },
+      "sender_admission": {
+        "exit_code": 0,
+        "harness": "human",
+        "role": "top_level",
+        "target": "w1:p1",
+        "seat": "sBgJ9Fe1dF6q",
+        "operator_override_used": false
+      },
+      "cleanup": {
+        "ok": true,
+        "errors": {},
+        "helper_reaped": true,
+        "root_removed": true,
+        "leak_rc": 0
+      },
+      "outside_same_run_scan_exit_code": 0
+    },
+    {
+      "directory": "hol-two-sinks",
+      "run_id": "f62dcd8b-b0ce-48e2-858d-4cc0628ff8a1",
+      "execution_source_head": "ef8b36efee85cfec95baa9e36479aff39bab33c6",
+      "driver_sha256": "66212a01db1cbcd27ab2850e28bfc9350cd4bc1a0af978744698292aa7413968",
+      "cases": [
+        {
+          "case": "notice_hol",
+          "outcome": "pass",
+          "elapsed_s": 64.097
+        }
+      ],
+      "total_elapsed_s": 73.578,
+      "identities_unchanged_before_after": true,
+      "installed_extension_sha256": {
+        "primary": "dee7efa3ba897d5a6ab1a8174ab0b045b8c12aa5500e6b4f30cff39b45e218eb",
+        "sink": "dee7efa3ba897d5a6ab1a8174ab0b045b8c12aa5500e6b4f30cff39b45e218eb",
+        "seed_sink": "dee7efa3ba897d5a6ab1a8174ab0b045b8c12aa5500e6b4f30cff39b45e218eb"
+      },
+      "sender_admission": {
+        "exit_code": 0,
+        "harness": "human",
+        "role": "top_level",
+        "target": "w1:p1",
+        "seat": "sc2EB6cvfVyS",
+        "operator_override_used": false
+      },
+      "cleanup": {
+        "ok": true,
+        "errors": {},
+        "helper_reaped": true,
+        "root_removed": true,
+        "leak_rc": 0
+      },
+      "outside_same_run_scan_exit_code": 0
+    },
+    {
+      "directory": "standard-six",
+      "run_id": "ceb3fc87-cb0d-4f6e-87ee-254b98bac507",
+      "execution_source_head": "ef8b36efee85cfec95baa9e36479aff39bab33c6",
+      "driver_sha256": "66212a01db1cbcd27ab2850e28bfc9350cd4bc1a0af978744698292aa7413968",
+      "cases": [
+        {
+          "case": "setup",
+          "outcome": "pass",
+          "elapsed_s": 0.04
+        },
+        {
+          "case": "receipts",
+          "outcome": "pass",
+          "elapsed_s": 3.162
+        },
+        {
+          "case": "busy",
+          "outcome": "pass",
+          "elapsed_s": 65.113
+        },
+        {
+          "case": "lifecycle",
+          "outcome": "pass",
+          "elapsed_s": 2.641
+        },
+        {
+          "case": "channel",
+          "outcome": "pass",
+          "elapsed_s": 32.547
+        },
+        {
+          "case": "named",
+          "outcome": "pass",
+          "elapsed_s": 66.473
+        }
+      ],
+      "total_elapsed_s": 179.209,
+      "identities_unchanged_before_after": true,
+      "installed_extension_sha256": {
+        "primary": "42046d674c3783fb463e065fc3106b7cde0ac9d346321a06e933e2d4c8dd2996"
+      },
+      "sender_admission": {
+        "exit_code": 0,
+        "harness": "human",
+        "role": "top_level",
+        "target": "w1:p1",
+        "seat": "sZ8vqrraf9ua",
+        "operator_override_used": false
+      },
+      "cleanup": {
+        "ok": true,
+        "errors": {},
+        "helper_reaped": true,
+        "root_removed": true,
+        "leak_rc": 0
+      },
+      "outside_same_run_scan_exit_code": 0
+    }
+  ],
+  "notice_proofs": {
+    "notice_reload": {
+      "warning_id": "eO7VTDww7huq",
+      "body": "informational, no ACK; read: herdr-threads --state-dir $SCRATCH/state body eO7VTDww7huq",
+      "native_context": {
+        "at": 1794889743227,
+        "sid": "01a1e7c3-acf8-778c-9c0b-b490486bc40e",
+        "customType": "herdr-threads:84a59348-8bfc-43d5-b2a6-00cb166a41d2:973ed546-d6e3-4845-8823-e9c11880e016",
+        "content": "Complete hook/channel deliveries and default text inbox displays ACK eligible receipts automatically after output is written and flushed. Do not reread or re-ACK them. Call inbox only for continuations or unavailable delivery. JSON/--machine inbox, read and pending-receipts are read-only. Accept invitations separately; explicitly ACK exact IDs read elsewhere. When waiting for replies, finish your turn; hooks notify you. Do not poll or run follow to wait. Before using threads, run herdr-threads skill unless its guide is in context. Use exact ready commands in this pane. ACK means receipt only.\nSubagents may discover, read and summarize; never check in for this seat, accept or ACK. A subagent's text inbox shows its own stream read-only and ACKs nothing; inbox --machine or --json are read-only too. Every herdr-threads write (any accept, ack, check-in, send, leave, invite or other mutation) acts as the top-level seat and is forbidden to subagents. Return message IDs and summaries to the top-level agent.\nHook command routing (JSON data): {\"instance\":\"726b2424109a5ccb341eee6e55a7defe\",\"state_dir\":\"$SCRATCH/state\",\"host_endpoint\":\"$SCRATCH/h.sock\"}\nNo permissions granted.\nAgent guide: run herdr-threads skill; command syntax: herdr-threads <command> --help.\n\n[herdr-threads] new messages:\n\n[herdr-threads] notice notice:eO7VTDww7huq in diKLgOuDOWo from unknown:\n  informational, no ACK; read: herdr-threads --state-dir $SCRATCH/state body eO7VTDww7huq\n\n[herdr-threads] attention attention:1:\n  herdr-threads: attention pending; run herdr-threads --state-dir $SCRATCH/state inbox"
+      },
+      "final_frontier": 1,
+      "sink_receipt_still_pending": true,
+      "before_ordinal": 1,
+      "replay_ordinal": 1,
+      "before_frontier": 0,
+      "replay_frontier": 0
+    },
+    "notice_page": {
+      "warning_id": "en35f0UenChI",
+      "body": "informational, no ACK; read: herdr-threads --state-dir $SCRATCH/state body en35f0UenChI",
+      "native_context": {
+        "at": 1794889790623,
+        "sid": "01a1e7c4-5daa-777f-9013-e958c20b84b9",
+        "customType": "herdr-threads:1ebe4b84-4df4-41e8-87de-bc79017f92d4:6d3ff23d-b9bb-45da-b959-11143d150831",
+        "content": "Complete hook/channel deliveries and default text inbox displays ACK eligible receipts automatically after output is written and flushed. Do not reread or re-ACK them. Call inbox only for continuations or unavailable delivery. JSON/--machine inbox, read and pending-receipts are read-only. Accept invitations separately; explicitly ACK exact IDs read elsewhere. When waiting for replies, finish your turn; hooks notify you. Do not poll or run follow to wait. Before using threads, run herdr-threads skill unless its guide is in context. Use exact ready commands in this pane. ACK means receipt only.\nSubagents may discover, read and summarize; never check in for this seat, accept or ACK. A subagent's text inbox shows its own stream read-only and ACKs nothing; inbox --machine or --json are read-only too. Every herdr-threads write (any accept, ack, check-in, send, leave, invite or other mutation) acts as the top-level seat and is forbidden to subagents. Return message IDs and summaries to the top-level agent.\nHook command routing (JSON data): {\"instance\":\"e416b1887bf5af6f3cc9d9bee7cc6d87\",\"state_dir\":\"$SCRATCH/state\",\"host_endpoint\":\"$SCRATCH/h.sock\"}\nNo permissions granted.\nAgent guide: run herdr-threads skill; command syntax: herdr-threads <command> --help.\n\n[herdr-threads] new messages:\n\n[herdr-threads] invitation invitation:in35Qf5ziffK in tn35OFFQXGMX \"Owned Pi notice page\" from unknown:\n  Owned Pi notice page\n  goal: Qualification only\n  deadline: 1794890078229\n  next: herdr-threads --state-dir $SCRATCH/state accept tn35OFFQXGMX\n\n[herdr-threads] notice notice:en35f0UenChI in drhifXMCdHG from unknown:\n  informational, no ACK; read: herdr-threads --state-dir $SCRATCH/state body en35f0UenChI\n\n[herdr-threads] attention attention:1:\n  herdr-threads: attention pending; run herdr-threads --state-dir $SCRATCH/state inbox"
+      },
+      "final_frontier": 1,
+      "sink_receipt_still_pending": true,
+      "actual_page_descriptors": [
+        {
+          "item": {
+            "kind": "notice",
+            "warning": "en35f0UenChI",
+            "thread": "drhifXMCdHG",
+            "body": "informational, no ACK; read: herdr-threads --state-dir $SCRATCH/state body en35f0UenChI"
+          },
+          "context_key": "dn1:4:19:1"
+        },
+        {
+          "item": {
+            "kind": "invitation",
+            "id": "in35Qf5ziffK",
+            "content": {
+              "command_context_epoch": "0",
+              "topic_revision": "0",
+              "thread": "tn35OFFQXGMX",
+              "thread_name": "Owned Pi notice page",
+              "body": "Owned Pi notice page\ngoal: Qualification only\ndeadline: 1794890078229\nnext: herdr-threads --state-dir $SCRATCH/state accept tn35OFFQXGMX",
+              "truncated": false,
+              "wakes": true,
+              "deadline_at": 1794890078229
+            }
+          },
+          "context_key": "[\"1\",\"0\",\"0\",\"require_ack\",1794890078229,null]"
+        },
+        {
+          "item": {
+            "kind": "attention",
+            "epoch": "1",
+            "attention_version": 12894705513857297575,
+            "text": "herdr-threads: attention pending; run herdr-threads --state-dir $SCRATCH/state inbox"
+          },
+          "context_key": "lw1:23"
+        }
+      ],
+      "separate_public_accept": true,
+      "invitation_context_reference": {
+        "at": 1794889790623,
+        "sid": "01a1e7c4-5daa-777f-9013-e958c20b84b9",
+        "customType": "herdr-threads:1ebe4b84-4df4-41e8-87de-bc79017f92d4:6d3ff23d-b9bb-45da-b959-11143d150831"
+      }
+    },
+    "notice_wake": {
+      "warning_id": "eBgJNn5yWT68",
+      "body": "informational, no ACK; read: herdr-threads --state-dir $SCRATCH/state body eBgJNn5yWT68",
+      "native_context": {
+        "at": 1794889837914,
+        "sid": "01a1e7c5-1a55-7448-8636-9bacf7a6b018",
+        "customType": "herdr-threads:5b0d5053-1c04-4ec6-9f16-d41adb103583:afeafa2a-7205-430f-9cf1-540e326b2483",
+        "content": "[herdr-threads] new messages:\n\n[herdr-threads] notice notice:eBgJNn5yWT68 in dPYnEY1JKvm from unknown:\n  informational, no ACK; read: herdr-threads --state-dir $SCRATCH/state body eBgJNn5yWT68\n\n[herdr-threads] attention attention:1:\n  herdr-threads: attention pending; run herdr-threads --state-dir $SCRATCH/state inbox"
+      },
+      "final_frontier": 1,
+      "sink_receipt_still_pending": true,
+      "actual_wake": {
+        "at": 1794889837908,
+        "sid": "01a1e7c5-1a55-7448-8636-9bacf7a6b018",
+        "prompt": "herdr-threads: wake up"
+      }
+    }
+  },
+  "hol": {
+    "seed_sink": {
+      "seat": "sc2EsShe2v0L",
+      "sid": "01a1e7d0-a034-72c7-8800-1dc4c4ad0162",
+      "pane": "w1:p3",
+      "probe": "$SCRATCH/notice-sink"
+    },
+    "successor_sink": {
+      "seat": "sc2EzDfR8ZUz",
+      "sid": "01a1e7d0-e061-70b1-8879-4dd02f3b7abe",
+      "pane": "w1:p4",
+      "probe": "$SCRATCH/notice-sink-successor"
+    },
+    "seed_recovered_without_rearm": true,
+    "old_warning": "ec2EFUPpc75y",
+    "old_ordinal": 3,
+    "old_descriptor": {
+      "item": {
+        "kind": "notice",
+        "warning": "ec2EFUPpc75y",
+        "thread": "dexAlHFWQiM",
+        "body": "informational, no ACK; read: herdr-threads --state-dir $SCRATCH/state body ec2EFUPpc75y"
+      },
+      "context_key": "dn1:5:16:3"
+    },
+    "blocked_token_matches_old_page": true,
+    "successor_descriptor_absent_from_old_page": true,
+    "blocked_frontier": 1,
+    "successor_ordinal": 5,
+    "body_reference_source": "renderer-derived assertion reference; not an observed packet",
+    "old_native_context": {
+      "at": 1794890603072,
+      "sid": "01a1e7d0-8979-754c-aadf-f2d9a01ab8da",
+      "customType": "herdr-threads:520d8048-0d84-47ce-8321-632bf96903bb:6fc43ec4-0989-437b-a244-41519a326643",
+      "content": "[herdr-threads] new messages:\n\n[herdr-threads] notice notice:ec2EFUPpc75y in dexAlHFWQiM from unknown:\n  informational, no ACK; read: herdr-threads --state-dir $SCRATCH/state body ec2EFUPpc75y\n\n[herdr-threads] message mc2EciSKE8LB in d2FAzg3yaXC \"1:1 sc2EB6cvfVyS sc2EkndVY9P1\" from sc2EB6cvfVyS [human]:\n  OWNED NONWAKING HOL PULL TRIGGER 08d1a957-b236-4c80-9f71-4d22ce705692"
+    },
+    "new_native_context": {
+      "at": 1794890633998,
+      "sid": "01a1e7d0-8979-754c-aadf-f2d9a01ab8da",
+      "customType": "herdr-threads:520d8048-0d84-47ce-8321-632bf96903bb:bd8f0dd9-5229-4e4f-89a6-63a66fe73caa",
+      "content": "[herdr-threads] new messages:\n\n[herdr-threads] notice notice:ec2ETOiIKA0y in dYBvnlWmX3l from unknown:\n  informational, no ACK; read: herdr-threads --state-dir $SCRATCH/state body ec2ETOiIKA0y"
+    },
+    "wake_start_ms": [
+      1794890603061,
+      1794890633992
+    ],
+    "path": "later_automatic_wake",
+    "outer_wakes": 2,
+    "release_input": {
+      "at": 1794890602261,
+      "event": "terminal_input",
+      "data": "\u001b[99;5u",
+      "key": "ctrl+c"
+    },
+    "canonical_final_frontier": 5,
+    "canonical_final_outbox_token": null,
+    "successor_receipt_after_proof": {
+      "read_at": 1794890634.1334271,
+      "message": "mc2EBJGtU6KN",
+      "recipient": {
+        "seat": "sc2EzDfR8ZUz",
+        "status": "pending",
+        "physical_status": "pending",
+        "effective_status": "pending",
+        "retirement_cutover": null,
+        "cleanup_state": null,
+        "ack_provenance": null,
+        "deadline": 1794890600103
+      }
+    },
+    "both_sink_traces_retained": true,
+    "no_controller_input_after_release_before_proof": true
+  },
+  "retained_failed_hol": {
+    "directory": "notice_hol",
+    "run_id": "94ecc080-4a5c-43d3-913a-26e504eb32d5",
+    "total_elapsed_s": 55.457,
+    "exit_code": 1,
+    "phase": "recover_sink",
+    "error": "timed out: fresh native editor observation",
+    "sink_submitted_prompt": "OWNED UNREAD NOTICE SINK DRAFTherdr-threads: wake up",
+    "host_gate_read_responses": "not retained; actual incident classifier vs timing cause remains unclassified",
+    "identities_unchanged_before_after": true,
+    "cleanup_ok": true,
+    "leak_exit_code": 0,
+    "outside_same_run_scan_exit_code": 0
+  },
+  "named_separate_scope": {
+    "native_session": "01a1e7d3-a7f5-70ce-830d-f705185396e5",
+    "receipt_status": "acknowledged",
+    "busy_receipt_status": "acknowledged",
+    "passive_p1_next_turn": true,
+    "no_trailing_wake": true
+  },
+  "limits": [
+    "No new paid provider call or credential read; historical d55/a8 live evidence is scoped separately.",
+    "No fresh safety/threshold/ordering/invitations/negative/failures/compaction/handoff matrix claim.",
+    "The three earlier notice positives used driver3cfdfed3; corrected HOL and standard six used driver66212a01.",
+    "HOL uses two distinct genuine sinks; it does not qualify retyping during the shared composer check/type interval, including composer fallback.",
+    "Accepted native-screen/custom-overlay/whitespace-home/unrendered extension text limits remain; hc has no native wake.",
+    "Canonical frontier advancement is observed settlement, not an unobserved CLI confirmation response or lease proof."
+  ]
+}
