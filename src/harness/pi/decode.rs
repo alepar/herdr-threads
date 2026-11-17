@@ -118,6 +118,7 @@ pub(super) fn decode(_: &PiAdmission, input: &HookInput) -> Result<DecodedEvent,
         event_id: uuid::Uuid::new_v4().to_string(),
         intent,
         metadata: EventMetadata {
+            native_turn_id: None,
             turn_end: false,
             skill_pointer,
             callback_deadline: None,
