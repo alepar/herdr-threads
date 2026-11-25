@@ -1,7 +1,7 @@
 {
   "schema_version": 2,
   "generated_from": "harness-canary 24972624a04fd17a2249321839edd184493e6028",
-  "generated_at": "2026-11-24T18:07:39Z",
+  "generated_at": "2026-11-25T17:31:19Z",
   "latest_release": "3.4.1",
   "contracts": {
     "claude": "59c0d06240ed2ce9",
@@ -236,6 +236,21 @@
     {
       "harness": "claude",
       "version": "2.1.331",
+      "status": "verified",
+      "evidence": "no_model",
+      "contract_id": "59c0d06240ed2ce9",
+      "source": "canary",
+      "supported_since": "3.4.1",
+      "broken_event": null,
+      "broken_field": null,
+      "last_working": null,
+      "issue_url": null,
+      "recipe": null,
+      "known_broken": []
+    },
+    {
+      "harness": "claude",
+      "version": "2.1.332",
       "status": "verified",
       "evidence": "no_model",
       "contract_id": "59c0d06240ed2ce9",
