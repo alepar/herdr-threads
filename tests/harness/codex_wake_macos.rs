@@ -33,15 +33,15 @@ impl Drop for Scratch {
 struct Sleeper(std::process::Child);
 impl Sleeper {
     fn start(path: &Path) -> Self {
-        // leak-guard: spawn::command tags it; Drop kills and reaps the exact child.
-        let child = crate::test_support::spawn::command(path)
+        let mut command = crate::test_support::spawn::command(path);
+        command
             .arg("30")
             .stdin(Stdio::null())
             .stdout(Stdio::null())
             .stderr(Stdio::null())
-            .process_group(0)
-            .spawn()
-            .unwrap();
+            .process_group(0);
+        // leak-guard: spawn::command tags it; Drop kills and reaps the exact child.
+        let child = command.spawn().unwrap();
         let sleeper = Self(child);
         let until = soon();
         // exec has completed once libproc reports the copied image.
