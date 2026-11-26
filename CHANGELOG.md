@@ -1,6 +1,18 @@
 # Changelog
 
-## Unreleased
+## v3.5.0
+
+Minor release: a closed tab's seat can be resurrected.
+
+One-way store upgrade to node schema 19. Older binaries that support at most schema 18 refuse an upgraded store. New peer fact `seat.obligations_expired`; older peers park it until they upgrade.
+
+### Added
+
+- **Resurrect a closed tab's seat (ht-eu3v).** Closing a tab no longer retires a keyless seat for good. Its pending ACK requests and ordinary invitations settle as recipient-retired 24 h after the close, and the retirement becomes final 7 d after it. Until then `herdr-threads human seat rebind OLD --pane PANE [--replace NEW] --operator` brings the old seat back onto a new pane with its memberships and history. Services get `ResurrectSeat` and keyless `FinalizeRetirement` in `service_session_v4`. An operator retire stays final at once. Seats holding a continuity key keep their service-owned contract.
+
+### Changed
+
+- Senders learn that a closed keyless recipient's obligations settled up to 24 h later than before; sends to it are still refused as retired at once. A thread whose remaining members all closed archives only after they finalize (7 d).
 
 ### Fixed
 
