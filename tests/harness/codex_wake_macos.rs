@@ -10,6 +10,9 @@ use std::{
 };
 
 const SESSION: &str = "00000000-0000-0000-0000-000000000001";
+/// Both tests read this process's own descriptor table, and the bound test fills it past
+/// FD_LIMIT; under `cargo test` threads they would see each other's descriptors.
+static OWN_FDS: std::sync::Mutex<()> = std::sync::Mutex::new(());
 fn soon() -> Instant {
     Instant::now() + Duration::from_secs(2)
 }
@@ -65,6 +68,24 @@ fn copy_sleep(dir: &Path, name: &str) -> PathBuf {
     let path = dir.join(name);
     fs::copy("/bin/sleep", &path).unwrap();
     fs::set_permissions(&path, fs::Permissions::from_mode(0o700)).unwrap();
+    // Gatekeeper (syspolicyd) terminates a relocated copy of a platform binary shortly
+    // after exec, and an ad-hoc signed one whose name changes before its asynchronous
+    // exec assessment ends. An ad-hoc signature (fat layout kept) plus one completed
+    // warm-up exec settles the assessment before a test renames the running image.
+    let signed = std::process::Command::new("/usr/bin/codesign")
+        .args(["-f", "-s", "-"])
+        .arg(&path)
+        .stdout(Stdio::null())
+        .stderr(Stdio::null())
+        .status()
+        .unwrap();
+    assert!(signed.success(), "ad-hoc signing the stand-in failed");
+    // leak-guard: spawn::command tags it; status() waits for the exact child.
+    let warm = crate::test_support::spawn::command(&path)
+        .arg("0")
+        .status()
+        .unwrap();
+    assert!(warm.success(), "stand-in warm-up exec failed: {warm:?}");
     path
 }
 
@@ -96,6 +117,7 @@ fn executable_identity_follows_the_mapped_image_and_refuses_replacement() {
 
 #[test]
 fn open_vnodes_report_own_identity_and_fail_closed_past_the_bound() {
+    let _fds = OWN_FDS.lock().unwrap_or_else(|e| e.into_inner());
     let s = Scratch::new("fds");
     let file = s.0.join("probe.sqlite");
     fs::write(&file, b"x").unwrap();
@@ -121,6 +143,7 @@ fn open_vnodes_report_own_identity_and_fail_closed_past_the_bound() {
 
 #[test]
 fn receiver_capture_and_hardlink_ambiguity_on_live_descriptors() {
+    let _fds = OWN_FDS.lock().unwrap_or_else(|e| e.into_inner());
     let s = Scratch::new("receiver");
     fs::create_dir_all(s.0.join("sqlite")).unwrap();
     fs::create_dir_all(s.0.join("thread-writer-locks")).unwrap();

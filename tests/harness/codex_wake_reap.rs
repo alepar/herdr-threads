@@ -57,9 +57,22 @@ fn wait_exited(pid: u32) {
                     .map(|(_, tail)| tail.trim_start().starts_with('Z'))
             })
             .is_none_or(|zombie| zombie);
-        // libproc answers ESRCH for both a reaped pid and a zombie.
+        // libproc answers ESRCH already while the child is exiting, before waitpid can
+        // collect it; WNOWAIT observes the waitable zombie without reaping it.
         #[cfg(target_os = "macos")]
-        let exited = super::super::macos::birth(pid) == Err(libc::ESRCH);
+        let exited = {
+            // SAFETY: zeroed siginfo_t is a valid out-buffer; WNOWAIT leaves the child unreaped.
+            let mut info: libc::siginfo_t = unsafe { std::mem::zeroed() };
+            let rc = unsafe {
+                libc::waitid(
+                    libc::P_PID,
+                    pid as libc::id_t,
+                    &mut info,
+                    libc::WEXITED | libc::WNOHANG | libc::WNOWAIT,
+                )
+            };
+            rc == 0 && info.si_pid == pid as i32
+        };
         if exited {
             return;
         }
