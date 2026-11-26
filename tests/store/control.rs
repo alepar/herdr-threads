@@ -22,11 +22,17 @@ fn begin_retirement(
 ) -> Result<crate::ports::RetirementJob, crate::protocol::results::ApiError> {
     #[cfg(feature = "test-support")]
     let _guard = crate::test_support::write_guard::arm(conn);
-    super::begin_retirement(context, conn, seat, proof).map(|start| {
-        start
-            .into_job()
-            .expect("a keyless seat's retirement has a job")
-    })
+    // A keyless close is reversible (ht-eu3v); these fixtures exercise the final job, so the
+    // retirement is finalized at once, as the 7 d clock would.
+    match super::begin_retirement(context, conn, seat.clone(), proof.clone())? {
+        crate::ports::RetirementStart::Job(job) => Ok(job),
+        crate::ports::RetirementStart::Reversible => {
+            crate::store::seats::reversible::finalize_now_for_test(context, conn, &seat)?;
+            Ok(super::begin_retirement(context, conn, seat, proof)?
+                .into_job()
+                .expect("a finalized retirement has a job"))
+        }
+    }
 }
 /// `join`, `leave` and `create_thread` author membership facts, so every call in
 /// this suite runs (in test-support builds) with the write guard armed: they
@@ -830,10 +836,8 @@ fn guarded_absence_retirement_commits_one_fence_and_rejects_invalidation() {
         &budget,
     )
     .unwrap();
-    assert!(matches!(
-        outcome,
-        ReconciliationOutcome::RetirementStarted(_)
-    ));
+    // A keyless close retires reversibly (ht-eu3v): one fence, the job deferred.
+    assert!(matches!(outcome, ReconciliationOutcome::RetiredReversibly));
     let state: (String, i64) = conn
         .query_row(
             "SELECT state,generation FROM seats WHERE id='s1'",
@@ -843,7 +847,7 @@ fn guarded_absence_retirement_commits_one_fence_and_rejects_invalidation() {
         .unwrap();
     assert_eq!(state, ("retired".into(), 2));
     assert_eq!(
-        conn.query_row("SELECT COUNT(*) FROM retirements", [], |r| r
+        conn.query_row("SELECT COUNT(*) FROM reversible_retirements", [], |r| r
             .get::<_, i64>(0))
             .unwrap(),
         1
@@ -1594,10 +1598,7 @@ fn fresh_coherent_absence_retires_a_host_invalidated_seat() {
         &budget,
     )
     .unwrap();
-    assert!(matches!(
-        outcome,
-        ReconciliationOutcome::RetirementStarted(_)
-    ));
+    assert!(matches!(outcome, ReconciliationOutcome::RetiredReversibly));
     let state: (String, Option<String>, Option<String>) = conn
         .query_row(
             "SELECT state,unresolved_reason,unresolved_from_generation_id FROM seats WHERE id='s1'",
@@ -5357,7 +5358,7 @@ fn ordinary_empty_allocation_retains_structural_identity_without_occupant_bindin
             &budget,
         )
         .unwrap(),
-        ReconciliationOutcome::RetirementStarted(_)
+        ReconciliationOutcome::RetiredReversibly
     ));
     drop(conn);
     let _ = std::fs::remove_file(path);
@@ -6664,7 +6665,10 @@ fn retirement_fence_is_immediate_and_cleanup_is_bounded_with_ordered_warnings() 
             |r| r.get::<_, i64>(0)
         )
         .unwrap(),
-        2
+        // The fence's sequence, advanced to the finalization decision (ht-eu3v).
+        conn.query_row("SELECT retired_seq FROM seats WHERE id='s2'", [], |r| r
+            .get::<_, i64>(0))
+            .unwrap()
     );
     drop(conn);
     let _ = std::fs::remove_file(path);
@@ -6993,7 +6997,7 @@ fn review_operator_rebind_new_incarnation_then_absence() {
     let outcome =
         seats::apply_reconciliation_transition(&context, &mut conn, t.clone(), &budget).unwrap();
     assert!(
-        matches!(outcome, ReconciliationOutcome::RetirementStarted(_)),
+        matches!(outcome, ReconciliationOutcome::RetiredReversibly),
         "authoritative absence after qualified repair returned {outcome:?}"
     );
     assert!(matches!(
@@ -7029,11 +7033,25 @@ fn review_operator_rebind_new_incarnation_then_absence() {
         .unwrap(),
         ("old-incarnation".into(), 50, 90)
     );
-    let ReconciliationOutcome::RetirementStarted(job) = outcome else {
-        unreachable!()
-    };
     drop(conn);
     let mut conn = context.open_writer().unwrap();
+    // Finalize the reversible close at once, as the 7 d clock would (ht-eu3v).
+    crate::store::seats::reversible::finalize_now_for_test(&context, &mut conn, &SeatId::new("s1"))
+        .unwrap();
+    let job = crate::ports::RetirementJob {
+        id: crate::protocol::ids::RetirementJobId::new(
+            conn.query_row("SELECT id FROM retirements WHERE seat_id='s1'", [], |r| {
+                r.get::<_, String>(0)
+            })
+            .unwrap(),
+        ),
+        seat: SeatId::new("s1"),
+        retired_at: UtcMillis(0),
+        phase: crate::ports::RetirementPhase::Warnings,
+        after_ordinal: None,
+        high_water_ordinal: 0,
+        processed_units: 0,
+    };
     let mut completed = false;
     for _ in 0..16 {
         let progress = advance_retirement(
@@ -8787,10 +8805,7 @@ fn reconciliation_retirement_of_last_unresolved_seat_lifts() {
         &budget,
     )
     .unwrap();
-    assert!(matches!(
-        outcome,
-        ReconciliationOutcome::RetirementStarted(_)
-    ));
+    assert!(matches!(outcome, ReconciliationOutcome::RetiredReversibly));
     assert_eq!(b5_hold_state(&conn), (0, 0));
     drop(conn);
     let _ = std::fs::remove_file(path);

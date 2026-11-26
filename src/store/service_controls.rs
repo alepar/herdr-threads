@@ -197,6 +197,12 @@ pub fn operate(
                 "service send and reads route outside service controls",
             ));
         }
+        ServiceOperation::ResurrectSeat(_) => {
+            return Err(api_error(
+                ErrorCode::Unsupported,
+                "resurrect routes through operator repair, outside service controls",
+            ));
+        }
         ServiceOperation::ReserveContinuityKey(v) => {
             ServiceResult::ContinuityKeyReserved(continuity_keys::reserve(tx, &author, v, at)?)
         }

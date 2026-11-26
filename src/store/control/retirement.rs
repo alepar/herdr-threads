@@ -128,9 +128,9 @@ pub fn begin_retirement(
 /// a final retirement, `seat.retired_reversible` for a reversible one.
 ///
 /// Responsibility
-/// - Owns: the one choice between final and reversible: a `Closed` retirement of a seat that holds
-///   a continuity key runs the transition and writes a reversible row (no job, nothing settled, the
-///   key kept); anything else is final and goes through [`insert_retirement_job`]. Also the one
+/// - Owns: the one choice between final and reversible: a `Closed` retirement runs the transition
+///   and writes a reversible row (no job, nothing settled, a key kept; a keyless row is timed,
+///   ht-eu3v); anything else (operator, `--replace`, an unretired seat's finalization) is final and goes through [`insert_retirement_job`]. Also the one
 ///   place a retirement reaches other nodes: [`emit_if_published`] through `FactRoute::Journal`
 ///   when the seat is local and published. An unpublished seat authors nothing (no other node
 ///   knows it).
@@ -167,7 +167,9 @@ pub(crate) fn begin_retirement_authored(
                 "a named seat is never retired as closed",
             ));
         }
-        if continuity_keys::key_of_seat(tx, &seat)?.is_some() {
+        // Every closed seat retires reversibly (ht-eu3v): a keyed one until its owner acts, a
+        // keyless one on the derived clocks of `reversible::timed_due`.
+        {
             retirement_transition(tx, at.utc, &seat, instance)?;
             reversible::insert_row(tx, &seat, at.utc, reason, &inputs)?;
             let payload = SeatRetiredReversiblePayload {

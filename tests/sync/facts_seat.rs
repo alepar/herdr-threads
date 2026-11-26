@@ -837,7 +837,8 @@ fn held_kinds_list_matches_the_spec() {
             "invitation.answered",
             "seat.retired",
             "seat.retired_reversible",
-            "seat.unretired"
+            "seat.unretired",
+            "seat.obligations_expired"
         ]
     );
     assert_eq!(ReceiptSettled::NAME, HELD_KINDS[0]);

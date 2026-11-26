@@ -119,6 +119,12 @@ Amended 2026-11-05 for reversible retirement (ht-ma6i.3): a `Closed` retirement 
 key defers its job until the owning service un-retires or finalizes it (*Reversible retirement*, under C2); provenance
 `service_unretire` and `service_finalize`; four accepted limits; every final retirement releases the key.
 
+Amended 2026-11-25 for seat resurrect (ht-eu3v): every `Closed` retirement is reversible; a keyless one is *timed*,
+its obligations expiring 24 h and the seat finalizing 7 d after the close; `seat rebind --operator` (and the
+`service_session_v4` `ResurrectSeat`) un-retires and rebinds a reversibly retired seat in one decision; any service
+session may finalize a keyless one; new seat-history provenance `operator_unretire`, `window_finalize` and
+`service_rebind`; new fact `seat.obligations_expired`; five accepted limits.
+
 Amended 2026-11-06 for the Hermes gateway and the continuity key (ht-ma6i.23): a Hermes 0.22.1+ gateway session never
 sees `HERDR_THREADS_CONTINUITY_KEY`, so a keyed Hermes clone behaves as a keyless one; one accepted limit; no new wire
 value.
@@ -257,6 +263,8 @@ added identity fields; the opt-in read changes no binding, receipt, membership o
 | Continuity key (ht-ma6i.2) | A top-level claim on a Herdr host presenting a reserved key bound to an unresolved seat, at a pane with no resolved owner, its native session matching no unresolved seat but the key's own, or matching the key's seat among others (the key's seat is then chosen). The session need not match any binding: the key is the evidence (*Continuity key* below) | `cooperative_continuity_key` |
 | Operator decision | `ht human seat rebind`, `ht human seat resolve --new-seat`, `ht human seat retire`, `ht human seat rebind --replace` (each with `--operator`). These repairs attribute no person and are not refused in an agent session; the person-attribution override `ht human me init --operator` is (A4 *Agent to human*) | `operator:local-user:<uid>` |
 | Service un-retire (ht-ma6i.3) | `UnretireSeat` by the service that owns the seat's continuity key, for a reversibly retired seat. The mapping only clears: the seat comes back unresolved with no target and no binding; it is placed later by a C1 path like any unresolved seat. | `service_unretire` |
+| Operator resurrect (ht-eu3v) | `ht human seat rebind OLD --pane P [--replace NEW] --operator` on a reversibly retired OLD (keyed or keyless): one decision un-retires OLD (as `UnretireSeat` does, deadlines of what is still pending shifting) and rebinds it onto P (`--replace` retires NEW finally first, C3). No binding opens; the next lifecycle check-in in P enrolls onto OLD. A finally retired OLD is refused. | `operator_unretire` then `operator_rebind`, both `operator:local-user:<uid>` |
+| Service resurrect (ht-eu3v) | `ResurrectSeat` from a `service_session_v4` session: the operator resurrect's decision, through the same fresh target observation, for a reversibly retired seat only. A keyless seat: any v4 session; a keyed one: its key's owner. | `service_unretire` then `service_rebind`, both `service:<author>` |
 
 Named rule. The named host is not host evidence and never closes by absence: reconcile plans no
 `BeginRetirement` and no `MarkUnresolved` for it, and the store refuses `RetireReason::Closed` for a named seat (only
@@ -452,8 +460,9 @@ holds or finalizing a no-match past it could seat a session twice. The operator 
 incarnation retires its seat, however many session bindings the seat holds. The retirement fence disconnects
 every connected binding with reason `seat_retired` through the one `store::bindings::disconnect` transition
 (side-effect hooks run) and ends every open binding; a binding already disconnected keeps its own reason.
-Memberships retire, receipts settle recipient-retired and invitations close, all seat-level. The seat record and
-every `binding_cursors` row persist, for undo and herdr-graph. A new or unknown incarnation never retires: it
+Memberships retire, receipts settle recipient-retired and invitations close, all seat-level, when the retirement
+finalizes (a close is reversible: *Reversible retirement* below; a keyless one finalizes 7 d later, its obligations
+expiring at 24 h). The seat record and every `binding_cursors` row persist, for undo and herdr-graph. A new or unknown incarnation never retires: it
 yields unresolved seats under the C2 restore holds above, and each binding ends with reason `seat_unresolved`
 so the same session can reopen it after a rebind.
 
@@ -544,9 +553,10 @@ ordinary resolution), the pane's hold released, the structural proof recorded so
 the seat stays unavailable until an agent checks in on the now resolved pane. A row is deleted when its seat retires
 finally and when it is un-retired, so a replaced seat in a surviving shell recovers on the next handoff.
 
-**Reversible retirement (ht-ma6i.3).** A `Closed` retirement of a seat that holds a continuity key (same-incarnation
-close, closure proof, restored-pane close, target absence) is undoable by the service that owns the key. `begin_retirement_authored`
-is the one place that chooses; a keyless seat's close, and every operator retire and `--replace`, stays final.
+**Reversible retirement (ht-ma6i.3, ht-eu3v).** Every `Closed` retirement (same-incarnation close, closure proof,
+restored-pane close, target absence, hc finality) is reversible: a keyed one until the service that owns the key acts,
+a keyless one on the timed rules below. `begin_retirement_authored` is the one place that chooses; every operator
+retire and `--replace`, and an unretired seat's finalization, stays final. A named seat is never `Closed`.
 - *The fence is real.* The seat reads retired: `retired_at`, `retired_seq`, bindings ended `seat_retired`, offers and
   wake work cleared. A `reversible_retirements` row holds the job's inputs instead of a `retirements` row. With no job
   nothing is settled: memberships and intervals, requirement episodes, receipts and invitations stay as they are, and
@@ -570,6 +580,28 @@ is the one place that chooses; a keyless seat's close, and every operator retire
   reversible seat gets the deferred job with the original cutover and evidence, and `retired_seq` advances to this
   decision, so the job also settles what a window fact wrote; an unretired seat takes an ordinary final retirement with
   reason `operator`, so it cannot go reversible again.
+- *Timed rows (ht-eu3v).* A local `reversible` row whose seat holds no continuity key is timed. Its clocks are derived
+  from the cutover, never stored, so a row replayed from the own log, or a keyed seat whose key is gone, is timed too; a
+  keyed row and a peer's row never are. The deadline lane, at most 16 rows a pass, oldest first, expires a timed row's
+  obligations at `cutover + 24 h` and then finalizes it at `cutover + 7 d`, each in its own writer transaction, so a
+  daemon down past both clocks expires before it finalizes.
+- *Obligation expiry (ht-eu3v).* One writer transaction re-checks that the row is still timed, reversible, in its
+  episode and unexpired, records `obligations_expired_at` and an `obligation_expiries` row, settles as
+  `recipient_retired` every obligation to the seat still pending and created by the expiry instant (ordinary
+  invitations, never a service-required one, and ACK-required receipts, physical and logical), each with the overdue
+  warning the retirement job writes, classified at the cutover, and authors `seat.obligations_expired` for a published
+  seat. Memberships, membership intervals and requirement episodes stay. Every node applies the fact by the same rule to
+  its own rows, whatever state the seat is in there, so arrival order and re-issue change nothing; an obligation first
+  written later with `created_at` at or before a recorded expiry settles at write. The seat stays reversible: a resurrect
+  brings it back with its memberships, and what expired stays settled.
+- *Window finalization (ht-eu3v).* At 7 d the timed row finalizes exactly as `FinalizeRetirement` does (the deferred
+  job with the original cutover, `retired_seq` advanced, the ordinary `seat.retired`), recorded `window_finalize`. A
+  service session may also finalize a keyless seat (`service_finalize` with `service:<author>`); a keyed one stays its
+  owner's.
+- *Resurrect (ht-eu3v).* `seat rebind --operator` and `ResurrectSeat` (C1 table) un-retire a `reversible` row and
+  rebind it in one decision; for a published seat the un-retire authors `seat.unretired` as `UnretireSeat` does. A
+  running agent on a replaced NEW stays served as NEW's retired binding on plain calls until its next lifecycle check-in
+  (bindings disconnected `seat_retired` never reconnect on a plain call); nothing moves from NEW to OLD.
 - *A final retirement releases the key.* The writer of a `retirements` row deletes the seat's key and its conflict rows
   in the same transaction, on every route, so the key can be reserved again.
 - *Cross-node (ht-ma6i.7).* A published seat authors `seat.retired_reversible` at the fence and `seat.unretired` at
@@ -684,6 +716,8 @@ live seat, the refusal offers exactly two resolutions, each as ready argv:
 - abandon the new role: `ht human seat rebind OLD --pane P --replace NEW --operator` (implemented), which retires NEW
   and rebinds OLD in one decision so the target cannot be claimed in between. NEW's pending obligations settle
   as recipient-retired; nothing moves from NEW to OLD.
+- resurrect a closed seat (ht-eu3v): the same `seat rebind OLD --pane P [--replace NEW] --operator` accepts an OLD
+  whose retirement is still reversible and un-retires it in the decision (*Reversible retirement*).
 
 **C4. Availability ends only on evidence.** A joined seat stays available across a daemon restart when its
 mapping is structurally reconfirmed; the open cooperative or operator binding carries forward to the new host epoch (implemented; a native binding re-registers instead, and a send before the first reconciliation pass assumes the carry rather than warning). A `managed_launch` binding is never availability, so it is not carried; it stays open and unregistered until a check-in replaces it. The bootstrap Send of an automatic handoff that launches its recipient is staged before the launch, so it raises no unavailable-recipient warning for that recipient (decided from the canonical registered handoff original, not from timing); the recipient's receipt keeps its honest availability and its send-time deadline (A6), so a launch that never checks in surfaces as an overdue warning, and every other send to the starting seat still warns (ht-fne2). Availability ends when the mapping becomes
@@ -779,7 +813,10 @@ records there are replay machinery, never its identity.
 | `operator_human` | bindings, receipts | A person declared this pane human with `ht human me init` and acted from it. Best effort: refused where the system sees evidence of an agent, and always from an agent session, `--operator` included (A4). |
 | `cooperative_continuity` | seat rebinds only | The seat was reattached because the same native harness session id matched (C1). Never on receipts. |
 | `service_unretire` | seat history (`allocation_decisions`) only | The service that owns the seat's continuity key undid its reversible retirement. Records the row's closure target; places nothing. Never on receipts. |
-| `service_finalize` | seat history (`allocation_decisions`) only | The service that owns the seat's continuity key made its reversible or unretired retirement final. An operator's finalization records `operator:local-user:<uid>` under `operator_retire` instead. Never on receipts. |
+| `service_finalize` | seat history (`allocation_decisions`) only | The service that owns the seat's continuity key made its reversible or unretired retirement final, or (ht-eu3v) any service session finalized a keyless one, recorded with `service:<author>`. An operator's finalization records `operator:local-user:<uid>` under `operator_retire` instead. Never on receipts. |
+| `operator_unretire` | seat history (`allocation_decisions`) only | The operator un-retired a reversibly retired seat in a `seat rebind --operator` resurrect (ht-eu3v), with `operator:local-user:<uid>`; the rebind follows as `operator_rebind` in the same decision. Never on receipts. |
+| `service_rebind` | seat history (`allocation_decisions`) only | A `service_session_v4` `ResurrectSeat` rebound the seat it un-retired (recorded `service_unretire` with `service:<author>` just before), with `service:<author>` (ht-eu3v). Never on receipts. |
+| `window_finalize` | seat history (`allocation_decisions`) only | The deadline lane finalized a timed (keyless) reversible retirement 7 d after its close (ht-eu3v). No author. Never on receipts. |
 | `structural_process_continuity` | seat rebinds only | The seat's top-level binding process (same fingerprint) was observed as, or in the session of, the shell Herdr reports for the pane, on that shell's controlling terminal, after a new incarnation (C1 process continuity, ht-hsyg). The reopened binding keeps its own `cooperative_top_level` provenance. Never on receipts. |
 | `structural_shell_continuity` | seat rebinds only | The shell Herdr reports for the seat's saved target was observed to be the process the seat's fingerprint recorded (same pid and start stamp), leading its session on the recorded controlling terminal, after a new incarnation (C1 *Shell continuity*, ht-ma6i.1). No binding opens. Never on receipts. |
 | `cooperative_continuity_key` | seat rebinds only | The seat was reattached because its top-level claim presented the reserved continuity key bound to the seat (C1 *Continuity key*, ht-ma6i.2). The session need not match any binding. The reopened or enrolled binding keeps its own `cooperative_top_level` provenance. Never on receipts. |
@@ -2476,6 +2513,15 @@ introduced.
 - A store restored from its own log (ht-ma6i.3, ht-ma6i.7). Keys are local and facts do not carry them, so a seat
   restored reversible keeps its row and reads retired with no key row: `UnretireSeat` and `FinalizeRetirement` answer
   `Unauthorized`, and only an operator can finalize it.
+- Seat resurrect (ht-eu3v). (1) Senders learn that a closed keyless recipient's obligations settled up to 24 h later
+  than before; sends to it are still refused as retired at once. (2) A thread whose remaining members are all
+  reversibly retired archives only after they finalize (7 d), because a reversible seat stays a live member for
+  archival. (3) Service-required invitations and requirement episodes of a closed keyless seat stay pending until it
+  finalizes; their service owns them. (4) A node that does not know `seat.obligations_expired` keeps those
+  obligations pending until it upgrades and replays the parked fact, or the seat finalizes; an obligation created
+  within clock skew of the expiry can land on either side, judged against the origin's clock. (5) Expiry and
+  finalization run on the home daemon's deadline lane, so a daemon down past a clock acts on its first pass after
+  start; and a keyless seat's service authority is any service session (cooperative, same-user).
 - A node that does not know the reversible kinds (ht-ma6i.7). A pre-3.1 node parks `seat.retired_reversible` and
   `seat.unretired`, shows the seat live until `seat.retired` arrives and keeps its overdue running; a message it sends
   meanwhile reaches the home node as an ordinary fact whose receipt stays frozen with the rest. After the upgrade it
@@ -3393,6 +3439,16 @@ really retires and only the job is deferred, because a retired seat already read
 overlay or a new seat state would be 80 places to forget. Only the paths that write durable state during the window
 compose the frozen fragment. Un-retire restores nothing, since a job that never ran released nothing. It is scoped to
 key holders, because the key is the evidence that a service answers for the seat. Operator decisions stay final.
+
+### Seat resurrect (2026-11-25, ht-eu3v)
+
+A closed tab's keyless seat retired finally, so reopening the tab split the role and stranded its memberships.
+Decision (the user's): every close goes reversible, a keyless one on two clocks, obligations expiring at 24 h so
+senders are not kept waiting, the seat finalizing at 7 d so a next-morning undo works; resurrect reuses `seat rebind`
+rather than a new verb, and graph gets a v4 service operation. Rejected: un-doing a final job after the fact (it
+would un-write receipts senders already saw), a stored per-row clock (a replayed row would never finalize), expiry in
+bounded quanta (a resurrect between quanta would split home from peers), and automatic resurrect by a resumed session
+id (a follow-up). Design: `docs/superpowers/specs/2026-11-25-seat-resurrect-design.md`.
 
 ### Process continuity across a Herdr live handoff (2026-10-31, ht-hsyg)
 

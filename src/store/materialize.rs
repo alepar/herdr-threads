@@ -139,6 +139,7 @@ pub const HELD_KINDS: &[&str] = &[
     "seat.retired",
     "seat.retired_reversible",
     "seat.unretired",
+    "seat.obligations_expired",
 ];
 
 /// The `detail` of the refusal [`FactRoute::emit`] returns while the restore-window

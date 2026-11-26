@@ -2826,20 +2826,21 @@ fn retired_seat_has_no_actionable_pending_invitation_before_cleanup() {
     )
     .unwrap();
     db.execute("INSERT INTO observed_targets(host_id,target_id,host_boot,epoch,generation,observed_at,provenance,terminal_id,incarnation,incarnation_source_kind,connection_epoch) VALUES ((SELECT min(host_id) FROM herdr_hosts),'target','boot',1,1,0,'fresh','term-'||'target','inc','coherent_enumeration',1)", []).unwrap();
-    let job = super::super::control::begin_retirement(
-        &store,
-        &mut db,
-        SeatId::new("s"),
-        crate::ports::ClosureEvidence {
-            host_boot: crate::protocol::ids::HostBootId::new("boot"),
-            epoch: 1,
-            target: HostTargetId::new("target"),
-            generation: 1,
-        },
-    )
-    .unwrap()
-    .into_job()
-    .unwrap();
+    let proof = crate::ports::ClosureEvidence {
+        host_boot: crate::protocol::ids::HostBootId::new("boot"),
+        epoch: 1,
+        target: HostTargetId::new("target"),
+        generation: 1,
+    };
+    // A keyless close is reversible (ht-eu3v); finalize at once, as the 7 d clock would.
+    super::super::control::begin_retirement(&store, &mut db, SeatId::new("s"), proof.clone())
+        .unwrap();
+    crate::store::seats::reversible::finalize_now_for_test(&store, &mut db, &SeatId::new("s"))
+        .unwrap();
+    let job = super::super::control::begin_retirement(&store, &mut db, SeatId::new("s"), proof)
+        .unwrap()
+        .into_job()
+        .unwrap();
     assert_eq!(job.seat.as_str(), "s");
     let physical_invitation: String = db
         .query_row("SELECT state FROM invitations WHERE id='inv'", [], |row| {

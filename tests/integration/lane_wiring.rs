@@ -192,6 +192,33 @@ impl Session {
         (output.status.code().unwrap_or(-1), value, stderr)
     }
 
+    /// An operator command (`herdr-threads human --json ... ARGS`), with no caller.
+    pub(crate) fn operator(&self, args: &[&str]) -> Value {
+        let output = self
+            .herdr
+            .command(BIN)
+            .arg("human")
+            .arg("--json")
+            .arg("--state-dir")
+            .arg(&self.state)
+            .arg("--host-endpoint")
+            .arg(self.herdr.socket_path())
+            .args(args)
+            .env_remove("HERDR_PLUGIN_STATE_DIR")
+            .env_remove("HERDR_PANE_ID")
+            .env_remove("HERDR_BIN_PATH")
+            .env_remove("HERDR_ENV")
+            .output()
+            .unwrap();
+        let stdout = String::from_utf8_lossy(&output.stdout).into_owned();
+        assert!(
+            output.status.success(),
+            "herdr-threads human {args:?} failed: {}{stdout}",
+            String::from_utf8_lossy(&output.stderr)
+        );
+        serde_json::from_str::<Value>(&stdout).unwrap_or(Value::Null)["result"]["data"].clone()
+    }
+
     pub(crate) fn ok(&self, caller: Option<&Caller>, args: &[&str]) -> Value {
         self.ok_in_session(caller, None, args)
     }

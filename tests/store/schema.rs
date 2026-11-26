@@ -8042,8 +8042,9 @@ fn queue_wake_candidate_schema_with_additive_witness_passes_audit_and_rejects_ta
     // production opener above refused the historical candidate without repair.
     db.execute_batch("ALTER TABLE wake_intents ADD COLUMN add_helper_json BLOB CHECK(add_helper_json IS NULL OR length(add_helper_json)<=2048); ALTER TABLE wake_intents ADD COLUMN armed_at_utc INTEGER; ALTER TABLE wake_intents ADD COLUMN native_degraded_at_utc INTEGER; ALTER TABLE wake_intents ADD COLUMN native_fallback_json BLOB CHECK(native_fallback_json IS NULL OR length(native_fallback_json)<=2048)")
         .unwrap();
-    schema::verify_baseline(&db).unwrap();
+    // Later deltas (0019+) apply over it; the audit then reads the latest schema.
     open_with(&db, schema::NODE_DELTAS).unwrap();
+    schema::verify_baseline(&db).unwrap();
     db.execute_batch("DROP INDEX wake_intents_unresolved_cohort")
         .unwrap();
     let error = schema::verify_baseline(&db).unwrap_err();

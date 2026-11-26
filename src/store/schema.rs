@@ -177,6 +177,14 @@ pub(crate) const NODE_DELTAS: &[NodeDelta] = &[
         sql: include_str!("../../migrations/node/0018_programmatic_wake_intents.sql"),
         rebuild: None,
     },
+    NodeDelta {
+        version: 19,
+        sql: include_str!("../../migrations/node/0019_seat_resurrect.sql"),
+        rebuild: Some(Rebuild {
+            copy: super::seats::copy_allocation_decisions,
+            sql_after: include_str!("../../migrations/node/0019_seat_resurrect_after.sql"),
+        }),
+    },
 ];
 
 /// Latest `PRAGMA user_version` supported by this binary's production schema.
@@ -1999,7 +2007,7 @@ fn record_overdue_inner(
                 // A retirement worker classifies the obligation at its cutover.
                 // The current effective projection is already retired, so read
                 // the durable pre-cutover settlement state for that path.
-                let status = if matches!(basis, TimeBasis::Retirement(_)) {
+                let status = if matches!(basis, TimeBasis::Retirement(_) | TimeBasis::Expiry(_)) {
                     match row.source {
                         ReceiptSource::Physical => tx.query_row(
                             "SELECT state FROM receipts WHERE message_id=?1 AND seat_id=?2",
@@ -2122,6 +2130,7 @@ fn record_overdue_inner(
             }
             cutover
         }
+        TimeBasis::Expiry(cutover) => cutover.0,
     };
     let comparison_deadline = if matches!(obligation, ObligationRef::Receipt { .. }) {
         super::receipts::effective_deadline_for(tx, seat.as_str(), thread.as_str(), deadline)?
@@ -2134,7 +2143,7 @@ fn record_overdue_inner(
             inserted: false,
         });
     }
-    let effective_status = if matches!(basis, TimeBasis::Retirement(_)) {
+    let effective_status = if matches!(basis, TimeBasis::Retirement(_) | TimeBasis::Expiry(_)) {
         "recipient_retired"
     } else {
         "pending"

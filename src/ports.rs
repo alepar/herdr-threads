@@ -591,6 +591,10 @@ pub enum WorkAdmission {
 pub enum TimeBasis {
     Decision,
     Retirement(RetirementJobId),
+    /// The obligation expiry of a reversibly retired seat (ht-eu3v): classified at the episode's
+    /// cutover, as the retirement job classifies it, with no job row and whatever state the seat
+    /// is in on this node.
+    Expiry(UtcMillis),
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -4225,6 +4229,11 @@ pub trait StorePort: ModStoreReads + Send + Sync {
     /// Runs the sender ledger's handoff due step (`store::handoff_obligations::due_pass`);
     /// returns the in-thread warnings added. A store without the ledger adds none.
     fn due_handoffs(&self, _budget: &CallBudget) -> Result<usize, ApiError> {
+        Ok(0)
+    }
+    /// Runs the timed reversible retirements' due step (ht-eu3v: obligation expiry at 24 h,
+    /// finalization at 7 d); returns the rows it changed. A store without them changes none.
+    fn timed_retirements(&self, _budget: &CallBudget) -> Result<usize, ApiError> {
         Ok(0)
     }
     fn begin_retirement(

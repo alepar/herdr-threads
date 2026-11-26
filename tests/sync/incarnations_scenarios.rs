@@ -1729,6 +1729,7 @@ fn registry_lacking(kind: &str) -> &'static FactRegistry {
         seat::SeatRetired,
         seat::SeatRetiredReversible,
         seat::SeatUnretired,
+        seat::SeatObligationsExpired,
         thread::ThreadCreated,
         thread::ThreadRegister,
         thread::ThreadDirect,

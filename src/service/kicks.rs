@@ -271,6 +271,12 @@ pub const KNOWN_UNMAPPED: &[&str] = &[
     // Un-retired windows (ht-ma6i.48) are written with the deadline shift they record, whose
     // receipt and invitation writes kick the deadline lane.
     "reversible_windows",
+    // Obligation expiries (ht-eu3v) are written with the receipt and invitation settlements they
+    // record, which kick the deadline lane themselves.
+    "obligation_expiries",
+    // Obligation expiries (ht-eu3v) are written with the receipt and invitation settlements they
+    // record, which kick the deadline lane themselves.
+    "obligation_expiries",
     // The kernel boot id (ht-ma6i.44) is written once at store start and read in binding writes.
     "node_kernel_boot",
     // Peer-requested launches (remote launch) are written and read only by the

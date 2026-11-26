@@ -273,7 +273,13 @@ fn unretire_authorization() {
             assert_eq!(refused.code, ErrorCode::Unauthorized, "{seat}");
             assert_eq!(fixture.journaled(operation), 0, "{seat}");
             let refused = session.finalize(operation, seat).await.unwrap_err();
-            assert_eq!(refused.code, ErrorCode::Unauthorized, "{seat}");
+            // A keyless seat is any service's to finalize (ht-eu3v); this one has no retirement.
+            let expected = if seat == "keyless" {
+                ErrorCode::NotFound
+            } else {
+                ErrorCode::Unauthorized
+            };
+            assert_eq!(refused.code, expected, "{seat}");
         }
         assert_eq!(fixture.row_state("theirs").as_deref(), Some("reversible"));
 

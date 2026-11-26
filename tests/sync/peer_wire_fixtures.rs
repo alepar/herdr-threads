@@ -39,6 +39,10 @@ const UNCHAINED_KINDS: &[(&str, u32)] = &[
         <seat::SeatUnretired as FactKind>::NAME,
         <seat::SeatUnretired as FactKind>::MAJOR,
     ),
+    (
+        <seat::SeatObligationsExpired as FactKind>::NAME,
+        <seat::SeatObligationsExpired as FactKind>::MAJOR,
+    ),
 ];
 
 fn fixtures_root() -> PathBuf {

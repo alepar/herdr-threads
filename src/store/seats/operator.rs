@@ -182,11 +182,37 @@ pub fn mutate_operator(
                     )
                     .optional()
                     .map_err(store_error)?;
-                if state.as_ref().map(|(state, _)| state.as_str()) != Some("unresolved") {
-                    return Err(api_error(
-                        ErrorCode::TargetUnresolved,
-                        "rebind source is not unresolved",
-                    ));
+                if let Some(author) = actor.service_author() {
+                    // A service resurrects only a reversibly retired seat, under its authority.
+                    if reversible::row_state(tx, seat)? != Some(reversible::RowState::Reversible) {
+                        return Err(api_error(
+                            ErrorCode::NotFound,
+                            "seat has no reversible retirement to resurrect",
+                        ));
+                    }
+                    reversible::require_v4_authority(tx, seat, author)?;
+                }
+                match state.as_ref().map(|(state, _)| state.as_str()) {
+                    Some("unresolved") => {}
+                    // Resurrect (ht-eu3v): a reversibly retired seat un-retires in the decision.
+                    Some("retired")
+                        if reversible::row_state(tx, seat)?
+                            == Some(reversible::RowState::Reversible) => {}
+                    Some("retired") => {
+                        return Err(api_error(
+                            ErrorCode::TargetUnresolved,
+                            format!(
+                                "seat {} retired finally; it can no longer be resurrected",
+                                seat.as_str()
+                            ),
+                        ));
+                    }
+                    _ => {
+                        return Err(api_error(
+                            ErrorCode::TargetUnresolved,
+                            "rebind source is not unresolved",
+                        ));
+                    }
                 }
                 if state.is_some_and(|(_, generation)| generation == i64::MAX) {
                     return Err(api_error(
@@ -276,6 +302,14 @@ pub fn mutate_operator(
                 ));
             }
             let result = if let Some(seat) = &seat {
+                if reversible::row_state(tx, seat)? == Some(reversible::RowState::Reversible) {
+                    let label = actor.audit_label();
+                    let by = match actor.service_author() {
+                        Some(author) => reversible::UnretireBy::Service(author),
+                        None => reversible::UnretireBy::Operator(&label),
+                    };
+                    reversible::unretire_for_rebind(tx, context, &instance, seat, at, by)?;
+                }
                 rebind_unresolved_seat(
                     tx,
                     &instance,
@@ -307,6 +341,11 @@ pub fn mutate_operator(
                 // Operator mapping without structural evidence cannot carry a prior proof.
                 tx.execute("UPDATE seats SET structural_terminal_id=NULL,structural_incarnation=NULL,structural_incarnation_kind=NULL,structural_host_boot=NULL,structural_host_epoch=NULL,structural_connection_epoch=NULL,structural_observation_sequence=NULL WHERE id=?1", [result_seat.as_str()]).map_err(store_error)?;
             }
+            let kind = if actor.service_author().is_some() {
+                "service_rebind"
+            } else {
+                kind
+            };
             tx.execute("INSERT INTO allocation_decisions(host_id,target_id,seat_id,kind,decided_at,host_boot,epoch,generation,operator_label) VALUES (?1,?2,?3,?4,?5,?6,?7,?8,?9)",
                 params![host.get(),target.as_str(),result_seat.as_str(),kind,at.utc.0,expected_boot.as_str(),expected_epoch_sql,expected_generation_sql,actor.audit_label()]).map_err(store_error)?;
             release_claimed_target(tx, &instance, host, target.as_str(), at.utc)?;

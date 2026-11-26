@@ -962,6 +962,9 @@ fn result_matches(request: &ServiceWireRequest, result: &ServiceResult) -> bool 
         ) | (
             ServiceRequest::Operation(ServiceOperation::ContinuityAlerts(_)),
             ServiceResult::ContinuityAlerts(_)
+        ) | (
+            ServiceRequest::Operation(ServiceOperation::ResurrectSeat(_)),
+            ServiceResult::SeatResurrected(_)
         )
     )
 }

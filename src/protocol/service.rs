@@ -25,6 +25,9 @@ pub const SERVICE_SESSION_CAPABILITY_V2: &str = "service_session_v2";
 /// `ReleaseContinuityKey`, `UnretireSeat`, `FinalizeRetirement`, `ContinuityAlerts`. Registration is
 /// the only advertisement; an old daemon rejects the name and there is no silent fallback.
 pub const SERVICE_SESSION_CAPABILITY_V3: &str = "service_session_v3";
+/// The v3 operations plus `ResurrectSeat` (ht-eu3v): un-retire a reversibly retired seat and bind
+/// it to a pane in one decision. An old daemon rejects the name at register.
+pub const SERVICE_SESSION_CAPABILITY_V4: &str = "service_session_v4";
 /// Same bound as native `store::messages::MAX_BODY_BYTES` (protocol must not
 /// depend on store; a test pins equality).
 pub const SERVICE_SEND_MAX_BODY_BYTES: usize = 65_536;
@@ -36,6 +39,7 @@ pub enum ServiceSessionLevel {
     V1,
     V2,
     V3,
+    V4,
 }
 
 impl ServiceSessionLevel {
@@ -44,6 +48,7 @@ impl ServiceSessionLevel {
             SERVICE_SESSION_CAPABILITY => Some(Self::V1),
             SERVICE_SESSION_CAPABILITY_V2 => Some(Self::V2),
             SERVICE_SESSION_CAPABILITY_V3 => Some(Self::V3),
+            SERVICE_SESSION_CAPABILITY_V4 => Some(Self::V4),
             _ => None,
         }
     }
@@ -53,6 +58,7 @@ impl ServiceSessionLevel {
             Self::V1 => SERVICE_SESSION_CAPABILITY,
             Self::V2 => SERVICE_SESSION_CAPABILITY_V2,
             Self::V3 => SERVICE_SESSION_CAPABILITY_V3,
+            Self::V4 => SERVICE_SESSION_CAPABILITY_V4,
         }
     }
 
@@ -74,6 +80,7 @@ impl ServiceSessionLevel {
             | ServiceOperation::UnretireSeat(_)
             | ServiceOperation::FinalizeRetirement(_)
             | ServiceOperation::ContinuityAlerts(_) => Self::V3,
+            ServiceOperation::ResurrectSeat(_) => Self::V4,
         }
     }
 }
@@ -217,6 +224,8 @@ pub enum ServiceOperation {
     FinalizeRetirement(FinalizeRetirement),
     /// Query, never journaled. Requires `service_session_v3`.
     ContinuityAlerts(ServiceContinuityAlertsQuery),
+    /// Mutation, journaled. Requires `service_session_v4`.
+    ResurrectSeat(ResurrectSeat),
 }
 
 /// Reserve a key for this service, optionally binding it to `seat` (spec 4.5).
@@ -239,6 +248,20 @@ pub struct ReleaseContinuityKey {
 #[serde(deny_unknown_fields)]
 pub struct UnretireSeat {
     pub seat: SeatId,
+    pub operation: OperationId,
+}
+
+/// Un-retire a reversibly retired seat and bind it to `target` on `host` in one decision
+/// (ht-eu3v). A keyless seat: any `service_session_v4` session; a keyed one: its key's owner.
+/// `replace` names a fresh seat already resolved on `target`, which retires finally in the same
+/// decision (TRUST-POLICY C3 `--replace`).
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct ResurrectSeat {
+    pub seat: SeatId,
+    pub target: HostTargetId,
+    pub host: HostLocator,
+    pub replace: Option<SeatId>,
     pub operation: OperationId,
 }
 
@@ -411,6 +434,8 @@ pub enum ServiceResult {
     SeatUnretired(SeatUnretired),
     RetirementFinalized(SeatId),
     ContinuityAlerts(Page<ContinuityAlert>),
+    /// `ResurrectSeat`: the seat now resolved on the target.
+    SeatResurrected(SeatId),
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -536,6 +561,7 @@ impl ServiceOperation {
             Self::ReleaseContinuityKey(request) => Some(&request.operation),
             Self::UnretireSeat(request) => Some(&request.operation),
             Self::FinalizeRetirement(request) => Some(&request.operation),
+            Self::ResurrectSeat(request) => Some(&request.operation),
             Self::History(_) | Self::Receipts(_) | Self::ContinuityAlerts(_) => None,
         }
     }
@@ -689,11 +715,12 @@ mod contract_tests {
     }
 
     #[test]
-    fn register_accepts_v1_v2_and_v3_only() {
+    fn register_accepts_v1_through_v4_only() {
         for capability in [
             SERVICE_SESSION_CAPABILITY,
             SERVICE_SESSION_CAPABILITY_V2,
             SERVICE_SESSION_CAPABILITY_V3,
+            SERVICE_SESSION_CAPABILITY_V4,
         ] {
             let mut request = registration();
             request.service = ServiceRequest::Register(ServiceRegister {
@@ -701,7 +728,7 @@ mod contract_tests {
             });
             assert_eq!(request.validate(), Ok(()), "{capability}");
         }
-        for capability in ["service_session_v4", "", "future-service"] {
+        for capability in ["service_session_v5", "", "future-service"] {
             let mut request = registration();
             request.service = ServiceRequest::Register(ServiceRegister {
                 capability: capability.into(),
@@ -907,6 +934,7 @@ mod contract_tests {
             ServiceSessionLevel::V1,
             ServiceSessionLevel::V2,
             ServiceSessionLevel::V3,
+            ServiceSessionLevel::V4,
         ] {
             assert_eq!(
                 ServiceSessionLevel::from_capability(level.capability()),
@@ -914,9 +942,10 @@ mod contract_tests {
             );
         }
         assert_eq!(
-            ServiceSessionLevel::from_capability("service_session_v4"),
+            ServiceSessionLevel::from_capability("service_session_v5"),
             None
         );
+        assert!(ServiceSessionLevel::V3 < ServiceSessionLevel::V4);
         assert!(ServiceSessionLevel::V1 < ServiceSessionLevel::V2);
         assert!(ServiceSessionLevel::V2 < ServiceSessionLevel::V3);
         assert_eq!(

@@ -898,8 +898,13 @@ pub(crate) fn insert_invitation(
         .map_err(store_error)?;
     let invitee_n = i64::try_from(p.invitee_n)
         .map_err(|_| api_error(ErrorCode::InvalidRequest, "invitee ordinal out of range"))?;
-    let state = if seat_state == "retired"
-        && !crate::store::seats::reversible::is_frozen(tx, &p.invitee)?
+    // An invitation created by an expiry already recorded for its invitee settles at write, as
+    // every copy present at the expiry did (ht-eu3v). A service-required one never expires.
+    let expired = matches!(placement, Placement::Voluntary)
+        && crate::store::seats::reversible::expired_episode(tx, p.invitee.as_str(), p.created_at)?
+            .is_some();
+    let state = if expired
+        || (seat_state == "retired" && !crate::store::seats::reversible::is_frozen(tx, &p.invitee)?)
     {
         "recipient_retired"
     } else if prior

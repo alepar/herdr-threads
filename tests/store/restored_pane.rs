@@ -245,14 +245,14 @@ fn restored_pane_closed_for_the_grace_retires_the_seat() {
     assert!(
         outcomes
             .iter()
-            .any(|o| matches!(o, ReconciliationOutcome::RetirementStarted(_)))
+            .any(|o| matches!(o, ReconciliationOutcome::RetiredReversibly))
     );
     assert_eq!(fx.state(), "retired");
     assert_eq!(fx.watch(), None, "a retirement deletes its watch");
     let evidence: Option<String> = fx
         .conn
         .query_row(
-            "SELECT closure_evidence FROM retirements WHERE seat_id='s1'",
+            "SELECT closure_evidence FROM reversible_retirements WHERE seat_id='s1'",
             [],
             |r| r.get(0),
         )
@@ -485,7 +485,7 @@ fn the_applier_refuses_a_retirement_whose_evidence_changed_after_the_page() {
     // Unchanged evidence retires.
     assert!(matches!(
         apply(&mut fx, retire),
-        ReconciliationOutcome::RetirementStarted(_)
+        ReconciliationOutcome::RetiredReversibly
     ));
     assert_eq!(fx.state(), "retired");
 }
@@ -1006,14 +1006,14 @@ fn absence_evidence_is_recorded_and_holds_lift() {
     assert!(
         outcomes
             .iter()
-            .any(|o| matches!(o, ReconciliationOutcome::RetirementStarted(_))),
+            .any(|o| matches!(o, ReconciliationOutcome::RetiredReversibly)),
         "{outcomes:?}"
     );
     type JobRow = (Option<String>, Option<String>, String, i64, String, i64);
     let row: JobRow = fx
         .conn
         .query_row(
-            "SELECT absence_evidence,closure_evidence,closure_boot,closure_epoch,closure_target,closure_generation FROM retirements WHERE seat_id='s1'",
+            "SELECT absence_evidence,closure_evidence,closure_boot,closure_epoch,closure_target,closure_generation FROM reversible_retirements WHERE seat_id='s1'",
             [],
             |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?, r.get(3)?, r.get(4)?, r.get(5)?)),
         )
@@ -1182,7 +1182,7 @@ fn a_target_showing_another_seats_pane_counts_as_absent() {
         let evidence: Option<String> = fx
             .conn
             .query_row(
-                "SELECT absence_evidence FROM retirements WHERE seat_id='s1'",
+                "SELECT absence_evidence FROM reversible_retirements WHERE seat_id='s1'",
                 [],
                 |r| r.get(0),
             )

@@ -213,6 +213,9 @@ impl PeerIdentity {
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct OperatorActor {
     effective_uid: u32,
+    /// Set for a `service_session_v4` `ResurrectSeat` (ht-eu3v), which takes the operator's
+    /// repair path as the registered service, not as the operator.
+    service: Option<super::ids::ServiceAuthorId>,
 }
 impl OperatorActor {
     pub(crate) fn effective_uid(&self) -> u32 {
@@ -221,14 +224,32 @@ impl OperatorActor {
     pub(crate) fn from_peer(peer: PeerIdentity, owner_uid: u32) -> Option<Self> {
         (peer.effective_uid == owner_uid).then_some(Self {
             effective_uid: owner_uid,
+            service: None,
         })
     }
+    /// The registered service session `author` resurrecting a seat through the repair path.
+    pub(crate) fn for_service(owner_uid: u32, author: super::ids::ServiceAuthorId) -> Self {
+        Self {
+            effective_uid: owner_uid,
+            service: Some(author),
+        }
+    }
+    /// The service session author, when this is a service `ResurrectSeat`.
+    pub(crate) fn service_author(&self) -> Option<&super::ids::ServiceAuthorId> {
+        self.service.as_ref()
+    }
     pub fn audit_label(&self) -> String {
-        format!("operator:local-user:{}", self.effective_uid)
+        match &self.service {
+            Some(author) => format!("service:{}", author.as_str()),
+            None => format!("operator:local-user:{}", self.effective_uid),
+        }
     }
     /// Canonical durable operation scope, isolated by daemon instance.
     pub fn operation_scope(&self, instance: &str) -> String {
-        format!("operator:{instance}:local-user:{}", self.effective_uid)
+        match &self.service {
+            Some(author) => format!("service-resurrect:{instance}:{}", author.as_str()),
+            None => format!("operator:{instance}:local-user:{}", self.effective_uid),
+        }
     }
 }
 

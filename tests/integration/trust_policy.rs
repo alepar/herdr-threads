@@ -2491,7 +2491,7 @@ impl World {
     fn closure_evidence(&self, seat: &str) -> Option<String> {
         self.database()
             .query_row(
-                "SELECT closure_evidence FROM retirements WHERE seat_id=?1",
+                "SELECT closure_evidence FROM reversible_retirements WHERE seat_id=?1",
                 [seat],
                 |r| r.get(0),
             )

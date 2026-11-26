@@ -254,6 +254,23 @@ impl Drop for WriterProgressGuard<'_> {
     }
 }
 impl SqliteStore {
+    /// Test support: a closure retirement finalized at once, as the 7 d clock would finalize a
+    /// keyless close (ht-eu3v), for fixtures that exercise the final retirement job.
+    #[cfg(any(test, feature = "test-support"))]
+    pub fn begin_final_retirement_for_test(
+        &self,
+        seat: SeatId,
+        proof: ClosureEvidence,
+        budget: &CallBudget,
+    ) -> Result<RetirementStart, ApiError> {
+        let mut writer = self.writer(budget)?;
+        if control::begin_retirement(&self.context, &mut writer, seat.clone(), proof.clone())?
+            == RetirementStart::Reversible
+        {
+            seats::reversible::finalize_now_for_test(&self.context, &mut writer, &seat)?;
+        }
+        control::begin_retirement(&self.context, &mut writer, seat, proof)
+    }
     fn check_service_read_instance(
         &self,
         connection: &crate::ports::ServiceConnectionAuthority,
@@ -3094,6 +3111,10 @@ impl StorePort for SqliteStore {
             self.clock().utc_now().0,
             HANDOFF_DUE_BATCH_LIMIT,
         )
+    }
+    fn timed_retirements(&self, budget: &CallBudget) -> Result<usize, ApiError> {
+        let mut writer = self.writer(budget)?;
+        seats::reversible::timed_pass(&self.context, &mut writer, &self.instance)
     }
     fn due_obligations(
         &self,

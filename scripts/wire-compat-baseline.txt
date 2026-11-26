@@ -179,6 +179,9 @@ field RetagPayload.tag
 field SeatCreatedPayload.display_name
 field SeatCreatedPayload.kind
 field SeatCreatedPayload.seat
+field SeatObligationsExpiredPayload.expired_at
+field SeatObligationsExpiredPayload.retired_at
+field SeatObligationsExpiredPayload.seat
 field SeatRetiredPayload.reason
 field SeatRetiredPayload.retired_at
 field SeatRetiredPayload.seat

@@ -414,17 +414,6 @@ fn closed_retirement_of_key_holder_writes_reversible_row_and_no_job() {
     );
 }
 
-/// Kills: reversibility leaking to a seat that holds no key.
-#[test]
-fn keyless_close_stays_final() {
-    let f = fx(&["s1"]);
-    let RetirementStart::Job(_) = f.close("s1").unwrap() else {
-        panic!("a keyless close yields a job");
-    };
-    assert_eq!(f.row_state("s1"), None);
-    assert_eq!(f.rows("retirements", "s1"), 1);
-}
-
 /// Kills: a retried proof reading as stale (the seat is retired, its target unchanged), or writing
 /// a second row.
 #[test]
@@ -1545,7 +1534,12 @@ fn invitation_warnings_reach_a_frozen_origin() {
             [],
         )
         .unwrap();
-        f.close("s1").unwrap();
+        if keyed {
+            f.close("s1").unwrap();
+        } else {
+            // A final retirement: a keyless close is reversible too (ht-eu3v).
+            f.operator_retire("s1", "final").unwrap();
+        }
         f.at(1_000);
         invitation_due::scan_invitation_due_batch(&f.store.context, &mut db, None, 10).unwrap();
         let warning: String = db
@@ -1613,4 +1607,482 @@ fn unretire_is_legal_under_the_armed_write_guard() {
     )
     .unwrap();
     tx.commit().unwrap();
+}
+
+// ---- ht-eu3v: keyless reversible retirement, obligation expiry, finalization and resurrect ----
+
+use crate::protocol::results::CommandResult;
+
+const DAY: i64 = OBLIGATION_EXPIRY_MS;
+const WEEK: i64 = KEYLESS_FINALIZE_MS;
+
+impl Fx {
+    fn timed_pass(&self) -> usize {
+        StorePort::timed_retirements(&self.store, &budget()).unwrap()
+    }
+    fn timed(&self) -> Vec<TimedDue> {
+        timed_due(&self.db(), self.store.context.clock().utc_now()).unwrap()
+    }
+    /// An ordinary pending invitation of `seat` to thread `t` from seat `inviter`, created at
+    /// `created`.
+    fn ordinary_invitation(&self, id: &str, seat: &str, created: i64) {
+        self.db()
+            .execute(
+                "INSERT INTO invitations(id,thread_id,seat_id,episode,state,created_decision_seq,created_at,frozen_duration_ms,deadline_at,origin_node,confirmation,inviter_seat_id) VALUES (?1,'t',?2,(SELECT coalesce(max(episode),0)+1 FROM invitations),'pending',1,?3,50,?4,(SELECT id FROM local_node),'require_ack','inviter')",
+                params![id, seat, created, created + 10 * WEEK],
+            )
+            .unwrap();
+    }
+    fn invitation_state(&self, id: &str) -> String {
+        self.db()
+            .query_row("SELECT state FROM invitations WHERE id=?1", [id], |r| {
+                r.get(0)
+            })
+            .unwrap()
+    }
+    fn receipt_row(&self, message: &MessageId, seat: &str) -> (String, Option<i64>) {
+        self.db()
+            .query_row(
+                "SELECT state,retired_at FROM receipt_state WHERE message_id=?1 AND seat_id=?2",
+                params![message.as_str(), seat],
+                |r| Ok((r.get(0)?, r.get(1)?)),
+            )
+            .unwrap()
+    }
+    /// A fresh current observation of `pane`, published for an operator guard.
+    fn observe(&self, pane: &str) -> crate::ports::HostObservation {
+        self.db()
+            .execute(
+                "INSERT OR REPLACE INTO observed_targets(host_id,target_id,host_boot,epoch,generation,observed_at,provenance,terminal_id,incarnation,incarnation_source_kind,connection_epoch) VALUES ((SELECT min(host_id) FROM herdr_hosts),?1,'b',1,1,0,'fresh','term-'||?1,'inc','coherent_enumeration',1)",
+                [pane],
+            )
+            .unwrap();
+        crate::ports::HostObservation {
+            focused: false,
+            target: HostTargetId::new(pane),
+            host_boot: HostBootId::new("b"),
+            epoch: 1,
+            generation: 1,
+            observed_at_utc: UtcMillis(0),
+            observed_at_mono: MonoInstant(1),
+            provenance: crate::ports::ObservationProvenance::FreshCurrentTarget,
+            occupant: None,
+            ui: crate::ports::HostUiState::Idle,
+            terminal: Some(crate::protocol::ids::TerminalId::new(format!(
+                "term-{pane}"
+            ))),
+            occupancy: crate::ports::StructuralOccupancy::EmptyShell,
+            incarnation: crate::ports::IncarnationEvidence::Unknown,
+            execution: crate::ports::ExecutionEvidence::Unknown,
+            call_id: crate::protocol::ids::HostCallId::new(format!("call-{pane}")),
+            connection_epoch: 1,
+            observation_sequence: 1,
+            started_at_mono: MonoInstant(1),
+            completed_at_mono: MonoInstant(1),
+        }
+    }
+    /// `seat rebind SEAT --pane PANE [--replace NEW]` by `actor`.
+    fn rebind_as(
+        &self,
+        actor: OperatorActor,
+        seat: &str,
+        pane: &str,
+        replace: Option<&str>,
+        operation: &str,
+    ) -> Result<CommandResult, ApiError> {
+        use crate::protocol::commands::{OperatorCommand, OperatorRebind, OperatorReplace};
+        let observation = self.observe(pane);
+        let host = crate::test_support::test_host_locator();
+        let request = match replace {
+            Some(new) => {
+                let command = OperatorReplace {
+                    seat: SeatId::new(seat),
+                    target: HostTargetId::new(pane),
+                    host,
+                    replace: SeatId::new(new),
+                    operation: OperationId::new(operation),
+                };
+                let guard = crate::ports::OperatorTargetGuard::try_new(
+                    INSTANCE,
+                    crate::test_support::test_host_id(),
+                    &OperatorCommand::Replace(command.clone()),
+                    observation,
+                )
+                .unwrap();
+                crate::ports::OperatorRequest::Replace(command, guard)
+            }
+            None => {
+                let command = OperatorRebind {
+                    seat: SeatId::new(seat),
+                    target: HostTargetId::new(pane),
+                    host,
+                    operation: OperationId::new(operation),
+                };
+                let guard = crate::ports::OperatorTargetGuard::try_new(
+                    INSTANCE,
+                    crate::test_support::test_host_id(),
+                    &OperatorCommand::Rebind(command.clone()),
+                    observation,
+                )
+                .unwrap();
+                crate::ports::OperatorRequest::Rebind(command, guard)
+            }
+        };
+        let mut db = self.db();
+        seats::mutate_operator(&self.store.context, &mut db, INSTANCE, request, actor, None)
+    }
+    fn rebind(
+        &self,
+        seat: &str,
+        pane: &str,
+        replace: Option<&str>,
+        operation: &str,
+    ) -> Result<CommandResult, ApiError> {
+        self.rebind_as(
+            OperatorActor::from_peer(PeerIdentity::from_kernel(501), 501).unwrap(),
+            seat,
+            pane,
+            replace,
+            operation,
+        )
+    }
+    fn decisions(&self, seat: &str) -> Vec<(String, Option<String>)> {
+        let db = self.db();
+        let mut statement = db
+            .prepare("SELECT kind,operator_label FROM allocation_decisions WHERE seat_id=?1 ORDER BY ordinal")
+            .unwrap();
+        statement
+            .query_map([seat], |r| Ok((r.get(0)?, r.get(1)?)))
+            .unwrap()
+            .collect::<Result<_, _>>()
+            .unwrap()
+    }
+}
+
+/// Kills: reversibility withheld from a keyless seat; clocks stored, missing or keyed rows timed.
+#[test]
+fn keyless_close_is_reversible_and_timed() {
+    let f = fx(&["s1", "s2"]);
+    f.key("s2");
+    f.at(300);
+    assert_eq!(f.close("s1").unwrap(), RetirementStart::Reversible);
+    assert_eq!(f.close("s2").unwrap(), RetirementStart::Reversible);
+    assert_eq!(f.row_state("s1"), Some(RowState::Reversible));
+    assert_eq!(f.rows("retirements", "s1"), 0);
+    assert_eq!(f.seat_state("s1"), "retired");
+    f.at(300 + DAY - 1);
+    assert!(f.timed().is_empty(), "nothing due before 24 h");
+    f.at(300 + DAY);
+    assert_eq!(
+        f.timed(),
+        vec![TimedDue {
+            seat: SeatId::new("s1"),
+            cutover_at: 300,
+            expire: true,
+            finalize: false
+        }],
+        "only the keyless row is timed"
+    );
+    f.at(300 + WEEK);
+    let due = f.timed();
+    assert_eq!(due.len(), 1);
+    assert!(due[0].expire && due[0].finalize);
+}
+
+/// Kills: expiry missing a receipt kind, settling a service-required invitation, touching
+/// memberships, or not recording itself; a second pass settling or recording twice.
+#[test]
+fn expiry_settles_ordinary_obligations_and_keeps_memberships() {
+    let f = fx(&["s1", "inviter"]);
+    let logical = f.send("logical", &["s1"], 10 * WEEK as u64).unwrap();
+    let materialized = f.send("materialized", &["s1"], 10 * WEEK as u64).unwrap();
+    f.drain(&materialized);
+    f.ordinary_invitation("ord", "s1", 100);
+    let ServiceResult::Invitation(required) = f
+        .op(ServiceOperation::Invite(ServiceInvite {
+            thread: ThreadId::new("t"),
+            seat: SeatId::new("s1"),
+            constraint: InvitationConstraint::Required,
+            deadline_millis: Some(10 * WEEK as u64),
+            operation: OperationId::new("required"),
+        }))
+        .unwrap()
+    else {
+        panic!("required invitation");
+    };
+    f.at(300);
+    f.close("s1").unwrap();
+    f.at(300 + DAY);
+    assert_eq!(f.timed_pass(), 1);
+    for message in [&logical, &materialized] {
+        assert_eq!(
+            f.receipt_row(message, "s1"),
+            ("recipient_retired".into(), Some(300))
+        );
+    }
+    assert_eq!(f.invitation_state("ord"), "recipient_retired");
+    assert_eq!(
+        f.invitation_state(required.invitation.as_str()),
+        "pending",
+        "a service-required invitation never expires"
+    );
+    assert_eq!(
+        f.text("SELECT state FROM memberships WHERE seat_id='s1'"),
+        "joined"
+    );
+    assert_eq!(
+        f.int("SELECT count(*) FROM membership_intervals WHERE seat_id='s1' AND left_seq IS NULL"),
+        1
+    );
+    assert_eq!(f.row_state("s1"), Some(RowState::Reversible));
+    assert_eq!(
+        f.int("SELECT obligations_expired_at FROM reversible_retirements WHERE seat_id='s1'"),
+        300 + DAY
+    );
+    assert_eq!(
+        f.int("SELECT count(*) FROM obligation_expiries WHERE seat_id='s1' AND retired_at=300"),
+        1
+    );
+    assert_eq!(f.timed_pass(), 0, "expired once");
+}
+
+/// Kills: a resurrect that loses memberships, revives an expired obligation, or leaves the row;
+/// the decision trail missing the un-retire.
+#[test]
+fn operator_rebind_resurrects_a_reversible_keyless_seat_after_expiry() {
+    let f = fx(&["s1"]);
+    let message = f.send("m", &["s1"], 10 * WEEK as u64).unwrap();
+    f.drain(&message);
+    f.at(300);
+    f.close("s1").unwrap();
+    f.at(300 + DAY);
+    f.timed_pass();
+    assert_eq!(
+        f.rebind("s1", "p2", None, "resurrect").unwrap(),
+        CommandResult::OperatorRebound(SeatId::new("s1"))
+    );
+    assert_eq!(f.seat_state("s1"), "resolved");
+    assert_eq!(f.text("SELECT target_id FROM seats WHERE id='s1'"), "p2");
+    assert_eq!(f.row_state("s1"), None);
+    assert_eq!(
+        f.text("SELECT state FROM memberships WHERE seat_id='s1'"),
+        "joined"
+    );
+    assert_eq!(
+        f.receipt_row(&message, "s1").0,
+        "recipient_retired",
+        "an expired obligation stays settled"
+    );
+    let kinds: Vec<String> = f.decisions("s1").into_iter().map(|(k, _)| k).collect();
+    assert_eq!(kinds, vec!["operator_unretire", "operator_rebind"]);
+    assert!(f.timed().is_empty());
+}
+
+/// Kills: the un-retire not shifting what is still pending (a resurrect before expiry).
+#[test]
+fn resurrect_before_expiry_keeps_obligations_pending_and_shifts_them() {
+    let f = fx(&["s1"]);
+    let message = f.send("m", &["s1"], 1_000).unwrap();
+    f.drain(&message);
+    let deadline_before = f.receipt(&message, "s1").deadline_at.unwrap();
+    f.at(300);
+    f.close("s1").unwrap();
+    f.at(300 + DAY - 1);
+    assert_eq!(f.timed_pass(), 0);
+    f.rebind("s1", "p2", None, "resurrect").unwrap();
+    let receipt = f.receipt(&message, "s1");
+    assert_eq!(receipt.state, EffectiveReceiptState::Pending);
+    assert_eq!(
+        receipt.deadline_at.unwrap(),
+        deadline_before + (DAY - 1),
+        "the frozen time is added back"
+    );
+    f.at(300 + WEEK);
+    assert_eq!(f.timed_pass(), 0, "a resurrected seat has no clocks");
+    assert_eq!(f.seat_state("s1"), "resolved");
+}
+
+/// Kills: a daemon down past both clocks finalizing before it expired, or finalizing twice.
+#[test]
+fn both_clocks_overdue_expire_then_finalize() {
+    let f = fx(&["s1"]);
+    let message = f.send("m", &["s1"], 10 * WEEK as u64).unwrap();
+    f.drain(&message);
+    f.at(300);
+    f.close("s1").unwrap();
+    f.at(300 + 2 * WEEK);
+    assert_eq!(f.timed_pass(), 2);
+    assert_eq!(f.row_state("s1"), None);
+    assert_eq!(f.rows("retirements", "s1"), 1);
+    assert_eq!(
+        f.int("SELECT count(*) FROM obligation_expiries WHERE seat_id='s1'"),
+        1,
+        "expired before the job ran"
+    );
+    let kinds: Vec<String> = f.decisions("s1").into_iter().map(|(k, _)| k).collect();
+    assert_eq!(kinds, vec!["window_finalize"]);
+    f.settle_job("s1");
+    assert_eq!(
+        f.text("SELECT state FROM memberships WHERE seat_id='s1'"),
+        "retired"
+    );
+    assert_eq!(f.timed_pass(), 0);
+    assert_eq!(
+        f.rebind("s1", "p2", None, "late").unwrap_err().detail,
+        "seat s1 retired finally; it can no longer be resurrected"
+    );
+}
+
+/// Kills: an operator retire of a closed keyless seat staying reversible.
+#[test]
+fn operator_retire_finalizes_a_timed_row_at_once() {
+    let f = fx(&["s1"]);
+    f.at(300);
+    f.close("s1").unwrap();
+    f.operator_retire("s1", "retire").unwrap();
+    assert_eq!(f.row_state("s1"), None);
+    assert_eq!(f.rows("retirements", "s1"), 1);
+}
+
+/// Kills: `--replace` leaving NEW live, or OLD not placed on NEW's pane.
+#[test]
+fn operator_rebind_replace_resurrects_onto_a_fresh_seats_pane() {
+    let f = fx(&["s1", "s3"]);
+    f.at(300);
+    f.close("s1").unwrap();
+    f.rebind("s1", "s3", Some("s3"), "resurrect").unwrap();
+    assert_eq!(f.seat_state("s1"), "resolved");
+    assert_eq!(f.text("SELECT target_id FROM seats WHERE id='s1'"), "s3");
+    assert_eq!(f.seat_state("s3"), "retired");
+    assert_eq!(f.rows("retirements", "s3"), 1, "NEW retires finally");
+}
+
+/// Kills: a service resurrect of a keyed seat by a non-owner, or of a seat with no reversible
+/// retirement; the service label missing from the trail.
+#[test]
+fn service_resurrect_authority_and_trail() {
+    let f = fx(&["s1", "s2", "s4"]);
+    f.key("s2");
+    f.at(300);
+    f.close("s1").unwrap();
+    f.close("s2").unwrap();
+    let stranger = OperatorActor::for_service(501, ServiceAuthorId::new("stranger"));
+    assert_eq!(
+        f.rebind_as(stranger.clone(), "s2", "p2", None, "s2")
+            .unwrap_err()
+            .code,
+        ErrorCode::Unauthorized,
+        "a keyed seat is its owner's"
+    );
+    assert_eq!(
+        f.rebind_as(stranger.clone(), "s4", "p4", None, "s4")
+            .unwrap_err()
+            .code,
+        ErrorCode::NotFound,
+        "a live seat is not resurrected"
+    );
+    f.rebind_as(stranger, "s1", "p1", None, "s1").unwrap();
+    assert_eq!(f.seat_state("s1"), "resolved");
+    assert_eq!(
+        f.decisions("s1"),
+        vec![
+            ("service_unretire".into(), Some("service:stranger".into())),
+            ("service_rebind".into(), Some("service:stranger".into())),
+        ]
+    );
+    let owner = OperatorActor::for_service(501, f.connection.author().clone());
+    f.rebind_as(owner, "s2", "p2", None, "s2-owner").unwrap();
+    assert_eq!(f.seat_state("s2"), "resolved");
+}
+
+/// Kills: a keyless finalization refused to a service, or a keyed one allowed to a stranger.
+#[test]
+fn service_finalize_of_a_keyless_seat_names_the_service() {
+    let f = fx(&["s1"]);
+    f.at(300);
+    f.close("s1").unwrap();
+    assert_eq!(
+        f.finalize("s1", "f").unwrap(),
+        ServiceResult::RetirementFinalized(SeatId::new("s1"))
+    );
+    let (kind, label) = f.decisions("s1").pop().unwrap();
+    assert_eq!(kind, "service_finalize");
+    assert_eq!(
+        label,
+        Some(format!("service:{}", f.connection.author().as_str()))
+    );
+}
+
+/// Kills: a late window obligation (created before a recorded expiry) left pending on any seat
+/// state, and a later one settled.
+#[test]
+fn an_obligation_created_before_a_recorded_expiry_settles_at_write() {
+    let f = fx(&["s1", "inviter"]);
+    f.at(300);
+    f.close("s1").unwrap();
+    f.at(300 + DAY);
+    f.timed_pass();
+    f.rebind("s1", "p2", None, "resurrect").unwrap();
+    let db = f.db();
+    let tx = db.unchecked_transaction().unwrap();
+    assert_eq!(
+        expired_episode(&tx, "s1", 300 + DAY).unwrap(),
+        Some(300),
+        "created at the expiry: covered"
+    );
+    assert_eq!(expired_episode(&tx, "s1", 300 + DAY + 1).unwrap(), None);
+    drop(tx);
+    // A peer's invitation created during the window, first written now, settles at write.
+    let late = crate::sync::facts::invitation::InvitationCreatedPayload {
+        invitation: crate::protocol::ids::InvitationId::new("late"),
+        thread: ThreadId::new("t"),
+        inviter: Some(SeatId::new("inviter")),
+        inviter_kind: Default::default(),
+        invitee: SeatId::new("s1"),
+        invitee_n: 0,
+        created_at: 400,
+        duration_ms: 1_000,
+        deadline_at: 1_400,
+        actor_label: None,
+    };
+    let fresh = crate::sync::facts::invitation::InvitationCreatedPayload {
+        invitation: crate::protocol::ids::InvitationId::new("fresh"),
+        created_at: 300 + DAY + 10,
+        deadline_at: 300 + DAY + 1_010,
+        ..late.clone()
+    };
+    let mut db = f.db();
+    let tx = db.transaction().unwrap();
+    let input = crate::store::materialize::local_only(
+        &tx,
+        DecisionInstant {
+            utc: UtcMillis(300 + DAY + 20),
+            monotonic: MonoInstant(1),
+        },
+    )
+    .unwrap();
+    crate::store::control::materialize_invitation(&tx, &input, &late).unwrap();
+    crate::store::control::materialize_invitation(&tx, &input, &fresh).unwrap();
+    tx.commit().unwrap();
+    assert_eq!(f.invitation_state("late"), "recipient_retired");
+    assert_eq!(f.invitation_state("fresh"), "pending");
+}
+
+/// Kills: `seat.obligations_expired` acting only on a frozen episode (arrival after the un-retire)
+/// or settling twice on re-issue.
+#[test]
+fn recorded_expiry_settles_whatever_the_seat_state_and_is_idempotent() {
+    let f = fx(&["s1", "inviter"]);
+    f.ordinary_invitation("ord", "s1", 100);
+    // A live seat (as on a peer that applied seat.unretired first) still settles.
+    let db = f.db();
+    let tx = db.unchecked_transaction().unwrap();
+    record_expiry(&tx, &SeatId::new("s1"), 50, 200).unwrap();
+    record_expiry(&tx, &SeatId::new("s1"), 50, 200).unwrap();
+    tx.commit().unwrap();
+    assert_eq!(f.invitation_state("ord"), "recipient_retired");
+    assert_eq!(
+        f.int("SELECT count(*) FROM obligation_expiries WHERE seat_id='s1'"),
+        1
+    );
 }

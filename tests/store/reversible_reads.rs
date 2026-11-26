@@ -342,11 +342,21 @@ fn retired_state_reads_reversible_or_final_and_absent_otherwise() {
     assert_eq!(finalized.retirement_state, None, "final is absent");
     assert!(finalized.retirement.is_some());
 
-    // A keyless close never went through a reversible row: the pre-branch shape.
+    // A keyless close is reversible too (ht-eu3v); finalized, it is the pre-branch shape.
     f.close("s2").unwrap();
     let keyless = f.inspect("s2");
     assert_eq!(keyless.summary.continuity, ContinuityStatus::Retired);
-    assert_eq!(keyless.retirement_state, None, "keyless final is absent");
+    assert_eq!(
+        keyless.retirement_state,
+        Some(SeatRetirementState::Reversible),
+        "a keyless close is reversible"
+    );
+    f.finalize("s2", "f2").unwrap();
+    assert_eq!(
+        f.inspect("s2").retirement_state,
+        None,
+        "keyless final is absent"
+    );
 }
 
 /// `SeatInspection`'s field set at protocol 9 (v3.0.0, `main` before ht-ma6i), as a stale client
@@ -377,6 +387,7 @@ fn a_finally_retired_inspection_decodes_under_the_protocol_9_shape() {
     assert_eq!(reversible["retirement_state"], "reversible");
     f.finalize("s1", "f").unwrap();
     f.close("s2").unwrap();
+    f.finalize("s2", "f2").unwrap();
     for seat in ["s1", "s2"] {
         let value = serde_json::to_value(f.inspect(seat)).unwrap();
         assert_eq!(value["summary"]["continuity"], "retired", "{seat}");

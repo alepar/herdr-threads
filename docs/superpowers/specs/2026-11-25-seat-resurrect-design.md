@@ -129,14 +129,16 @@ ResurrectSeat { seat, target: HostTargetId, host: HostLocator, replace: Option<S
 - Effect: the same transaction as section 4, with `service_unretire` (author recorded) instead of
   `operator_unretire`, and the rebind recorded as `service_rebind:<author>`. `replace` retires a fresh seat on P
   finally (graph's lost-response fallback: requirement (3)); NEW must be resolved on P, as for the operator.
-- `FinalizeRetirement` from a v4 session also accepts a keyless reversible seat (graph's early finalize at purge).
-  A v3 session's answers are unchanged (`Unauthorized` for a keyless seat).
+- `FinalizeRetirement` also accepts a keyless reversible seat from any service session (graph's early finalize at
+  purge). Implementation note: the store does not see the session level, so this applies at every level; the only
+  change is that an `Unauthorized` answer for a keyless seat becomes success, and a keyless seat has no owner to protect.
 
 ## 6. Visibility
 
-`seat inspect` already reports `retirement.state = reversible`. For a timed row its text and JSON add the
-derived `expires_at` and `finalizes_at` and the recorded `obligations_expired_at`, so graph and the operator can tell reversible from final and
-see when it closes. Graph treats reversible-keyless as final until its follow-up adopts `ResurrectSeat`
+`seat inspect` already reports `retirement_state: reversible` for a reversibly retired seat and nothing for a final
+one, which is what graph asked for. Implementation note: no clock fields are added, because `SeatInspection` decodes
+with `deny_unknown_fields` and an older client would refuse them; the clocks are documented as `retired_at + 24 h`
+and `retired_at + 7 d`. Graph treats reversible-keyless as final until its follow-up adopts `ResurrectSeat`
 (graph caution).
 
 ## 7. Cross-node
@@ -158,7 +160,9 @@ writes them today.
   (graph's requirement (4)); their service owns them and can release them.
 - Expiry and finalization run on the home daemon's deadline lane: a daemon that is down past a deadline acts on its
   first tick after start, never earlier.
-- A keyless seat's service authority is any v4 service session (cooperative, same-user).
+- A keyless seat's service authority is any service session (cooperative, same-user).
+- A thread whose remaining members are all reversibly retired archives only after they finalize (7 d): a reversible
+  seat stays a live member for archival (found in implementation).
 
 ## 9. TRUST-POLICY changes (same commit)
 

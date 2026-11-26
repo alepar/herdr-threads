@@ -1594,7 +1594,7 @@ fn ordinary_empty_allocation_survives_a_later_coherent_publication() {
             &budget
         )
         .unwrap(),
-        ReconciliationOutcome::RetirementStarted(_)
+        ReconciliationOutcome::RetiredReversibly
     ));
     let retired: (String, i64) = conn
         .query_row(
@@ -3920,6 +3920,7 @@ mod hc_closure {
                         outcome,
                         ReconciliationOutcome::Applied
                             | ReconciliationOutcome::RetirementStarted(_)
+                            | ReconciliationOutcome::RetiredReversibly
                     ),
                     "{transition:?}: {outcome:?}"
                 );

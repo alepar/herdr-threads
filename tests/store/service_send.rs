@@ -880,7 +880,7 @@ fn retirement_settles_service_obligation_to_recipient_retired() {
     let f = Fixture::with_joined(&["s1", "s2"]);
     let id = f.sent("k", "retire me", &["s1", "s2"]).summary.message;
     f.drain(&id);
-    let job = StorePort::begin_retirement(
+    let job = crate::store::SqliteStore::begin_final_retirement_for_test(
         &f.store,
         SeatId::new("s1"),
         ClosureEvidence {

@@ -42,9 +42,402 @@ use crate::{
     },
     sync::facts::{
         FactKind,
-        seat::{RetireReason, SeatUnretired, SeatUnretiredPayload},
+        seat::{
+            RetireReason, SeatObligationsExpired, SeatObligationsExpiredPayload, SeatUnretired,
+            SeatUnretiredPayload,
+        },
     },
 };
+
+/// How long after a keyless seat's close what it is owed expires (ht-eu3v, D1).
+pub(crate) const OBLIGATION_EXPIRY_MS: i64 = 24 * 60 * 60 * 1000;
+/// How long after a keyless seat's close its reversible retirement finalizes (ht-eu3v, D1).
+pub(crate) const KEYLESS_FINALIZE_MS: i64 = 7 * 24 * 60 * 60 * 1000;
+/// Test-support builds: overrides [`OBLIGATION_EXPIRY_MS`] for a spawned daemon, which has no
+/// injected clock.
+pub const TEST_OBLIGATION_EXPIRY_ENV: &str = "HT_TEST_OBLIGATION_EXPIRY_MS";
+/// Test-support builds: overrides [`KEYLESS_FINALIZE_MS`] for a spawned daemon.
+pub const TEST_KEYLESS_FINALIZE_ENV: &str = "HT_TEST_KEYLESS_FINALIZE_MS";
+
+fn clock_ms(production: i64, _env: &str) -> i64 {
+    #[cfg(any(test, feature = "test-support"))]
+    if let Some(ms) = std::env::var(_env)
+        .ok()
+        .and_then(|ms| ms.parse::<i64>().ok())
+    {
+        return ms;
+    }
+    production
+}
+
+/// The obligation expiry delay in force.
+pub(crate) fn obligation_expiry_ms() -> i64 {
+    clock_ms(OBLIGATION_EXPIRY_MS, TEST_OBLIGATION_EXPIRY_ENV)
+}
+
+/// The keyless finalization delay in force.
+pub(crate) fn keyless_finalize_ms() -> i64 {
+    clock_ms(KEYLESS_FINALIZE_MS, TEST_KEYLESS_FINALIZE_ENV)
+}
+
+/// Timed rows one deadline pass acts on at most; the rest wait for the next pass.
+pub(crate) const TIMED_ROWS_PER_PASS: i64 = 16;
+
+/// A timed row (ht-eu3v): a local `reversible` row whose seat holds no continuity key. Its clocks
+/// are derived from `cutover_at`, so a row replayed from the own log, or a keyed seat whose key is
+/// gone, is timed too. A peer's row (a remote seat) never is: peers act only on facts.
+macro_rules! timed_row_sql {
+    ($rr:literal) => {
+        concat!(
+            $rr,
+            ".state='reversible' AND EXISTS(SELECT 1 FROM seats ts WHERE ts.id=",
+            $rr,
+            ".seat_id AND ts.is_local=1) AND NOT EXISTS(SELECT 1 FROM continuity_keys tk WHERE tk.seat_id=",
+            $rr,
+            ".seat_id)"
+        )
+    };
+}
+
+/// What the deadline lane owes one timed row.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) struct TimedDue {
+    pub seat: SeatId,
+    pub cutover_at: i64,
+    /// Its obligations are due to expire (24 h passed, not yet expired).
+    pub expire: bool,
+    /// It is due to finalize (7 d passed).
+    pub finalize: bool,
+}
+
+/// The timed rows with an expiry or finalization due at `now`, oldest first, at most
+/// [`TIMED_ROWS_PER_PASS`].
+pub(crate) fn timed_due(conn: &Connection, now: UtcMillis) -> Result<Vec<TimedDue>, ApiError> {
+    let mut statement = conn
+        .prepare(concat!(
+            "SELECT rr.seat_id,rr.cutover_at,rr.obligations_expired_at IS NULL AND rr.cutover_at+?2<=?1,rr.cutover_at+?3<=?1 \
+             FROM reversible_retirements rr WHERE ",
+            timed_row_sql!("rr"),
+            " AND ((rr.obligations_expired_at IS NULL AND rr.cutover_at+?2<=?1) OR rr.cutover_at+?3<=?1) \
+             ORDER BY rr.cutover_at,rr.seat_id LIMIT ?4"
+        ))
+        .map_err(store_error)?;
+    let rows = statement
+        .query_map(
+            params![
+                now.0,
+                obligation_expiry_ms(),
+                keyless_finalize_ms(),
+                TIMED_ROWS_PER_PASS
+            ],
+            |r| {
+                Ok(TimedDue {
+                    seat: SeatId::new(r.get::<_, String>(0)?),
+                    cutover_at: r.get(1)?,
+                    expire: r.get(2)?,
+                    finalize: r.get(3)?,
+                })
+            },
+        )
+        .map_err(store_error)?;
+    rows.collect::<Result<_, _>>().map_err(store_error)
+}
+
+/// One deadline pass over the timed rows (ht-eu3v): each due expiry, then each due finalization,
+/// each in its own writer transaction, so a daemon that was down past both clocks expires first.
+/// Returns how many rows it changed.
+pub(crate) fn timed_pass(
+    context: &StoreContext,
+    conn: &mut Connection,
+    instance: &str,
+) -> Result<usize, ApiError> {
+    let now = context.clock().utc_now();
+    let due = timed_due(conn, now)?;
+    let mut changed = 0;
+    for row in due {
+        let decide =
+            |conn: &mut Connection,
+             step: &dyn Fn(&Transaction<'_>, DecisionInstant) -> Result<bool, ApiError>|
+             -> Result<bool, ApiError> {
+                let tx = conn
+                    .transaction_with_behavior(rusqlite::TransactionBehavior::Immediate)
+                    .map_err(store_error)?;
+                let at = DecisionInstant {
+                    utc: context.clock().utc_now(),
+                    monotonic: context.clock().monotonic_now(),
+                };
+                let done = step(&tx, at)?;
+                tx.commit().map_err(store_error)?;
+                Ok(done)
+            };
+        if row.expire
+            && decide(conn, &|tx, at| {
+                expire_obligations(tx, context, &row.seat, row.cutover_at, at)
+            })?
+        {
+            changed += 1;
+        }
+        if row.finalize
+            && decide(conn, &|tx, at| {
+                if !timed_in(tx, &row.seat, row.cutover_at)? {
+                    return Ok(false);
+                }
+                finalize(tx, context, instance, FinalizeBy::Window, &row.seat, at)?;
+                Ok(true)
+            })?
+        {
+            changed += 1;
+        }
+    }
+    Ok(changed)
+}
+
+/// Test support: finalize `seat`'s reversible retirement now, as the 7 d clock would, for fixtures
+/// that exercise the final retirement job after a close.
+#[cfg(any(test, feature = "test-support"))]
+pub fn finalize_now_for_test(
+    context: &StoreContext,
+    conn: &mut Connection,
+    seat: &SeatId,
+) -> Result<(), ApiError> {
+    let instance: String = conn
+        .query_row("SELECT id FROM local_node", [], |r| r.get(0))
+        .map_err(store_error)?;
+    let tx = conn
+        .transaction_with_behavior(rusqlite::TransactionBehavior::Immediate)
+        .map_err(store_error)?;
+    let at = DecisionInstant {
+        utc: context.clock().utc_now(),
+        monotonic: context.clock().monotonic_now(),
+    };
+    finalize(&tx, context, &instance, FinalizeBy::Window, seat, at)?;
+    tx.commit().map_err(store_error)
+}
+
+/// Whether `seat` has a timed row of episode `cutover_at`.
+fn timed_in(conn: &Connection, seat: &SeatId, cutover_at: i64) -> Result<bool, ApiError> {
+    conn.query_row(
+        concat!(
+            "SELECT EXISTS(SELECT 1 FROM reversible_retirements rr WHERE rr.seat_id=?1 AND rr.cutover_at=?2 AND ",
+            timed_row_sql!("rr"),
+            ")"
+        ),
+        params![seat.as_str(), cutover_at],
+        |r| r.get(0),
+    )
+    .map_err(store_error)
+}
+
+/// The home expiry of a timed row (ht-eu3v, spec section 2), in one writer transaction: the row
+/// must still be timed, in episode `cutover_at`, unexpired and 24 h old. Records the expiry,
+/// settles what the seat is owed and authors `seat.obligations_expired` for a published seat.
+/// Returns whether it expired anything (`false`: the row changed under the caller).
+pub(crate) fn expire_obligations(
+    tx: &Transaction<'_>,
+    context: &StoreContext,
+    seat: &SeatId,
+    cutover_at: i64,
+    at: DecisionInstant,
+) -> Result<bool, ApiError> {
+    let due: bool = tx
+        .query_row(
+            "SELECT EXISTS(SELECT 1 FROM reversible_retirements WHERE seat_id=?1 AND cutover_at=?2 \
+             AND obligations_expired_at IS NULL AND cutover_at+?3<=?4)",
+            params![seat.as_str(), cutover_at, obligation_expiry_ms(), at.utc.0],
+            |r| r.get(0),
+        )
+        .map_err(store_error)?;
+    if !due || !timed_in(tx, seat, cutover_at)? {
+        return Ok(false);
+    }
+    tx.execute(
+        "UPDATE reversible_retirements SET obligations_expired_at=?2 WHERE seat_id=?1",
+        params![seat.as_str(), at.utc.0],
+    )
+    .map_err(store_error)?;
+    record_expiry(tx, seat, cutover_at, at.utc.0)?;
+    control::emit_if_published::<SeatObligationsExpired>(
+        tx,
+        context,
+        at,
+        seat,
+        &SeatObligationsExpiredPayload {
+            seat: seat.clone(),
+            retired_at: cutover_at,
+            expired_at: at.utc.0,
+        },
+    )?;
+    Ok(true)
+}
+
+/// Records the expiry of episode `retired_at` at `expired_at` and applies the expiry rule: every
+/// obligation to `seat` still pending and created by `expired_at` settles `recipient_retired`.
+/// The home expiry and every `seat.obligations_expired` apply (peer or own-log replay) take this;
+/// re-applying settles nothing new.
+pub(crate) fn record_expiry(
+    tx: &Transaction<'_>,
+    seat: &SeatId,
+    retired_at: i64,
+    expired_at: i64,
+) -> Result<(), ApiError> {
+    let expired_at = expired_at.max(retired_at);
+    tx.execute(
+        "INSERT OR IGNORE INTO obligation_expiries(seat_id,retired_at,expired_at) VALUES (?1,?2,?3)",
+        params![seat.as_str(), retired_at, expired_at],
+    )
+    .map_err(store_error)?;
+    settle_expired(tx, seat, retired_at, expired_at)
+}
+
+/// The retirement episode whose expiry covers an obligation to `seat` created at `created_at`
+/// (origin clock): the latest recorded expiry at or after it. An obligation first written later
+/// than such an expiry settles at write, as every node's copy present at the expiry did.
+pub(crate) fn expired_episode(
+    conn: &Connection,
+    seat: &str,
+    created_at: i64,
+) -> Result<Option<i64>, ApiError> {
+    conn.query_row(
+        "SELECT retired_at FROM obligation_expiries WHERE seat_id=?1 AND expired_at>=?2 ORDER BY expired_at DESC LIMIT 1",
+        params![seat, created_at],
+        |r| r.get(0),
+    )
+    .optional()
+    .map_err(store_error)
+}
+
+/// The expiry rule (spec section 2) over the node's own rows: ordinary pending invitations to
+/// `seat` (never a service-required one) and its pending ACK-required receipts, physical and
+/// logical, created by `expired_at`, each with the overdue warning the retirement job writes,
+/// classified at the episode's cutover. Memberships, intervals and requirement episodes stay.
+fn settle_expired(
+    tx: &Transaction<'_>,
+    seat: &SeatId,
+    retired_at: i64,
+    expired_at: i64,
+) -> Result<(), ApiError> {
+    use crate::ports::TimeBasis;
+    use crate::protocol::authority::ObligationRef;
+    use crate::protocol::ids::{InvitationId, MessageId};
+    use crate::store::effective::{EffectiveReceiptState, effective_receipt};
+    // Settling what a seat is owed on its expiry is a legal replicated write on every node.
+    #[cfg(feature = "test-support")]
+    let _scope = crate::test_support::write_guard::enter_replicated_write_scope();
+    let basis = TimeBasis::Expiry(UtcMillis(retired_at));
+    let decided = UtcMillis(expired_at);
+    let invitations: Vec<String> = {
+        let mut statement = tx
+            .prepare(
+                "SELECT i.id FROM invitations i WHERE i.seat_id=?1 AND i.state='pending' AND i.created_at<=?2 \
+                 AND NOT EXISTS (SELECT 1 FROM invitation_cancellations c WHERE c.invitation_id=i.id) \
+                 AND NOT EXISTS (SELECT 1 FROM invitation_rejections rejection WHERE rejection.invitation_id=i.id) \
+                 AND NOT EXISTS (SELECT 1 FROM requirement_episodes r WHERE r.invitation_id=i.id AND r.created_decision_seq=i.created_decision_seq) \
+                 ORDER BY i.ordinal",
+            )
+            .map_err(store_error)?;
+        let rows = statement
+            .query_map(params![seat.as_str(), expired_at], |r| r.get(0))
+            .map_err(store_error)?;
+        rows.collect::<Result<_, _>>().map_err(store_error)?
+    };
+    for id in invitations {
+        let invitation = InvitationId::new(id);
+        schema::record_overdue_if_pending(
+            tx,
+            &ObligationRef::Invitation(invitation.clone()),
+            &basis,
+            decided,
+        )?;
+        tx.execute(
+            "UPDATE invitations SET state='recipient_retired',retired_at=?1 WHERE id=?2 AND state='pending'",
+            params![retired_at, invitation.as_str()],
+        )
+        .map_err(store_error)?;
+        schema::clear_warning_condition_for_invitation(tx, invitation.as_str(), decided)?;
+    }
+    let receipts: Vec<(String, String)> = {
+        let mut statement = tx
+            .prepare(
+                "SELECT r.message_id,r.thread_id FROM receipts r JOIN messages m ON m.id=r.message_id \
+                 WHERE r.seat_id=?1 AND r.state='pending' AND r.ack_required=1 AND m.decision_at<=?2 ORDER BY r.ordinal",
+            )
+            .map_err(store_error)?;
+        let rows = statement
+            .query_map(params![seat.as_str(), expired_at], |r| {
+                Ok((r.get(0)?, r.get(1)?))
+            })
+            .map_err(store_error)?;
+        rows.collect::<Result<_, _>>().map_err(store_error)?
+    };
+    for (message, thread) in receipts {
+        let message = MessageId::new(message);
+        let Some(receipt) = effective_receipt(tx, message.as_str(), seat.as_str())? else {
+            continue;
+        };
+        if receipt.state == EffectiveReceiptState::NotRequired {
+            continue;
+        }
+        schema::record_overdue_if_pending(
+            tx,
+            &ObligationRef::Receipt {
+                message: message.clone(),
+                seat: seat.clone(),
+            },
+            &basis,
+            decided,
+        )?;
+        tx.execute(
+            "UPDATE receipts SET state='recipient_retired',retired_at=?1 WHERE message_id=?2 AND seat_id=?3 AND state='pending'",
+            params![retired_at, message.as_str(), seat.as_str()],
+        )
+        .map_err(store_error)?;
+        schema::clear_warning_conditions_for_receipts(tx, &thread, seat.as_str(), decided)?;
+    }
+    type Logical = (String, String);
+    let logical: Vec<Logical> = {
+        let mut statement = tx
+            .prepare(
+                "SELECT sm.message_id,pr.thread_id FROM prepared_recipients pr \
+                 JOIN send_manifests sm ON sm.preparation_id=pr.preparation_id \
+                 LEFT JOIN receipt_state rs ON rs.message_id=sm.message_id AND rs.seat_id=pr.seat_id \
+                 WHERE pr.seat_id=?1 AND pr.ack_required=1 AND sm.decision_at<=?2 \
+                 AND (rs.state IS NULL OR rs.state='pending') ORDER BY pr.ordinal",
+            )
+            .map_err(store_error)?;
+        let rows = statement
+            .query_map(params![seat.as_str(), expired_at], |r| {
+                Ok((r.get(0)?, r.get(1)?))
+            })
+            .map_err(store_error)?;
+        rows.collect::<Result<_, _>>().map_err(store_error)?
+    };
+    for (message, thread) in logical {
+        let message = MessageId::new(message);
+        let Some(receipt) = effective_receipt(tx, message.as_str(), seat.as_str())? else {
+            continue;
+        };
+        if receipt.state == EffectiveReceiptState::NotRequired {
+            continue;
+        }
+        schema::record_overdue_if_pending(
+            tx,
+            &ObligationRef::Receipt {
+                message: message.clone(),
+                seat: seat.clone(),
+            },
+            &basis,
+            decided,
+        )?;
+        tx.execute(
+            "INSERT INTO receipt_state(message_id,seat_id,state,available_at,deadline_at,retired_at) VALUES (?1,?2,'recipient_retired',?3,?4,?5) \
+             ON CONFLICT(message_id,seat_id) DO UPDATE SET state='recipient_retired',available_at=COALESCE(receipt_state.available_at,excluded.available_at),deadline_at=COALESCE(receipt_state.deadline_at,excluded.deadline_at),retired_at=excluded.retired_at WHERE receipt_state.state='pending'",
+            params![message.as_str(), seat.as_str(), receipt.available_at, receipt.deadline_at, retired_at],
+        )
+        .map_err(store_error)?;
+        schema::clear_warning_conditions_for_receipts(tx, &thread, seat.as_str(), decided)?;
+    }
+    Ok(())
+}
 
 /// A seat retired reversibly: what it owes is frozen, so a due scan skips it.
 macro_rules! frozen_seat_sql {
@@ -116,8 +509,12 @@ pub(crate) enum RowState {
 /// Who finalizes: the service that owns the seat's key, or the operator under this audit label.
 #[derive(Debug, Clone, Copy)]
 pub(crate) enum FinalizeBy<'a> {
+    /// A service session: the key owner for a keyed seat, any session for a keyless one
+    /// (ht-eu3v).
     Service(&'a ServiceAuthorId),
     Operator(&'a str),
+    /// The deadline lane, 7 d after a keyless close (ht-eu3v).
+    Window,
 }
 
 struct Row {
@@ -310,6 +707,20 @@ fn require_key_owner(
             ErrorCode::Unauthorized,
             "seat's continuity key is not this service's",
         )),
+    }
+}
+
+/// A service session acts on a seat's reversible retirement (ht-eu3v): the key owner for a keyed
+/// seat, any session for a keyless one (cooperative, same-user: TRUST-POLICY
+/// *Reversible retirement*).
+pub(crate) fn require_v4_authority(
+    conn: &Connection,
+    seat: &SeatId,
+    author: &ServiceAuthorId,
+) -> Result<(), ApiError> {
+    match continuity_keys::key_of_seat(conn, seat)? {
+        None => Ok(()),
+        Some(_) => require_key_owner(conn, seat, author),
     }
 }
 
@@ -582,6 +993,53 @@ pub(crate) fn unretire(
     }))
 }
 
+/// Who un-retires a seat that a rebind then places (ht-eu3v resurrect).
+#[derive(Debug, Clone, Copy)]
+pub(crate) enum UnretireBy<'a> {
+    /// The operator, under this audit label: `seat rebind OLD --pane P --operator`.
+    Operator(&'a str),
+    /// A `service_session_v4` session's `ResurrectSeat`; the caller checked its authority.
+    Service(&'a ServiceAuthorId),
+}
+
+/// The un-retire half of a resurrect: a `reversible` row un-retires exactly as `UnretireSeat`
+/// does (deadlines of what is still pending shift, the seat reads unresolved with no target), is
+/// recorded in seat history and, for a published seat, authors `seat.unretired`. The caller's
+/// rebind then places the seat in the same transaction and deletes the row.
+pub(crate) fn unretire_for_rebind(
+    tx: &Transaction<'_>,
+    context: &StoreContext,
+    instance: &str,
+    seat: &SeatId,
+    at: DecisionInstant,
+    by: UnretireBy<'_>,
+) -> Result<(), ApiError> {
+    let row = read_row(tx, seat)?
+        .filter(|row| row.state == RowState::Reversible)
+        .ok_or_else(no_retirement)?;
+    unretire_local(tx, instance, seat, row.cutover_at, at.utc)?;
+    let service_label;
+    let (kind, label) = match by {
+        UnretireBy::Operator(label) => ("operator_unretire", label),
+        UnretireBy::Service(author) => {
+            service_label = format!("service:{}", author.as_str());
+            ("service_unretire", service_label.as_str())
+        }
+    };
+    allocation_decision(tx, seat, kind, at, &row.inputs, Some(label))?;
+    control::emit_if_published::<SeatUnretired>(
+        tx,
+        context,
+        at,
+        seat,
+        &SeatUnretiredPayload {
+            seat: seat.clone(),
+            retired_at: row.cutover_at,
+            unretired_at: at.utc.0,
+        },
+    )
+}
+
 /// The un-retire transition of a local row, without authorization: `UnretireSeat` and an own
 /// `seat.unretired` replayed from the log. `unretired_at` is the fact's, and it bounds the shift
 /// as in [`shift_pending_deadlines`]. Returns the seat's new generation.
@@ -715,9 +1173,12 @@ pub(crate) fn finalize(
     seat: &SeatId,
     at: DecisionInstant,
 ) -> Result<(), ApiError> {
-    if let FinalizeBy::Service(author) = by {
-        require_key_owner(tx, seat, author)?;
+    match by {
+        FinalizeBy::Service(author) => require_v4_authority(tx, seat, author)?,
+        FinalizeBy::Operator(_) | FinalizeBy::Window => {}
     }
+    // Read before the final job releases the key: a keyless finalization names its service.
+    let keyless = continuity_keys::key_of_seat(tx, seat)?.is_none();
     let row = read_row(tx, seat)?.ok_or_else(no_retirement)?;
     delete_row(tx, seat)?;
     match row.state {
@@ -753,9 +1214,15 @@ pub(crate) fn finalize(
             )?;
         }
     }
+    let author_label;
     let (kind, label) = match by {
+        FinalizeBy::Service(author) if keyless => {
+            author_label = format!("service:{}", author.as_str());
+            ("service_finalize", Some(author_label.as_str()))
+        }
         FinalizeBy::Service(_) => ("service_finalize", None),
         FinalizeBy::Operator(label) => ("operator_retire", Some(label)),
+        FinalizeBy::Window => ("window_finalize", None),
     };
     allocation_decision(tx, seat, kind, at, &row.inputs, label)
 }

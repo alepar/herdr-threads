@@ -363,19 +363,19 @@ fn keyless_reversible_seat_stays_reversible_and_reads_retired() {
     assert_eq!(fresh.int("SELECT count(*) FROM continuity_keys"), 0);
 }
 
-/// Kills: a service acting on a seat whose key the store no longer has.
+/// Kills: a service un-retiring a seat whose key the store no longer has, or a restored keyless row
+/// that no service can finalize (ht-eu3v: a keyless seat's reversible retirement is any
+/// service's to finalize).
 #[test]
-fn unretire_and_finalize_answer_unauthorized_after_restore() {
+fn unretire_answers_unauthorized_and_finalize_succeeds_after_restore() {
     let (fresh, _peer, seat) = restored();
     assert_eq!(
         fresh.unretire(&seat).unwrap_err().code,
         ErrorCode::Unauthorized
     );
-    assert_eq!(
-        fresh.finalize(&seat).unwrap_err().code,
-        ErrorCode::Unauthorized
-    );
     assert_eq!(fresh.row(&seat), Some(RowState::Reversible));
+    fresh.finalize(&seat).unwrap();
+    assert_eq!(fresh.row(&seat), None);
 }
 
 /// Kills: an operator retire of a restored seat answering not found or failing on empty inputs, and

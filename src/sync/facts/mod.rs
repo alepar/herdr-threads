@@ -305,6 +305,7 @@ impl FactRegistry {
                 .with::<seat::SeatRetired>()
                 .with::<seat::SeatRetiredReversible>()
                 .with::<seat::SeatUnretired>()
+                .with::<seat::SeatObligationsExpired>()
                 .with::<thread::ThreadCreated>()
                 .with::<thread::ThreadRegister>()
                 .with::<thread::ThreadDirect>()

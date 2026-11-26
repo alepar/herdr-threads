@@ -59,7 +59,7 @@ impl LocalService for RetirementDomain {
 }
 
 fn retirement_fixture() -> (std::path::PathBuf, String, crate::ports::RetirementJob) {
-    use crate::ports::{ClosureEvidence, StorePort};
+    use crate::ports::ClosureEvidence;
     use crate::protocol::ids::{HostBootId, HostTargetId};
     let path = crate::test_support::scratch::temp_path(format!(
         "herdr-retirement-control-{}.db",
@@ -97,7 +97,7 @@ fn retirement_fixture() -> (std::path::PathBuf, String, crate::ports::Retirement
         crate::store::StoreSettings::default(),
     )
     .unwrap();
-    let job = StorePort::begin_retirement(
+    let job = crate::store::SqliteStore::begin_final_retirement_for_test(
         &store,
         SeatId::new("retiring"),
         ClosureEvidence {

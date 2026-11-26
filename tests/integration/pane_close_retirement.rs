@@ -113,13 +113,24 @@ fn closing_a_pane_with_two_bindings_retires_its_seat() {
         assert_eq!(reason.as_deref(), Some("seat_retired"), "{binding}");
     }
     assert!(open_bindings(&db, &closed.seat).is_empty());
-    wait_until("memberships to retire", Duration::from_secs(60), || {
+    // A keyless close is reversible (ht-eu3v): the membership is kept for a resurrect, the job
+    // deferred to the 7 d clock.
+    assert_eq!(
         scalar(
-            &s.db(),
+            &db,
+            "SELECT state FROM reversible_retirements WHERE seat_id=?1",
+            &closed.seat
+        ),
+        "reversible"
+    );
+    assert_eq!(
+        scalar(
+            &db,
             "SELECT state FROM memberships WHERE seat_id=?1",
-            &closed.seat,
-        ) == "retired"
-    });
+            &closed.seat
+        ),
+        "joined"
+    );
     // The seat record and every cursor row persist for undo and herdr-graph.
     assert_eq!(cursor_rows(&db, &closed.seat), cursors_before);
     // The pane that stayed is untouched.
@@ -206,5 +217,74 @@ fn isolated_herdr_restart_keeps_seats_in_restore_hold() {
         )
         .unwrap(),
         0
+    );
+}
+
+/// ht-eu3v: a closed tab's keyless seat comes back on a new pane through `seat rebind --operator`,
+/// with its id and memberships, and the next lifecycle check-in there enrolls onto it.
+/// Kills: a resurrect that mints a new seat, drops the membership, or leaves the pane unowned.
+#[test]
+fn a_closed_tabs_seat_resurrects_onto_a_new_pane() {
+    let Some(s) = Session::new("a_closed_tabs_seat_resurrects_onto_a_new_pane") else {
+        return;
+    };
+    let kept_pane = s.first_pane();
+    let closed_pane = s.split_pane(&kept_pane);
+    let kept = s.seat(&kept_pane);
+    let (closed, thread, _) = seat_with_two_bindings(&s, &closed_pane, &kept);
+    s.herdr_api(&["pane", "close", &closed_pane]);
+    wait_until("the seat to retire", Duration::from_secs(60), || {
+        scalar(&s.db(), "SELECT state FROM seats WHERE id=?1", &closed.seat) == "retired"
+    });
+    let new_pane = s.split_pane(&kept_pane);
+    s.operator(&[
+        "seat",
+        "rebind",
+        &closed.seat,
+        "--pane",
+        &new_pane,
+        "--operator",
+    ]);
+    let db = s.db();
+    assert_eq!(
+        scalar(&db, "SELECT state FROM seats WHERE id=?1", &closed.seat),
+        "resolved"
+    );
+    assert_eq!(
+        scalar(&db, "SELECT target_id FROM seats WHERE id=?1", &closed.seat),
+        new_pane
+    );
+    assert_eq!(
+        scalar(
+            &db,
+            "SELECT state FROM memberships WHERE seat_id=?1",
+            &closed.seat
+        ),
+        "joined"
+    );
+    // The pane now resolves to the resurrected seat, and its agent enrolls onto it.
+    let resolved = s.ok(None, &["seat", "resolve", "--pane", &new_pane]);
+    assert_eq!(resolved.as_str(), Some(closed.seat.as_str()));
+    let caller = Caller {
+        seat: closed.seat.clone(),
+        pane: new_pane.clone(),
+    };
+    s.ok_in_session(
+        Some(&caller),
+        Some("session-3"),
+        &[
+            "check-in",
+            "--lifecycle-event",
+            "start-3",
+            "--native-session",
+            "session-3",
+        ],
+    );
+    assert_eq!(open_bindings(&s.db(), &closed.seat).len(), 1);
+    // It can send to its thread again.
+    s.ok_in_session(
+        Some(&caller),
+        Some("session-3"),
+        &["send", &thread, "--body", "back"],
     );
 }

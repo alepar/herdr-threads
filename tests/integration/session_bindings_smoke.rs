@@ -287,7 +287,10 @@ impl Smoke {
         if let Some(pane) = pane {
             command.env("HERDR_ENV", "1").env("HERDR_PANE_ID", pane);
         }
-        // Read only by the daemon a call starts (test-support builds).
+        // Read only by the daemon a call starts (test-support builds): these configurations
+        // exercise a close's final effects (retired memberships, archival), so a keyless close
+        // finalizes at once, as before ht-eu3v; the reversible window has its own tests.
+        command.env(herdr_threads::store::seats::TEST_KEYLESS_FINALIZE_ENV, "0");
         if let Some(tick) = self.lane_tick {
             command.env(
                 herdr_threads::service::config::TEST_LANE_TICK_ENV,

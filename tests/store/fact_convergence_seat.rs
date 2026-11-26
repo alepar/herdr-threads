@@ -283,11 +283,18 @@ pub fn begin_retirement(node: &Node, seat: &SeatId) -> Result<RetirementJob, Api
     let proof = closure_proof(node, seat);
     let mut conn = node.raw();
     let _guard = write_guard::arm(&conn);
-    control::begin_retirement(node.ctx(), &mut conn, seat.clone(), proof).map(|start| {
-        start
-            .into_job()
-            .expect("a keyless seat's retirement has a job")
-    })
+    // A keyless close is reversible (ht-eu3v): finalize it at once, as the 7 d clock would.
+    match control::begin_retirement(node.ctx(), &mut conn, seat.clone(), proof.clone())? {
+        herdr_threads::ports::RetirementStart::Job(job) => Ok(job),
+        herdr_threads::ports::RetirementStart::Reversible => {
+            herdr_threads::store::seats::finalize_now_for_test(node.ctx(), &mut conn, seat)?;
+            Ok(
+                control::begin_retirement(node.ctx(), &mut conn, seat.clone(), proof)?
+                    .into_job()
+                    .expect("a finalized retirement has a job"),
+            )
+        }
+    }
 }
 
 fn retired_payloads(node: &Node) -> Vec<SeatRetiredPayload> {

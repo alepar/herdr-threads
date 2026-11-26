@@ -650,7 +650,7 @@ fn service_receipts_equals_native_delivery_inspect_and_shows_states() {
     assert_eq!(provenance.decided_at, UtcMillis(100));
     assert_eq!(acked.delivery.acknowledged, 1);
 
-    let job = StorePort::begin_retirement(
+    let job = crate::store::SqliteStore::begin_final_retirement_for_test(
         &fx.store,
         SeatId::new("s2"),
         ClosureEvidence {

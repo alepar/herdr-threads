@@ -847,7 +847,7 @@ fn public_facade_retirement_fences_before_bounded_cleanup() {
         StoreSettings::default(),
     )
     .unwrap();
-    let job = StorePort::begin_retirement(
+    let job = SqliteStore::begin_final_retirement_for_test(
         &store,
         SeatId::new("s2"),
         ClosureEvidence {
@@ -954,7 +954,7 @@ fn public_facade_mixed_retirement_keeps_cutover_across_quanta_and_reopen() {
         StoreSettings::default(),
     )
     .unwrap();
-    let job = StorePort::begin_retirement(
+    let job = SqliteStore::begin_final_retirement_for_test(
         &store,
         SeatId::new("retiring"),
         ClosureEvidence {

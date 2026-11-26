@@ -931,7 +931,7 @@ fn lazy_addressed_survives_leave_retire_archive_and_excludes_postjoin() {
     let retired_claim = f.claim("agent");
     let retirement = f
         .store
-        .begin_retirement(
+        .begin_final_retirement_for_test(
             SeatId::new("agent"),
             herdr_threads::ports::ClosureEvidence {
                 host_boot: HostBootId::new("b"),

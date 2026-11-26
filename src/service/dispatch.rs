@@ -585,6 +585,56 @@ impl DomainService {
     /// The session an operator action runs on: the server its command names,
     /// else (retire and orphan invite name no pane and never touch a server)
     /// the lowest-id attached one, which only supplies the store and writer.
+    /// `ResurrectSeat` (ht-eu3v): the operator's rebind (or `--replace`) of a reversibly retired
+    /// seat, taken by the registered service session through the same fresh target observation.
+    /// Its authority (keyless: any v4 session; keyed: the key owner) is decided in the store.
+    fn service_resurrect(
+        &self,
+        request: &crate::protocol::service::ResurrectSeat,
+        connection: &ServiceConnectionAuthority,
+        budget: &CallBudget,
+    ) -> Result<ServiceResult, ApiError> {
+        if connection.instance() != self.instance {
+            return Err(error(
+                ErrorCode::StaleHostObservation,
+                "service session belongs to another instance",
+            ));
+        }
+        let uid = self
+            .operator_owner_uid
+            .ok_or_else(|| ApiError::unsupported("operator owner unavailable"))?;
+        let actor = OperatorActor::for_service(uid, connection.author().clone());
+        let command = match &request.replace {
+            Some(replace) => Command::OperatorReplace(crate::protocol::commands::OperatorReplace {
+                seat: request.seat.clone(),
+                target: request.target.clone(),
+                host: request.host.clone(),
+                replace: replace.clone(),
+                operation: request.operation.clone(),
+            }),
+            None => Command::OperatorRebind(crate::protocol::commands::OperatorRebind {
+                seat: request.seat.clone(),
+                target: request.target.clone(),
+                host: request.host.clone(),
+                operation: request.operation.clone(),
+            }),
+        };
+        let preparation = self.operator_host(&command, budget)?;
+        let operator = OperatorCommand::try_from(command).map_err(|_| {
+            error(
+                ErrorCode::StoreCorrupt,
+                "resurrect is not an operator action",
+            )
+        })?;
+        match preparation.identity().operator(operator, actor, budget)? {
+            CommandResult::OperatorRebound(seat) => Ok(ServiceResult::SeatResurrected(seat)),
+            _ => Err(error(
+                ErrorCode::StoreCorrupt,
+                "unexpected resurrect result",
+            )),
+        }
+    }
+
     fn operator_host(
         &self,
         command: &Command,
@@ -2000,6 +2050,9 @@ impl LocalService for DomainService {
         gate: &dyn ServiceAuthorityGate,
         budget: &CallBudget,
     ) -> Result<ServiceResult, ApiError> {
+        if let ServiceOperation::ResurrectSeat(request) = &operation {
+            return self.service_resurrect(request, connection, budget);
+        }
         let admission = self
             .cooperative_runtime
             .as_ref()

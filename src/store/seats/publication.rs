@@ -18,8 +18,9 @@ use crate::{
         FactKind,
         payload::SeatKind,
         seat::{
-            SeatCreated, SeatCreatedPayload, SeatRetiredPayload, SeatRetiredReversible,
-            SeatRetiredReversiblePayload, SeatUnretired, SeatUnretiredPayload,
+            SeatCreated, SeatCreatedPayload, SeatObligationsExpiredPayload, SeatRetiredPayload,
+            SeatRetiredReversible, SeatRetiredReversiblePayload, SeatUnretired,
+            SeatUnretiredPayload,
         },
     },
 };
@@ -580,6 +581,30 @@ pub fn materialize_seat_unretired(
         reversible::mark_episode_effect(tx, m.ingest_seq)?;
     }
     Ok(())
+}
+
+/// Materializes `seat.obligations_expired` (ht-eu3v) on every node, own-log replay included: the
+/// expiry is recorded and every obligation to the seat still pending and created by its
+/// `expired_at` settles. It reads no episode state, so arrival order and re-issue change nothing.
+pub fn materialize_seat_obligations_expired(
+    tx: &Transaction<'_>,
+    m: &MaterializeInput<'_>,
+    payload: &SeatObligationsExpiredPayload,
+) -> Result<(), ApiError> {
+    let known: bool = tx
+        .query_row(
+            "SELECT EXISTS(SELECT 1 FROM seats WHERE id=?1)",
+            [payload.seat.as_str()],
+            |r| r.get(0),
+        )
+        .map_err(store_error)?;
+    if !known {
+        if m.local_origin {
+            return Ok(());
+        }
+        return Err(api_error(ErrorCode::InvalidRequest, "unknown seat"));
+    }
+    reversible::record_expiry(tx, &payload.seat, payload.retired_at, payload.expired_at)
 }
 
 /// Whether the row a retirement fact acts on is local, `None` for a fact with nothing to do.

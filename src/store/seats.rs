@@ -76,4 +76,7 @@ pub use self::observation::*;
 pub use self::operator::*;
 pub use self::publication::*;
 pub use self::resolution::*;
+#[cfg(any(test, feature = "test-support"))]
+pub use self::reversible::finalize_now_for_test;
+pub use self::reversible::{TEST_KEYLESS_FINALIZE_ENV, TEST_OBLIGATION_EXPIRY_ENV};
 pub use self::threshold::*;

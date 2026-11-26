@@ -994,7 +994,9 @@ mod launched_finality {
             assert!(
                 matches!(
                     outcome,
-                    ReconciliationOutcome::Applied | ReconciliationOutcome::RetirementStarted(_)
+                    ReconciliationOutcome::Applied
+                        | ReconciliationOutcome::RetirementStarted(_)
+                        | ReconciliationOutcome::RetiredReversibly
                 ),
                 "{transition:?}: {outcome:?}"
             );

@@ -58,6 +58,10 @@ pub trait DeadlinePort {
     fn due_handoffs(&self, _budget: &CallBudget) -> Result<usize, ApiError> {
         Ok(0)
     }
+    /// Run the timed reversible retirements' due step (ht-eu3v); returns the rows it changed.
+    fn timed_retirements(&self, _budget: &CallBudget) -> Result<usize, ApiError> {
+        Ok(0)
+    }
     /// Enumerate pending retirements under a frozen high water. This excludes
     /// terminal history and cannot establish full-history recovery coverage.
     fn pending_retirement_jobs(
@@ -413,6 +417,7 @@ impl<'a, P: DeadlinePort + ?Sized> DeadlineDriver<'a, P> {
             outcome.due_warnings_added = outcome
                 .due_warnings_added
                 .saturating_add(u16::try_from(handoffs).unwrap_or(u16::MAX));
+            self.port.timed_retirements(budget)?;
             self.due_continuation = progress.has_more
                 && ((run_invitations
                     && !progress.state.invitations_complete

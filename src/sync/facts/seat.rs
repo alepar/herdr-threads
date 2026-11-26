@@ -127,6 +127,22 @@ impl ReferencedSeats for SeatUnretiredPayload {
     }
 }
 
+/// The `seat.obligations_expired` v1 payload (ht-eu3v): the home node expired what the seat was
+/// owed in the episode `retired_at` names, at `expired_at`. Every node settles each obligation to
+/// the seat still pending and created at or before `expired_at`.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub struct SeatObligationsExpiredPayload {
+    pub seat: SeatId,
+    pub retired_at: i64,
+    pub expired_at: i64,
+}
+
+impl ReferencedSeats for SeatObligationsExpiredPayload {
+    fn referenced_seats(&self) -> Vec<SeatId> {
+        vec![self.seat.clone()]
+    }
+}
+
 /// The `seat.retired` v1 kind. It is a held kind (`materialize::HELD_KINDS`):
 /// `FactRoute::Journal` refuses it for a local seat during the restore-window
 /// authoring hold.
@@ -224,6 +240,41 @@ impl FactKind for SeatUnretired {
                 &AuthorRule::SeatHome(payload.seat.clone()),
             )?;
             seats::materialize_seat_unretired(tx, m, &payload)
+        })
+    }
+}
+
+/// The `seat.obligations_expired` v1 kind (ht-eu3v). A held kind. A node that does not know it
+/// parks it, and replays it after an upgrade; it acts on obligation state alone, so its outcome
+/// does not depend on where it lands relative to the episode's other facts.
+pub struct SeatObligationsExpired;
+
+impl FactKind for SeatObligationsExpired {
+    const NAME: &'static str = "seat.obligations_expired";
+    const MAJOR: u32 = 1;
+    type Payload = SeatObligationsExpiredPayload;
+
+    fn creates(_: &SeatObligationsExpiredPayload) -> Option<EntityKey> {
+        None
+    }
+
+    fn needs(payload: &SeatObligationsExpiredPayload) -> Vec<EntityKey> {
+        seat_key(&payload.seat).into_iter().collect()
+    }
+
+    fn apply(
+        tx: &Transaction<'_>,
+        cx: &mut ApplyContext<'_>,
+        payload: SeatObligationsExpiredPayload,
+    ) -> Result<(), FactError> {
+        with_input(cx, |m| {
+            require_author(
+                tx,
+                m,
+                Self::NAME,
+                &AuthorRule::SeatHome(payload.seat.clone()),
+            )?;
+            seats::materialize_seat_obligations_expired(tx, m, &payload)
         })
     }
 }

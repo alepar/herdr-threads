@@ -731,7 +731,24 @@ fn project_receipt(
     // row stays `pending`, resumes on un-retire and settles through the job on finalization.
     let frozen = effective.state == EffectiveReceiptState::RecipientRetired
         && super::seats::reversible::is_frozen(tx, &crate::protocol::ids::SeatId::new(seat))?;
+    // An ACK request created by an expiry already recorded for its recipient (a window message
+    // from a node that had not seen the expiry) settles at write, as every copy present at the
+    // expiry did (ht-eu3v), whatever state the seat is in now.
+    let expired = match effective.state {
+        EffectiveReceiptState::Pending | EffectiveReceiptState::RecipientRetired => {
+            let created: i64 = tx
+                .query_row(
+                    "SELECT decision_at FROM messages WHERE id=?1",
+                    [message],
+                    |r| r.get(0),
+                )
+                .map_err(store_error)?;
+            super::seats::reversible::expired_episode(tx, seat, created)?
+        }
+        _ => None,
+    };
     let physical_state = match effective.state {
+        _ if expired.is_some() => "recipient_retired",
         EffectiveReceiptState::Pending => "pending",
         EffectiveReceiptState::Acknowledged => "acked",
         EffectiveReceiptState::RecipientRetired if frozen => "pending",
@@ -741,9 +758,12 @@ fn project_receipt(
     let ack_required = i64::from(effective.state != EffectiveReceiptState::NotRequired);
     // An ack recipient already retired when the message applies (its retirement
     // fact came first) is projected `recipient_retired` at the seat's `retired_at`.
-    let retired_at = (effective.state == EffectiveReceiptState::RecipientRetired && !frozen)
-        .then_some(effective.retired_at)
-        .flatten();
+    let retired_at = match expired {
+        Some(episode) => Some(episode),
+        None => (effective.state == EffectiveReceiptState::RecipientRetired && !frozen)
+            .then_some(effective.retired_at)
+            .flatten(),
+    };
     // A pending deadline first written after an un-retire it predates (a window message from a
     // node that had not seen the retirement) moves by the time it spent frozen, as the copies
     // present at the un-retire did. A stored deadline wins below, so nothing moves twice.

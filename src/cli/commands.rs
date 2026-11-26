@@ -1722,7 +1722,7 @@ enum SeatSub {
         #[command(flatten)]
         page: PageArgs,
     },
-    /// Rebind a seat to a pane through explicit operator repair.
+    /// Rebind a seat to a pane through explicit operator repair; also resurrects a closed tab's seat while its retirement is reversible (7 days for a keyless seat).
     Rebind {
         /// SEAT: exact ID or SPACE/TAB/PANE[@MACHINE]; single-quote path: names with \/ \\ \@ escapes
         seat: String,

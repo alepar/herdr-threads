@@ -1243,7 +1243,8 @@ fn retirement_during_pending_work_never_acks() {
     let m = Matrix::new();
     let (s, r, thread) = m.pair();
     let sent = m.send(&s, &thread, "hello", &[], "send-1").unwrap();
-    StorePort::begin_retirement(
+    // The final retirement this case is about: a keyless close finalized at once (ht-eu3v).
+    SqliteStore::begin_final_retirement_for_test(
         m.store.as_ref(),
         SeatId::new("r"),
         ClosureEvidence {
@@ -1273,7 +1274,8 @@ fn retirement_during_pending_work_never_acks() {
         0
     );
     // A still-joined sender is unaffected.
-    assert!(m.send(&s, &thread, "after", &[], "send-2").is_ok());
+    let after = m.send(&s, &thread, "after", &[], "send-2");
+    assert!(after.is_ok(), "{after:?}");
 }
 
 /// Boundary: rebind (successor execution) while a receipt is pending.
