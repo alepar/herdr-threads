@@ -1,5 +1,5 @@
 //! Programmatic wake selection. Message bodies and receipts remain in turn hooks.
-use super::queue_recovery::QueueRecovery;
+use super::queue_recovery::{QueueRecovery, ResultSlot};
 use crate::{
     harness::{
         registry::builtins,
@@ -122,10 +122,22 @@ impl QueueWakeRuntime {
             },
         )
     }
-    fn refuse_without_helper(&self, r: &WakeReservation) -> Result<(), ApiError> {
+    /// No Add helper was begun, so this invocation definitively did not add.
+    fn refuse_without_helper(
+        &self,
+        r: &WakeReservation,
+        slot: &ResultSlot,
+    ) -> Result<(), ApiError> {
+        let result = WakeIntentResult {
+            outcome: WakeIntentOutcome::NoEffect,
+            cleanup_confirmed: true,
+            diagnostic: "helper not started".into(),
+        };
+        // Retained until the refusal CAS settles, so a failed write is retried.
+        slot.publish_pre_arm(None, None, result.clone())?;
         let budget = self.completion_budget();
         let Some(row) = self.store.wake_intent(&r.attempt, &budget)? else {
-            return Ok(());
+            return slot.settled();
         };
         if row.helper.is_none() && row.arm_nonce.is_none() && row.phase == WakeIntentPhase::Prepared
         {
@@ -133,13 +145,13 @@ impl QueueWakeRuntime {
                 store.refuse_prepared_wake_intent(
                     &r.attempt,
                     row.revision,
-                    true,
-                    "helper not started",
+                    result.cleanup_confirmed,
+                    &result.diagnostic,
                     &budget,
                 )
             })?;
         }
-        Ok(())
+        slot.settled()
     }
     /// Complete an already captured adapter target under canonical submission fences.
     #[allow(clippy::too_many_arguments)]
@@ -170,11 +182,11 @@ impl QueueWakeRuntime {
             {
                 Ok(Some(journal)) => journal,
                 Ok(None) => {
-                    self.refuse_without_helper(r)?;
+                    self.refuse_without_helper(r, &result_slot)?;
                     return self.native_if_clear(r, &context.budget);
                 }
                 Err(error) => {
-                    let _ = self.refuse_without_helper(r);
+                    let _ = self.refuse_without_helper(r, &result_slot);
                     return Err(error);
                 }
             };
@@ -245,10 +257,18 @@ impl QueueWakeRuntime {
             cleanup_confirmed: journal.cleanup_confirmed(),
             diagnostic: diagnostic.chars().take(512).collect(),
         };
-        if let Some(ticket) = reporting_ticket.as_ref() {
+        let possible_effect = !matches!(outcome, WakeAddOutcome::RefusedBeforeEffect(_));
+        if !possible_effect {
+            // Retained until settled, so a failed refusal metadata write is retried
+            // by recovery from this exact completed invocation, never by age.
+            result_slot.publish_pre_arm(
+                reporting_ticket.clone(),
+                Some(journal.op_id()),
+                result.clone(),
+            )?;
+        } else if let Some(ticket) = reporting_ticket.as_ref() {
             result_slot.publish(ticket.clone(), result.clone())?;
         }
-        let possible_effect = !matches!(outcome, WakeAddOutcome::RefusedBeforeEffect(_));
         let recording = match reporting_ticket {
             Some(ticket) => self.write(&budget, |store| {
                 store.record_wake_intent_result(&ticket, &result, &budget)
@@ -278,19 +298,33 @@ impl QueueWakeRuntime {
         if recorded {
             result_slot.settled()?;
         }
-        if !recorded
-            && matches!(outcome, WakeAddOutcome::RefusedBeforeEffect(_))
-            && let Some(current) = self.store.wake_intent(&r.attempt, &budget)?
-        {
-            self.write(&budget, |store| {
-                store.refuse_prepared_wake_intent(
-                    &r.attempt,
-                    current.revision,
-                    result.cleanup_confirmed,
-                    &result.diagnostic,
-                    &budget,
-                )
-            })?;
+        if !recorded && !possible_effect {
+            if let Some(current) = self.store.wake_intent(&r.attempt, &budget)?
+                && current.phase == WakeIntentPhase::Prepared
+                && current.arm_nonce.is_none()
+            {
+                self.write(&budget, |store| {
+                    store.refuse_prepared_wake_intent(
+                        &r.attempt,
+                        current.revision,
+                        result.cleanup_confirmed,
+                        &result.diagnostic,
+                        &budget,
+                    )
+                })?;
+            }
+            if self
+                .store
+                .wake_intent(&r.attempt, &budget)?
+                .is_none_or(|row| {
+                    !matches!(
+                        row.phase,
+                        WakeIntentPhase::Prepared | WakeIntentPhase::Armed
+                    )
+                })
+            {
+                result_slot.settled()?;
+            }
         }
         match outcome {
             WakeAddOutcome::Accepted { .. } => Ok(if recorded {
@@ -410,7 +444,8 @@ mod tests {
         harness::{
             adapter::TurnEdge,
             wake::{
-                ControlFailure, OwnedWakeEntries, WakeControlTarget, WakeHelperWitness, WakeScope,
+                ControlFailure, OwnedWakeEntries, WakeControlTarget, WakeHelperObserver,
+                WakeHelperWitness, WakeScope,
             },
         },
         host::process_table::HostProcessTable,
@@ -794,6 +829,215 @@ mod tests {
         assert!(row.owned_ids.is_empty());
         assert!(!row.cleanup_quarantined);
         assert_eq!(control.effects.load(Ordering::SeqCst), 0);
+    }
+    fn reject_no_effect(store: &SqliteStore) -> rusqlite::Connection {
+        let fault = store.context().open_writer().unwrap();
+        fault.execute_batch("CREATE TRIGGER reject_runtime_refusal BEFORE UPDATE OF phase ON wake_intents WHEN NEW.phase='no_effect' BEGIN SELECT RAISE(ABORT,'injected refusal metadata failure'); END;").unwrap();
+        fault
+    }
+    fn native_blocked(control: &AcceptingControl, row: &WakeIntentSnapshot) -> bool {
+        control
+            .store
+            .wake_intent_blockers(
+                &control.reservation.seat,
+                row.preparation.adapter,
+                &row.preparation.replay_scope,
+                &fixture_support::budget(),
+            )
+            .unwrap()
+            .native
+    }
+    #[test]
+    fn pre_arm_refusal_metadata_failure_retries_same_boot_without_add() {
+        let (runtime, control, preparation, key, context) = runtime_fixture(false);
+        let fault = std::sync::Mutex::new(None);
+        let guard = || {
+            *fault.lock().unwrap() = Some(reject_no_effect(&control.store));
+            Err(unavailable("UI changed before arm"))
+        };
+        assert!(
+            runtime
+                .submit_captured(
+                    &control.reservation,
+                    &key,
+                    preparation,
+                    &control,
+                    &guard,
+                    &|| Ok(true),
+                    &context
+                )
+                .is_err(),
+            "failed refusal metadata surfaces"
+        );
+        let stranded = control
+            .store
+            .wake_intent(&control.reservation.attempt, &context.budget)
+            .unwrap()
+            .unwrap();
+        assert_eq!(stranded.phase, WakeIntentPhase::Prepared);
+        assert!(stranded.arm_nonce.is_none());
+        assert_eq!(stranded.owner_boot, control.reservation.daemon_boot);
+        assert!(native_blocked(&control, &stranded));
+        control.clock.0.store(5000, Ordering::SeqCst);
+        assert!(runtime.recovery.tick(&runtime.completion_budget()).is_err());
+        assert_eq!(
+            control
+                .store
+                .wake_intent(&control.reservation.attempt, &context.budget)
+                .unwrap()
+                .unwrap()
+                .phase,
+            WakeIntentPhase::Prepared,
+            "contention keeps the exact completion retained"
+        );
+        assert!(runtime.recovery.has_work());
+        fault
+            .lock()
+            .unwrap()
+            .take()
+            .unwrap()
+            .execute_batch("DROP TRIGGER reject_runtime_refusal")
+            .unwrap();
+        control.clock.0.store(10000, Ordering::SeqCst);
+        runtime.recovery.tick(&runtime.completion_budget()).unwrap();
+        let row = control
+            .store
+            .wake_intent(&control.reservation.attempt, &context.budget)
+            .unwrap()
+            .unwrap();
+        assert_eq!(row.phase, WakeIntentPhase::NoEffect);
+        assert!(row.arm_nonce.is_none());
+        assert!(!row.cleanup_quarantined);
+        assert!(row.owned_ids.is_empty());
+        assert!(
+            !native_blocked(&control, &row),
+            "native wake available again"
+        );
+        assert_eq!(control.calls.load(Ordering::SeqCst), 1, "no Add replay");
+        assert_eq!(control.effects.load(Ordering::SeqCst), 0);
+        assert!(
+            runtime
+                .recovery
+                .reserve_result(&control.reservation)
+                .unwrap()
+                .is_some(),
+            "settled completion releases its slot"
+        );
+    }
+    #[test]
+    fn pre_arm_retry_never_classifies_in_flight_or_other_operations() {
+        let (runtime, control, preparation, _key, context) = runtime_fixture(false);
+        let PrepareWakeIntent::Prepared(row) = control
+            .store
+            .prepare_wake_intent(&control.reservation, &preparation, &context.budget)
+            .unwrap()
+        else {
+            panic!("fresh intent prepares")
+        };
+        let slot = runtime
+            .recovery
+            .reserve_result(&control.reservation)
+            .unwrap()
+            .unwrap();
+        // In flight: a reserved but unpublished slot is no completion proof.
+        control.clock.0.store(5000, Ordering::SeqCst);
+        runtime.recovery.tick(&runtime.completion_budget()).unwrap();
+        let unchanged = |expected: &WakeIntentSnapshot| {
+            assert_eq!(
+                &control
+                    .store
+                    .wake_intent(&control.reservation.attempt, &context.budget)
+                    .unwrap()
+                    .unwrap(),
+                expected
+            )
+        };
+        unchanged(&row);
+        let no_effect = WakeIntentResult {
+            outcome: WakeIntentOutcome::NoEffect,
+            cleanup_confirmed: true,
+            diagnostic: "refused".into(),
+        };
+        assert!(
+            slot.publish_pre_arm(
+                None,
+                None,
+                WakeIntentResult {
+                    outcome: WakeIntentOutcome::Unknown,
+                    ..no_effect.clone()
+                }
+            )
+            .is_err(),
+            "only a definitive no-add is a pre-arm completion"
+        );
+        // A different operation's completion never classifies this row.
+        slot.publish_pre_arm(None, Some(uuid::Uuid::new_v4()), no_effect)
+            .unwrap();
+        drop(slot);
+        control.clock.0.store(10000, Ordering::SeqCst);
+        runtime.recovery.tick(&runtime.completion_budget()).unwrap();
+        unchanged(&row);
+        assert!(native_blocked(&control, &row));
+        assert!(
+            runtime
+                .recovery
+                .reserve_result(&control.reservation)
+                .unwrap()
+                .is_some(),
+            "inapplicable completion settles without a write"
+        );
+        assert_eq!(control.calls.load(Ordering::SeqCst), 0);
+    }
+    #[test]
+    fn pre_arm_retry_keeps_uncertain_started_helper_quarantined() {
+        let (runtime, control, preparation, _key, context) = runtime_fixture(false);
+        let PrepareWakeIntent::Prepared(row) = control
+            .store
+            .prepare_wake_intent(&control.reservation, &preparation, &context.budget)
+            .unwrap()
+        else {
+            panic!("fresh intent prepares")
+        };
+        let slot = runtime
+            .recovery
+            .reserve_result(&control.reservation)
+            .unwrap()
+            .unwrap();
+        let journal = runtime
+            .recovery
+            .begin_helper(&row, WakeHelperPurpose::Add, None, &context.budget)
+            .unwrap()
+            .unwrap();
+        let scope = &preparation.target.scope;
+        journal
+            .started(&WakeHelperWitness {
+                process: scope.process,
+                kernel_boot: scope.kernel_boot.clone(),
+                pgid: scope.process.pid,
+            })
+            .unwrap();
+        slot.publish_pre_arm(
+            None,
+            Some(journal.op_id()),
+            WakeIntentResult {
+                outcome: WakeIntentOutcome::NoEffect,
+                cleanup_confirmed: false,
+                diagnostic: "helper cleanup unconfirmed".into(),
+            },
+        )
+        .unwrap();
+        drop(slot);
+        control.clock.0.store(5000, Ordering::SeqCst);
+        runtime.recovery.tick(&runtime.completion_budget()).unwrap();
+        let row = control
+            .store
+            .wake_intent(&control.reservation.attempt, &context.budget)
+            .unwrap()
+            .unwrap();
+        assert_eq!(row.phase, WakeIntentPhase::NoEffect);
+        assert!(row.cleanup_quarantined, "uncertain helper stays fenced");
+        assert!(!row.native_no_add_exception);
+        assert!(native_blocked(&control, &row));
     }
     #[test]
     fn completed_noeffect_after_lost_arm_reply_retries_without_add() {

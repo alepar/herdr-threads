@@ -28,7 +28,8 @@ use std::{
 use uuid::Uuid;
 
 mod results;
-use results::{ResultSlot, Results};
+pub(crate) use results::ResultSlot;
+use results::Results;
 
 fn reap_owned_helpers() {
     for registration in builtins().registrations() {

@@ -1,5 +1,11 @@
 # Changelog
 
+## Unreleased
+
+### Fixed
+
+- **Opt-in queue wake: a failed pre-arm refusal no longer fences later wakes (ht-d2jq.8).** When an Add was refused before arm and the following no-effect metadata write failed transiently, the same-boot Prepared row kept that seat's wakes fenced until scope finality or a daemon restart. The completed invocation's no-add result, bound to its own Add helper operation, is now kept in the node's result slots and recovery retries the same Prepared refusal CAS once contention ends. No Add is replayed, and no nonce or age is used to release the row. A row that changed state or holds another operation settles without a write. An uncertain started helper stays quarantined. Queue wake remains off by default.
+
 ## v3.4.1
 
 Fixes only; no store schema or peer wire change.
