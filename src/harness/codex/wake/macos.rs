@@ -139,7 +139,7 @@ pub(super) fn open_vnodes(pid: u32, deadline: Instant) -> Option<Vec<Vnode>> {
             bytes,
         )
     };
-    if n <= 0 || n as usize % size_of::<libc::proc_fdinfo>() != 0 {
+    if n <= 0 || !(n as usize).is_multiple_of(size_of::<libc::proc_fdinfo>()) {
         return None;
     }
     let count = n as usize / size_of::<libc::proc_fdinfo>();
