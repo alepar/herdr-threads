@@ -1,9 +1,19 @@
 #!/usr/bin/python3
 """Deterministic queue protocol peer; no model, auth or real harness config."""
-import json, os, sys, time, tomllib, subprocess
+import json, os, sys, time, subprocess
 from pathlib import Path
 assert sys.argv[1] == "-c" and sys.argv[3:] == ["app-server", "--listen", "stdio://"]
-root = Path(tomllib.loads(sys.argv[2])["sqlite_home"])
+
+
+def sqlite_home(config):
+    # /usr/bin/python3 is 3.9 on macOS (no tomllib); the value is one TOML string.
+    key, _, value = config.partition("=")
+    assert key.strip() == "sqlite_home", config
+    value = value.strip()
+    return value[1:-1] if value[:1] == "'" else json.loads(value)
+
+
+root = Path(sqlite_home(sys.argv[2]))
 mode = (root / "mode").read_text()
 opened = open(root / ("other.sqlite" if mode == "wrong_db" else "queue_1.sqlite"), "rb")
 trace = (root / "trace").open("a", buffering=1)
