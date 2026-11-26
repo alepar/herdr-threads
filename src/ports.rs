@@ -75,8 +75,9 @@ impl ServiceConnectionAuthority {
     }
 }
 
-/// Only `ServiceDecisionTransaction::begin` creates this after SQLite has
-/// acquired its IMMEDIATE transaction. It cannot be constructed by consumers.
+/// Created only after SQLite has acquired the deciding IMMEDIATE transaction: by
+/// `ServiceDecisionTransaction::begin`, and by [`service_decision_guard_in`] for a caller that
+/// opened it (the operator repair path of `ResurrectSeat`). It cannot be constructed by consumers.
 pub struct ServiceWriteTransactionProof(());
 
 pub trait ServiceDecisionGuard {
@@ -247,9 +248,6 @@ pub enum ServiceDecisionStartError {
     Authority(ApiError),
 }
 
-/// Owns both the actual SQLite write transaction and authority guard. SQLite
-/// BEGIN IMMEDIATE runs first; `commit`, `rollback`, and the drop/error path
-/// finish the transaction while the authority guard is still held.
 /// `gate`'s decision guard for `connection`, for a decision whose write transaction the caller
 /// already opened (the operator repair path of `ResurrectSeat`, ht-eu3v). The caller holds the
 /// guard until that transaction commits, as [`ServiceDecisionTransaction`] does.
@@ -261,6 +259,9 @@ pub(crate) fn service_decision_guard_in<'gate>(
     gate.decision_guard(&ServiceWriteTransactionProof(()), connection)
 }
 
+/// Owns both the actual SQLite write transaction and authority guard. SQLite
+/// BEGIN IMMEDIATE runs first; `commit`, `rollback`, and the drop/error path
+/// finish the transaction while the authority guard is still held.
 pub struct ServiceDecisionTransaction<'db, 'gate> {
     transaction: Option<Transaction<'db>>,
     authority: Box<dyn ServiceDecisionGuard + 'gate>,

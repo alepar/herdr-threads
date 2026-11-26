@@ -264,7 +264,7 @@ added identity fields; the opt-in read changes no binding, receipt, membership o
 | Operator decision | `ht human seat rebind`, `ht human seat resolve --new-seat`, `ht human seat retire`, `ht human seat rebind --replace` (each with `--operator`). These repairs attribute no person and are not refused in an agent session; the person-attribution override `ht human me init --operator` is (A4 *Agent to human*) | `operator:local-user:<uid>` |
 | Service un-retire (ht-ma6i.3) | `UnretireSeat` by the service that owns the seat's continuity key, for a reversibly retired seat. The mapping only clears: the seat comes back unresolved with no target and no binding; it is placed later by a C1 path like any unresolved seat. | `service_unretire` |
 | Operator resurrect (ht-eu3v) | `ht human seat rebind OLD --pane P [--replace NEW] --operator` on a reversibly retired OLD (keyed or keyless): one decision un-retires OLD (as `UnretireSeat` does, deadlines of what is still pending shifting) and rebinds it onto P (`--replace` retires NEW finally first, C3). No binding opens; the next lifecycle check-in in P enrolls onto OLD. A finally retired OLD is refused. | `operator_unretire` then `operator_rebind`, both `operator:local-user:<uid>` |
-| Service resurrect (ht-eu3v) | `ResurrectSeat` from a `service_session_v4` session: the operator resurrect's decision, through the same fresh target observation, for a reversibly retired seat only. A keyless seat: any v4 session; a keyed one: its key's owner. | `service_unretire` then `service_rebind`, both `service:<author>` |
+| Service resurrect (ht-eu3v) | `ResurrectSeat` from a `service_session_v4` session: the operator resurrect's decision, through the same fresh target observation, under the session's decision guard, for a reversibly retired seat only. A keyless seat: any v4 session; a keyed one: its key's owner. Its `replace` names only a bare NEW (no memberships, `InvalidRequest` otherwise) whose key, if any, is the service's own (`Unauthorized` otherwise). | `service_unretire` then `service_rebind`, both `service:<author>` |
 
 Named rule. The named host is not host evidence and never closes by absence: reconcile plans no
 `BeginRetirement` and no `MarkUnresolved` for it, and the store refuses `RetireReason::Closed` for a named seat (only
@@ -3049,7 +3049,7 @@ These are decisions, not bugs. Each is safe to rely on only as stated.
 - **A seat whose session lives elsewhere can lose it to target absence (G5, ht-ma6i.4).** The race is the one above:
   a session running in another pane with no kept claim does not stop the 10 observed minutes, so its seat retires
   while its saved target stays gone. For a seat with a continuity key that retirement is reversible, so its service
-  can undo it; a keyless seat's is final. That includes a session whose claim was refused and that enrolled a fresh
+  can undo it; a keyless seat's is reversible on the timed clocks (ht-eu3v), so the operator can resurrect it. That includes a session whose claim was refused and that enrolled a fresh
   seat in the pane at the seat's target, while that fresh seat is live (not retired, its binding open): that pane is
   the fresh seat's, so it counts as absent. A pane at the target named only by a departed claimant (a retired seat's
   retained proof, an ended binding) does not count, and is not watched either: such a seat waits for its session's

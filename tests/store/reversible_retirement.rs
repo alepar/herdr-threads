@@ -2559,3 +2559,161 @@ impl Fx {
             .unwrap();
     }
 }
+
+impl Fx {
+    /// A late voluntary invitation of `seat` to thread `t`, created at `created`, materialized now.
+    fn late_invitation(&self, id: &str, seat: &str, created: i64) {
+        let payload = crate::sync::facts::invitation::InvitationCreatedPayload {
+            invitation: crate::protocol::ids::InvitationId::new(id),
+            thread: ThreadId::new("t"),
+            inviter: Some(SeatId::new("inviter")),
+            inviter_kind: Default::default(),
+            invitee: SeatId::new(seat),
+            invitee_n: 0,
+            created_at: created,
+            duration_ms: 1_000,
+            deadline_at: created + 1_000,
+            actor_label: None,
+        };
+        let mut db = self.db();
+        let tx = db.transaction().unwrap();
+        let input = crate::store::materialize::local_only(
+            &tx,
+            DecisionInstant {
+                utc: self.store.context.clock().utc_now(),
+                monotonic: MonoInstant(1),
+            },
+        )
+        .unwrap();
+        crate::store::control::materialize_invitation(&tx, &input, &payload).unwrap();
+        tx.commit().unwrap();
+    }
+    fn invitation_retired_at(&self, id: &str) -> Option<i64> {
+        self.db()
+            .query_row(
+                "SELECT retired_at FROM invitations WHERE id=?1",
+                [id],
+                |r| r.get(0),
+            )
+            .unwrap()
+    }
+    fn membership_rows(&self, seat: &str) -> Vec<String> {
+        let db = self.db();
+        let mut statement = db
+            .prepare("SELECT state FROM memberships WHERE seat_id=?1")
+            .unwrap();
+        statement
+            .query_map([seat], |r| r.get(0))
+            .unwrap()
+            .collect::<Result<_, _>>()
+            .unwrap()
+    }
+}
+
+/// Kills (roast 2): a late invitation settled by an expiry writing a terminal membership for a
+/// live seat, or a finally retired invitee with a recorded expiry losing its terminal row; an
+/// invitation's `retired_at` that is neither the expiry's episode nor the retirement's.
+#[test]
+fn late_invitation_membership_and_retired_at_follow_their_cause() {
+    // Resurrected (live) bare seat: the expiry is the cause.
+    let f = fx(&["s1", "inviter"]);
+    f.bare("s1");
+    f.at(300);
+    f.close("s1").unwrap();
+    f.at(300 + DAY);
+    f.timed_pass();
+    f.rebind("s1", "p2", None, "back").unwrap();
+    f.late_invitation("live", "s1", 400);
+    assert_eq!(f.invitation_state("live"), "recipient_retired");
+    assert_eq!(f.invitation_retired_at("live"), Some(300));
+    assert!(f.membership_rows("s1").is_empty(), "no membership row");
+
+    // Finally retired bare seat with a recorded expiry: the retirement is the cause.
+    let f = fx(&["s2", "inviter"]);
+    f.bare("s2");
+    f.at(300);
+    f.close("s2").unwrap();
+    f.at(300 + WEEK);
+    assert_eq!(f.timed_pass(), 2);
+    f.late_invitation("final", "s2", 400);
+    assert_eq!(f.invitation_state("final"), "recipient_retired");
+    assert_eq!(f.invitation_retired_at("final"), Some(300));
+    assert_eq!(f.membership_rows("s2"), vec!["retired".to_owned()]);
+}
+
+/// Kills (roast 2): a home row whose expiry fact applied before the row existed never
+/// finalizing.
+#[test]
+fn an_expiry_recorded_before_its_row_still_lets_the_row_finalize() {
+    let f = fx(&["s1"]);
+    let db = f.db();
+    let tx = db.unchecked_transaction().unwrap();
+    record_expiry(&tx, &SeatId::new("s1"), 300, 300 + DAY).unwrap();
+    tx.commit().unwrap();
+    f.at(300);
+    f.close("s1").unwrap();
+    f.at(300 + DAY);
+    assert_eq!(
+        f.timed_pass(),
+        1,
+        "the row takes the recorded expiry's mark"
+    );
+    assert_eq!(
+        f.int("SELECT obligations_expired_at FROM reversible_retirements WHERE seat_id='s1'"),
+        300 + DAY
+    );
+    f.at(300 + WEEK);
+    assert_eq!(f.timed_pass(), 1);
+    assert_eq!(f.row_state("s1"), None);
+}
+
+/// Kills (roast 2): the replay applier not passing its apply instant as the row's clock base.
+#[test]
+fn an_applied_reversible_fact_runs_its_clocks_from_the_apply() {
+    let f = fx(&["s1"]);
+    let applied = 300 + 2 * WEEK;
+    let mut db = f.db();
+    let tx = db.transaction().unwrap();
+    let input = crate::store::materialize::local_only(
+        &tx,
+        DecisionInstant {
+            utc: UtcMillis(applied),
+            monotonic: MonoInstant(1),
+        },
+    )
+    .unwrap();
+    seats::materialize_seat_retired_reversible(
+        &tx,
+        &input,
+        &crate::sync::facts::seat::SeatRetiredReversiblePayload {
+            seat: SeatId::new("s1"),
+            reason: RetireReason::Closed,
+            retired_at: 300,
+        },
+    )
+    .unwrap();
+    tx.commit().unwrap();
+    assert_eq!(
+        f.int("SELECT timed_from FROM reversible_retirements WHERE seat_id='s1'"),
+        applied
+    );
+    f.at(applied + DAY - 1);
+    assert_eq!(f.timed_pass(), 0);
+    f.at(applied + DAY);
+    assert_eq!(f.timed_pass(), 1);
+}
+
+/// Kills (roast 2): a guard whose author is not the actor's deciding a service resurrect.
+#[test]
+fn a_guard_for_another_author_is_refused() {
+    let f = fx(&["s1"]);
+    f.at(300);
+    f.close("s1").unwrap();
+    assert_eq!(
+        f.service_rebind(&Gate(ServiceAuthorId::new("other")), "s1", "p2", None, "x")
+            .unwrap_err()
+            .code,
+        ErrorCode::StaleServiceGeneration
+    );
+    assert_eq!(f.row_state("s1"), Some(RowState::Reversible));
+}

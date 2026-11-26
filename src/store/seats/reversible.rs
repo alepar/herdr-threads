@@ -262,14 +262,31 @@ pub(crate) fn expire_obligations(
     let due: bool = tx
         .query_row(
             "SELECT EXISTS(SELECT 1 FROM reversible_retirements WHERE seat_id=?1 AND cutover_at=?2 \
-             AND obligations_expired_at IS NULL AND COALESCE(timed_from,cutover_at)+?3<=?4) \
-             AND NOT EXISTS(SELECT 1 FROM obligation_expiries WHERE seat_id=?1 AND retired_at=?2)",
+             AND obligations_expired_at IS NULL AND COALESCE(timed_from,cutover_at)+?3<=?4)",
             params![seat.as_str(), cutover_at, obligation_expiry_ms(), at.utc.0],
             |r| r.get(0),
         )
         .map_err(store_error)?;
     if !due || !timed_in(tx, seat, cutover_at)? {
         return Ok(false);
+    }
+    // An expiry of this episode already applied (its fact landed before the row existed): the row
+    // only takes its mark, so the lane moves on to finalization.
+    if let Some(recorded) = tx
+        .query_row(
+            "SELECT expired_at FROM obligation_expiries WHERE seat_id=?1 AND retired_at=?2",
+            params![seat.as_str(), cutover_at],
+            |r| r.get::<_, i64>(0),
+        )
+        .optional()
+        .map_err(store_error)?
+    {
+        tx.execute(
+            "UPDATE reversible_retirements SET obligations_expired_at=?2 WHERE seat_id=?1",
+            params![seat.as_str(), recorded],
+        )
+        .map_err(store_error)?;
+        return Ok(true);
     }
     // The expiry instant is the derived one, not the decision's: every node (and a re-authored
     // copy after a restore) records and settles by the same instant, however late the lane ran.
