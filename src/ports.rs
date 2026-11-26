@@ -250,6 +250,17 @@ pub enum ServiceDecisionStartError {
 /// Owns both the actual SQLite write transaction and authority guard. SQLite
 /// BEGIN IMMEDIATE runs first; `commit`, `rollback`, and the drop/error path
 /// finish the transaction while the authority guard is still held.
+/// `gate`'s decision guard for `connection`, for a decision whose write transaction the caller
+/// already opened (the operator repair path of `ResurrectSeat`, ht-eu3v). The caller holds the
+/// guard until that transaction commits, as [`ServiceDecisionTransaction`] does.
+pub(crate) fn service_decision_guard_in<'gate>(
+    _transaction: &Transaction<'_>,
+    gate: &'gate dyn ServiceAuthorityGate,
+    connection: &ServiceConnectionAuthority,
+) -> Result<Box<dyn ServiceDecisionGuard + 'gate>, ApiError> {
+    gate.decision_guard(&ServiceWriteTransactionProof(()), connection)
+}
+
 pub struct ServiceDecisionTransaction<'db, 'gate> {
     transaction: Option<Transaction<'db>>,
     authority: Box<dyn ServiceDecisionGuard + 'gate>,
@@ -3878,6 +3889,19 @@ pub trait StorePort: ModStoreReads + Send + Sync {
         actor: OperatorActor,
         budget: &CallBudget,
     ) -> Result<CommandResult, ApiError>;
+    /// `ResurrectSeat` (ht-eu3v): [`Self::mutate_operator`] for a service actor, decided under
+    /// `gate`'s decision guard for `connection`, taken inside the write transaction and held
+    /// through its commit. A store without it refuses.
+    fn mutate_operator_as_service(
+        &self,
+        _command: OperatorRequest,
+        _actor: OperatorActor,
+        _gate: &dyn ServiceAuthorityGate,
+        _connection: &ServiceConnectionAuthority,
+        _budget: &CallBudget,
+    ) -> Result<CommandResult, ApiError> {
+        Err(ApiError::unsupported("service resurrect is unavailable"))
+    }
     /// Payload-bound historical continuity result; a miss has no durable effects.
     fn replay_continuity(
         &self,

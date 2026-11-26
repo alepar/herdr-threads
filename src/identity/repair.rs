@@ -427,6 +427,28 @@ impl OrdinaryIdentity {
         actor: OperatorActor,
         budget: &CallBudget,
     ) -> Result<CommandResult, ApiError> {
+        self.operator_for(command, actor, None, budget)
+    }
+
+    /// `ResurrectSeat` (ht-eu3v): [`Self::operator`] for a service actor, whose rebind or
+    /// replace decides under the session's decision guard.
+    pub fn operator_as_service(
+        &self,
+        command: OperatorCommand,
+        actor: OperatorActor,
+        service: crate::store::seats::ServiceDecision<'_>,
+        budget: &CallBudget,
+    ) -> Result<CommandResult, ApiError> {
+        self.operator_for(command, actor, Some(service), budget)
+    }
+
+    fn operator_for(
+        &self,
+        command: OperatorCommand,
+        actor: OperatorActor,
+        service: Option<crate::store::seats::ServiceDecision<'_>>,
+        budget: &CallBudget,
+    ) -> Result<CommandResult, ApiError> {
         let replay = {
             let _turn = self.writer.enter_foreground(budget, self.clock.as_ref())?;
             self.store
@@ -467,7 +489,12 @@ impl OrdinaryIdentity {
                 OperatorCommand::OrphanInvite(_) | OperatorCommand::Retire(_) => unreachable!(),
             };
             let _turn = self.writer.enter_foreground(budget, self.clock.as_ref())?;
-            self.store.mutate_operator(request, actor, budget)
+            match service {
+                Some((gate, connection)) => self
+                    .store
+                    .mutate_operator_as_service(request, actor, gate, connection, budget),
+                None => self.store.mutate_operator(request, actor, budget),
+            }
         })
     }
 

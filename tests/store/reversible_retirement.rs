@@ -1966,22 +1966,21 @@ fn service_resurrect_authority_and_trail() {
     f.at(300);
     f.close("s1").unwrap();
     f.close("s2").unwrap();
-    let stranger = OperatorActor::for_service(501, ServiceAuthorId::new("stranger"));
+    let stranger_gate = Gate(ServiceAuthorId::new("stranger"));
+    let stranger = |seat: &str, pane: &str, op: &str| {
+        f.service_rebind_by(Some("stranger"), &stranger_gate, seat, pane, None, op)
+    };
     assert_eq!(
-        f.rebind_as(stranger.clone(), "s2", "p2", None, "s2")
-            .unwrap_err()
-            .code,
+        stranger("s2", "p2", "s2").unwrap_err().code,
         ErrorCode::Unauthorized,
         "a keyed seat is its owner's"
     );
     assert_eq!(
-        f.rebind_as(stranger.clone(), "s4", "p4", None, "s4")
-            .unwrap_err()
-            .code,
+        stranger("s4", "p4", "s4").unwrap_err().code,
         ErrorCode::NotFound,
         "a live seat is not resurrected"
     );
-    f.rebind_as(stranger, "s1", "p1", None, "s1").unwrap();
+    stranger("s1", "p1", "s1").unwrap();
     assert_eq!(f.seat_state("s1"), "resolved");
     assert_eq!(
         f.decisions("s1"),
@@ -1990,8 +1989,8 @@ fn service_resurrect_authority_and_trail() {
             ("service_rebind".into(), Some("service:stranger".into())),
         ]
     );
-    let owner = OperatorActor::for_service(501, f.connection.author().clone());
-    f.rebind_as(owner, "s2", "p2", None, "s2-owner").unwrap();
+    f.service_rebind(&f.gate, "s2", "p2", None, "s2-owner")
+        .unwrap();
     assert_eq!(f.seat_state("s2"), "resolved");
 }
 
@@ -2085,4 +2084,289 @@ fn recorded_expiry_settles_whatever_the_seat_state_and_is_idempotent() {
         f.int("SELECT count(*) FROM obligation_expiries WHERE seat_id='s1'"),
         1
     );
+}
+
+/// A gate whose session was revoked: every decision guard is refused.
+struct RevokedGate;
+impl ServiceAuthorityGate for RevokedGate {
+    fn register(
+        &self,
+        _: &str,
+        _: &str,
+        _: ServiceAuthorId,
+    ) -> Result<ServiceConnectionAuthority, ApiError> {
+        unreachable!("not registered in these tests")
+    }
+    fn decision_guard<'a>(
+        &'a self,
+        _: &ServiceWriteTransactionProof,
+        _: &ServiceConnectionAuthority,
+    ) -> Result<Box<dyn ServiceDecisionGuard + 'a>, ApiError> {
+        Err(ApiError::new(
+            ErrorCode::StaleServiceGeneration,
+            "service connection was revoked",
+        ))
+    }
+    fn revoke_exact(&self, _: &ServiceConnectionAuthority) -> bool {
+        true
+    }
+}
+
+impl Fx {
+    /// `ResurrectSeat`'s store decision for this fixture's service session under `gate`.
+    fn service_rebind(
+        &self,
+        gate: &dyn ServiceAuthorityGate,
+        seat: &str,
+        pane: &str,
+        replace: Option<&str>,
+        operation: &str,
+    ) -> Result<CommandResult, ApiError> {
+        self.service_rebind_by(None, gate, seat, pane, replace, operation)
+    }
+    /// [`Self::service_rebind`] as the session of `author` (default: this fixture's).
+    fn service_rebind_by(
+        &self,
+        author: Option<&str>,
+        gate: &dyn ServiceAuthorityGate,
+        seat: &str,
+        pane: &str,
+        replace: Option<&str>,
+        operation: &str,
+    ) -> Result<CommandResult, ApiError> {
+        use crate::protocol::commands::{OperatorCommand, OperatorRebind, OperatorReplace};
+        let observation = self.observe(pane);
+        let host = crate::test_support::test_host_locator();
+        let request = match replace {
+            Some(new) => {
+                let command = OperatorReplace {
+                    seat: SeatId::new(seat),
+                    target: HostTargetId::new(pane),
+                    host,
+                    replace: SeatId::new(new),
+                    operation: OperationId::new(operation),
+                };
+                let guard = crate::ports::OperatorTargetGuard::try_new(
+                    INSTANCE,
+                    crate::test_support::test_host_id(),
+                    &OperatorCommand::Replace(command.clone()),
+                    observation,
+                )
+                .unwrap();
+                crate::ports::OperatorRequest::Replace(command, guard)
+            }
+            None => {
+                let command = OperatorRebind {
+                    seat: SeatId::new(seat),
+                    target: HostTargetId::new(pane),
+                    host,
+                    operation: OperationId::new(operation),
+                };
+                let guard = crate::ports::OperatorTargetGuard::try_new(
+                    INSTANCE,
+                    crate::test_support::test_host_id(),
+                    &OperatorCommand::Rebind(command.clone()),
+                    observation,
+                )
+                .unwrap();
+                crate::ports::OperatorRequest::Rebind(command, guard)
+            }
+        };
+        let connection = match author {
+            Some(author) => ServiceConnectionAuthority::new(
+                INSTANCE.into(),
+                "boot".into(),
+                1,
+                ServiceAuthorId::new(author),
+            ),
+            None => ServiceConnectionAuthority::new(
+                INSTANCE.into(),
+                "boot".into(),
+                1,
+                self.connection.author().clone(),
+            ),
+        };
+        StorePort::mutate_operator_as_service(
+            &self.store,
+            request,
+            OperatorActor::for_service(501, connection.author().clone()),
+            gate,
+            &connection,
+            &budget(),
+        )
+    }
+}
+
+/// Kills: a resurrect committed by a revoked session, or a service actor deciding with no guard.
+#[test]
+fn service_resurrect_of_a_revoked_session_commits_nothing() {
+    let f = fx(&["s1"]);
+    f.at(300);
+    f.close("s1").unwrap();
+    assert_eq!(
+        f.service_rebind(&RevokedGate, "s1", "p2", None, "r")
+            .unwrap_err()
+            .code,
+        ErrorCode::StaleServiceGeneration
+    );
+    assert_eq!(f.row_state("s1"), Some(RowState::Reversible));
+    assert_eq!(f.seat_state("s1"), "retired");
+    assert!(f.decisions("s1").is_empty());
+    // The unguarded store entry refuses a service actor outright.
+    let mut db = f.db();
+    let command = crate::protocol::commands::OperatorRebind {
+        seat: SeatId::new("s1"),
+        target: HostTargetId::new("p2"),
+        host: crate::test_support::test_host_locator(),
+        operation: OperationId::new("r2"),
+    };
+    let guard = crate::ports::OperatorTargetGuard::try_new(
+        INSTANCE,
+        crate::test_support::test_host_id(),
+        &crate::protocol::commands::OperatorCommand::Rebind(command.clone()),
+        f.observe("p2"),
+    )
+    .unwrap();
+    assert_eq!(
+        seats::mutate_operator(
+            &f.store.context,
+            &mut db,
+            INSTANCE,
+            crate::ports::OperatorRequest::Rebind(command, guard),
+            OperatorActor::for_service(501, f.connection.author().clone()),
+            None,
+        )
+        .unwrap_err()
+        .code,
+        ErrorCode::Unauthorized
+    );
+}
+
+/// Kills: a lost-response retry of `ResurrectSeat` with `replace` deciding twice, or an operation
+/// key reused across service operations going unnoticed.
+#[test]
+fn service_resurrect_with_replace_is_idempotent_per_operation_key() {
+    let f = fx(&["s1", "s3"]);
+    f.at(300);
+    f.close("s1").unwrap();
+    let first = f
+        .service_rebind(&f.gate, "s1", "s3", Some("s3"), "lost")
+        .unwrap();
+    let again = f
+        .service_rebind(&f.gate, "s1", "s3", Some("s3"), "lost")
+        .unwrap();
+    assert_eq!(first, again);
+    assert_eq!(f.seat_state("s1"), "resolved");
+    assert_eq!(f.seat_state("s3"), "retired");
+    assert_eq!(
+        f.decisions("s1")
+            .into_iter()
+            .map(|(kind, _)| kind)
+            .collect::<Vec<_>>(),
+        vec!["service_unretire", "service_rebind"],
+        "one decision"
+    );
+    assert_eq!(f.rows("retirements", "s3"), 1);
+    // The same key on another service operation is the session's one decision.
+    assert_eq!(
+        f.finalize("s1", "lost").unwrap_err().code,
+        ErrorCode::OperationPayloadMismatch
+    );
+}
+
+/// Kills: an applied (or own-log replayed) `seat.obligations_expired` leaving the home row
+/// unexpired, so the lane expires the episode a second time with a later instant.
+#[test]
+fn applied_expiry_fact_marks_the_home_row_and_the_lane_does_not_repeat_it() {
+    let f = fx(&["s1", "inviter"]);
+    f.ordinary_invitation("early", "s1", 100);
+    f.at(300);
+    f.close("s1").unwrap();
+    let payload = crate::sync::facts::seat::SeatObligationsExpiredPayload {
+        seat: SeatId::new("s1"),
+        retired_at: 300,
+        expired_at: 300 + DAY,
+    };
+    let mut db = f.db();
+    let tx = db.transaction().unwrap();
+    let input = crate::store::materialize::local_only(
+        &tx,
+        DecisionInstant {
+            utc: UtcMillis(300 + DAY),
+            monotonic: MonoInstant(1),
+        },
+    )
+    .unwrap();
+    seats::materialize_seat_obligations_expired(&tx, &input, &payload).unwrap();
+    tx.commit().unwrap();
+    assert_eq!(f.invitation_state("early"), "recipient_retired");
+    assert_eq!(
+        f.int("SELECT obligations_expired_at FROM reversible_retirements WHERE seat_id='s1'"),
+        300 + DAY
+    );
+    // An invitation created after the recorded expiry stays pending through later passes.
+    f.ordinary_invitation("later", "s1", 300 + DAY + 5);
+    f.at(300 + DAY + 10);
+    assert_eq!(f.timed_pass(), 0, "already expired");
+    assert_eq!(f.invitation_state("later"), "pending");
+    assert_eq!(
+        f.int("SELECT expired_at FROM obligation_expiries WHERE seat_id='s1'"),
+        300 + DAY
+    );
+}
+
+/// Kills: an ACK request first projected after a recorded expiry it predates staying pending (the
+/// receipt half of the late-arrival rule).
+#[test]
+fn a_receipt_first_projected_after_a_recorded_expiry_settles_at_write() {
+    let f = fx(&["s1"]);
+    let message = f.send("late", &["s1"], 10 * WEEK as u64).unwrap();
+    // An expiry recorded before this node projected the receipt.
+    f.db()
+        .execute(
+            "INSERT INTO obligation_expiries(seat_id,retired_at,expired_at) VALUES ('s1',50,?1)",
+            [300 + DAY],
+        )
+        .unwrap();
+    f.drain(&message);
+    assert_eq!(
+        f.receipt_row(&message, "s1"),
+        ("recipient_retired".into(), Some(50))
+    );
+}
+
+/// Kills: an expiry that settles without the overdue warning the retirement job writes.
+#[test]
+fn expiry_warns_the_sender_of_an_obligation_overdue_at_the_close() {
+    let f = fx(&["s1"]);
+    let message = f.send("due", &["s1"], 50).unwrap();
+    f.drain(&message);
+    f.at(300);
+    f.close("s1").unwrap();
+    let warnings = || f.int("SELECT count(*) FROM messages WHERE kind='warn'");
+    let before = warnings();
+    f.at(300 + DAY);
+    assert_eq!(f.timed_pass(), 1);
+    assert_eq!(warnings(), before + 1, "the sender is warned");
+    assert_eq!(f.receipt_row(&message, "s1").0, "recipient_retired");
+}
+
+/// Kills: a row replayed from the own log (no key, no closure inputs) that is not timed, so it
+/// would never expire or finalize.
+#[test]
+fn a_replayed_keyless_row_is_timed() {
+    let f = fx(&["s1"]);
+    f.at(300);
+    f.close("s1").unwrap();
+    // The fence's row replaced by the shape an own-log replay writes.
+    let db = f.db();
+    db.execute("DELETE FROM reversible_retirements WHERE seat_id='s1'", [])
+        .unwrap();
+    let tx = db.unchecked_transaction().unwrap();
+    insert_fact_row(&tx, &SeatId::new("s1"), 300, RetireReason::Closed).unwrap();
+    tx.commit().unwrap();
+    f.at(300 + WEEK);
+    assert_eq!(f.timed_pass(), 2, "expired, then finalized");
+    assert_eq!(f.row_state("s1"), None);
+    assert_eq!(f.rows("retirements", "s1"), 1);
 }

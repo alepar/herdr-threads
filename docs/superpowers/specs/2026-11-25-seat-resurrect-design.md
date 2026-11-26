@@ -104,8 +104,9 @@ enrolls onto OLD, as after any operator rebind.
 
 **A live agent on NEW.** With `--replace NEW`, a running agent bound to NEW in P stays served as NEW's (now
 retired) binding on its plain calls until its next lifecycle check-in (TRUST-POLICY *bindings disconnected
-seat_retired never reconnect on a plain call*); nothing moves from NEW to OLD (C3). The command's text output
-says so in one `next:` line naming the step: restart the agent in P or run `/clear` there. Graph's case is a pane
+seat_retired never reconnect on a plain call*); nothing moves from NEW to OLD (C3). Implementation note: the planned
+`next:` line in the command output is not added (no new model-visible text); `docs/operations.md` states the step
+(restart the agent in P or run `/clear` there). Graph's case is a pane
 with no agent (requirement (3)), so this only affects the operator fallback.
 
 Refusals:
@@ -196,3 +197,10 @@ Each item is one named test.
 - `ResurrectSeat` with `replace`, retried with the same operation id (lost response): one decision.
 - Integration (private Herdr): close a pane, rebind the retired seat onto a new pane, an agent check-in there
   enrolls onto the old seat with its memberships.
+
+Implementation notes (PR roast 1): the service decision runs under the session's decision guard and journals under the
+session's operation scope (covered at store level: revoked session, replace retry); not covered by a named test, and
+left to the existing mechanisms they reuse: `ResurrectSeat` end to end through a live v4 socket (the v4 level gate is
+a protocol test), a parked `seat.obligations_expired` replayed after an upgrade across two nodes (the applier is order
+independent and tested directly), and plain calls of a live agent on a replaced NEW (TRUST-POLICY binding rules,
+unchanged).

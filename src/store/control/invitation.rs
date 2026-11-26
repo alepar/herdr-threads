@@ -900,10 +900,14 @@ pub(crate) fn insert_invitation(
         .map_err(|_| api_error(ErrorCode::InvalidRequest, "invitee ordinal out of range"))?;
     // An invitation created by an expiry already recorded for its invitee settles at write, as
     // every copy present at the expiry did (ht-eu3v). A service-required one never expires.
-    let expired = matches!(placement, Placement::Voluntary)
-        && crate::store::seats::reversible::expired_episode(tx, p.invitee.as_str(), p.created_at)?
-            .is_some();
-    let state = if expired
+    // Its episode is the retired_at it settles at, and it writes no membership row: an expiry never
+    // touches memberships.
+    let expired = if matches!(placement, Placement::Voluntary) {
+        crate::store::seats::reversible::expired_episode(tx, p.invitee.as_str(), p.created_at)?
+    } else {
+        None
+    };
+    let state = if expired.is_some()
         || (seat_state == "retired" && !crate::store::seats::reversible::is_frozen(tx, &p.invitee)?)
     {
         "recipient_retired"
@@ -951,7 +955,7 @@ pub(crate) fn insert_invitation(
             decision_seq,
             p.duration_ms,
             deadline,
-            if state == "recipient_retired" { seat_retired_at } else { None },
+            if state == "recipient_retired" { expired.or(seat_retired_at) } else { None },
             confirmation,
             inviter,
             m.origin_node.to_string(),
@@ -960,7 +964,7 @@ pub(crate) fn insert_invitation(
         ],
     )
     .map_err(store_error)?;
-    if state == "recipient_retired" && prior.is_none() {
+    if state == "recipient_retired" && prior.is_none() && expired.is_none() {
         // The terminal row the retirement job leaves for an invitee whose
         // invitation applied first: either arrival order ends with the same
         // `memberships` row (fact-kinds design section 3 audit; the order

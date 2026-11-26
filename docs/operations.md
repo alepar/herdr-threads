@@ -300,8 +300,11 @@ The first abandons the old seat. The second abandons the new role: it retires NE
 | `structural_process_continuity` | reattached after a new Herdr incarnation because the seat's own agent process was found running in the pane (process continuity, above) |
 | `structural_shell_continuity` | reattached after a new Herdr incarnation because the seat's recorded pane shell is still the pane's shell (process continuity, above) |
 | `cooperative_continuity_key` | reattached by a check-in presenting the seat's continuity key (continuity key, above) |
-| `service_unretire` | the key's service un-retired a reversibly retired seat |
-| `service_finalize` | the key's service finalized a reversible retirement |
+| `service_unretire` | the key's service un-retired a reversibly retired seat, or a v4 service resurrected one (label `service:<author>`) |
+| `service_finalize` | the key's service finalized a reversible retirement, or a service finalized a keyless one (label `service:<author>`) |
+| `operator_unretire` | the operator resurrected a reversibly retired seat; the `operator_rebind` row that follows placed it |
+| `service_rebind` | a v4 service's `ResurrectSeat` placed the seat it un-retired |
+| `window_finalize` | a keyless seat's reversible retirement finalized 7 days after its close |
 | `operator_human_override` | a person's `me init --operator` replaced an agent binding |
 
 **Daemon restart.** A request carries the daemon boot the client addressed. If the daemon restarted in between, it refuses before dispatch with `daemon_boot_changed` (`DaemonBootChanged`, exit 3, transient) and nothing was applied. Retry the command; the client addresses the daemon's current boot on the next attempt. A joined seat whose pane mapping is structurally reconfirmed after the restart stays available: its open binding carries forward to the new host epoch with no new check-in. The carry lands in the first reconciliation pass, not at `daemon ensure`; a send in between does not wait for it. A recipient whose binding is about to be carried (same Herdr boot and incarnation, a cooperative or operator binding) is staged as not yet available but draws no `recipient_unavailable` warning; its receipt deadline already runs from the committed send time (A6), and the carry only restores availability. If the pass does not carry the seat, the ordinary unavailable paths open the outage and later sends warn as usual. A native `verified_current_target` binding is never carried; it re-registers. Availability still ends when the mapping becomes unresolved, the seat retires, or its last connected binding disconnects.

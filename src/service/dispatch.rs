@@ -592,12 +592,13 @@ impl DomainService {
         &self,
         request: &crate::protocol::service::ResurrectSeat,
         connection: &ServiceConnectionAuthority,
+        gate: &dyn ServiceAuthorityGate,
         budget: &CallBudget,
     ) -> Result<ServiceResult, ApiError> {
         if connection.instance() != self.instance {
             return Err(error(
-                ErrorCode::StaleHostObservation,
-                "service session belongs to another instance",
+                ErrorCode::InstanceMismatch,
+                "service connection instance mismatch",
             ));
         }
         let uid = self
@@ -626,7 +627,12 @@ impl DomainService {
                 "resurrect is not an operator action",
             )
         })?;
-        match preparation.identity().operator(operator, actor, budget)? {
+        match preparation.identity().operator_as_service(
+            operator,
+            actor,
+            (gate, connection),
+            budget,
+        )? {
             CommandResult::OperatorRebound(seat) => Ok(ServiceResult::SeatResurrected(seat)),
             _ => Err(error(
                 ErrorCode::StoreCorrupt,
@@ -2051,7 +2057,10 @@ impl LocalService for DomainService {
         budget: &CallBudget,
     ) -> Result<ServiceResult, ApiError> {
         if let ServiceOperation::ResurrectSeat(request) = &operation {
-            return self.service_resurrect(request, connection, budget);
+            operation
+                .validate()
+                .map_err(|why| error(ErrorCode::InvalidRequest, why))?;
+            return self.service_resurrect(request, connection, gate, budget);
         }
         let admission = self
             .cooperative_runtime

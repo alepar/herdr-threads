@@ -815,7 +815,7 @@ records there are replay machinery, never its identity.
 | `service_unretire` | seat history (`allocation_decisions`) only | The service that owns the seat's continuity key undid its reversible retirement. Records the row's closure target; places nothing. Never on receipts. |
 | `service_finalize` | seat history (`allocation_decisions`) only | The service that owns the seat's continuity key made its reversible or unretired retirement final, or (ht-eu3v) any service session finalized a keyless one, recorded with `service:<author>`. An operator's finalization records `operator:local-user:<uid>` under `operator_retire` instead. Never on receipts. |
 | `operator_unretire` | seat history (`allocation_decisions`) only | The operator un-retired a reversibly retired seat in a `seat rebind --operator` resurrect (ht-eu3v), with `operator:local-user:<uid>`; the rebind follows as `operator_rebind` in the same decision. Never on receipts. |
-| `service_rebind` | seat history (`allocation_decisions`) only | A `service_session_v4` `ResurrectSeat` rebound the seat it un-retired (recorded `service_unretire` with `service:<author>` just before), with `service:<author>` (ht-eu3v). Never on receipts. |
+| `service_rebind` | seat history (`allocation_decisions`) only | A `service_session_v4` `ResurrectSeat` rebound the seat it un-retired (recorded `service_unretire` with `service:<author>` just before), with `service:<author>` (ht-eu3v). Its `replace` records NEW's final retirement as `operator_retire` with `service:<author>`. The decision runs under the session's decision guard, so a revoked or superseded session commits nothing, and it journals under the session's own operation scope. Never on receipts. |
 | `window_finalize` | seat history (`allocation_decisions`) only | The deadline lane finalized a timed (keyless) reversible retirement 7 d after its close (ht-eu3v). No author. Never on receipts. |
 | `structural_process_continuity` | seat rebinds only | The seat's top-level binding process (same fingerprint) was observed as, or in the session of, the shell Herdr reports for the pane, on that shell's controlling terminal, after a new incarnation (C1 process continuity, ht-hsyg). The reopened binding keeps its own `cooperative_top_level` provenance. Never on receipts. |
 | `structural_shell_continuity` | seat rebinds only | The shell Herdr reports for the seat's saved target was observed to be the process the seat's fingerprint recorded (same pid and start stamp), leading its session on the recorded controlling terminal, after a new incarnation (C1 *Shell continuity*, ht-ma6i.1). No binding opens. Never on receipts. |
@@ -2502,17 +2502,19 @@ introduced.
 - First-turn hooks and the continuity key (ht-ma6i.2). A harness whose hook does not fire until its first turn (the
   Codex TUI) presents no key while idle, so it reattaches on its first turn. A launcher that needs the seat at once
   starts it with a prompt.
-- A service that never acts (ht-ma6i.3). A seat reversibly retired or unretired stays that way until its service acts
-  or an operator retires it: threads runs no timer, so obligations it owes stay frozen or pending. The owning service
-  owns the undo window; `herdr-threads human seat retire --operator` always finalizes.
-- A keyless seat's close stays final (ht-ma6i.3). Only a seat holding a continuity key can be un-retired; a seat gains
-  a key at keyed check-in or through a reservation that names it.
+- A service that never acts (ht-ma6i.3). A keyed seat reversibly retired or unretired stays that way until its service
+  acts or an operator retires it: threads runs no timer for a keyed row, so obligations it owes stay frozen or pending.
+  The owning service owns the undo window; `herdr-threads human seat retire --operator` always finalizes. A keyless row
+  is timed (ht-eu3v) and finalizes on its own.
+- A keyless seat's close is un-retired only through a resurrect (ht-ma6i.3, amended ht-eu3v). `UnretireSeat` stays the
+  key owner's; a keyless seat comes back through `seat rebind --operator` or `ResurrectSeat`, which also place it.
 - A frozen seat misses ACK warnings (ht-ma6i.3). ACK-request warnings reach their origin through SQL triggers that skip
   a retired seat, so an origin frozen when one fires gets no row, and sees the state in `pending-receipts` on reattach.
   Rewriting the triggers for one informational warning is not worth it; invitation warnings do reach it.
 - A store restored from its own log (ht-ma6i.3, ht-ma6i.7). Keys are local and facts do not carry them, so a seat
-  restored reversible keeps its row and reads retired with no key row: `UnretireSeat` and `FinalizeRetirement` answer
-  `Unauthorized`, and only an operator can finalize it.
+  restored reversible keeps its row and reads retired with no key row: `UnretireSeat` answers `Unauthorized`. The row is
+  timed (ht-eu3v), so it expires and finalizes on the keyless clocks, any service session or the operator can finalize
+  it at once, and the operator or a v4 session can resurrect it.
 - Seat resurrect (ht-eu3v). (1) Senders learn that a closed keyless recipient's obligations settled up to 24 h later
   than before; sends to it are still refused as retired at once. (2) A thread whose remaining members are all
   reversibly retired archives only after they finalize (7 d), because a reversible seat stays a live member for

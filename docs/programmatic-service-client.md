@@ -60,7 +60,7 @@ A seat binds to a key at the check-in of an agent presenting it (`bound_by: chec
 
 1. `ReserveContinuityKey` before launch. An unreserved key does nothing.
 2. `UnretireSeat` before relaunching a reversible seat's agent. Otherwise the agent stays seatless under a `key_retired_reversibly` conflict and its pane is held.
-3. `FinalizeRetirement` when the undo window ends. Threads has no timer: the service owns the window, and a service that disappears leaves its seats retired-reversible, their obligations frozen, until an operator retires them.
+3. `FinalizeRetirement` when the undo window ends. Threads has no timer for a keyed seat: the service owns the window, and a service that disappears leaves its keyed seats retired-reversible, their obligations frozen, until an operator retires them. A keyless seat finalizes on its own 7 days after the close.
 
 A launcher that needs the seat at once starts a harness whose hook waits for a first turn (Codex TUI) with a prompt: with no turn the agent presents no key while idle, and it reattaches on its first turn. A hookless plain CLI caller never reattaches by key.
 

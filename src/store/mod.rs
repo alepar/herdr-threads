@@ -2365,6 +2365,25 @@ impl StorePort for SqliteStore {
         self.live_budget(budget)?;
         Ok(result)
     }
+    fn mutate_operator_as_service(
+        &self,
+        command: OperatorRequest,
+        actor: OperatorActor,
+        gate: &dyn crate::ports::ServiceAuthorityGate,
+        connection: &crate::ports::ServiceConnectionAuthority,
+        budget: &CallBudget,
+    ) -> Result<CommandResult, ApiError> {
+        let mut writer = self.writer(budget)?;
+        seats::mutate_operator_guarded(
+            &self.context,
+            &mut writer,
+            &self.instance,
+            command,
+            actor,
+            self.settings.invitation_default_ms,
+            Some((gate, connection)),
+        )
+    }
     fn mutate_operator(
         &self,
         command: OperatorRequest,

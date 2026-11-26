@@ -961,6 +961,26 @@ mod contract_tests {
         }
     }
 
+    /// Kills: `ResurrectSeat` reachable from a v3 session, a changed wire shape, or a result the
+    /// client does not pair with it (ht-eu3v).
+    #[test]
+    fn resurrect_seat_is_v4_and_round_trips() {
+        let fixture = json!({"kind": "resurrect_seat", "args": {"seat": "s1", "target": "w1:p2", "host": "/host.sock", "replace": null, "operation": "op-5"}});
+        let parsed: ServiceOperation = serde_json::from_value(fixture.clone()).unwrap();
+        assert_eq!(parsed.validate(), Ok(()));
+        assert_eq!(serde_json::to_value(&parsed).unwrap(), fixture);
+        assert_eq!(
+            ServiceSessionLevel::required_by(&parsed),
+            ServiceSessionLevel::V4
+        );
+        assert!(ServiceSessionLevel::V3 < ServiceSessionLevel::required_by(&parsed));
+        assert_eq!(parsed.operation_key(), Some(&OperationId::new("op-5")));
+        let result = json!({"kind": "seat_resurrected", "data": "s1"});
+        let decoded: ServiceResult = serde_json::from_value(result.clone()).unwrap();
+        assert_eq!(decoded, ServiceResult::SeatResurrected(SeatId::new("s1")));
+        assert_eq!(serde_json::to_value(decoded).unwrap(), result);
+    }
+
     #[test]
     fn clone_identity_operations_round_trip() {
         let page = serde_json::to_value(PageRequest::default()).unwrap();

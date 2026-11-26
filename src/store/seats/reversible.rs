@@ -242,7 +242,8 @@ pub(crate) fn expire_obligations(
     let due: bool = tx
         .query_row(
             "SELECT EXISTS(SELECT 1 FROM reversible_retirements WHERE seat_id=?1 AND cutover_at=?2 \
-             AND obligations_expired_at IS NULL AND cutover_at+?3<=?4)",
+             AND obligations_expired_at IS NULL AND cutover_at+?3<=?4) \
+             AND NOT EXISTS(SELECT 1 FROM obligation_expiries WHERE seat_id=?1 AND retired_at=?2)",
             params![seat.as_str(), cutover_at, obligation_expiry_ms(), at.utc.0],
             |r| r.get(0),
         )
@@ -280,9 +281,22 @@ pub(crate) fn record_expiry(
     retired_at: i64,
     expired_at: i64,
 ) -> Result<(), ApiError> {
-    let expired_at = expired_at.max(retired_at);
     tx.execute(
         "INSERT OR IGNORE INTO obligation_expiries(seat_id,retired_at,expired_at) VALUES (?1,?2,?3)",
+        params![seat.as_str(), retired_at, expired_at.max(retired_at)],
+    )
+    .map_err(store_error)?;
+    // The first recorded expiry of the episode is the one every node settles by.
+    let expired_at: i64 = tx
+        .query_row(
+            "SELECT expired_at FROM obligation_expiries WHERE seat_id=?1 AND retired_at=?2",
+            params![seat.as_str(), retired_at],
+            |r| r.get(0),
+        )
+        .map_err(store_error)?;
+    // A home row (own-log replay) reads expired, so its lane never expires the episode again.
+    tx.execute(
+        "UPDATE reversible_retirements SET obligations_expired_at=COALESCE(obligations_expired_at,?3) WHERE seat_id=?1 AND cutover_at=?2",
         params![seat.as_str(), retired_at, expired_at],
     )
     .map_err(store_error)?;

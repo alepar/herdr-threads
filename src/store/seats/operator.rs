@@ -26,10 +26,45 @@ pub fn mutate_operator(
     context: &StoreContext,
     conn: &mut Connection,
     elected_instance: &str,
-    mut request: OperatorRequest,
+    request: OperatorRequest,
     actor: OperatorActor,
     installation_default_ms: Option<u64>,
 ) -> Result<CommandResult, ApiError> {
+    mutate_operator_guarded(
+        context,
+        conn,
+        elected_instance,
+        request,
+        actor,
+        installation_default_ms,
+        None,
+    )
+}
+
+/// The service session behind a service actor's repair (`ResurrectSeat`, ht-eu3v): its gate and
+/// connection, whose decision guard the deciding transaction holds through commit.
+pub type ServiceDecision<'a> = (
+    &'a dyn crate::ports::ServiceAuthorityGate,
+    &'a crate::ports::ServiceConnectionAuthority,
+);
+
+/// [`mutate_operator`], and for a service actor (`service` set) the decision runs under the
+/// session's decision guard, so a revoked or superseded session commits nothing.
+pub fn mutate_operator_guarded(
+    context: &StoreContext,
+    conn: &mut Connection,
+    elected_instance: &str,
+    mut request: OperatorRequest,
+    actor: OperatorActor,
+    installation_default_ms: Option<u64>,
+    service: Option<ServiceDecision<'_>>,
+) -> Result<CommandResult, ApiError> {
+    if actor.service_author().is_some() != service.is_some() {
+        return Err(api_error(
+            ErrorCode::Unauthorized,
+            "a service repair needs its session's decision guard",
+        ));
+    }
     let (
         kind,
         target,
@@ -117,6 +152,9 @@ pub fn mutate_operator(
     let expected_epoch_sql = checked_host_number(expected_epoch)?;
     let expected_generation_sql = checked_host_number(expected_generation)?;
     let digest = crate::store::operator::digest(elected_instance, &typed_command)?;
+    // A service actor's decision guard, taken inside the transaction and held through commit.
+    let held: std::cell::RefCell<Option<Box<dyn crate::ports::ServiceDecisionGuard + '_>>> =
+        std::cell::RefCell::new(None);
     let result = schema::execute_idempotent_transaction(
         context,
         conn,
@@ -124,6 +162,16 @@ pub fn mutate_operator(
         operation.as_str(),
         digest,
         |tx| {
+            if let Some((gate, connection)) = service {
+                let guard = crate::ports::service_decision_guard_in(tx, gate, connection)?;
+                if Some(guard.author()) != actor.service_author() {
+                    return Err(api_error(
+                        ErrorCode::StaleServiceGeneration,
+                        "service author changed",
+                    ));
+                }
+                *held.borrow_mut() = Some(guard);
+            }
             // A remote seat is never rebound or replaced here; refused before any write.
             for named in seat.iter().chain(replace.iter()) {
                 require_local_seat(tx, named)?;
@@ -353,6 +401,7 @@ pub fn mutate_operator(
             Ok(result)
         },
     )?;
+    drop(held);
     crate::store::operator::validate_result(&typed_command, &result)?;
     Ok(result)
 }

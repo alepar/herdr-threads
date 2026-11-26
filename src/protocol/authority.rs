@@ -247,7 +247,9 @@ impl OperatorActor {
     /// Canonical durable operation scope, isolated by daemon instance.
     pub fn operation_scope(&self, instance: &str) -> String {
         match &self.service {
-            Some(author) => format!("service-resurrect:{instance}:{}", author.as_str()),
+            // The service session's own journal scope: one operation key is one decision
+            // across every service operation of the session.
+            Some(author) => format!("service:{instance}:{}", author.as_str()),
             None => format!("operator:{instance}:local-user:{}", self.effective_uid),
         }
     }
