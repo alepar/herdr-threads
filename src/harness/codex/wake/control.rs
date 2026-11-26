@@ -192,9 +192,14 @@ impl<'a> Peer<'a> {
         let until = (Instant::now() + Duration::from_millis(250))
             .min(self.deadline + Duration::from_millis(250));
         // This group is exclusively ours. Never block in wait(): quiescence must be observed.
-        let signal = unsafe { libc::kill(-(self.child_id() as i32), libc::SIGKILL) };
-        let signal_failed =
-            signal < 0 && std::io::Error::last_os_error().raw_os_error() != Some(libc::ESRCH);
+        let group = -(self.child_id() as i32);
+        let signal = unsafe { libc::kill(group, libc::SIGKILL) };
+        let errno = (signal < 0).then(|| std::io::Error::last_os_error().raw_os_error());
+        // macOS answers EPERM for a group whose every member is a zombie (here: the leader
+        // exited on its own, unreaped). That proves nothing about other members, so it is
+        // confirmed only by the group being gone (ESRCH) once the leader is reaped.
+        let provisional = errno == Some(Some(libc::EPERM));
+        let signal_failed = errno.is_some_and(|e| e != Some(libc::ESRCH)) && !provisional;
         let child_pid = self.child_id();
         let failed = || {
             Some(error(&format!(
@@ -242,7 +247,15 @@ impl<'a> Peer<'a> {
                 }
             }
             if reaped && self.stdout_eof && self.stderr_eof {
-                return if signal_failed { failed() } else { None };
+                let gone = || {
+                    (unsafe { libc::kill(group, 0) }) < 0
+                        && std::io::Error::last_os_error().raw_os_error() == Some(libc::ESRCH)
+                };
+                return if signal_failed || (provisional && !gone()) {
+                    failed()
+                } else {
+                    None
+                };
             }
             if Instant::now() >= until {
                 return failed();
