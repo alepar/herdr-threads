@@ -4178,6 +4178,26 @@ failure is an accepted observation limit, not an asserted cross-process loadedne
 query. It changes no seat continuity, binding attribution or receipt evidence.
 
 
+### macOS queue wake identity: accepted limits (2026-11-25)
+
+macOS has no `/proc`. The Codex adapter reads the receiver and helper through public
+libproc and sysctl calls only (no task port, no private flavor). Descriptor and region
+paths come from the kernel name cache, which can lag a rename, name another hardlink or
+lose its directory. A recognized queue database or session lock therefore needs an
+absolute path, one link, a regular file and a current `stat` identity equal to the
+descriptor's own vnode; any mismatch refuses admission instead of being skipped. A
+full descriptor buffer is treated as truncation and refuses.
+
+Executable identity has no public text-vnode API. It is the process path whose current
+identity, before and after a complete region walk, equals every file-backed mapping
+of that path, one of them executable. Replacement, unlink and other images are refused.
+Accepted limit: an in-place rewrite of the running executable keeps its inode, and macOS
+permits it, so it is not detected between capture and validation. Helper quiescence uses
+the same exact process, group and boot evidence as Linux. macOS answers EPERM for a
+zombie-only group, so such a group reads Unknown until it is reaped, never absent; this
+delays fallback, it does not weaken it. No version is a gate; observed facts are
+evidence only.
+
 ### Qualified native-turn observation for queue wake purpose (2026-11-14)
 
 A canonically validated native turn-start, or qualified new EndFirst after a lost Start, from an exact top-level binding/session,

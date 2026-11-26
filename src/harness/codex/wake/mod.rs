@@ -9,16 +9,21 @@ pub(super) fn replay_scope_for_session(
     crate::harness::wake::WakeReplayScope::parse(format!("session:{id}")).ok()
 }
 
-#[cfg(target_os = "linux")]
+#[cfg(any(target_os = "linux", target_os = "macos"))]
 mod capture;
-#[cfg(target_os = "linux")]
+#[cfg(any(target_os = "linux", target_os = "macos"))]
 mod control;
-#[cfg(target_os = "linux")]
+#[cfg(any(target_os = "linux", target_os = "macos"))]
 mod helper;
-#[cfg(target_os = "linux")]
+#[cfg(target_os = "macos")]
+mod macos;
+#[cfg(any(target_os = "linux", target_os = "macos"))]
 mod reap;
+#[cfg(any(target_os = "linux", target_os = "macos"))]
+#[cfg_attr(not(target_os = "macos"), allow(dead_code))]
+mod rules;
 
-#[cfg(target_os = "linux")]
+#[cfg(any(target_os = "linux", target_os = "macos"))]
 mod implementation {
     use super::{capture, control};
     use crate::{
@@ -30,7 +35,6 @@ mod implementation {
     };
     use std::{
         collections::BTreeSet,
-        path::Path,
         sync::Mutex,
         time::{Duration, Instant},
     };
@@ -74,8 +78,8 @@ mod implementation {
             .0
             .saturating_sub(c.clock.monotonic_now().0)
             .min(100);
-        let d = capture::files(
-            Path::new(&format!("/proc/{}", scope.process.pid)),
+        let d = capture::process_files(
+            scope.process.pid,
             scope.native_session.as_str(),
             Instant::now() + Duration::from_millis(left),
         )?;
@@ -210,5 +214,5 @@ mod implementation {
         }
     }
 }
-#[cfg(target_os = "linux")]
+#[cfg(any(target_os = "linux", target_os = "macos"))]
 pub static CONTROL: implementation::Control = implementation::Control;

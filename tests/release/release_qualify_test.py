@@ -38,11 +38,12 @@ class QueueProofRouting(unittest.TestCase):
             self.assertFalse(any("--queue-proof" in argv for argv in commands if argv is not wakes[0]))
             return wakes[0], evidence
 
-    def test_linux_flag_forwards_only_to_authenticated_wake(self):
-        with mock.patch.object(sys, 'platform', 'linux'):
-            argv, evidence = self.wake_command(queue_proof=True)
-        self.assertEqual(argv, ['scripts/wake-e2e-herdr', release.newest_release(ROOT / 'tests/herdr-releases.tsv'),
-                                '--evidence-dir', str(evidence / 'wake'), '--queue-proof'])
+    def test_linux_and_macos_flag_forwards_only_to_authenticated_wake(self):
+        for platform in ('linux', 'darwin'):
+            with self.subTest(platform=platform), mock.patch.object(sys, 'platform', platform):
+                argv, evidence = self.wake_command(queue_proof=True)
+            self.assertEqual(argv, ['scripts/wake-e2e-herdr', release.newest_release(ROOT / 'tests/herdr-releases.tsv'),
+                                    '--evidence-dir', str(evidence / 'wake'), '--queue-proof'])
 
     def test_unflagged_command_unchanged_on_linux_and_macos(self):
         for platform in ('linux', 'darwin'):
@@ -58,8 +59,8 @@ class QueueProofRouting(unittest.TestCase):
             self.assertEqual(release.main(), 0)
         qualify.assert_called_once_with(Path('/unused/evidence'), False, queue_proof=True)
 
-    def test_non_linux_explicit_proof_refuses_before_any_side_effect(self):
-        with mock.patch.object(sys, 'platform', 'darwin'), \
+    def test_unsupported_platform_explicit_proof_refuses_before_any_side_effect(self):
+        with mock.patch.object(sys, 'platform', 'win32'), \
                 mock.patch.object(sys, 'argv', ['release-qualify', '--queue-proof']), \
                 mock.patch.object(release, 'qualify') as qualify, \
                 mock.patch.object(release.tempfile, 'mkdtemp') as scratch, \
@@ -68,7 +69,7 @@ class QueueProofRouting(unittest.TestCase):
             with self.assertRaises(SystemExit) as error:
                 release.main()
         self.assertEqual(error.exception.code, 2)
-        self.assertIn("--queue-proof requires Linux", errors.getvalue())
+        self.assertIn("--queue-proof requires Linux or macOS", errors.getvalue())
         qualify.assert_not_called()
         scratch.assert_not_called()
         run.assert_not_called()
@@ -153,13 +154,18 @@ class OperatorQueueMode(unittest.TestCase):
         report=release._doctor_report([sys.executable,'-c','import json;print(json.dumps({"doctor":{"node_dir":"/valid"}}));raise SystemExit(1)'])
         self.assertEqual(report['doctor']['node_dir'],'/valid')
 
-    def test_non_linux_ordinary_mode_never_probes_operator(self):
+    def test_unsupported_platform_ordinary_mode_never_probes_operator(self):
         with tempfile.TemporaryDirectory(prefix='ht-native-mode-') as temp, \
                 mock.patch.object(release.subprocess,'run',return_value=subprocess.CompletedProcess([],0)), \
                 mock.patch.object(release,'operator_programmatic_wake',side_effect=AssertionError('unexpected probe')) as probe, \
-                mock.patch.object(sys,'platform','darwin'),contextlib.redirect_stdout(io.StringIO()):
+                mock.patch.object(sys,'platform','win32'),contextlib.redirect_stdout(io.StringIO()):
             self.assertEqual(release.qualify(Path(temp)/'evidence',False),0)
             probe.assert_not_called()
+
+    def test_macos_selected_install_on_routes_required_queue_proof(self):
+        with mock.patch.object(sys,'platform','darwin'):
+            argv,_=QueueProofRouting().wake_command(install_enabled=True)
+        self.assertIn('--queue-proof',argv)
 
 
 if __name__ == '__main__':

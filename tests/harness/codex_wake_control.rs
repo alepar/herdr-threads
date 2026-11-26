@@ -68,6 +68,24 @@ impl Fixture {
         )
     }
 }
+/// The process has exited (reaped or a zombie awaiting its parent).
+fn exited_or_zombie(pid: u32) -> bool {
+    #[cfg(target_os = "linux")]
+    {
+        fs::read_to_string(format!("/proc/{pid}/stat"))
+            .ok()
+            .and_then(|s| {
+                s.rsplit_once(')')
+                    .map(|(_, tail)| tail.trim_start().starts_with('Z'))
+            })
+            .is_none_or(|zombie| zombie)
+    }
+    // libproc answers ESRCH for both a reaped pid and a zombie.
+    #[cfg(target_os = "macos")]
+    {
+        super::super::macos::birth(pid) == Err(libc::ESRCH)
+    }
+}
 impl Drop for Fixture {
     fn drop(&mut self) {
         let _ = fs::remove_dir_all(&self.root);
@@ -297,13 +315,12 @@ fn accepted_effect_remains_accepted_while_descendants_are_stopped() {
     let f = Fixture::new("descendant");
     assert!(matches!(f.add(true), WakeAddOutcome::Accepted { .. }));
     let pid = fs::read_to_string(f.root.join("descendant")).unwrap();
-    let stat = PathBuf::from(format!("/proc/{}/stat", pid.trim()));
+    let pid: u32 = pid.trim().parse().unwrap();
     let until = std::time::Instant::now() + std::time::Duration::from_secs(1);
     loop {
-        match fs::read_to_string(&stat) {
-            Err(_) => break,
-            Ok(s) if s.rsplit_once(')').unwrap().1.split_whitespace().next() == Some("Z") => break,
-            _ => {
+        match exited_or_zombie(pid) {
+            true => break,
+            false => {
                 assert!(
                     std::time::Instant::now() < until,
                     "owned descendant still running"
@@ -664,18 +681,21 @@ fn helper_probe_boot_change_is_quiescent_but_unreadable_leader_is_unknown() {
             .unwrap(),
         P::Quiescent(Q::BootChanged)
     );
-    let dir = f.root.join("unreadable-proc");
-    fs::create_dir_all(&dir).unwrap();
-    fs::write(dir.join("stat"), "malformed").unwrap();
-    assert_eq!(
-        super::super::helper::leader_at(&dir, 1),
-        super::super::helper::LeaderPresence::Unknown
-    );
-    fs::remove_dir_all(&dir).unwrap();
-    assert_eq!(
-        super::super::helper::leader_at(&dir, 1),
-        super::super::helper::LeaderPresence::Ended
-    );
+    #[cfg(target_os = "linux")]
+    {
+        let dir = f.root.join("unreadable-proc");
+        fs::create_dir_all(&dir).unwrap();
+        fs::write(dir.join("stat"), "malformed").unwrap();
+        assert_eq!(
+            super::super::helper::leader_at(&dir, 1),
+            super::super::helper::LeaderPresence::Unknown
+        );
+        fs::remove_dir_all(&dir).unwrap();
+        assert_eq!(
+            super::super::helper::leader_at(&dir, 1),
+            super::super::helper::LeaderPresence::Ended
+        );
+    }
 }
 
 #[test]
@@ -737,17 +757,29 @@ fn helper_probe_distinguishes_live_reused_pid_and_absent_group() {
             .unwrap(),
         P::Quiescent(Q::LeaderEndedAndGroupAbsent)
     );
-    let dir = f.root.join("unknown-owner");
-    fs::create_dir_all(&dir).unwrap();
-    fs::copy(
-        format!("/proc/{}/stat", std::process::id()),
-        dir.join("stat"),
-    )
-    .unwrap();
-    fs::write(dir.join("status"), "Uid: unreadable").unwrap();
+    #[cfg(target_os = "linux")]
+    {
+        let dir = f.root.join("unknown-owner");
+        fs::create_dir_all(&dir).unwrap();
+        fs::copy(
+            format!("/proc/{}/stat", std::process::id()),
+            dir.join("stat"),
+        )
+        .unwrap();
+        fs::write(dir.join("status"), "Uid: unreadable").unwrap();
+        assert_eq!(
+            super::super::helper::leader_at(&dir, 1),
+            super::super::helper::LeaderPresence::Unknown
+        );
+    }
+    // pgid 1 would broadcast the group probe: never Live.
+    witness.process = LivenessFingerprint::current_process();
+    witness.pgid = 1;
     assert_eq!(
-        super::super::helper::leader_at(&dir, 1),
-        super::super::helper::LeaderPresence::Unknown
+        super::super::CONTROL
+            .probe_helper(&witness, &f.context())
+            .unwrap(),
+        P::Unknown
     );
 }
 
@@ -836,13 +868,7 @@ fn deadline_and_early_pipe_failure_keep_child_reap_ownership() {
         drop(peer);
         let until = Instant::now() + Duration::from_secs(2);
         while Instant::now() < until {
-            let state = fs::read_to_string(format!("/proc/{pid}/stat"))
-                .ok()
-                .and_then(|s| {
-                    s.rsplit_once(')')
-                        .map(|(_, tail)| tail.trim_start().starts_with('Z'))
-                });
-            if state.is_none() || state == Some(true) {
+            if exited_or_zombie(pid) {
                 break;
             }
             std::thread::sleep(Duration::from_millis(1));

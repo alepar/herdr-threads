@@ -49,13 +49,18 @@ fn gated_child(pool: &Children) -> (u32, Gate, crate::harness::wake::WakeHelperW
 fn wait_exited(pid: u32) {
     let until = Instant::now() + Duration::from_secs(2);
     while Instant::now() < until {
-        let state = std::fs::read_to_string(format!("/proc/{pid}/stat"))
+        #[cfg(target_os = "linux")]
+        let exited = std::fs::read_to_string(format!("/proc/{pid}/stat"))
             .ok()
             .and_then(|s| {
                 s.rsplit_once(')')
                     .map(|(_, tail)| tail.trim_start().starts_with('Z'))
-            });
-        if state.is_none() || state == Some(true) {
+            })
+            .is_none_or(|zombie| zombie);
+        // libproc answers ESRCH for both a reaped pid and a zombie.
+        #[cfg(target_os = "macos")]
+        let exited = super::super::macos::birth(pid) == Err(libc::ESRCH);
+        if exited {
             return;
         }
         std::thread::sleep(Duration::from_millis(1));

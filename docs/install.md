@@ -561,7 +561,7 @@ State is preserved. There is no data-deletion command.
 
 ### Opt in to programmatic wake
 
-Queue-backed wake is off by default. Set `"programmatic_wake": true` alongside
+Queue-backed wake (Codex on Linux and macOS) is off by default. Set `"programmatic_wake": true` alongside
 the existing keys in the selected install's `<state>/node/settings.json` to opt
 in; false or an absent key keeps native typed wake. Like other node settings,
 the value is read at the next daemon start. This changes only new programmatic

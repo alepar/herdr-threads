@@ -6,8 +6,10 @@ use crate::{
     },
     protocol::{authority::LivenessFingerprint, results::ApiError},
 };
+#[cfg(target_os = "linux")]
 use std::{fs::File, io::Read, path::Path};
 
+#[cfg(target_os = "linux")]
 fn bounded(path: &Path) -> std::io::Result<String> {
     let mut bytes = Vec::new();
     File::open(path)?.take(16385).read_to_end(&mut bytes)?;
@@ -16,11 +18,19 @@ fn bounded(path: &Path) -> std::io::Result<String> {
     }
     String::from_utf8(bytes).map_err(|_| std::io::ErrorKind::InvalidData.into())
 }
+#[cfg(target_os = "linux")]
 fn boot() -> Option<String> {
     let raw = bounded(Path::new("/proc/sys/kernel/random/boot_id")).ok()?;
     let boot = raw.trim();
     (!boot.is_empty() && boot.len() <= 64).then(|| boot.to_owned())
 }
+/// macOS boot identity is kern.bootsessionuuid, the value the host process table reads.
+#[cfg(target_os = "macos")]
+fn boot() -> Option<String> {
+    use crate::ports::ProcessInfo;
+    crate::host::process_table::HostProcessTable.kernel_boot()
+}
+#[cfg(target_os = "linux")]
 fn birth(dir: &Path) -> std::io::Result<(u64, u32)> {
     let raw = bounded(&dir.join("stat"))?;
     let fields: Vec<_> = raw
@@ -31,6 +41,7 @@ fn birth(dir: &Path) -> std::io::Result<(u64, u32)> {
     let parse = || Some((fields.get(19)?.parse().ok()?, fields.get(2)?.parse().ok()?));
     parse().ok_or_else(|| std::io::ErrorKind::InvalidData.into())
 }
+#[cfg(target_os = "linux")]
 fn same_user(dir: &Path) -> bool {
     let Ok(status) = bounded(&dir.join("status")) else {
         return false;
@@ -41,10 +52,29 @@ fn same_user(dir: &Path) -> bool {
         .and_then(|uid| uid.split_ascii_whitespace().next()?.parse::<u32>().ok())
         == Some(unsafe { libc::getuid() })
 }
+#[cfg(target_os = "linux")]
 pub(super) fn witness(pid: u32) -> Result<WakeHelperWitness, ApiError> {
     let dir = std::path::PathBuf::from(format!("/proc/{pid}"));
     let (start, pgid) = birth(&dir).map_err(|_| error("queue helper birth unavailable"))?;
     if !same_user(&dir) || pgid != pid || birth(&dir).ok() != Some((start, pgid)) {
+        return Err(error("queue helper ownership unavailable"));
+    }
+    Ok(WakeHelperWitness {
+        process: LivenessFingerprint { pid, start },
+        kernel_boot: boot().ok_or_else(|| error("queue helper kernel boot unavailable"))?,
+        pgid,
+    })
+}
+/// The same witness on macOS: TBSDINFO fork-time start, pgid and real uid, read twice.
+#[cfg(target_os = "macos")]
+pub(super) fn witness(pid: u32) -> Result<WakeHelperWitness, ApiError> {
+    let first = super::macos::birth(pid).map_err(|_| error("queue helper birth unavailable"))?;
+    let (start, pgid, ruid) = first;
+    // SAFETY: getuid has no preconditions.
+    if ruid != unsafe { libc::getuid() }
+        || pgid != pid
+        || super::macos::birth(pid).ok() != Some(first)
+    {
         return Err(error("queue helper ownership unavailable"));
     }
     Ok(WakeHelperWitness {
@@ -59,6 +89,30 @@ pub(super) enum LeaderPresence {
     Ended,
     Unknown,
 }
+#[cfg(target_os = "linux")]
+fn leader(pid: u32, start: u64) -> LeaderPresence {
+    leader_at(Path::new(&format!("/proc/{pid}")), start)
+}
+/// ESRCH (gone, or a zombie on macOS) is Ended; the group check that follows decides
+/// quiescence. Another owner or any other error is Unknown.
+#[cfg(target_os = "macos")]
+fn leader(pid: u32, start: u64) -> LeaderPresence {
+    let first = match super::macos::birth(pid) {
+        Ok(value) => value,
+        Err(e) if e == libc::ESRCH => return LeaderPresence::Ended,
+        Err(_) => return LeaderPresence::Unknown,
+    };
+    // SAFETY: getuid has no preconditions.
+    if first.2 != unsafe { libc::getuid() } || super::macos::birth(pid).ok() != Some(first) {
+        return LeaderPresence::Unknown;
+    }
+    if first.0 == start {
+        LeaderPresence::Same
+    } else {
+        LeaderPresence::Ended
+    }
+}
+#[cfg(target_os = "linux")]
 pub(super) fn leader_at(dir: &Path, start: u64) -> LeaderPresence {
     let first = match birth(dir) {
         Ok(value) => value,
@@ -104,18 +158,17 @@ pub(super) fn probe(
             WakeHelperQuiescence::BootChanged,
         ));
     }
+    // pgid 1 would make kill(-1, 0) a broadcast probe.
     if witness.process.pid == 0
         || witness.process.pid > i32::MAX as u32
-        || witness.pgid == 0
+        || witness.pgid <= 1
         || witness.pgid > i32::MAX as u32
     {
         return Ok(WakeHelperPresence::Unknown);
     }
-    let leader = leader_at(
-        Path::new(&format!("/proc/{}", witness.process.pid)),
-        witness.process.start,
-    );
+    let leader = leader(witness.process.pid, witness.process.start);
     // Signal zero only observes group existence; it never terminates or modifies a process.
+    // macOS answers EPERM for a zombie-only group: Unknown until it is reaped, never absent.
     let group = if unsafe { libc::kill(-(witness.pgid as i32), 0) } == 0 {
         Some(true)
     } else if std::io::Error::last_os_error().raw_os_error() == Some(libc::ESRCH) {

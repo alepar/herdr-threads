@@ -15,9 +15,32 @@ pub(super) struct Descriptor {
     pub database: FileIdentity,
     pub session_lock: FileIdentity,
 }
+/// The receiver's executable, queue database and session lock, read from its own process.
+#[cfg(target_os = "linux")]
+pub(super) fn process_files(pid: u32, session: &str, deadline: Instant) -> Option<Descriptor> {
+    files(Path::new(&format!("/proc/{pid}")), session, deadline)
+}
+/// macOS reads the same three identities through libproc: no /proc, and descriptor paths
+/// come from the name cache, so `rules` fails closed on every name ambiguity.
+#[cfg(target_os = "macos")]
+pub(super) fn process_files(pid: u32, session: &str, deadline: Instant) -> Option<Descriptor> {
+    if super::macos::managed_daemon(pid)? || Instant::now() >= deadline {
+        return None;
+    }
+    let executable = super::macos::executable(pid, deadline)?;
+    let files = super::macos::open_vnodes(pid, deadline)?;
+    let (database, session_lock) = super::rules::receiver_files(&files, session, &identity)?;
+    (Instant::now() < deadline).then_some(Descriptor {
+        executable,
+        database,
+        session_lock,
+    })
+}
+#[cfg(target_os = "linux")]
 pub(super) fn files(process: &Path, session: &str, deadline: Instant) -> Option<Descriptor> {
     files_with(process, session, deadline, |path| std::fs::read_link(path))
 }
+#[cfg(target_os = "linux")]
 fn files_with(
     process: &Path,
     session: &str,
@@ -102,6 +125,7 @@ fn files_with(
         session_lock: locks.into_values().next()?,
     })
 }
+#[cfg(target_os = "linux")]
 pub(super) fn from_fd(link: &Path) -> Option<FileIdentity> {
     let path = std::fs::read_link(link).ok()?;
     if !path.is_absolute()
@@ -123,11 +147,21 @@ pub(super) fn identity(path: &Path) -> Option<FileIdentity> {
     let meta = std::fs::metadata(path).ok()?;
     meta.is_file().then(|| FileIdentity {
         path: path.to_path_buf(),
-        device: meta.dev(),
+        device: device(meta.dev()),
         inode: meta.ino(),
     })
 }
+/// macOS st_dev is an i32 that std sign-extends; libproc reports it as u32. Both sides
+/// compare and serialize as the u32 value.
+#[cfg(target_os = "macos")]
+fn device(raw: u64) -> u64 {
+    u64::from(raw as u32)
+}
+#[cfg(not(target_os = "macos"))]
+fn device(raw: u64) -> u64 {
+    raw
+}
 
-#[cfg(all(test, feature = "test-support"))]
+#[cfg(all(test, feature = "test-support", target_os = "linux"))]
 #[path = "../../../../tests/harness/codex_wake_capture.rs"]
 mod tests;

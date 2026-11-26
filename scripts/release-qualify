@@ -111,6 +111,10 @@ def operator_programmatic_wake():
     return settings.get('programmatic_wake', False)
 
 
+# Platforms whose Codex adapter implements queue control.
+QUEUE_PLATFORMS = ('linux', 'darwin')
+
+
 def qualify(evidence: Path, self_test: bool, queue_proof: bool = False) -> int:
     evidence.mkdir(parents=True, exist_ok=True)
     results = []
@@ -190,7 +194,7 @@ def qualify(evidence: Path, self_test: bool, queue_proof: bool = False) -> int:
         # branch gets its own state/XDG roots. Explicit proof never reads config.
         required = queue_proof
         mode_ok = True
-        if not self_test and candidate_ok and not queue_proof and sys.platform == 'linux':
+        if not self_test and candidate_ok and not queue_proof and sys.platform in QUEUE_PLATFORMS:
             started = time.monotonic()
             try:
                 required = operator_programmatic_wake()
@@ -263,8 +267,8 @@ def main():
     parser.add_argument('--queue-proof', action='store_true',
                         help='require Codex queue transport proof for supported Linux qualification')
     args = parser.parse_args()
-    if args.queue_proof and sys.platform != 'linux':
-        parser.error('--queue-proof requires Linux; use native qualification without this flag')
+    if args.queue_proof and sys.platform not in QUEUE_PLATFORMS:
+        parser.error('--queue-proof requires Linux or macOS; use native qualification without this flag')
     evidence = (args.evidence_dir or Path(tempfile.mkdtemp(prefix='release-qualify-', dir='/tmp'))).resolve()
     return qualify(evidence, args.self_test, queue_proof=args.queue_proof)
 

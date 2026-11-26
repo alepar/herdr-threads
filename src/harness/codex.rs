@@ -1517,11 +1517,11 @@ impl HarnessAdapter for CodexAdapter {
         wake::replay_scope_for_session(session)
     }
     fn wake_control(&self) -> Option<&dyn super::wake::WakeControl> {
-        #[cfg(target_os = "linux")]
+        #[cfg(any(target_os = "linux", target_os = "macos"))]
         {
             Some(&wake::CONTROL)
         }
-        #[cfg(not(target_os = "linux"))]
+        #[cfg(not(any(target_os = "linux", target_os = "macos")))]
         {
             None
         }

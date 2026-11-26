@@ -1,4 +1,6 @@
-use super::capture::{Descriptor, from_fd, identity};
+#[cfg(target_os = "linux")]
+use super::capture::from_fd;
+use super::capture::{Descriptor, identity};
 use crate::{
     harness::wake::{ControlFailure, OwnedWakeEntries, WakeAddOutcome, WakeControlContext},
     protocol::results::{ApiError, ErrorCode},
@@ -291,7 +293,17 @@ impl<'a> Peer<'a> {
             Ok(())
         }
     }
-    fn verify_database(&self, d: &Descriptor) -> Result<(), ApiError> {
+    #[cfg(target_os = "macos")]
+    fn helper_databases(&self) -> Result<std::collections::BTreeSet<(u64, u64)>, ApiError> {
+        self.check(self.deadline)?;
+        let until = (Instant::now() + Duration::from_millis(100)).min(self.deadline);
+        let files = super::macos::open_vnodes(self.child_id(), until)
+            .ok_or_else(|| error("queue helper files unavailable"))?;
+        self.check(self.deadline)?;
+        super::rules::helper_databases(&files, &identity).map_err(error)
+    }
+    #[cfg(target_os = "linux")]
+    fn helper_databases(&self) -> Result<std::collections::BTreeSet<(u64, u64)>, ApiError> {
         let start = Instant::now();
         let mut found = std::collections::BTreeSet::new();
         for (i, entry) in fs::read_dir(format!("/proc/{}/fd", self.child_id()))
@@ -318,6 +330,10 @@ impl<'a> Peer<'a> {
                 found.insert((file.device, file.inode));
             }
         }
+        Ok(found)
+    }
+    fn verify_database(&self, d: &Descriptor) -> Result<(), ApiError> {
+        let found = self.helper_databases()?;
         if found.len() != 1
             || !found.contains(&(d.database.device, d.database.inode))
             || identity(&d.database.path).as_ref() != Some(&d.database)
