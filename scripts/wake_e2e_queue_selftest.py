@@ -7,7 +7,8 @@ import tempfile
 import unittest
 from unittest import mock
 
-from wake_e2e_queue import codex_turn_delivery, eligible_scope, queue_activity_intervals, queue_proof, queue_snapshot
+from wake_e2e_queue import (STALE_AUTHORITY, codex_turn_delivery, eligible_scope, queue_activity_intervals, queue_proof,
+                             queue_snapshot, stale_authority_native)
 
 SESSION = "00000000-0000-0000-0000-000000000001"
 OWNER = "00000000-0000-0000-0000-000000000002"
@@ -318,6 +319,31 @@ class QueueEvidence(unittest.TestCase):
         self.assertEqual(work, {"active_attempt": None, "active_boot": None, "last_attempt": "attempt-1",
                                "last_boot": OWNER, "last_outcome": "submitted", "reserved_at_utc": None,
                                "last_reserved_at_utc": 100, "completed_at_utc": 110, "reason_bits": 1, "retry_step": 1})
+
+    def stale_case(self, phase="no_effect", nonce=None, diagnostic=STALE_AUTHORITY, work=("attempt-1", "submitted")):
+        before = self.snapshot()
+        self.db.execute("INSERT INTO wake_intents VALUES(1, 'instance', 'attempt-1', 'codex', 'seat', ?, ?, 3, ?, ?, NULL, NULL, 'active', NULL, NULL, 0, 0, 0, NULL, 0, 100, 110, ?, ?, NULL)",
+                        (json.dumps(SCOPE).encode(), phase, OWNER, nonce, b"descriptor", diagnostic))
+        if work:
+            self.db.execute("INSERT INTO wake_work VALUES('seat',NULL,NULL,?,?,?,NULL,100,110,1,0)", (work[0], OWNER, work[1]))
+        self.db.commit()
+        return stale_authority_native(before, [self.snapshot()])
+
+    def test_stale_authority_refusal_followed_by_same_attempt_native_wake_passes(self):
+        result = self.stale_case()
+        self.assertTrue(result["passed"], result["reasons"])
+        self.assertEqual((result["expectation"], result["stale_authority_attempt"]), ("native", "attempt-1"))
+        self.assertNotIn(STALE_AUTHORITY, json.dumps(self.snapshot()))
+
+    def test_stale_authority_exception_needs_exact_refusal_unarmed_and_correlated_native(self):
+        for kwargs in ({"diagnostic": "queue helper closed"}, {"nonce": "nonce"},
+                       {"phase": "unknown", "nonce": "nonce"}, {"phase": "accepted", "nonce": "nonce"},
+                       {"work": ("other-attempt", "submitted")}, {"work": ("attempt-1", "refused")}, {"work": None}):
+            with self.subTest(**{k: str(v) for k, v in kwargs.items()}):
+                self.db.execute("DELETE FROM wake_intents")
+                self.db.execute("DELETE FROM wake_work")
+                self.db.commit()
+                self.assertFalse(self.stale_case(**kwargs)["passed"])
 
     def test_absent_process_or_native_metadata_is_not_bootstrap(self):
         self.db.execute("DELETE FROM native_turn_state")

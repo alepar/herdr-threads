@@ -4198,6 +4198,23 @@ zombie-only group, so such a group reads Unknown until it is reaped, never absen
 delays fallback, it does not weaken it. No version is a gate; observed facts are
 evidence only.
 
+### Queue wake stale authority: accepted limit (2026-11-26)
+
+Shared by every queue platform, not macOS-specific. The queue path re-checks the wake
+reservation (`wake::validate_reservation`) at selection, at intent preparation and at
+arm. That check requires the instance-wide decision sequence to be unchanged, so any
+decision anywhere on the node between selection and arm, typically during the helper's
+start, makes the reservation stale. The queue then adds nothing: a refusal at selection
+or preparation writes no intent, and one at arm records NoEffect with the refusal
+`queue wake no longer authorized`. The same attempt falls back to the native wake, which
+requires only that the wake is still owed. The wake is never lost, and native fallback
+is the designed degradation. Under concurrent activity, a queue-eligible wake can
+therefore be typed rather than queued. Found in the macOS qualification
+(`mixed-order/group`), and present in the shipped Linux code. Seat-scoped validity for
+the queue re-check is follow-up `ht-c877`, pending a design review of the shared
+accounting. Required queue proof accepts this fallback only for `mixed-order/group`,
+only for a correlated arm-time refusal, and only within the native six-second window.
+
 ### Qualified native-turn observation for queue wake purpose (2026-11-14)
 
 A canonically validated native turn-start, or qualified new EndFirst after a lost Start, from an exact top-level binding/session,

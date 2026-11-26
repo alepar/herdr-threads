@@ -19,6 +19,9 @@ MAX_INTENTS = 32
 MAX_IDS = 128
 MAX_SAMPLES = 128
 MAX_BYTES = 65536
+# The arm-time refusal detail of a reservation that went stale before the Add
+# (control.rs). Only this equality is evidence; the diagnostic text never is.
+STALE_AUTHORITY = "queue wake no longer authorized"
 
 
 def _text(value, limit=128, optional=False):
@@ -133,7 +136,7 @@ def queue_snapshot(state: Path, seat: str, after: int = 0) -> dict:
                 snapshot["wake_work"] = dict(zip(("active_attempt", "active_boot", "last_attempt", "last_boot", "last_outcome", "reserved_at_utc", "last_reserved_at_utc", "completed_at_utc", "reason_bits", "retry_step"), work))
                 for key in ("active_attempt", "active_boot", "last_attempt", "last_boot", "last_outcome"):
                     snapshot["wake_work"][key] = _text(snapshot["wake_work"][key], optional=True)
-            intents = db.execute("SELECT ordinal,attempt,adapter,target_json,phase,revision,owner_boot,arm_nonce,arm_native_id,arm_native_ordinal,logical_status,fulfillment_turn,fulfillment_ordinal,cleanup_quarantined,cleanup_list_attempted,native_no_add_exception,helper_json,add_helper_json,ids_complete,created_at,updated_at FROM wake_intents WHERE instance_id=? AND origin_seat=? AND ordinal>? ORDER BY ordinal LIMIT 33", (seat_scope["instance"], seat, after)).fetchall()
+            intents = db.execute("SELECT ordinal,attempt,adapter,target_json,phase,revision,owner_boot,arm_nonce,arm_native_id,arm_native_ordinal,logical_status,fulfillment_turn,fulfillment_ordinal,cleanup_quarantined,cleanup_list_attempted,native_no_add_exception,helper_json,add_helper_json,ids_complete,created_at,updated_at,diagnostic FROM wake_intents WHERE instance_id=? AND origin_seat=? AND ordinal>? ORDER BY ordinal LIMIT 33", (seat_scope["instance"], seat, after)).fetchall()
             snapshot["truncated"] |= len(intents) > MAX_INTENTS
             for intent in intents[:MAX_INTENTS]:
                 ids = db.execute("SELECT queue_id,cleanup_attempted FROM wake_intent_ids WHERE intent_ordinal=? ORDER BY queue_id LIMIT 129", (intent["ordinal"],)).fetchall()
@@ -152,7 +155,8 @@ def queue_snapshot(state: Path, seat: str, after: int = 0) -> dict:
                     "native_no_add_exception": bool(intent["native_no_add_exception"]), "helper": _helper(intent["helper_json"]),
                     "add_helper": _helper(intent["add_helper_json"]),
                     "ids": [{"id": _text(item["queue_id"]), "cleanup_attempted": bool(item["cleanup_attempted"])} for item in ids[:MAX_IDS]],
-                    "ids_complete": bool(intent["ids_complete"]), "created_at": intent["created_at"], "updated_at": intent["updated_at"]})
+                    "ids_complete": bool(intent["ids_complete"]), "created_at": intent["created_at"], "updated_at": intent["updated_at"],
+                    "stale_authority": intent["diagnostic"] == STALE_AUTHORITY})
             db.execute("ROLLBACK")
         if len(json.dumps(snapshot, separators=(",", ":")).encode()) > MAX_BYTES:
             return _failure("snapshot_byte_limit", True)
@@ -264,6 +268,31 @@ def queue_proof(before: dict, samples: list[dict], expectation: str) -> dict:
     result["transport_inference"] = "compositional no-native-typing inference from reviewed Accepted/no-fallback path"
     if len(json.dumps(result, separators=(",", ":")).encode()) > MAX_BYTES:
         result.update(passed=False, attempts=[], reasons=["proof_byte_limit"])
+    return result
+
+
+def stale_authority_native(before: dict, samples: list[dict]) -> dict:
+    """Required proof's one narrow exception (mixed-order only, the caller decides): the
+    measured interval holds exactly one intent, never armed, ending NoEffect with the
+    stale-authority refusal, and the same attempt then settled as a submitted native wake.
+    Any possible or unknown effect fails through queue_proof's "none" judgement.
+    """
+    result = queue_proof(before, samples, "none")
+    if not result["passed"]:
+        return result
+    intents = [i for sample in samples for i in sample["intents"] if i["ordinal"] > before["watermark"]]
+    attempts = {i["attempt"] for i in intents}
+    final = intents[-1] if intents else None
+    native = len(attempts) == 1 and any(
+        (sample.get("wake_work") or {}).get("last_attempt") == final["attempt"]
+        and (sample.get("wake_work") or {}).get("last_outcome") == "submitted" for sample in samples)
+    if not (native and final["phase"] == "no_effect" and final["stale_authority"]
+            and all(i["arm_nonce"] is None for i in intents)):
+        result["passed"] = False
+        result["reasons"].append("no_correlated_stale_authority_refusal_with_native_wake")
+        return result
+    result.update(expectation="native", stale_authority_attempt=final["attempt"],
+                  transport_inference="stale reservation refused before Add; same attempt submitted natively")
     return result
 
 

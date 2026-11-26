@@ -196,6 +196,10 @@ SIDE_FORKS = 2
 # (`wake=unreadable` cannot be staged this way on Codex: no captured Codex screen lacks a `› ` row.)
 WAKE_BLOCK_CASES = ("modal-hold/group", "draft-hold/group")
 QUEUE_NATIVE_CASES = ("native-fallback/group",)
+# Required queue proof also passes these on a stale-authority native fallback: concurrent
+# decisions anywhere on the node can stale the reservation between selection and arm
+# (TRUST-POLICY, queue wake stale authority).
+QUEUE_STALE_CASES = ("mixed-order/group",)
 QUEUE_SAMPLE_LIMIT = 128
 QUEUE_EVIDENCE_BYTES = 512 * 1024
 WAKE_BLOCK_HOLD_S = 30
@@ -2024,7 +2028,7 @@ class QueueCaseEvidence:
                 self.worker.join()  # bounded read-only SQLite calls; never leave a case worker behind
 
     def finish(self, row):
-        from wake_e2e_queue import eligible_scope, queue_proof
+        from wake_e2e_queue import eligible_scope, queue_proof, stale_authority_native
         if self.result is not None:
             return self.result
         self.__exit__()
@@ -2045,6 +2049,10 @@ class QueueCaseEvidence:
             if native["passed"]:
                 result = dict(native, expectation="native",
                               transport_inference="compositional native after no queue effect; external wake check required")
+        elif expectation == "accepted" and required and not result["passed"] and self.case in QUEUE_STALE_CASES:
+            stale = stale_authority_native(self.before, self.samples)
+            if stale["passed"]:
+                result = stale
         result["accepted_wake_window_s"] = QUEUE_WAKE_WINDOW_S if result.get("attempts") else WAKE_WINDOW_S
         if (result.get("expectation") == "native" and row.get("expect_wake")
                 and self.case not in WAKE_BLOCK_CASES + RESUME_CASES + SIDE_CASES):
