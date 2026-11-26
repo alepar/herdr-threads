@@ -531,7 +531,13 @@ pub fn materialize_seat_retired_reversible(
         payload.retired_at,
         decision_seq(m)?,
     )? {
-        reversible::insert_fact_row(tx, &payload.seat, payload.retired_at, payload.reason)?;
+        reversible::insert_fact_row(
+            tx,
+            &payload.seat,
+            payload.retired_at,
+            payload.reason,
+            m.decision.utc,
+        )?;
         if let Some(unretire) =
             reversible::kept_unretire(tx, &payload.seat, payload.retired_at, m.ingest_seq)?
         {

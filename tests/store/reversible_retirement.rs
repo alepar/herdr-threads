@@ -2247,6 +2247,7 @@ fn service_resurrect_of_a_revoked_session_commits_nothing() {
 #[test]
 fn service_resurrect_with_replace_is_idempotent_per_operation_key() {
     let f = fx(&["s1", "s3"]);
+    f.bare("s3");
     f.at(300);
     f.close("s1").unwrap();
     let first = f
@@ -2328,10 +2329,18 @@ fn a_receipt_first_projected_after_a_recorded_expiry_settles_at_write() {
             [300 + DAY],
         )
         .unwrap();
+    let attention =
+        || f.int("SELECT coalesce(max(attention_version),0) FROM wake_work WHERE seat_id='s1'");
+    let before = attention();
     f.drain(&message);
     assert_eq!(
         f.receipt_row(&message, "s1"),
         ("recipient_retired".into(), Some(50))
+    );
+    assert_eq!(
+        attention(),
+        before,
+        "a settled receipt queues no attention (review 4)"
     );
 }
 
@@ -2363,10 +2372,190 @@ fn a_replayed_keyless_row_is_timed() {
     db.execute("DELETE FROM reversible_retirements WHERE seat_id='s1'", [])
         .unwrap();
     let tx = db.unchecked_transaction().unwrap();
-    insert_fact_row(&tx, &SeatId::new("s1"), 300, RetireReason::Closed).unwrap();
+    insert_fact_row(
+        &tx,
+        &SeatId::new("s1"),
+        300,
+        RetireReason::Closed,
+        UtcMillis(300),
+    )
+    .unwrap();
     tx.commit().unwrap();
     f.at(300 + WEEK);
     assert_eq!(f.timed_pass(), 2, "expired, then finalized");
     assert_eq!(f.row_state("s1"), None);
     assert_eq!(f.rows("retirements", "s1"), 1);
+}
+
+/// Kills (review 3): a row replayed long after its close acting at once, before the rest of the own
+/// history (a later `seat.unretired`) could arrive, and an expiry recorded at the lane's own instant.
+#[test]
+fn a_replayed_row_waits_a_full_window_and_expires_at_the_derived_instant() {
+    let f = fx(&["s1"]);
+    f.at(300);
+    f.close("s1").unwrap();
+    let db = f.db();
+    db.execute("DELETE FROM reversible_retirements WHERE seat_id='s1'", [])
+        .unwrap();
+    let replayed = 300 + 2 * WEEK;
+    let tx = db.unchecked_transaction().unwrap();
+    insert_fact_row(
+        &tx,
+        &SeatId::new("s1"),
+        300,
+        RetireReason::Closed,
+        UtcMillis(replayed),
+    )
+    .unwrap();
+    tx.commit().unwrap();
+    f.at(replayed + DAY - 1);
+    assert_eq!(
+        f.timed_pass(),
+        0,
+        "nothing acts within a window of the replay"
+    );
+    f.at(replayed + DAY);
+    assert_eq!(f.timed_pass(), 1, "expired, not finalized");
+    assert_eq!(f.row_state("s1"), Some(RowState::Reversible));
+    assert_eq!(
+        f.int("SELECT expired_at FROM obligation_expiries WHERE seat_id='s1'"),
+        300 + DAY,
+        "the derived instant"
+    );
+    assert_eq!(
+        f.int("SELECT obligations_expired_at FROM reversible_retirements WHERE seat_id='s1'"),
+        300 + DAY
+    );
+    f.at(replayed + WEEK);
+    assert_eq!(f.timed_pass(), 1, "finalized a week after the replay");
+    assert_eq!(f.row_state("s1"), None);
+}
+
+/// Kills (review 3): a lane-run expiry recording its decision instant instead of the derived one.
+#[test]
+fn a_late_lane_expiry_records_the_derived_instant() {
+    let f = fx(&["s1"]);
+    f.at(300);
+    f.close("s1").unwrap();
+    f.at(300 + DAY + 5_000);
+    assert_eq!(f.timed_pass(), 1);
+    assert_eq!(
+        f.int("SELECT expired_at FROM obligation_expiries WHERE seat_id='s1'"),
+        300 + DAY
+    );
+}
+
+/// Kills (review 2): one row's failure failing the timed pass, or blocking the rows behind it.
+#[test]
+fn a_failing_timed_row_does_not_stop_the_pass() {
+    let f = fx(&["bad", "good"]);
+    f.at(100);
+    f.close("bad").unwrap();
+    f.at(200);
+    f.close("good").unwrap();
+    // The older row cannot be finalized: a stray job row for its seat makes the final job's
+    // insert fail.
+    f.db()
+        .execute(
+            "INSERT INTO retirements(id,seat_id,cutover_at,origin) VALUES ('stray','bad',100,'replicated')",
+            [],
+        )
+        .unwrap();
+    f.at(200 + WEEK);
+    // Both expire; the bad row's finalization fails and the good row behind it still finalizes.
+    assert_eq!(f.timed_pass(), 3);
+    assert_eq!(f.row_state("bad"), Some(RowState::Reversible));
+    assert_eq!(f.row_state("good"), None);
+    assert_eq!(f.rows("retirements", "good"), 1);
+}
+
+/// Kills (review 1): a service `replace` finally retiring a keyed NEW it does not own, or a NEW that
+/// is a role (has memberships) rather than a leftover bare seat.
+#[test]
+fn service_replace_needs_a_bare_new_it_may_act_on() {
+    let f = fx(&["s1", "keyed", "member"]);
+    f.bare("keyed");
+    f.db()
+        .execute_batch(
+            "PRAGMA foreign_keys=OFF;
+             INSERT INTO service_authors(id,instance_id,created_at) VALUES ('other-author','other-instance',0);
+             INSERT INTO continuity_keys(key,owner_author_id,seat_id,reserved_at,bound_at,bound_by) VALUES ('other-key','other-author','keyed',5,5,'service_reservation');
+             PRAGMA foreign_keys=ON;",
+        )
+        .unwrap();
+    f.at(300);
+    f.close("s1").unwrap();
+    assert_eq!(
+        f.service_rebind(&f.gate, "s1", "keyed", Some("keyed"), "k")
+            .unwrap_err()
+            .code,
+        ErrorCode::Unauthorized
+    );
+    assert_eq!(f.seat_state("keyed"), "resolved");
+    assert_eq!(
+        f.service_rebind(&f.gate, "s1", "member", Some("member"), "m")
+            .unwrap_err()
+            .code,
+        ErrorCode::InvalidRequest
+    );
+    assert_eq!(f.seat_state("member"), "resolved");
+    assert_eq!(f.row_state("s1"), Some(RowState::Reversible));
+    // The operator form is unrestricted (C3), as before.
+    f.rebind("s1", "member", Some("member"), "op").unwrap();
+    assert_eq!(f.seat_state("member"), "retired");
+}
+
+/// Kills (review 4): a late invitation settled by an expiry where its copy would read
+/// `already_joined`.
+#[test]
+fn a_late_invitation_to_an_already_joined_seat_stays_already_joined() {
+    let f = fx(&["s1", "inviter"]);
+    f.db()
+        .execute(
+            "INSERT INTO obligation_expiries(seat_id,retired_at,expired_at) VALUES ('s1',50,?1)",
+            [300 + DAY],
+        )
+        .unwrap();
+    f.db()
+        .execute(
+            "UPDATE memberships SET last_joined_n=5 WHERE seat_id='s1' AND thread_id='t'",
+            [],
+        )
+        .unwrap();
+    let late = crate::sync::facts::invitation::InvitationCreatedPayload {
+        invitation: crate::protocol::ids::InvitationId::new("late"),
+        thread: ThreadId::new("t"),
+        inviter: Some(SeatId::new("inviter")),
+        inviter_kind: Default::default(),
+        invitee: SeatId::new("s1"),
+        invitee_n: 1,
+        created_at: 400,
+        duration_ms: 1_000,
+        deadline_at: 1_400,
+        actor_label: None,
+    };
+    let mut db = f.db();
+    let tx = db.transaction().unwrap();
+    let input = crate::store::materialize::local_only(
+        &tx,
+        DecisionInstant {
+            utc: UtcMillis(300 + DAY + 20),
+            monotonic: MonoInstant(1),
+        },
+    )
+    .unwrap();
+    crate::store::control::materialize_invitation(&tx, &input, &late).unwrap();
+    tx.commit().unwrap();
+    assert_eq!(f.invitation_state("late"), "already_joined");
+}
+
+impl Fx {
+    /// Drops `seat`'s memberships: the bare seat a lost `ResolveSeat` response leaves behind.
+    fn bare(&self, seat: &str) {
+        let db = self.db();
+        db.execute("DELETE FROM membership_intervals WHERE seat_id=?1", [seat])
+            .unwrap();
+        db.execute("DELETE FROM memberships WHERE seat_id=?1", [seat])
+            .unwrap();
+    }
 }

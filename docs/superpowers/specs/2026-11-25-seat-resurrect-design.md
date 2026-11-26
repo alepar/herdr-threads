@@ -204,3 +204,9 @@ left to the existing mechanisms they reuse: `ResurrectSeat` end to end through a
 a protocol test), a parked `seat.obligations_expired` replayed after an upgrade across two nodes (the applier is order
 independent and tested directly), and plain calls of a live agent on a replaced NEW (TRUST-POLICY binding rules,
 unchanged).
+
+Implementation notes (independent review, 2026-11-26): the expiry records the derived instant `cutover + 24 h`;
+a row replayed from a fact runs its clocks from the replay (`timed_from`); a failing timed row is skipped, never
+failing the deadline drive; a service `replace` needs a bare NEW it may act on; a late arrival expires only what would
+otherwise be pending and gets no overdue warning on a non-authoring node (its authoring node warns at the expiry).
+Residual accepted limit (6) in TRUST-POLICY: a restore whose later own entries stay unreachable past a full window.

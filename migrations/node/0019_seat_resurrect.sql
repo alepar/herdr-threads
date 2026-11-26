@@ -18,6 +18,10 @@ CREATE TABLE allocation_decisions_new (
 
 -- When a timed (keyless) reversible row's obligations expired on its home node. NULL: not yet.
 ALTER TABLE reversible_retirements ADD COLUMN obligations_expired_at INTEGER;
+-- When a row was replayed into this store from a fact (own-log restore or a peer); NULL for the
+-- fence's own row. A replayed local row's clocks run from here, so the rest of its own history
+-- (a later seat.unretired) has a full window to arrive before the lane acts on it.
+ALTER TABLE reversible_retirements ADD COLUMN timed_from INTEGER;
 
 -- One row per expiry of a seat's obligations, on every node that applied it: an obligation to the
 -- seat first written later with created_at <= expired_at settles at write. Never pruned: bounded

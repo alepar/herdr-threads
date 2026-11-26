@@ -176,6 +176,31 @@ pub fn mutate_operator_guarded(
             for named in seat.iter().chain(replace.iter()) {
                 require_local_seat(tx, named)?;
             }
+            // A service replaces only a bare seat it may act on: a keyed NEW stays its key's
+            // owner's, and a NEW with memberships is a role, not a leftover (ht-eu3v).
+            if let (Some(author), Some(replace)) = (actor.service_author(), &replace) {
+                if crate::store::continuity_keys::key_of_seat(tx, replace)?
+                    .is_some_and(|key| key.owner != *author)
+                {
+                    return Err(api_error(
+                        ErrorCode::Unauthorized,
+                        "replace names a seat whose continuity key is not this service's",
+                    ));
+                }
+                let members: bool = tx
+                    .query_row(
+                        "SELECT EXISTS(SELECT 1 FROM memberships WHERE seat_id=?1)",
+                        [replace.as_str()],
+                        |r| r.get(0),
+                    )
+                    .map_err(store_error)?;
+                if members {
+                    return Err(api_error(
+                        ErrorCode::InvalidRequest,
+                        "a service replaces only a bare seat with no memberships",
+                    ));
+                }
+            }
             if !observed_matches(
                 tx,
                 host,

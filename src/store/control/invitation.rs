@@ -907,8 +907,8 @@ pub(crate) fn insert_invitation(
     } else {
         None
     };
-    let state = if expired.is_some()
-        || (seat_state == "retired" && !crate::store::seats::reversible::is_frozen(tx, &p.invitee)?)
+    let state = if seat_state == "retired"
+        && !crate::store::seats::reversible::is_frozen(tx, &p.invitee)?
     {
         "recipient_retired"
     } else if prior
@@ -916,9 +916,13 @@ pub(crate) fn insert_invitation(
         .is_some_and(|(_, joined_n)| *joined_n > invitee_n)
     {
         "already_joined"
+    } else if expired.is_some() {
+        // Only what would otherwise be pending expires, as at the expiry itself.
+        "recipient_retired"
     } else {
         "pending"
     };
+    let expired = expired.filter(|_| state == "recipient_retired");
     // A pending invitation first written after an un-retire it predates moves by the time it
     // spent frozen, as the copies present at the un-retire did.
     let deadline = if state == "pending" {

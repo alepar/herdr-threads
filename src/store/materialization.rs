@@ -786,7 +786,12 @@ fn project_receipt(
         deadline => deadline,
     };
     tx.execute("INSERT INTO receipt_state(message_id,seat_id,state,available_at,deadline_at,ack_required,retired_at) VALUES(?1,?2,?3,?4,?5,?6,?7) ON CONFLICT(message_id,seat_id) DO UPDATE SET available_at=COALESCE(receipt_state.available_at,excluded.available_at),deadline_at=COALESCE(receipt_state.deadline_at,excluded.deadline_at),ack_required=MIN(receipt_state.ack_required,excluded.ack_required) WHERE receipt_state.state='pending'",params![message,seat,physical_state,effective.available_at,deadline_at,ack_required,retired_at]).map_err(store_error)?;
-    if attend && effective.state == EffectiveReceiptState::Pending && prior.is_none() {
+    // A receipt settled at write by an expiry owes nothing, so it gets no attention.
+    if attend
+        && effective.state == EffectiveReceiptState::Pending
+        && physical_state == "pending"
+        && prior.is_none()
+    {
         DeliveryTail::attention(tx, seat, 0)?;
     }
     Ok(())

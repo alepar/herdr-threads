@@ -115,10 +115,10 @@ pub(crate) struct TimedDue {
 pub(crate) fn timed_due(conn: &Connection, now: UtcMillis) -> Result<Vec<TimedDue>, ApiError> {
     let mut statement = conn
         .prepare(concat!(
-            "SELECT rr.seat_id,rr.cutover_at,rr.obligations_expired_at IS NULL AND rr.cutover_at+?2<=?1,rr.cutover_at+?3<=?1 \
+            "SELECT rr.seat_id,rr.cutover_at,rr.obligations_expired_at IS NULL AND COALESCE(rr.timed_from,rr.cutover_at)+?2<=?1,COALESCE(rr.timed_from,rr.cutover_at)+?3<=?1 \
              FROM reversible_retirements rr WHERE ",
             timed_row_sql!("rr"),
-            " AND ((rr.obligations_expired_at IS NULL AND rr.cutover_at+?2<=?1) OR rr.cutover_at+?3<=?1) \
+            " AND ((rr.obligations_expired_at IS NULL AND COALESCE(rr.timed_from,rr.cutover_at)+?2<=?1) OR COALESCE(rr.timed_from,rr.cutover_at)+?3<=?1) \
              ORDER BY rr.cutover_at,rr.seat_id LIMIT ?4"
         ))
         .map_err(store_error)?;
@@ -170,23 +170,43 @@ pub(crate) fn timed_pass(
                 tx.commit().map_err(store_error)?;
                 Ok(done)
             };
-        if row.expire
-            && decide(conn, &|tx, at| {
-                expire_obligations(tx, context, &row.seat, row.cutover_at, at)
-            })?
-        {
-            changed += 1;
-        }
-        if row.finalize
-            && decide(conn, &|tx, at| {
-                if !timed_in(tx, &row.seat, row.cutover_at)? {
-                    return Ok(false);
+        // A row's failure never fails the pass or the rows behind it: the own-history hold's
+        // retryable refusal clears on a later pass, and any other error is logged and retried.
+        let mut outcome = |step: &str, result: Result<bool, ApiError>| match result {
+            Ok(done) => {
+                changed += usize::from(done);
+                done
+            }
+            Err(error) => {
+                if !crate::store::materialize::is_own_history_hold(&error) {
+                    eprintln!(
+                        "herdr-threads: timed retirement {step} of {} failed: {}",
+                        row.seat.as_str(),
+                        error.detail
+                    );
                 }
-                finalize(tx, context, instance, FinalizeBy::Window, &row.seat, at)?;
-                Ok(true)
-            })?
-        {
-            changed += 1;
+                false
+            }
+        };
+        let expired = !row.expire
+            || outcome(
+                "expiry",
+                decide(conn, &|tx, at| {
+                    expire_obligations(tx, context, &row.seat, row.cutover_at, at)
+                }),
+            );
+        // A finalization waits for its episode's expiry, so a pass never finalizes first.
+        if row.finalize && expired {
+            outcome(
+                "finalization",
+                decide(conn, &|tx, at| {
+                    if !timed_in(tx, &row.seat, row.cutover_at)? {
+                        return Ok(false);
+                    }
+                    finalize(tx, context, instance, FinalizeBy::Window, &row.seat, at)?;
+                    Ok(true)
+                }),
+            );
         }
     }
     Ok(changed)
@@ -242,7 +262,7 @@ pub(crate) fn expire_obligations(
     let due: bool = tx
         .query_row(
             "SELECT EXISTS(SELECT 1 FROM reversible_retirements WHERE seat_id=?1 AND cutover_at=?2 \
-             AND obligations_expired_at IS NULL AND cutover_at+?3<=?4) \
+             AND obligations_expired_at IS NULL AND COALESCE(timed_from,cutover_at)+?3<=?4) \
              AND NOT EXISTS(SELECT 1 FROM obligation_expiries WHERE seat_id=?1 AND retired_at=?2)",
             params![seat.as_str(), cutover_at, obligation_expiry_ms(), at.utc.0],
             |r| r.get(0),
@@ -251,12 +271,15 @@ pub(crate) fn expire_obligations(
     if !due || !timed_in(tx, seat, cutover_at)? {
         return Ok(false);
     }
+    // The expiry instant is the derived one, not the decision's: every node (and a re-authored
+    // copy after a restore) records and settles by the same instant, however late the lane ran.
+    let expired_at = cutover_at.saturating_add(obligation_expiry_ms());
     tx.execute(
         "UPDATE reversible_retirements SET obligations_expired_at=?2 WHERE seat_id=?1",
-        params![seat.as_str(), at.utc.0],
+        params![seat.as_str(), expired_at],
     )
     .map_err(store_error)?;
-    record_expiry(tx, seat, cutover_at, at.utc.0)?;
+    record_expiry(tx, seat, cutover_at, expired_at)?;
     control::emit_if_published::<SeatObligationsExpired>(
         tx,
         context,
@@ -265,7 +288,7 @@ pub(crate) fn expire_obligations(
         &SeatObligationsExpiredPayload {
             seat: seat.clone(),
             retired_at: cutover_at,
-            expired_at: at.utc.0,
+            expired_at,
         },
     )?;
     Ok(true)
@@ -646,10 +669,11 @@ pub(crate) fn insert_fact_row(
     seat: &SeatId,
     retired_at: i64,
     reason: RetireReason,
+    applied_at: UtcMillis,
 ) -> Result<(), ApiError> {
     tx.execute(
-        "INSERT INTO reversible_retirements(seat_id,state,cutover_at,reason) VALUES (?1,'reversible',?2,?3)",
-        params![seat.as_str(), retired_at, reason_column(reason)],
+        "INSERT INTO reversible_retirements(seat_id,state,cutover_at,reason,timed_from) VALUES (?1,'reversible',?2,?3,MAX(?2,?4))",
+        params![seat.as_str(), retired_at, reason_column(reason), applied_at.0],
     )
     .map_err(store_error)?;
     Ok(())

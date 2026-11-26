@@ -580,26 +580,36 @@ retire and `--replace`, and an unretired seat's finalization, stays final. A nam
   reversible seat gets the deferred job with the original cutover and evidence, and `retired_seq` advances to this
   decision, so the job also settles what a window fact wrote; an unretired seat takes an ordinary final retirement with
   reason `operator`, so it cannot go reversible again.
-- *Timed rows (ht-eu3v).* A local `reversible` row whose seat holds no continuity key is timed. Its clocks are derived
-  from the cutover, never stored, so a row replayed from the own log, or a keyed seat whose key is gone, is timed too; a
-  keyed row and a peer's row never are. The deadline lane, at most 16 rows a pass, oldest first, expires a timed row's
-  obligations at `cutover + 24 h` and then finalizes it at `cutover + 7 d`, each in its own writer transaction, so a
-  daemon down past both clocks expires before it finalizes.
+- *Timed rows (ht-eu3v).* A local `reversible` row whose seat holds no continuity key is timed. Its clocks are derived,
+  never stored, so a row replayed from the own log, or a keyed seat whose key is gone, is timed too; a keyed row and a
+  peer's row never are. They run from the cutover for the fence's own row, and from when the row was written for a row
+  replayed from a fact (`timed_from`), so the rest of an own history being restored (a later `seat.unretired`) has a
+  full window to arrive first. The deadline lane, at most 16 rows a pass, oldest first, expires a timed row's
+  obligations 24 h after its base and then finalizes it 7 d after it, each in its own writer transaction; a
+  finalization waits for its episode's expiry, so a daemon down past both clocks expires first. A row whose step fails
+  is skipped (the own-history hold's retryable refusal silently, any other error logged) and retried on a later pass;
+  it never fails the pass or the rows behind it.
 - *Obligation expiry (ht-eu3v).* One writer transaction re-checks that the row is still timed, reversible, in its
-  episode and unexpired, records `obligations_expired_at` and an `obligation_expiries` row, settles as
+  episode and unexpired (and no expiry of the episode is recorded), records the derived instant `cutover + 24 h` (not
+  the lane's decision time, so every node and a re-authored copy agree) as `obligations_expired_at` and in
+  `obligation_expiries`, settles as
   `recipient_retired` every obligation to the seat still pending and created by the expiry instant (ordinary
   invitations, never a service-required one, and ACK-required receipts, physical and logical), each with the overdue
   warning the retirement job writes, classified at the cutover, and authors `seat.obligations_expired` for a published
   seat. Memberships, membership intervals and requirement episodes stay. Every node applies the fact by the same rule to
-  its own rows, whatever state the seat is in there, so arrival order and re-issue change nothing; an obligation first
-  written later with `created_at` at or before a recorded expiry settles at write. The seat stays reversible: a resurrect
+  its own rows, whatever state the seat is in there, so arrival order and re-issue change nothing, and marks a home row
+  expired; an obligation first written later with `created_at` at or before a recorded expiry, and that would otherwise
+  be pending, settles at write, with no membership row and no attention. It gets no overdue warning there: warnings are
+  written only by the obligation's authoring node, which holds its copy before any expiry fact reaches it and warns
+  through the expiry rule itself. The seat stays reversible: a resurrect
   brings it back with its memberships, and what expired stays settled.
 - *Window finalization (ht-eu3v).* At 7 d the timed row finalizes exactly as `FinalizeRetirement` does (the deferred
   job with the original cutover, `retired_seq` advanced, the ordinary `seat.retired`), recorded `window_finalize`. A
   service session may also finalize a keyless seat (`service_finalize` with `service:<author>`); a keyed one stays its
   owner's.
 - *Resurrect (ht-eu3v).* `seat rebind --operator` and `ResurrectSeat` (C1 table) un-retire a `reversible` row and
-  rebind it in one decision; for a published seat the un-retire authors `seat.unretired` as `UnretireSeat` does. A
+  rebind it in one decision. A service's `replace` must name a bare NEW (no memberships) whose key, if any, is the
+  service's own; the operator's is unrestricted (C3); for a published seat the un-retire authors `seat.unretired` as `UnretireSeat` does. A
   running agent on a replaced NEW stays served as NEW's retired binding on plain calls until its next lifecycle check-in
   (bindings disconnected `seat_retired` never reconnect on a plain call); nothing moves from NEW to OLD.
 - *A final retirement releases the key.* The writer of a `retirements` row deletes the seat's key and its conflict rows
@@ -2523,7 +2533,10 @@ introduced.
   obligations pending until it upgrades and replays the parked fact, or the seat finalizes; an obligation created
   within clock skew of the expiry can land on either side, judged against the origin's clock. (5) Expiry and
   finalization run on the home daemon's deadline lane, so a daemon down past a clock acts on its first pass after
-  start; and a keyless seat's service authority is any service session (cooperative, same-user).
+  start; and a keyless seat's service authority is any service session (cooperative, same-user). (6) A store restored
+  from its own log whose later entries (a `seat.unretired`, ACKs after a resurrect) stay unreachable for more than a
+  full window after the replay expires and then finalizes a seat that is live elsewhere in the history: replayed rows
+  wait 24 h and 7 d from the replay, not from the cutover, which bounds this to a peer down that long after a restore.
 - A node that does not know the reversible kinds (ht-ma6i.7). A pre-3.1 node parks `seat.retired_reversible` and
   `seat.unretired`, shows the seat live until `seat.retired` arrives and keeps its overdue running; a message it sends
   meanwhile reaches the home node as an ordinary fact whose receipt stays frozen with the rest. After the upgrade it
