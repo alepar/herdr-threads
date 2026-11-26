@@ -10,11 +10,11 @@ use std::{
     fs,
     io::{Read, Write},
     os::{
-        fd::AsRawFd,
+        fd::{AsRawFd, OwnedFd},
         unix::{fs::DirBuilderExt, process::CommandExt},
     },
     path::PathBuf,
-    process::{Child, ChildStderr, ChildStdin, ChildStdout, Command, Stdio},
+    process::{Child, Command, Stdio},
     time::{Duration, Instant},
 };
 
@@ -33,9 +33,9 @@ impl Drop for Home {
 }
 struct Peer<'a> {
     child: super::reap::Slot<'static>,
-    input: ChildStdin,
-    output: ChildStdout,
-    stderr: ChildStderr,
+    input: fs::File,
+    output: fs::File,
+    stderr: fs::File,
     buffer: Vec<u8>,
     total: usize,
     errors: usize,
@@ -61,6 +61,42 @@ fn nonblocking(pipe: &impl AsRawFd) -> Result<(), ApiError> {
     } else {
         Ok(())
     }
+}
+/// The helper's stdio pipes as (read, write) pairs for stdin, stdout and stderr, every
+/// end close-on-exec from its creation, or None where libSystem has no pipe2. A pipe end
+/// that another thread's concurrent spawn inherits outlives the helper and withholds the
+/// EOF that cleanup confirmation requires; std on macOS creates pipes with pipe() and
+/// sets FD_CLOEXEC afterwards, which leaves exactly that window.
+#[cfg(target_os = "macos")]
+fn cloexec_pipes() -> Result<Option<[(OwnedFd, OwnedFd); 3]>, ApiError> {
+    use std::os::fd::FromRawFd;
+    type Pipe2 = unsafe extern "C" fn(*mut libc::c_int, libc::c_int) -> libc::c_int;
+    static PIPE2: std::sync::OnceLock<Option<Pipe2>> = std::sync::OnceLock::new();
+    let found = *PIPE2.get_or_init(|| {
+        // SAFETY: dlsym with RTLD_DEFAULT and a NUL-terminated name has no other
+        // preconditions; a non-null result is libSystem's pipe2(int[2], int).
+        let symbol = unsafe { libc::dlsym(libc::RTLD_DEFAULT, c"pipe2".as_ptr()) };
+        (!symbol.is_null())
+            .then(|| unsafe { std::mem::transmute::<*mut libc::c_void, Pipe2>(symbol) })
+    });
+    let Some(pipe2) = found else {
+        return Ok(None);
+    };
+    let pipe = || -> Result<(OwnedFd, OwnedFd), ApiError> {
+        let mut fds = [-1 as libc::c_int; 2];
+        // SAFETY: `fds` is a valid int[2] out-buffer.
+        if unsafe { pipe2(fds.as_mut_ptr(), libc::O_CLOEXEC) } != 0 {
+            return Err(error("queue helper pipe unavailable"));
+        }
+        // SAFETY: pipe2 succeeded, so both descriptors are fresh and owned here.
+        Ok(unsafe { (OwnedFd::from_raw_fd(fds[0]), OwnedFd::from_raw_fd(fds[1])) })
+    };
+    Ok(Some([pipe()?, pipe()?, pipe()?]))
+}
+/// Linux: std already creates its pipes with pipe2(O_CLOEXEC).
+#[cfg(not(target_os = "macos"))]
+fn cloexec_pipes() -> Result<Option<[(OwnedFd, OwnedFd); 3]>, ApiError> {
+    Ok(None)
 }
 impl<'a> Peer<'a> {
     fn child_id(&self) -> u32 {
@@ -108,10 +144,28 @@ impl<'a> Peer<'a> {
             .env("XDG_STATE_HOME", home.0.join("state"))
             .env("XDG_CACHE_HOME", home.0.join("cache"))
             .current_dir(&home.0)
-            .stdin(Stdio::piped())
-            .stdout(Stdio::piped())
-            .stderr(Stdio::piped())
             .process_group(0);
+        let parent = match cloexec_pipes()? {
+            Some(
+                [
+                    (in_read, in_write),
+                    (out_read, out_write),
+                    (err_read, err_write),
+                ],
+            ) => {
+                command.stdin(in_read).stdout(out_write).stderr(err_write);
+                Some([in_write, out_read, err_read].map(fs::File::from))
+            }
+            // No pipe2: std's pipe-then-fcntl leaves a window in which a concurrent
+            // spawn can inherit an end; that fails closed as unconfirmed cleanup.
+            None => {
+                command
+                    .stdin(Stdio::piped())
+                    .stdout(Stdio::piped())
+                    .stderr(Stdio::piped());
+                None
+            }
+        };
         #[cfg(feature = "test-support")]
         crate::test_support::spawn::tag(&mut command);
         let mut child = super::reap::OWNED.reserve()?;
@@ -120,10 +174,18 @@ impl<'a> Peer<'a> {
                 .spawn()
                 .map_err(|_| error("queue helper could not start"))?,
         );
+        // The command holds this process's copies of the child ends; dropping it now
+        // leaves the helper (and its descendants) as their only holders.
+        drop(command);
         let spawned = child.as_mut().expect("reserved child");
-        let input = spawned.stdin.take().expect("piped input");
-        let output = spawned.stdout.take().expect("piped output");
-        let stderr = spawned.stderr.take().expect("piped stderr");
+        let [input, output, stderr] = match parent {
+            Some(ends) => ends,
+            None => [
+                fs::File::from(OwnedFd::from(spawned.stdin.take().expect("piped input"))),
+                fs::File::from(OwnedFd::from(spawned.stdout.take().expect("piped output"))),
+                fs::File::from(OwnedFd::from(spawned.stderr.take().expect("piped stderr"))),
+            ],
+        };
         let mut peer = Self {
             child,
             input,

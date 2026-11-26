@@ -952,3 +952,27 @@ fn dropping_private_helper_home_preserves_shared_parent() {
         "shared parent must outlive individual helper homes"
     );
 }
+
+#[cfg(target_os = "macos")]
+#[test]
+fn helper_pipes_are_close_on_exec_from_creation_where_pipe2_exists() {
+    use std::os::fd::AsRawFd;
+    // SAFETY: dlsym with RTLD_DEFAULT and a NUL-terminated name has no other preconditions.
+    let present = !unsafe { libc::dlsym(libc::RTLD_DEFAULT, c"pipe2".as_ptr()) }.is_null();
+    let pipes = cloexec_pipes().unwrap();
+    assert_eq!(
+        pipes.is_some(),
+        present,
+        "pipe2 is used exactly when present"
+    );
+    for (read, write) in pipes.iter().flatten() {
+        for fd in [read.as_raw_fd(), write.as_raw_fd()] {
+            // SAFETY: fd is a live descriptor owned by `pipes`.
+            let flags = unsafe { libc::fcntl(fd, libc::F_GETFD) };
+            assert!(
+                flags >= 0 && flags & libc::FD_CLOEXEC != 0,
+                "fd {fd} lacks FD_CLOEXEC"
+            );
+        }
+    }
+}
