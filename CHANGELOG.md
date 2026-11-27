@@ -1,12 +1,24 @@
 # Changelog
 
-## Unreleased
+## v3.6.0
+
+Minor release: macOS queue wake for Codex, and service restore of a seat held by a Herdr restart.
+
+No store schema change.
 
 ### Added
 
 - **Optional queue wake for macOS Codex (ht-8t52).** The off-by-default `"programmatic_wake": true` opt-in now also works on macOS. The receiver's executable, queue database and session lock are read through public libproc calls instead of `/proc`. Any ambiguous file name (unlinked, replaced, hardlinked or truncated view) refuses queue admission and keeps native typed wake. The same eligibility, busy refusal, effect fences and native fallback apply as on Linux. Known limit, on every queue platform: concurrent activity on the node can stale a queue reservation before the add. The wake is then typed natively instead (ht-c877).
 - **Frictionless Herdr restart for service-managed seats (ht-0f0r).** After a Herdr restart, a v4 service's `ResurrectSeat` also restores a seat the restart left unresolved and held, onto its own saved pane, so a fresh (non-resume) agent launched there enrolls onto the old seat without an operator `seat rebind`. A resumed session that reattached first answers the new `SeatAlreadyResolved`. A hook whose continuity claim loses that race now checks in onto the pane's owner instead of failing.
 - **Service client level (ht-lzhi).** `PersistentServiceClient::with_level(ServiceSessionLevel::V4)` registers `service_session_v4`, so one shared client can call `ResurrectSeat`. The default stays v3; a daemon that does not serve the level refuses at register, with no fallback.
+
+### Changed
+
+- **herdr-core 0.1.22.** Added to the tested herdr-core releases. Its changes are additive (chunked `terminal.put_*`, an optional `events.subscribe` filter).
+
+### Fixed
+
+- **macOS: one host seen as two through symlinked paths.** A herdr-core terminal's CLI commands name the socket as the hook records it, so they no longer fail with "no resolved seat is mapped". A terminal or named seat's Herdr endpoint and an automatic handoff to a herdr-core target use the same spelling too. On macOS, temp paths sit under `/var -> /private/var`.
 
 ## v3.5.0
 
