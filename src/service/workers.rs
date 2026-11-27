@@ -2563,6 +2563,9 @@ where
                                 // lack, and the seats whose own shells survived.
                                 let _ = identity.record_shell_fingerprints();
                                 let _ = identity.decide_shell_continuity();
+                                // ht-iygh D1: then the seats whose resumed
+                                // session Herdr reports in their saved pane.
+                                let _ = identity.decide_host_session_continuity();
                             }
                         }
                     }

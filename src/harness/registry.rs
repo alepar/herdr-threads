@@ -222,6 +222,7 @@ trait ErasedAdapter: Send + Sync {
     fn child_scrub_vars(&self) -> &'static [&'static str];
     fn host_launch_argv(&self, kind: crate::ports::HostKind) -> Vec<String>;
     fn binding_policy(&self) -> BindingPolicy;
+    fn host_agent_kind(&self) -> Option<&'static str>;
     fn required_hook_events(&self) -> Vec<&'static str>;
     fn rewrite_hook_output(&self, input: &[u8], existing_stdout: &[u8]) -> Option<Vec<u8>>;
     fn compact_hook_input(&self, input: &[u8]) -> Option<Vec<u8>>;
@@ -369,6 +370,9 @@ impl<A: HarnessAdapter> ErasedAdapter for TypedAdapter<A> {
     }
     fn binding_policy(&self) -> BindingPolicy {
         self.0.binding_policy()
+    }
+    fn host_agent_kind(&self) -> Option<&'static str> {
+        self.0.host_agent_kind()
     }
     fn required_hook_events(&self) -> Vec<&'static str> {
         self.0.required_hook_events()
@@ -1598,6 +1602,15 @@ impl Registry {
             .iter()
             .find(|r| r.metadata().id == harness_id)
             .map_or_else(BindingPolicy::default, |r| r.adapter.binding_policy())
+    }
+    /// The Herdr agent kind that may restore a seat of this harness id after a cold Herdr restart
+    /// (`HarnessAdapter::host_agent_kind`); `None` for `"human"`, unknown ids and harnesses that
+    /// declare none.
+    pub fn host_agent_kind(&self, harness_id: &str) -> Option<&'static str> {
+        self.registrations
+            .iter()
+            .find(|r| r.metadata().id == harness_id)
+            .and_then(|r| r.adapter.host_agent_kind())
     }
     /// Every registered caller shape as `(harness id, shape)`, in registry order.
     pub fn caller_shapes(&self) -> impl Iterator<Item = (&'static str, CallerEnvShape)> {

@@ -279,6 +279,13 @@ pub trait HarnessAdapter: Send + Sync + 'static {
     fn binding_turn_delivery(&self, _provenance: Option<&str>) -> bool {
         true
     }
+    /// The Herdr agent kind whose `agent_session` report may restore this harness's seat after a
+    /// cold Herdr restart (TRUST-POLICY C1 host session continuity, ht-iygh D1): Herdr's agent
+    /// record for the seat's saved pane must name this kind and the session of the seat's ended
+    /// binding. `None` (the default): never eligible.
+    fn host_agent_kind(&self) -> Option<&'static str> {
+        None
+    }
     fn canary_strategy(&self) -> Option<&dyn CanaryStrategy> {
         None
     }

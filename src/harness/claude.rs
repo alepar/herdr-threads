@@ -1001,6 +1001,10 @@ impl HarnessAdapter for ClaudeAdapter {
             crate::notification::policy::MARKER
         }
     }
+    /// Herdr's agent record names a resumed Claude session as the pane's `agent_session`.
+    fn host_agent_kind(&self) -> Option<&'static str> {
+        Some("claude")
+    }
     fn installer_policy(&self) -> Option<&dyn InstallerPolicy> {
         Some(self)
     }

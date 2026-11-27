@@ -96,7 +96,7 @@ fn session_may_become_candidate(
     .map_err(store_error)
 }
 
-/// Schema deltas 12 (ht-hsyg) and 16 (ht-ma6i.5): copy every seat-history decision into the table
+/// Schema deltas 12 (ht-hsyg), 16 (ht-ma6i.5), 19 (ht-eu3v) and 20 (ht-iygh): copy every seat-history decision into the table
 /// that admits the new kinds. Ordinals are kept, so the AUTOINCREMENT sequence follows.
 pub(crate) fn copy_allocation_decisions(conn: &Connection) -> Result<(), ApiError> {
     conn.execute(
@@ -1559,6 +1559,394 @@ pub fn decide_shell_continuity(
     )
 }
 
+/// The C1 host session continuity binding `b` of seat `s` under publication `g` (ht-iygh D1): a
+/// top-level agent binding (not human, `managed_launch`, a subagent or a `plugin_context:` session)
+/// that the seat's latest unresolve ended (placed at the generation it bumped from) under an
+/// earlier incarnation than the published one, while it was open: connected (`seat_unresolved`) or
+/// itself a restored binding no check-in had connected yet (`host_session_restore`).
+const HOST_SESSION_BINDING: &str = "b.role='top_level' AND b.agent_id='' AND b.harness<>'human' AND b.observation_provenance<>'managed_launch' \
+     AND b.native_session<>'' AND substr(b.native_session,1,15)<>'plugin_context:' \
+     AND b.ended_at IS NOT NULL AND b.disconnect_reason IN ('seat_unresolved','host_session_restore') \
+     AND b.generation=s.generation-1 AND b.incarnation IS NOT NULL AND b.incarnation<>g.incarnation";
+
+/// The seats host session continuity judges: unresolved (reason `other`) local unnamed seats on a
+/// Herdr host, not a person's, holding no continuity key (its owner's service decides a keyed seat).
+const HOST_SESSION_SEAT: &str = "s.state='unresolved' AND s.unresolved_reason='other' \
+     AND s.is_local=1 AND s.name IS NULL AND s.target_id IS NOT NULL AND h.kind='herdr' \
+     AND NOT EXISTS(SELECT 1 FROM continuity_keys k WHERE k.seat_id=s.id)";
+
+/// TRUST-POLICY C1 host session continuity (ht-iygh D1): the unresolved seats of `host` whose saved
+/// target the published snapshot shows, each with the sessions of its [`HOST_SESSION_BINDING`]
+/// rows, newest first. At most [`crate::ports::HOST_SESSION_CONTINUITY_CANDIDATES_PER_PASS`] seats
+/// after `after`, in seat order.
+pub fn host_session_continuity_candidates(
+    context: &StoreContext,
+    instance: &str,
+    host: crate::ports::HostId,
+    after: Option<&SeatId>,
+    budget: &CallBudget,
+) -> Result<Vec<crate::ports::HostSessionCandidate>, ApiError> {
+    let db = context.open_query(budget.clone())?;
+    let limit = i64::try_from(crate::ports::HOST_SESSION_CONTINUITY_CANDIDATES_PER_PASS)
+        .unwrap_or(i64::MAX);
+    let from = "FROM seats s JOIN herdr_hosts h ON h.host_id=s.host_id \
+         JOIN snapshot_generations g ON g.id=h.active_snapshot_id AND g.status='published' \
+         JOIN snapshot_targets t ON t.generation_id=g.id AND t.target_id=s.target_id \
+         JOIN occupant_bindings b ON b.seat_id=s.id";
+    let mut statement = db
+        .prepare(&format!(
+            "WITH page(id) AS (SELECT DISTINCT s.id {from} \
+               WHERE s.instance_id=?1 AND s.host_id=?2 AND {HOST_SESSION_SEAT} AND {NOT_A_PERSON_SEAT} AND {HOST_SESSION_BINDING} \
+               AND (?3 IS NULL OR s.id>?3) ORDER BY s.id LIMIT ?4) \
+             SELECT s.id,s.generation,s.target_id,b.harness,b.native_session {from} \
+             WHERE s.id IN (SELECT id FROM page) AND {HOST_SESSION_BINDING} \
+             ORDER BY s.id, b.ordinal DESC",
+        ))
+        .map_err(|e| db.map_error(e))?;
+    let rows = statement
+        .query_map(
+            params![instance, host.get(), after.map(SeatId::as_str), limit],
+            |r| {
+                Ok((
+                    r.get::<_, String>(0)?,
+                    r.get::<_, i64>(1)?,
+                    r.get::<_, String>(2)?,
+                    r.get::<_, String>(3)?,
+                    r.get::<_, String>(4)?,
+                ))
+            },
+        )
+        .map_err(|e| db.map_error(e))?
+        .collect::<Result<Vec<_>, _>>()
+        .map_err(|e| db.map_error(e))?;
+    let corrupt = |what: &str| api_error(ErrorCode::StoreCorrupt, format!("invalid {what}"));
+    let mut candidates: Vec<crate::ports::HostSessionCandidate> = Vec::new();
+    for (seat, generation, target, harness, session) in rows {
+        let seat = SeatId::parse(seat).map_err(|_| corrupt("seat id"))?;
+        match candidates.last_mut() {
+            Some(last) if last.seat == seat => {
+                if !last.sessions.contains(&(harness.clone(), session.clone())) {
+                    last.sessions.push((harness, session));
+                }
+            }
+            _ => candidates.push(crate::ports::HostSessionCandidate {
+                seat,
+                seat_generation: u64::try_from(generation)
+                    .map_err(|_| corrupt("seat generation"))?,
+                target: HostTargetId::parse(target).map_err(|_| corrupt("target id"))?,
+                sessions: vec![(harness, session)],
+            }),
+        }
+    }
+    Ok(candidates)
+}
+
+/// The judged seat still stands as listed, with this (harness, session) binding; returns that
+/// binding's execution id.
+fn host_session_candidate_stands(
+    tx: &Transaction<'_>,
+    host: crate::ports::HostId,
+    target: &str,
+    seat: &SeatId,
+    harness: &str,
+    session: &str,
+) -> Result<Option<String>, ApiError> {
+    tx.query_row(
+        &format!(
+            "SELECT b.execution_id FROM seats s JOIN herdr_hosts h ON h.host_id=s.host_id \
+             JOIN snapshot_generations g ON g.id=h.active_snapshot_id AND g.status='published' \
+             JOIN snapshot_targets t ON t.generation_id=g.id AND t.target_id=s.target_id \
+             JOIN occupant_bindings b ON b.seat_id=s.id \
+             WHERE s.id=?1 AND s.host_id=?2 AND s.target_id=?3 AND {HOST_SESSION_SEAT} AND {NOT_A_PERSON_SEAT} AND {HOST_SESSION_BINDING} \
+             AND b.harness=?4 AND b.native_session=?5 ORDER BY b.ordinal DESC LIMIT 1"
+        ),
+        params![seat.as_str(), host.get(), target, harness, session],
+        |r| r.get(0),
+    )
+    .optional()
+    .map_err(store_error)
+}
+
+/// What else the evidence could name: a kept claim for one of the seat's top-level sessions
+/// (decided by its own path first), another non-retired seat with a binding naming the session
+/// (the session would fit two seats), or another unresolved seat saved at the target.
+fn host_session_rivals(
+    tx: &Transaction<'_>,
+    host: crate::ports::HostId,
+    target: &str,
+    seat: &SeatId,
+    session: &str,
+) -> Result<Option<ApiError>, ApiError> {
+    let (kept, other_seat, other_saved): (bool, bool, bool) = tx
+        .query_row(
+            "SELECT EXISTS(SELECT 1 FROM kept_continuity_claims k JOIN occupant_bindings b ON b.harness=k.harness AND b.native_session=k.native_session WHERE b.seat_id=?1 AND b.role='top_level' AND b.agent_id=''), \
+             EXISTS(SELECT 1 FROM occupant_bindings b JOIN seats o ON o.id=b.seat_id WHERE b.seat_id<>?1 AND b.native_session=?4 AND o.state<>'retired'), \
+             EXISTS(SELECT 1 FROM seats o WHERE o.id<>?1 AND o.host_id=?2 AND o.target_id=?3 AND o.state='unresolved')",
+            params![seat.as_str(), host.get(), target, session],
+            |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?)),
+        )
+        .map_err(store_error)?;
+    Ok(if kept {
+        Some(api_error(
+            ErrorCode::ServiceBusy,
+            "a kept continuity claim names this seat's session and is decided first; retry",
+        ))
+    } else if other_seat || other_saved {
+        Some(api_error(
+            ErrorCode::Conflict,
+            "host session evidence does not name this seat alone; no seat moved",
+        ))
+    } else {
+        None
+    })
+}
+
+/// TRUST-POLICY C1 host session continuity (ht-iygh D1): resolve the seat whose ended binding's
+/// harness and session Herdr reports in its saved pane, in one transaction under an operation key
+/// per (seat, generation, session). Guarded like shell continuity (the target observation and
+/// structural proof, the pane free or lagging, the seat pinned at the judged generation, no kept
+/// claim on the target), and also refused when a kept claim names one of the seat's sessions,
+/// another non-retired seat's binding names the session, another unresolved seat is saved at the
+/// target, the seat holds a continuity key or the target has a hold-bearing key conflict row.
+/// Opens one top-level binding for the session at the new generation, provenance
+/// `host_session_continuity`, with no fingerprint and no `registered_at`, disconnected
+/// (`host_session_restore`): a dormant wake target that the session's own check-in connects.
+pub fn decide_host_session_continuity(
+    context: &StoreContext,
+    conn: &mut Connection,
+    elected_instance: &str,
+    request: crate::ports::HostSessionContinuityRequest,
+) -> Result<CommandResult, ApiError> {
+    let crate::ports::HostSessionContinuityRequest {
+        seat,
+        seat_generation,
+        harness,
+        native_session,
+        mut guard,
+    } = request;
+    let instance = guard.instance().to_owned();
+    if instance != elected_instance {
+        return Err(api_error(
+            ErrorCode::StaleHostObservation,
+            "continuity guard belongs to another instance",
+        ));
+    }
+    let host = guard.host_id();
+    let target = guard.target().as_str().to_owned();
+    let target = target.as_str();
+    let generation = checked_host_number(seat_generation)?;
+    let expected_boot = guard.host_boot().clone();
+    let expected_epoch = guard.epoch();
+    let expected_generation = guard.generation();
+    let proof = guard.structural_proof().clone();
+    let expected_epoch_sql = checked_host_number(expected_epoch)?;
+    let expected_generation_sql = checked_host_number(expected_generation)?;
+    let operation = format!(
+        "host-session-continuity:{}:{}:{}",
+        seat.as_str(),
+        generation,
+        native_session
+    );
+    let digest = schema::canonical_digest(&(
+        crate::protocol::authority::HOST_SESSION_CONTINUITY_PROVENANCE,
+        &instance,
+        seat.as_str(),
+        target,
+        generation,
+        &harness,
+        &native_session,
+    ))?;
+    let session_id = crate::protocol::ids::NativeSessionId::parse(native_session.clone())
+        .map_err(|_| api_error(ErrorCode::InvalidRequest, "invalid native session"))?;
+    let execution = std::cell::RefCell::new(String::new());
+    schema::execute_idempotent_transaction(
+        context,
+        conn,
+        &continuity_scope(&instance),
+        &operation,
+        digest,
+        |tx| {
+            if !observed_matches(
+                tx,
+                host,
+                target,
+                &expected_boot,
+                expected_epoch,
+                expected_generation,
+            )? {
+                return Err(api_error(
+                    ErrorCode::StaleHostObservation,
+                    "continuity target observation changed",
+                ));
+            }
+            if !target_free(tx, host, target)? {
+                return Err(if reconciliation_lags(tx, host)? {
+                    api_error(
+                        ErrorCode::ServiceBusy,
+                        "recovery reconciliation of the current host epoch has not finished; retry",
+                    )
+                } else {
+                    api_error(
+                        ErrorCode::TargetAlreadyOwned,
+                        "continuity target has a resolved owner; no seat moved",
+                    )
+                });
+            }
+            if !structural_proof_matches_current(tx, host, &proof)? {
+                return Err(api_error(
+                    ErrorCode::StaleHostObservation,
+                    "continuity structural proof differs from current evidence",
+                ));
+            }
+            guard_continuity_pin(tx, host, target, &seat, &seat, generation)?;
+            if let Some(refusal) = host_session_rivals(tx, host, target, &seat, &native_session)? {
+                return Err(refusal);
+            }
+            if continuity_keys::key_of_seat(tx, &seat)?.is_some()
+                || continuity_keys::hold_kind(tx, host, target)?.is_some()
+            {
+                return Err(api_error(
+                    ErrorCode::Conflict,
+                    "a continuity key decides this seat or target; no seat moved",
+                ));
+            }
+            let Some(standing) =
+                host_session_candidate_stands(tx, host, target, &seat, &harness, &native_session)?
+            else {
+                return Err(api_error(
+                    ErrorCode::Conflict,
+                    "host session evidence no longer names this seat's binding; no seat moved",
+                ));
+            };
+            *execution.borrow_mut() = standing;
+            if generation == i64::MAX {
+                return Err(api_error(
+                    ErrorCode::SequenceExhausted,
+                    "seat binding generation exhausted",
+                ));
+            }
+            Ok(())
+        },
+        |tx, at| {
+            let fresh = effective::effective_observation(tx, host, target)?
+                .filter(|observation| {
+                    observation.source == EffectiveObservationSource::NewerCurrentTarget
+                })
+                .ok_or_else(|| {
+                    api_error(
+                        ErrorCode::StaleHostObservation,
+                        "fresh target observation missing",
+                    )
+                })?;
+            guard
+                .consume(&DecisionFence {
+                    now: at.monotonic,
+                    host_boot: HostBootId::new(fresh.host_boot),
+                    host_epoch: u64::try_from(fresh.epoch)
+                        .map_err(|_| api_error(ErrorCode::StoreCorrupt, "negative host epoch"))?,
+                    target_generation: u64::try_from(fresh.structural_generation).map_err(
+                        |_| api_error(ErrorCode::StoreCorrupt, "negative target generation"),
+                    )?,
+                    binding_generation: 0,
+                    known_invalidated: !observed_matches(
+                        tx,
+                        host,
+                        target,
+                        &expected_boot,
+                        expected_epoch,
+                        expected_generation,
+                    )?,
+                })
+                .map_err(|reason| api_error(ErrorCode::StaleHostObservation, reason))?;
+            rebind_unresolved_seat(
+                tx,
+                &instance,
+                host,
+                &seat,
+                target,
+                expected_generation_sql,
+                at.utc,
+            )?;
+            update_structural_proof(tx, &seat, &proof)?;
+            let new_generation: i64 = tx
+                .query_row(
+                    "SELECT generation FROM seats WHERE id=?1",
+                    [seat.as_str()],
+                    |r| r.get(0),
+                )
+                .map_err(store_error)?;
+            let binding_generation = u64::try_from(new_generation)
+                .map_err(|_| api_error(ErrorCode::StoreCorrupt, "negative seat generation"))?;
+            tx.execute(
+                "INSERT INTO allocation_decisions(host_id,target_id,seat_id,kind,decided_at,host_boot,epoch,generation) VALUES (?1,?2,?3,?4,?5,?6,?7,?8)",
+                params![
+                    host.get(),
+                    target,
+                    seat.as_str(),
+                    crate::protocol::authority::HOST_SESSION_CONTINUITY_PROVENANCE,
+                    at.utc.0,
+                    expected_boot.as_str(),
+                    expected_epoch_sql,
+                    expected_generation_sql
+                ],
+            )
+            .map_err(store_error)?;
+            let key = bindings::BindingKey {
+                seat: seat.clone(),
+                harness: harness.clone(),
+                native_session: session_id.clone(),
+                agent_id: None,
+            };
+            let placement = bindings::BindingPlacement {
+                generation: binding_generation,
+                target_generation: expected_generation,
+                target: target.to_owned(),
+                terminal: proof.terminal().as_str().to_owned(),
+                incarnation: proof.incarnation().to_owned(),
+                host_boot: expected_boot.as_str().to_owned(),
+                host_epoch: expected_epoch,
+                execution: execution.borrow().clone(),
+                provenance: crate::protocol::authority::HOST_SESSION_CONTINUITY_PROVENANCE
+                    .to_owned(),
+                observed_at: at.utc,
+                registered_at: None,
+            };
+            let enrolled = bindings::enroll(
+                tx,
+                &bindings::EnrollRequest {
+                    key: &key,
+                    role: bindings::BindingRole::TopLevel,
+                    parent: None,
+                    lineage: None,
+                    fingerprint: None,
+                    placement: &placement,
+                    trigger: bindings::EnrollTrigger::PlainCall,
+                },
+                at.utc,
+            )?;
+            let binding = match enrolled {
+                bindings::EnrollOutcome::Enrolled { binding, .. }
+                | bindings::EnrollOutcome::Existing(binding) => binding,
+            };
+            bindings::disconnect(
+                tx,
+                &binding.binding_id,
+                bindings::DisconnectReason::HostSessionRestore,
+                at.utc,
+            )?;
+            release_claimed_target(tx, &instance, host, target, at.utc)?;
+            lift_baseline_hold_if_clear(tx, &instance, host, at.utc)?;
+            Ok(CommandResult::ContinuityReattached(
+                crate::protocol::results::ContinuityReattachment {
+                    seat: seat.clone(),
+                    binding_generation,
+                    fast_forward: None,
+                },
+            ))
+        },
+    )
+}
+
 #[cfg(test)]
 #[path = "../../../tests/store/named_continuity.rs"]
 mod named_continuity_tests;
@@ -1566,3 +1954,7 @@ mod named_continuity_tests;
 #[cfg(test)]
 #[path = "../../../tests/store/shell_continuity.rs"]
 mod shell_continuity_tests;
+
+#[cfg(test)]
+#[path = "../../../tests/store/host_session_continuity.rs"]
+mod host_session_continuity_tests;

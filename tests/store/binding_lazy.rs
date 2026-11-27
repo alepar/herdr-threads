@@ -903,6 +903,41 @@ fn an_end_event_leaves_a_dormant_binding_like_a_process_exit() {
     assert_eq!(wake_frontier(&db, "s", t0).unwrap(), None);
 }
 
+/// C1 host session continuity (ht-iygh D1) opens the restored session's binding disconnected: it
+/// is dormant like a process exit, so only its threshold decides (delivery contract rules 1-2), and
+/// the session's own check-in reconnects it.
+#[test]
+fn a_host_session_restore_leaves_a_dormant_binding() {
+    let t0 = NudgeThreshold::new(0).unwrap();
+    let seat = SeatId::new("s");
+    let mut db = placed_db();
+    let a = enroll_binding(&db, "sess-A", None);
+    disconnect(&db, &a, DisconnectReason::HostSessionRestore);
+    assert_eq!(
+        dormant_top_level(&db, "s").unwrap(),
+        Some(a.as_str().to_owned())
+    );
+    publish(&mut db, 3);
+    assert_eq!(wake_frontier(&db, "s", t0).unwrap(), None, "p1 at T=0");
+    assert!(
+        crate::store::wake::wake_targets(&db, &seat, false)
+            .unwrap()
+            .is_empty()
+    );
+    publish_p0(&mut db, 4);
+    assert_eq!(wake_frontier(&db, "s", t0).unwrap(), Some(4));
+    assert_eq!(
+        wake_frontier(&db, "s", NudgeThreshold::ALL).unwrap(),
+        Some(4)
+    );
+    let targets = crate::store::wake::wake_targets(&db, &seat, false).unwrap();
+    assert_eq!(targets.len(), 1);
+    assert_eq!(targets[0].binding, a);
+    assert!(targets[0].dormant);
+    reconnect(&db, &a);
+    assert_eq!(dormant_top_level(&db, "s").unwrap(), None);
+}
+
 /// A successor session in the pane (a new session after the end event, as Claude's `/clear`
 /// starts one) is the only target while connected, and after it exits too only the newest
 /// disconnected binding is dormant: the seat is never woken twice.

@@ -2007,6 +2007,9 @@ pub struct ProcessContinuityCandidate {
 pub const SHELL_FINGERPRINT_READS_PER_PASS: usize = 16;
 /// Candidate seats one C1 shell continuity page lists (ht-ma6i.1); the next pass pages on.
 pub const SHELL_CONTINUITY_CANDIDATES_PER_PASS: usize = 32;
+/// Most seats C1 host session continuity judges per pass (ht-iygh D1): one Herdr `agent.get` read
+/// each.
+pub const HOST_SESSION_CONTINUITY_CANDIDATES_PER_PASS: usize = 16;
 
 /// A resolved seat with no fingerprint for its current (boot, incarnation, terminal). What the
 /// fingerprint write is compared against, so a seat that moved since the listing records nothing.
@@ -2126,9 +2129,34 @@ pub struct ShellContinuityRequest {
     pub guard: ShellContinuityGuard,
 }
 
+/// An unresolved seat a new incarnation left at a saved target, with the sessions of the
+/// top-level bindings its latest unresolve ended (TRUST-POLICY C1 host session continuity,
+/// ht-iygh D1).
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct HostSessionCandidate {
+    pub seat: SeatId,
+    pub seat_generation: u64,
+    pub target: HostTargetId,
+    /// (harness id, native session), the seat's newest binding first.
+    pub sessions: Vec<(String, String)>,
+}
+
+/// The decision input of [`StorePort::decide_host_session_continuity`]: the judged seat at its
+/// generation, the binding session Herdr reported in its saved pane, and the target's fresh
+/// structural observation (the guard shell continuity uses).
+#[derive(Debug)]
+pub struct HostSessionContinuityRequest {
+    pub seat: SeatId,
+    pub seat_generation: u64,
+    pub harness: String,
+    pub native_session: String,
+    pub guard: ShellContinuityGuard,
+}
+
 /// Herdr's per-pane agent record for exactly one pane. TRUST-POLICY C1/A4:
 /// Herdr's agent field may only suggest; it never moves a seat, allocates one
-/// or ends a binding.
+/// or ends a binding, except C1 host session continuity (ht-iygh D1), where its
+/// kind and session must match a seat's ended binding at the seat's saved pane.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct PaneAgentObservation {
     /// Herdr's detection-based agent kind (for example `claude`, `codex`).
@@ -3964,6 +3992,23 @@ pub trait StorePort: ModStoreReads + Send + Sync {
     fn decide_shell_continuity(
         &self,
         request: ShellContinuityRequest,
+        budget: &CallBudget,
+    ) -> Result<CommandResult, ApiError>;
+    /// TRUST-POLICY C1 host session continuity (ht-iygh D1): unresolved seats a new incarnation
+    /// left at a saved target the published snapshot shows, with the sessions their latest
+    /// unresolve ended, seat order, after the cursor, at most
+    /// [`HOST_SESSION_CONTINUITY_CANDIDATES_PER_PASS`] seats.
+    fn host_session_continuity_candidates(
+        &self,
+        host: HostId,
+        after: Option<SeatId>,
+        budget: &CallBudget,
+    ) -> Result<Vec<HostSessionCandidate>, ApiError>;
+    /// TRUST-POLICY C1 host session continuity: resolve the judged seat at its saved target and
+    /// open its session's binding disconnected, in one transaction.
+    fn decide_host_session_continuity(
+        &self,
+        request: HostSessionContinuityRequest,
         budget: &CallBudget,
     ) -> Result<CommandResult, ApiError>;
     /// The host's kept claims due for another decision, oldest first and

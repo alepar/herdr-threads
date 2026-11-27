@@ -3,10 +3,10 @@ use crate::{
     ports::{
         BootstrapAttachmentGuard, BootstrapObserver, ContinuityRequest, ContinuityTargetGuard,
         HostCallContext, HostId, HostInvalidationReason, HostObservation, HostObservationAdmission,
-        HostPort, NamedTargetCheck, OperatorRequest, OperatorTargetGuard,
-        OrdinaryResolutionAttempt, OrdinaryResolutionGuard, OrdinaryResolutionOutcome, ProcessInfo,
-        ResolvedTargetCheck, ShellContinuityCandidate, ShellContinuityGuard,
-        ShellContinuityRequest, StorePort,
+        HostPort, HostSessionCandidate, HostSessionContinuityRequest, NamedTargetCheck,
+        OperatorRequest, OperatorTargetGuard, OrdinaryResolutionAttempt, OrdinaryResolutionGuard,
+        OrdinaryResolutionOutcome, ProcessInfo, ResolvedTargetCheck, ShellContinuityCandidate,
+        ShellContinuityGuard, ShellContinuityRequest, StorePort,
     },
     protocol::{
         authority::OperatorActor,
@@ -113,6 +113,12 @@ pub struct OrdinaryIdentity {
     shell_record_cursor: std::sync::Mutex<Option<SeatId>>,
     /// The last seat C1 shell continuity walked; `None` starts over.
     shell_decide_cursor: std::sync::Mutex<Option<SeatId>>,
+    /// C1 host session continuity (ht-iygh D1) sessions a mismatch or a definitive refusal ruled
+    /// out, by (seat, generation, native session), with when: same cap, TTL and eviction as
+    /// `process_declined`.
+    host_session_declined: std::sync::Mutex<std::collections::HashMap<HostSessionDeclineKey, u64>>,
+    /// The last seat C1 host session continuity walked; `None` starts over.
+    host_session_cursor: std::sync::Mutex<Option<SeatId>>,
     /// The kernel facts shell continuity reads.
     processes: Arc<dyn ProcessInfo>,
     /// The lane's configured cadence in milliseconds.
@@ -121,6 +127,9 @@ pub struct OrdinaryIdentity {
 
 use crate::identity::process_continuity::DeclineKey as ProcessDeclineKey;
 use crate::identity::shell_continuity::DeclineKey as ShellDeclineKey;
+/// What a remembered host session continuity decline is keyed by: (seat, seat generation, native
+/// session).
+type HostSessionDeclineKey = (SeatId, u64, String);
 /// Most C1 process continuity declines remembered before the set is cleared.
 const PROCESS_DECLINED_CAP: usize = 1024;
 /// How long a C1 process continuity decline stands before the candidate is read again.
@@ -152,6 +161,8 @@ impl OrdinaryIdentity {
             shell_declined: std::sync::Mutex::new(std::collections::HashMap::new()),
             shell_record_cursor: std::sync::Mutex::new(None),
             shell_decide_cursor: std::sync::Mutex::new(None),
+            host_session_declined: std::sync::Mutex::new(std::collections::HashMap::new()),
+            host_session_cursor: std::sync::Mutex::new(None),
             processes: Arc::new(crate::host::process_table::HostProcessTable),
             observation_cadence_millis: crate::identity::reconcile::DEFAULT_SNAPSHOT_CADENCE_MILLIS,
         }
@@ -916,6 +927,110 @@ impl OrdinaryIdentity {
         );
     }
 
+    /// TRUST-POLICY C1 host session continuity (ht-iygh D1): after C1 shell continuity, resolve
+    /// each unresolved seat whose saved pane Herdr reports running one of the sessions its latest
+    /// unresolve ended, of that session's harness (`HarnessAdapter::host_agent_kind`). One
+    /// `agent.get` read per judged seat, at most
+    /// [`crate::ports::HOST_SESSION_CONTINUITY_CANDIDATES_PER_PASS`] seats per pass under a
+    /// cursor. A mismatch (another session, another or no agent, no session) and a definitive
+    /// refusal are remembered for 10 minutes per (seat, generation, session); a failed read and a
+    /// not-ready refusal are retried next pass.
+    pub fn decide_host_session_continuity(&self) -> Result<(), ApiError> {
+        let budget = self.maintenance_budget();
+        let after = lock_cursor(&self.host_session_cursor);
+        let candidates = {
+            let _turn = self.writer.enter_foreground(&budget, self.clock.as_ref())?;
+            self.store
+                .host_session_continuity_candidates(self.host_id, after, &budget)?
+        };
+        let now = self.clock.monotonic_now().0;
+        let mut walked_all =
+            candidates.len() < crate::ports::HOST_SESSION_CONTINUITY_CANDIDATES_PER_PASS;
+        for candidate in &candidates {
+            if budget.is_exhausted(self.clock.as_ref()) {
+                walked_all = false;
+                break;
+            }
+            let open = candidate.sessions.iter().any(|(_, session)| {
+                !decline_stands(
+                    &self.host_session_declined,
+                    &host_session_decline_key(candidate, session),
+                    now,
+                )
+            });
+            if open {
+                self.judge_host_session_candidate(candidate, &budget);
+            }
+            set_cursor(&self.host_session_cursor, Some(candidate.seat.clone()));
+        }
+        if walked_all {
+            set_cursor(&self.host_session_cursor, None);
+        }
+        Ok(())
+    }
+
+    /// One candidate with an undeclined session: the pane's agent record, then the decision.
+    fn judge_host_session_candidate(&self, candidate: &HostSessionCandidate, budget: &CallBudget) {
+        let Ok(observed) = self
+            .host
+            .observe_pane_agent(&candidate.target, &self.quiet_read_context(budget))
+        else {
+            return;
+        };
+        let registry = crate::harness::registry::builtins();
+        let matched = observed.as_ref().and_then(|agent| {
+            let session = agent.agent_session.as_deref()?;
+            let kind = agent.kind.as_deref()?;
+            candidate.sessions.iter().find(|(harness, bound)| {
+                bound == session && registry.host_agent_kind(harness) == Some(kind)
+            })
+        });
+        let Some((harness, session)) = matched else {
+            for (_, session) in &candidate.sessions {
+                self.decline_host_session(candidate, session);
+            }
+            return;
+        };
+        let result = self.with_read_inner(
+            &candidate.target,
+            budget,
+            |target, context| self.host.observe_current_target(target, context),
+            |observation| observation,
+            |_, observation| {
+                let guard = ShellContinuityGuard::try_new(
+                    &self.instance,
+                    self.host_id,
+                    &candidate.target,
+                    observation,
+                )
+                .map_err(|detail| error(ErrorCode::StaleHostObservation, detail))?;
+                let _turn = self.writer.enter_foreground(budget, self.clock.as_ref())?;
+                self.store.decide_host_session_continuity(
+                    HostSessionContinuityRequest {
+                        seat: candidate.seat.clone(),
+                        seat_generation: candidate.seat_generation,
+                        harness: harness.clone(),
+                        native_session: session.clone(),
+                        guard,
+                    },
+                    budget,
+                )
+            },
+            true,
+        );
+        if result.is_err() && !continuity_not_ready(&result) {
+            self.decline_host_session(candidate, session);
+        }
+    }
+
+    fn decline_host_session(&self, candidate: &HostSessionCandidate, session: &str) {
+        remember_decline(
+            &self.host_session_declined,
+            host_session_decline_key(candidate, session),
+            self.clock.monotonic_now().0,
+        );
+    }
+
     /// A quiet host read's context fenced to one host boot and epoch: the host refuses the read
     /// once its context moved past them.
     fn fenced_quiet_read_context(
@@ -1409,6 +1524,17 @@ fn set_cursor(cursor: &std::sync::Mutex<Option<SeatId>>, seat: Option<SeatId>) {
     if let Ok(mut cursor) = cursor.lock() {
         *cursor = seat;
     }
+}
+
+fn host_session_decline_key(
+    candidate: &HostSessionCandidate,
+    session: &str,
+) -> HostSessionDeclineKey {
+    (
+        candidate.seat.clone(),
+        candidate.seat_generation,
+        session.to_owned(),
+    )
 }
 
 /// Whether `key`'s decline is within its TTL.

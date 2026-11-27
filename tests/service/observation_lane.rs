@@ -111,6 +111,11 @@ struct LaneHost {
     shell_contexts: Mutex<Vec<(Option<String>, Option<u64>)>>,
     exhaust_budget_at_read: AtomicU64,
     on_shell_read: Mutex<Option<OnShellRead>>,
+    /// What Herdr's `agent.get` reports per pane (none: no agent); `agent_read_fails` fails every
+    /// such read.
+    agents: Mutex<std::collections::HashMap<String, PaneAgentObservation>>,
+    agent_reads: AtomicU64,
+    agent_read_fails: AtomicBool,
 }
 impl LaneHost {
     fn observation(&self, sequence: u64) -> HostObservation {
@@ -244,6 +249,17 @@ impl HostPort for LaneHost {
         }
         Ok(self.shells.lock().unwrap().get(target.as_str()).copied())
     }
+    fn observe_pane_agent(
+        &self,
+        target: &HostTargetId,
+        _context: &HostCallContext,
+    ) -> Result<Option<PaneAgentObservation>, ApiError> {
+        self.agent_reads.fetch_add(1, Ordering::SeqCst);
+        if self.agent_read_fails.load(Ordering::SeqCst) {
+            return Err(Self::down_error());
+        }
+        Ok(self.agents.lock().unwrap().get(target.as_str()).cloned())
+    }
     fn pane_agent_state(
         &self,
         _target: &SafeWakeTarget,
@@ -328,6 +344,9 @@ impl Rig {
             shell_contexts: Mutex::default(),
             exhaust_budget_at_read: AtomicU64::new(0),
             on_shell_read: Mutex::default(),
+            agents: Mutex::default(),
+            agent_reads: AtomicU64::new(0),
+            agent_read_fails: AtomicBool::new(false),
         });
         let processes = Arc::new(LaneProcesses::default());
         let writer = Arc::new(FairWriter::new(32));
@@ -1496,4 +1515,127 @@ fn an_exhausted_budget_stops_the_page_and_resumes_after_the_last_judged() {
     // The page completed: the listing wraps.
     rig.identity.decide_shell_continuity().unwrap();
     assert_eq!(rig.shell_targets()[2 * K..], panes(0..2 * K));
+}
+
+/// A codex seat a cold restart left unresolved at `pane`: its top-level binding of `session`, ended
+/// by the unresolve under the old incarnation, with no fingerprint (the resumed TUI ran no hook).
+fn left_by_cold_restart(rig: &Rig, seat: &str, session: &str) {
+    let db = rig.db_conn();
+    db.execute(
+        "INSERT INTO seats(id,instance_id,state,unresolved_reason,role,target_id,generation,target_generation,created_at,home_node,is_local,host_id) \
+         VALUES (?1,?2,'unresolved','other','native','pane',2,1,0,(SELECT id FROM local_node),1,(SELECT min(host_id) FROM herdr_hosts))",
+        rusqlite::params![seat, rig.instance],
+    )
+    .unwrap();
+    db.execute(
+        "INSERT INTO occupant_bindings(seat_id,generation,target_id,terminal_id,incarnation,host_boot,host_epoch,target_generation,harness,native_session,execution_id,observation_provenance,observed_at,registered_at,ended_at,liveness,disconnected_at,disconnect_reason) \
+         VALUES (?1,1,'pane','term-old','old-incarnation','old-boot',1,1,'codex',?2,'execution-'||?1,'cooperative_top_level',50,50,60,'disconnected',60,'seat_unresolved')",
+        rusqlite::params![seat, session],
+    )
+    .unwrap();
+}
+
+impl Rig {
+    fn agent_at(&self, target: &str, kind: &str, session: &str) {
+        self.host.agents.lock().unwrap().insert(
+            target.to_owned(),
+            PaneAgentObservation {
+                kind: Some(kind.to_owned()),
+                agent_session: Some(session.to_owned()),
+            },
+        );
+    }
+
+    fn agent_reads(&self) -> u64 {
+        self.host.agent_reads.load(Ordering::SeqCst)
+    }
+
+    fn host_session_decisions(&self, seat: &str) -> i64 {
+        self.db_conn()
+            .query_row(
+                "SELECT count(*) FROM allocation_decisions WHERE seat_id=?1 AND kind='host_session_continuity'",
+                [seat],
+                |r| r.get(0),
+            )
+            .unwrap()
+    }
+}
+
+/// The Mac shape (ht-iygh D1): Herdr re-ran `codex resume <session>` in the saved pane and reports
+/// that session there. Kills: the lane never deciding, or deciding outside its completed pass.
+#[test]
+fn a_resumed_session_herdr_reports_restores_its_seat_on_the_lane() {
+    let mut rig = Rig::new();
+    rig.agent_at("pane", "codex", "sess-a");
+    rig.start();
+    rig.wait_idle(1);
+    left_by_cold_restart(&rig, "resumed", "sess-a");
+    rig.pass();
+    assert_eq!(rig.seat_state("resumed"), "resolved");
+    assert_eq!(rig.host_session_decisions("resumed"), 1);
+    assert_eq!(
+        rig.scalar(
+            "SELECT count(*) FROM occupant_bindings WHERE seat_id='resumed' AND ended_at IS NULL AND liveness='disconnected' AND disconnect_reason='host_session_restore' AND observation_provenance='host_session_continuity' AND native_session='sess-a'"
+        ),
+        1
+    );
+}
+
+/// Each mismatch decides nothing and is not read again for ten minutes; a failed read is retried.
+/// Kills: a kind or session dropped from the match, a harness with no declared Herdr kind taken
+/// as eligible, a forgotten decline (a read per pass), or a failed read remembered as a mismatch.
+#[test]
+fn a_mismatch_decides_nothing_and_is_declined_ten_minutes() {
+    type Scene = fn(&Rig);
+    let scenes: [(&str, Scene); 4] = [
+        ("another harness kind", |rig| {
+            rig.agent_at("pane", "claude", "sess-a")
+        }),
+        ("another session", |rig| {
+            rig.agent_at("pane", "codex", "sess-b")
+        }),
+        ("no agent", |_| {}),
+        ("no session", |rig| {
+            rig.host.agents.lock().unwrap().insert(
+                "pane".into(),
+                PaneAgentObservation {
+                    kind: Some("codex".into()),
+                    agent_session: None,
+                },
+            );
+        }),
+    ];
+    for (what, scene) in scenes {
+        let mut rig = Rig::new();
+        rig.start();
+        rig.wait_idle(1);
+        rig.stop();
+        left_by_cold_restart(&rig, "resumed", "sess-a");
+        scene(&rig);
+        rig.identity.decide_host_session_continuity().unwrap();
+        assert_eq!(rig.agent_reads(), 1, "{what}");
+        rig.identity.decide_host_session_continuity().unwrap();
+        assert_eq!(rig.agent_reads(), 1, "{what}: the decline stands");
+        assert_eq!(rig.seat_state("resumed"), "unresolved", "{what}");
+        assert_eq!(rig.host_session_decisions("resumed"), 0, "{what}");
+        rig.clock.0.fetch_add(10 * 60 * 1000, Ordering::SeqCst);
+        rig.identity.decide_host_session_continuity().unwrap();
+        assert_eq!(rig.agent_reads(), 2, "{what}: read again after ten minutes");
+    }
+
+    // A failed read is no decline.
+    let mut rig = Rig::new();
+    rig.start();
+    rig.wait_idle(1);
+    rig.stop();
+    left_by_cold_restart(&rig, "resumed", "sess-a");
+    rig.agent_at("pane", "codex", "sess-a");
+    rig.host.agent_read_fails.store(true, Ordering::SeqCst);
+    for reads in 1..=2 {
+        rig.identity.decide_host_session_continuity().unwrap();
+        assert_eq!(rig.agent_reads(), reads, "a failed read is retried");
+    }
+    rig.host.agent_read_fails.store(false, Ordering::SeqCst);
+    rig.identity.decide_host_session_continuity().unwrap();
+    assert_eq!(rig.seat_state("resumed"), "resolved");
 }

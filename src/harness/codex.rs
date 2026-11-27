@@ -1468,6 +1468,11 @@ impl HarnessAdapter for CodexAdapter {
     fn binding_turn_delivery(&self, provenance: Option<&str>) -> bool {
         provenance == Some(crate::protocol::authority::COOPERATIVE_TOP_LEVEL_PROVENANCE)
     }
+    /// Herdr's session restore re-runs `codex resume <session>` in the saved pane and reports
+    /// that session as the pane's `agent_session`; the TUI runs no hook until its first turn.
+    fn host_agent_kind(&self) -> Option<&'static str> {
+        Some("codex")
+    }
 
     fn installer_policy(&self) -> Option<&dyn InstallerPolicy> {
         Some(self)

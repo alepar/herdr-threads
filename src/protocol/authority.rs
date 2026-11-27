@@ -160,6 +160,12 @@ pub const STRUCTURAL_PROCESS_CONTINUITY_PROVENANCE: &str = "structural_process_c
 /// target is the process the seat's fingerprint recorded, on the recorded controlling terminal.
 /// Seat history only, never on receipts; no binding opens.
 pub const STRUCTURAL_SHELL_CONTINUITY_PROVENANCE: &str = "structural_shell_continuity";
+/// TRUST-POLICY C1 host session continuity (ht-iygh D1): after a new incarnation, Herdr's agent
+/// record for the seat's saved target names the harness and native session of the top-level
+/// binding the seat's latest unresolve ended. Seat history (`allocation_decisions.kind`) and the
+/// binding the decision opens, disconnected (`host_session_restore`); never on receipts, and it
+/// confers no receipt authority until the session's own check-in connects that binding.
+pub const HOST_SESSION_CONTINUITY_PROVENANCE: &str = "host_session_continuity";
 /// TRUST-POLICY A3: Herdr's guarded `agent.start` in this pane was observed
 /// starting the harness and the agent has not checked in. Bindings only (an
 /// unregistered occupant binding the daemon opens after a correlated launch,
@@ -175,11 +181,12 @@ pub const MANAGED_LAUNCH_PLACEHOLDER_PREFIX: &str = "launch:";
 /// TRUST-POLICY A4: the open-binding provenances that are an agent's, which a
 /// person's `me init` never replaces without `--operator` and a second
 /// `launch` respects.
-pub const AGENT_BINDING_PROVENANCES: [&str; 4] = [
+pub const AGENT_BINDING_PROVENANCES: [&str; 5] = [
     COOPERATIVE_TOP_LEVEL_PROVENANCE,
     MANAGED_LAUNCH_PROVENANCE,
     COOPERATIVE_ENV_SESSION_PROVENANCE,
     COOPERATIVE_HOOK_AGENT_PROVENANCE,
+    HOST_SESSION_CONTINUITY_PROVENANCE,
 ];
 
 /// Obtained from the local socket kernel credential, never from JSON.
@@ -756,6 +763,7 @@ mod tests {
             COOPERATIVE_HOOK_AGENT_PROVENANCE,
             LIVENESS_PROCESS_EXIT_PROVENANCE,
             LIVENESS_END_EVENT_PROVENANCE,
+            HOST_SESSION_CONTINUITY_PROVENANCE,
         ] {
             assert!(
                 text.contains(&format!("| `{value}` |")),
@@ -769,5 +777,9 @@ mod tests {
         assert_eq!(COOPERATIVE_HOOK_AGENT_PROVENANCE, "cooperative_hook_agent");
         assert_eq!(LIVENESS_PROCESS_EXIT_PROVENANCE, "liveness_process_exit");
         assert_eq!(LIVENESS_END_EVENT_PROVENANCE, "liveness_end_event");
+        assert_eq!(
+            HOST_SESSION_CONTINUITY_PROVENANCE,
+            "host_session_continuity"
+        );
     }
 }

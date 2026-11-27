@@ -2193,6 +2193,22 @@ mod publication_order {
         ) -> Result<CommandResult, ApiError> {
             self.inner.decide_shell_continuity(request, budget)
         }
+        fn host_session_continuity_candidates(
+            &self,
+            host: crate::ports::HostId,
+            after: Option<SeatId>,
+            budget: &CallBudget,
+        ) -> Result<Vec<crate::ports::HostSessionCandidate>, ApiError> {
+            self.inner
+                .host_session_continuity_candidates(host, after, budget)
+        }
+        fn decide_host_session_continuity(
+            &self,
+            request: crate::ports::HostSessionContinuityRequest,
+            budget: &CallBudget,
+        ) -> Result<CommandResult, ApiError> {
+            self.inner.decide_host_session_continuity(request, budget)
+        }
         fn kept_continuity_claims(
             &self,
             host: crate::ports::HostId,

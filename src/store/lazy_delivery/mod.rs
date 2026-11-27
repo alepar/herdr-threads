@@ -124,7 +124,8 @@ pub(crate) use seat_unread_sql;
 /// A lazy recipient row `r` (with its message `m`) is still owed a display at seat level when it is
 /// legacy pending or some open top-level binding of the seat that can still read it finds it
 /// unread: a connected one, or one disconnected because its process exited (`liveness_process_exit`,
-/// which reconnects on its next call). A binding disconnected as superseded, by an end event,
+/// which reconnects on its next call) or opened disconnected for the session Herdr restored in the
+/// seat's pane (`host_session_restore`, which its own next check-in connects). A binding disconnected as superseded, by an end event,
 /// retirement, unresolve, replacement or migration owes nothing, so it neither keeps the seat-wide
 /// `state` `pending` nor (through `seat_unread_sql!`, which counts connected bindings only) holds the
 /// wake frontier open. Decides only the seat-wide `state` (`MARK_DISPLAYED_SQL`). No delivery or wake
@@ -134,7 +135,7 @@ macro_rules! seat_owes_display_sql {
     () => {
         concat!(
             "(r.legacy_pending=1 OR EXISTS(SELECT 1 FROM occupant_bindings b WHERE b.seat_id=r.seat_id AND b.role='top_level' AND ",
-            "(b.ended_at IS NULL AND (b.liveness='connected' OR b.disconnect_reason='liveness_process_exit'))",
+            "(b.ended_at IS NULL AND (b.liveness='connected' OR b.disconnect_reason IN ('liveness_process_exit','host_session_restore')))",
             " AND ",
             $crate::store::lazy_delivery::binding_lazy_unread_sql!(),
             "))"
@@ -246,7 +247,9 @@ pub(crate) fn connected_top_level(conn: &Connection, seat: &str) -> Result<Vec<S
 /// agent binding when a process exit or a harness end event disconnected it. A harness may run no
 /// hook until its first turn, so a resumed session sits idle in the pane unknown to the daemon, and
 /// this row is all that names it (TRUST-POLICY A4 *Wake*). An end event (Codex `/quit` sends
-/// SessionEnd) does not stop the same session being resumed in the pane. It authorizes a wake prompt
+/// SessionEnd) does not stop the same session being resumed in the pane. C1 host session continuity
+/// opens its binding disconnected (`host_session_restore`) for the session Herdr re-ran in the
+/// seat's pane after a cold restart (ht-iygh D1). It authorizes a wake prompt
 /// only; no view is held for it, and the native recheck keeps it off a pane whose agent is not its
 /// harness awaiting input. A fork (`concurrent_session`) has no successor of its own. A row the
 /// seat's mapping has moved past names no occupant of the seat's pane, so it is not dormant. A binding
@@ -254,7 +257,7 @@ pub(crate) fn connected_top_level(conn: &Connection, seat: &str) -> Result<Vec<S
 pub(crate) fn dormant_top_level(conn: &Connection, seat: &str) -> Result<Option<String>, ApiError> {
     let row: Option<(Option<String>, Option<String>)> = conn
         .prepare_cached(
-            "SELECT CASE WHEN b.disconnect_reason IN ('liveness_process_exit','liveness_end_event') THEN b.binding_id END, h.kind FROM occupant_bindings b JOIN seats s ON s.id=b.seat_id \
+            "SELECT CASE WHEN b.disconnect_reason IN ('liveness_process_exit','liveness_end_event','host_session_restore') THEN b.binding_id END, h.kind FROM occupant_bindings b JOIN seats s ON s.id=b.seat_id \
              LEFT JOIN herdr_hosts h ON h.host_id=s.host_id \
              WHERE b.seat_id=?1 AND b.ended_at IS NULL AND b.role='top_level' AND b.harness<>'human' AND b.concurrent_session=0 AND b.liveness='disconnected' \
              AND b.generation=s.generation AND b.target_generation=s.target_generation AND b.target_id=s.target_id \

@@ -265,6 +265,7 @@ added identity fields; the opt-in read changes no binding, receipt, membership o
 | Named continuity | A seat-acting resolve on the built-in named host of a name equal to the name of an unresolved named seat, with no live seat of that name. The seat keeps its id, history and obligations; no new seat is made. Retire ends continuity for good: a retired name mints a new seat | `cooperative_named_seat` (seat history only) |
 | Process continuity (ht-hsyg) | After a new or unknown Herdr incarnation, a top-level harness binding (not human, `managed_launch` or subagent) of an unresolved seat (reason `other`) that its latest unresolve ended while open and connected, placed under an earlier incarnation than the current one, has a live fingerprinted process (same pid and start stamp, recorded under the current kernel boot id) that is the shell Herdr reports for the seat's saved target in the current incarnation or belongs to the session that shell leads, on that shell's controlling terminal; no other such binding of another seat saved at that target has its process in that pane (or unreadable), no kept C1 claim names the target, the pane has no resolved owner, and the session's unique C1 match is that seat at the judged generation | `structural_process_continuity` |
 | Shell continuity (ht-ma6i.1) | After a new or unknown Herdr incarnation, an unresolved local unnamed seat (reason `other`) on a Herdr host, with a saved target, a recorded fingerprint of an earlier incarnation there and a newest top-level binding that is not `human`, has no live undeclined process continuity candidate, and the shell Herdr reports at that target is the fingerprinted process (same pid and start stamp, recorded under the current kernel boot id), leading its session, on the recorded controlling terminal; no other non-retired seat's fingerprint of the same kernel boot names that process, no other seat saved at that target has its process in that pane (or unreadable), no kept C1 claim names the target, and the pane has no resolved owner. A key conflict row on the target does not block it, and the decision clears the row. No binding opens (*Shell continuity* below) | `structural_shell_continuity` |
+| Host session continuity (ht-iygh) | After a new or unknown Herdr incarnation, an unresolved local unnamed seat (reason `other`) on a Herdr host, holding no continuity key, with a newest top-level binding that is not `human` and a saved target the current publication shows; Herdr's agent record for that pane (one `agent.get` read) names a session equal to the native session of a top-level binding of the seat (not human, `managed_launch` or subagent) that its latest unresolve ended, placed under an earlier incarnation, and a kind equal to the Herdr agent kind that binding's harness adapter declares (`host_agent_kind`; today Codex and Claude). No other non-retired seat has a binding naming that session, no other unresolved seat is saved at the target, no kept C1 claim names the target or one of the seat's top-level sessions, the target has no hold-bearing key conflict row, and the pane has no resolved owner (*Host session continuity* below) | `host_session_continuity` |
 | Continuity key (ht-ma6i.2) | A top-level claim on a Herdr host presenting a reserved key bound to an unresolved seat, at a pane with no resolved owner, its native session matching no unresolved seat but the key's own, or matching the key's seat among others (the key's seat is then chosen). The session need not match any binding: the key is the evidence (*Continuity key* below) | `cooperative_continuity_key` |
 | Operator decision | `ht human seat rebind`, `ht human seat resolve --new-seat`, `ht human seat retire`, `ht human seat rebind --replace` (each with `--operator`). These repairs attribute no person and are not refused in an agent session; the person-attribution override `ht human me init --operator` is (A4 *Agent to human*) | `operator:local-user:<uid>` |
 | Service un-retire (ht-ma6i.3) | `UnretireSeat` by the service that owns the seat's continuity key, for a reversibly retired seat. The mapping only clears: the seat comes back unresolved with no target and no binding; it is placed later by a C1 path like any unresolved seat. | `service_unretire` |
@@ -397,7 +398,9 @@ meanwhile. The claim and its evidence are the session's own; the daemon only def
 files are never read by the daemon.
 
 Seats are never merged. Pane labels, saved addresses, terminal-id hints and Herdr's agent field may *suggest*
-candidates in diagnostics; they never move a seat, allocate one, or end a binding.
+candidates in diagnostics; they never move a seat, allocate one, or end a binding. One exception, decided by the user
+on 2026-11-27 (ht-iygh D1): C1 *Host session continuity* moves an unresolved seat back onto its own saved pane when
+Herdr's agent kind and session there equal the harness and session of the binding the seat's unresolve ended.
 A seat-argument name is a locator that the CLI resolves once to a canonical seat before submission, and never moves a
 seat or ends a binding. Lookup slots (reads, operator repair, `handoff --existing`) never allocate. Invite and
 ACK-recipient names allocate where their pane forms (`--pane`, `--require-ack-pane`) already do; direct send by name
@@ -436,7 +439,8 @@ of current targets. Every unowned target in that baseline is **held**: ordinary 
 `launch`, top-level `SessionStart` enrollment, `ht human me init`) refuses it with inspect / rebind / fresh-seat guidance. Panes authoritatively created
 after the baseline are not held. Holds are durable and survive daemon restart. A hold is released by:
 operator rebind or fresh seat on that target; cooperative continuity on that target (C1); a service restore of the
-seat saved at that target (C1 *Service restore*); or, per Herdr server,
+seat saved at that target (C1 *Service restore*); host session continuity of the seat saved at that target (C1);
+or, per Herdr server,
 when no unresolved nonretired seats of that server remain (implemented, nothing left to protect). Holds, the
 baseline and observed targets are keyed by the Herdr server (`host_id`), because target ids are unique only
 within one server: a coherent snapshot of one server resolves, unresolves or retires only the local seats whose
@@ -568,6 +572,26 @@ ordinary resolution), the pane's hold released, the structural proof recorded so
 `allocation_decisions` row of kind `structural_shell_continuity`. It opens no binding: there is no session to attach, so
 the seat stays unavailable until an agent checks in on the now resolved pane. A row is deleted when its seat retires
 finally and when it is un-retired, so a replaced seat in a surviving shell recovers on the next handoff.
+
+**Host session continuity (ht-iygh D1).** A cold Herdr restart kills every pane process; Herdr 0.9.5 keeps the pane ids,
+mints new terminal ids and re-runs each Codex as `codex resume <session>`. A Codex TUI runs no hook until its first
+turn, so an idle resumed session makes no C1 claim and its seat stays unresolved and unwoken. After shell continuity
+the lane judges up to 16 unresolved seats per pass under a cursor (the C1 table row's scope; a keyed seat is left to
+its key's owner). One `agent.get` read of the saved pane per seat: Herdr's kind and `agent_session` must equal a
+listed binding's harness kind (`HarnessAdapter::host_agent_kind`, neutral default `None`: never eligible) and native
+session. A mismatch (another kind or session, no agent, no session) and a definitive refusal are not read again for
+10 minutes, keyed by (seat, generation, session); a failed read and a not-ready refusal are retried next pass. The
+decision is its own transaction after a fresh target read, under a daemon operation key per (seat, generation,
+session), guarded as shell continuity is (the observation and structural proof current, the pane free, `ServiceBusy`
+while reconciliation lags, the seat pinned at the judged generation, no kept claim on the target) and by the rest of
+the row. It runs `rebind_unresolved_seat`, records the structural proof, releases the pane's hold, writes one
+`allocation_decisions` row of kind `host_session_continuity` and enrolls one top-level binding for (seat, harness,
+session) at the new generation and the pane's current terminal: provenance `host_session_continuity`, no fingerprint,
+no `registered_at`, disconnected at once with reason `host_session_restore`. That binding is a dormant wake target
+(A4 *Wake*), so `p <= T` wakes the idle session and `p > T` does not; the seat stays unavailable and the binding
+confers no receipt authority until the session's own lifecycle or turn check-in in the pane matches it (same seat,
+harness and session) and connects it as an ordinary check-in, with no second binding. A second restart before that
+turn ends the restored binding with it, and the binding still names the session, so the next pass judges it again.
 
 **Reversible retirement (ht-ma6i.3, ht-eu3v).** Every `Closed` retirement (same-incarnation close, closure proof,
 restored-pane close, target absence, hc finality) is reversible: a keyed one until the service that owns the key acts,
@@ -845,6 +869,7 @@ records there are replay machinery, never its identity.
 | `window_finalize` | seat history (`allocation_decisions`) only | The deadline lane finalized a timed (keyless) reversible retirement 7 d after its close (ht-eu3v). No author. Never on receipts. |
 | `structural_process_continuity` | seat rebinds only | The seat's top-level binding process (same fingerprint) was observed as, or in the session of, the shell Herdr reports for the pane, on that shell's controlling terminal, after a new incarnation (C1 process continuity, ht-hsyg). The reopened binding keeps its own `cooperative_top_level` provenance. Never on receipts. |
 | `structural_shell_continuity` | seat rebinds only | The shell Herdr reports for the seat's saved target was observed to be the process the seat's fingerprint recorded (same pid and start stamp), leading its session on the recorded controlling terminal, after a new incarnation (C1 *Shell continuity*, ht-ma6i.1). No binding opens. Never on receipts. |
+| `host_session_continuity` | seat rebinds; bindings | Herdr's agent record for the seat's saved pane named the harness kind and native session of the top-level binding the seat's latest unresolve ended, after a new incarnation (C1 *Host session continuity*, ht-iygh D1). On the binding the decision opens, disconnected (`host_session_restore`) with no fingerprint and no `registered_at`: it authorizes nothing but a wake prompt (a dormant wake target, A4 *Wake*) and confers no A5 receipt authority until the session's own check-in connects it, which rewrites it to that check-in's provenance. Never on receipts. |
 | `cooperative_continuity_key` | seat rebinds only | The seat was reattached because its top-level claim presented the reserved continuity key bound to the seat (C1 *Continuity key*, ht-ma6i.2). The session need not match any binding. The reopened or enrolled binding keeps its own `cooperative_top_level` provenance. Never on receipts. |
 | `operator:local-user:<uid>` | audit of administrative decisions | The local account made a repair or recovery decision. Never on receipts. Also covers `sync clone-cleared` and the other mutating sync, peer and legacy commands (`sync resync`, `peer add`, `peer forget`, `legacy purge`). |
 | `replicated_from:<node_uuid>` | receipts, invitation answers (the accept and reject rows) and events applied from another node's fact (bindings never) | Applied as given from a fact authored and signed by node `<node_uuid>`; the authoring node's own provenance travels inside the fact. Never written for a locally authored fact. |
@@ -1317,7 +1342,7 @@ model open work, and summary closure never changes receipt state or installs glo
   binding is never woken. One exception, the *dormant* binding (ht-unmk): a harness may run no hook until its first
   turn, so a session resumed in the pane sits idle unknown to the daemon. With no top-level binding of the seat
   connected, the last disconnected top-level agent binding (not a fork, `concurrent_session`) is a target when a
-  process exit or a harness end event disconnected it (`liveness_process_exit`, `liveness_end_event`: an end event such as Codex's SessionEnd on `/quit` does not stop the same session being resumed in the pane) and it has something to act on at the seat's threshold,
+  process exit or a harness end event disconnected it (`liveness_process_exit`, `liveness_end_event`: an end event such as Codex's SessionEnd on `/quit` does not stop the same session being resumed in the pane), or C1 host session continuity opened it disconnected (`host_session_restore`, ht-iygh D1), and it has something to act on at the seat's threshold,
   placed on the observed terminal and seat generation like any target, and only on a host that can wake a target with no live
   process (`HostKind::wakes_dormant_target`, today Herdr): a named seat's verified tmux binding ends with its process and hc
   has no composer wake, so such a seat gets no dormant target and its sender reads `wake=no_wake`. It authorizes nothing but an ordinary wake
@@ -3052,7 +3077,13 @@ These are decisions, not bugs. Each is safe to rely on only as stated.
   that outlives a callback. After a Herdr restart, such a session whose resume or lifecycle callback reached no
   daemon (none ran, or every attempt failed before a daemon could keep the claim) stays unresolved, and so is not
   woken, until its next turn makes the `same_session` claim or an operator rebinds it. Herdr's agent field naming
-  the session never moves or wakes the seat.
+  the session in the seat's saved pane, with the harness's declared kind, restores and wakes it (C1 *Host session
+  continuity*, ht-iygh D1, decided by the user on 2026-11-27); elsewhere it never moves or wakes the seat.
+- **Host session continuity trusts Herdr's cached session (ht-iygh D1).** Herdr's `agent_session` is Herdr's own word,
+  and Herdr may retain it after native execution replacement. A fresh agent of the same harness in the saved pane
+  can therefore take the seat, the outcome D3 pane continuity grants anyway (approved by the user). A session that
+  `/resume`d into another seat's session before its first turn joins this seat until a later check-in, as in a pane
+  with no restart.
 - **A reattachment for a session that `/clear` replaced names the old session (ht-dtx0).** A watch spawned
   before the mod adopted the new session id, or a kept resume claim decided after `/clear`, reattaches the seat
   for the claimed (old) session in the same process and pane. The pane's role is the right one; the open binding
@@ -3503,6 +3534,19 @@ decide the same seat; a resume that already won answers a distinct no-op. Reject
 needs only its own), a new verb or session level (the request shape is unchanged), and inferring the seat from the
 pane. Design: `docs/superpowers/specs/2026-11-26-service-restore-held-seat-design.md`.
 
+### Host session continuity after a cold Herdr restart (2026-11-27, ht-iygh)
+
+After a cold Herdr restart every seat was unresolved (C2) and every open binding ended `seat_unresolved`; Herdr 0.9.5
+re-ran each Codex as `codex resume <same session>` in its kept pane, and that TUI runs no hook until its first turn,
+so the idle session never made its `same_session` claim and was never woken. Herdr's `agent.get` record for each such
+pane reported the harness and that session. Decision (user, 2026-11-27): C1 *Host session continuity* trusts that
+record when it names, in the seat's own saved pane, the harness and session of the binding the unresolve ended, with
+every C1 guard, and opens that session's binding disconnected as a dormant wake target. This reverses the 2026-10-03
+rejection of waking on Herdr's agent field (*Managed launch binding*) for that one shape; the accepted limit *Host
+session continuity trusts Herdr's cached session* records the cost. Rejected: waiting for the session's first turn
+(the reported symptom). Design:
+`docs/superpowers/specs/2026-11-27-seat-restore-after-restart-design.md`.
+
 ### Process continuity across a Herdr live handoff (2026-10-31, ht-hsyg)
 
 A live handoff gives every pane a new terminal id under a new server process, so C2 unresolved every seat and idle
@@ -3588,7 +3632,9 @@ daemon opens an unregistered `managed_launch` binding (A3) on a seat with no ope
 any bindings the seat holds, with the started process's fingerprint); it carries the
 harness the wake recheck compares and nothing a caller can claim. Rejected: waking a resolved but unbound
 seat whose pane Herdr reports as an idle agent (Herdr's agent field may only suggest, C1/C5); documenting
-lost-prompt recovery as unsupported on Codex 0.159.3 and later.
+lost-prompt recovery as unsupported on Codex 0.159.3 and later. Amended 2026-11-27 (ht-iygh D1, the user's decision):
+after a cold Herdr restart, Herdr's agent kind and session in an unresolved seat's saved pane, equal to the binding
+the unresolve ended, restore and wake the seat (*Host session continuity after a cold Herdr restart*).
 
 ### Mod delivery is the receipt (2026-10-09, ht-j16)
 

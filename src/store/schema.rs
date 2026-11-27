@@ -185,6 +185,14 @@ pub(crate) const NODE_DELTAS: &[NodeDelta] = &[
             sql_after: include_str!("../../migrations/node/0019_seat_resurrect_after.sql"),
         }),
     },
+    NodeDelta {
+        version: 20,
+        sql: include_str!("../../migrations/node/0020_host_session_continuity.sql"),
+        rebuild: Some(Rebuild {
+            copy: super::seats::copy_allocation_decisions,
+            sql_after: include_str!("../../migrations/node/0020_host_session_continuity_after.sql"),
+        }),
+    },
 ];
 
 /// Latest `PRAGMA user_version` supported by this binary's production schema.

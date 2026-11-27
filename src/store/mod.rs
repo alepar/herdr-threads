@@ -2482,6 +2482,28 @@ impl StorePort for SqliteStore {
         let mut writer = self.writer(budget)?;
         seats::decide_shell_continuity(&self.context, &mut writer, &self.instance, request)
     }
+    fn host_session_continuity_candidates(
+        &self,
+        host: crate::ports::HostId,
+        after: Option<SeatId>,
+        budget: &CallBudget,
+    ) -> Result<Vec<crate::ports::HostSessionCandidate>, ApiError> {
+        seats::host_session_continuity_candidates(
+            &self.context,
+            &self.instance,
+            host,
+            after.as_ref(),
+            budget,
+        )
+    }
+    fn decide_host_session_continuity(
+        &self,
+        request: crate::ports::HostSessionContinuityRequest,
+        budget: &CallBudget,
+    ) -> Result<CommandResult, ApiError> {
+        let mut writer = self.writer(budget)?;
+        seats::decide_host_session_continuity(&self.context, &mut writer, &self.instance, request)
+    }
     fn kept_continuity_claims(
         &self,
         host: crate::ports::HostId,

@@ -69,6 +69,10 @@ pub enum DisconnectReason {
     SeatRetired,
     SeatUnresolved,
     Replaced,
+    /// TRUST-POLICY C1 host session continuity (ht-iygh D1): the binding the decision opens for
+    /// the session Herdr reports in the seat's saved pane, disconnected until that session's own
+    /// check-in. A dormant wake target (`lazy_delivery::dormant_top_level`).
+    HostSessionRestore,
 }
 impl DisconnectReason {
     pub fn as_str(self) -> &'static str {
@@ -80,6 +84,7 @@ impl DisconnectReason {
             Self::SeatRetired => "seat_retired",
             Self::SeatUnresolved => "seat_unresolved",
             Self::Replaced => "replaced",
+            Self::HostSessionRestore => "host_session_restore",
         }
     }
 }
