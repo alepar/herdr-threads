@@ -477,10 +477,11 @@ fn service_case_of(
     let Some((state, saved_target, saved_host, kind)) = row else {
         return Err(not_found());
     };
-    // Only the seat's own saved pane, on a Herdr pane host (never named or herdr-core).
+    // Only the seat's own saved pane, on a host whose restart restores panes at their saved ids
+    // (a Herdr pane host: never the named host or a herdr-core terminal).
     if saved_target.as_deref() != Some(target)
         || saved_host != host.get()
-        || HostKind::from_stored(&kind) != HostKind::Herdr
+        || !HostKind::from_stored(&kind).restores_saved_targets()
         || replace.is_some() && state != "unresolved"
     {
         return Err(not_found());
