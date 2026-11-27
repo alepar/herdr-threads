@@ -14058,14 +14058,14 @@ fn restore_hold_health_names_unowned_targets_and_excludes_released_owned_and_for
     assert_eq!(health.held_targets, Some(2));
     let text = health.limitations.join("\n");
     assert!(text.contains("held-a") && text.contains("held-b"), "{text}");
-    assert!(text.contains("no unresolved seats remain"), "{text}");
+    assert!(text.contains("a hold lifts when the seat saved at its pane is restored or retires"), "{text}");
     assert_eq!(health.validate(), Ok(()));
     drop(conn);
     let _ = std::fs::remove_file(path);
 }
 
 #[test]
-fn restore_hold_refusal_names_cause_blockers_and_exact_operator_repairs() {
+fn restore_hold_after_the_pass_frees_a_pane_no_unresolved_seat_is_saved_at() {
     use crate::ports::{OrdinaryResolutionAttempt as Attempt, OrdinaryResolutionGuard, StorePort};
     use crate::protocol::commands::ResolveSeat;
     let (_context, conn, path, store, observation, budget) = ordinary_resolution_fixture();
@@ -14084,7 +14084,10 @@ fn restore_hold_refusal_names_cause_blockers_and_exact_operator_repairs() {
     )
     .unwrap();
     conn.execute("INSERT INTO seats(id,instance_id,state,role,generation,created_at,home_node,is_local,host_id) VALUES ('blocking-seat','34750f98bd59fcfc946da45aaabe933b','unresolved','native',1,0,(SELECT id FROM local_node),1,(SELECT min(host_id) FROM herdr_hosts))", []).unwrap();
-    let err = store
+    // ht-iygh D2: after the pass the baseline hold covers only the saved
+    // targets of unresolved seats; this one is saved nowhere, so the pane
+    // resolves.
+    store
         .resolve_seat(
             request.clone(),
             Attempt::Observed(
@@ -14092,32 +14095,7 @@ fn restore_hold_refusal_names_cause_blockers_and_exact_operator_repairs() {
             ),
             &budget,
         )
-        .unwrap_err();
-    assert_eq!(err.code, ErrorCode::TargetUnresolved);
-    assert!(
-        err.detail.contains("restore baseline hold"),
-        "{}",
-        err.detail
-    );
-    assert!(
-        err.detail
-            .contains("herdr-threads human seat resolve --pane pane-new --new-seat --operator"),
-        "{}",
-        err.detail
-    );
-    // ht-iygh D4: a seat saved at another target (here none) is no rebind
-    // candidate for this pane.
-    assert!(
-        !err.detail.contains("blocking-seat"),
-        "{}",
-        err.detail
-    );
-    assert!(
-        err.detail
-            .contains("no unresolved seat is saved at pane-new"),
-        "{}",
-        err.detail
-    );
+        .unwrap();
     drop(store);
     drop(conn);
     let _ = std::fs::remove_file(path);
@@ -14677,3 +14655,6 @@ fn continuity_keys_alert_only_row_clears_when_its_owner_moves() {
     drop(conn);
     let _ = std::fs::remove_file(path);
 }
+
+#[path = "restore_hold_targets.rs"]
+mod restore_hold_targets;

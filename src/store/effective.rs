@@ -187,11 +187,13 @@ pub fn effective_recovery_disposition(
         if released {
             return Ok(EffectiveRecoveryDisposition::Released);
         }
-        return Ok(if hold_unclaimed != 0 {
-            EffectiveRecoveryDisposition::BaselineHeld
-        } else {
-            EffectiveRecoveryDisposition::UnambiguousUnclaimed
-        });
+        return Ok(
+            if hold_unclaimed != 0 && baseline_target_held(db, host, target)? {
+                EffectiveRecoveryDisposition::BaselineHeld
+            } else {
+                EffectiveRecoveryDisposition::UnambiguousUnclaimed
+            },
+        );
     }
     if active.is_some() {
         Ok(EffectiveRecoveryDisposition::CreatedAfterBaseline)
@@ -200,20 +202,50 @@ pub fn effective_recovery_disposition(
     }
 }
 
+/// TRUST-POLICY C2 (ht-iygh D2): while the baseline hold stands, a member
+/// target is held until the server's reconciliation pass of the current
+/// recovery boot and epoch has run (a seat may still read resolved on a dead
+/// incarnation); after it, only while an unresolved, not waiting, local seat
+/// of that server is saved at the target. `$h` is the `herdr_hosts` row and
+/// `$t` the target id expression.
+macro_rules! baseline_target_held_sql {
+    ($h:literal, $t:literal) => {
+        concat!(
+            "(", $h, ".recovery_boot IS NULL OR ", $h, ".reconciled_boot IS NOT ", $h, ".recovery_boot OR ",
+            $h, ".reconciled_epoch IS NOT ", $h, ".recovery_epoch OR EXISTS(SELECT 1 FROM seats hs WHERE hs.host_id=",
+            $h, ".host_id AND hs.target_id=", $t, " AND hs.is_local=1 AND hs.state='unresolved' AND NOT EXISTS(",
+            "SELECT 1 FROM reversible_retirements rr WHERE rr.seat_id=hs.id AND rr.state='unretired')))"
+        )
+    };
+}
+
+fn baseline_target_held(db: &Connection, host: HostId, target: &str) -> Result<bool, ApiError> {
+    db.query_row(
+        concat!(
+            "SELECT ",
+            baseline_target_held_sql!("h", "?2"),
+            " FROM herdr_hosts h WHERE h.host_id=?1"
+        ),
+        params![host.get(), target],
+        |r| r.get(0),
+    )
+    .map_err(store_error)
+}
+
 // CROSS JOIN keeps each local host the outer loop, so the open-hold index is
 // searched by (host_id, current boot, current epoch) and never walks another
 // epoch's retained holds.
-pub(crate) const RECOVERY_HOLD_TARGETS_SQL: &str = "WITH held(host_id,target_id) AS (
+pub(crate) const RECOVERY_HOLD_TARGETS_SQL: &str = concat!("WITH held(host_id,target_id) AS (
             SELECT h.host_id,h.target_id FROM herdr_hosts i CROSS JOIN recovery_holds h INDEXED BY recovery_holds_current_open
               ON h.host_id=i.host_id AND h.baseline_boot=i.host_boot AND h.baseline_epoch=i.host_epoch AND h.released_at IS NULL
             WHERE i.node_id=?1
             UNION
             SELECT i.host_id,t.target_id FROM herdr_hosts i JOIN snapshot_targets t ON t.generation_id=i.recovery_baseline_generation_id
-            WHERE i.node_id=?1 AND i.baseline_hold_unclaimed<>0
+            WHERE i.node_id=?1 AND i.baseline_hold_unclaimed<>0 AND ", baseline_target_held_sql!("i", "t.target_id"), "
             AND NOT EXISTS(SELECT 1 FROM recovery_baseline_releases r WHERE r.host_id=i.host_id AND r.baseline_generation_id=i.recovery_baseline_generation_id AND r.target_id=t.target_id)
         ) SELECT target_id FROM held h WHERE NOT EXISTS(
             SELECT 1 FROM seats s WHERE s.instance_id=?1 AND s.host_id=h.host_id AND s.target_id=h.target_id AND s.state='resolved'
-        ) ORDER BY target_id, host_id";
+        ) ORDER BY target_id, host_id");
 
 /// Count durable held targets once per attached Herdr host of the node,
 /// excluding current owners, released baseline

@@ -822,7 +822,7 @@ impl HealthInputs {
             .filter(|summary| summary.holds.count > 0)
         {
             health.limitations.push(bounded(&format!(
-                "restore holds: {} unowned targets; baseline holds lift when no unresolved seats remain; inspect with `herdr-threads daemon health`; per-pane repair: `herdr-threads human seat resolve --pane PANE --new-seat --operator`",
+                "restore holds: {} unowned targets; a hold lifts when the seat saved at its pane is restored or retires; inspect with `herdr-threads daemon health`; per-pane repair: `herdr-threads human seat resolve --pane PANE --new-seat --operator`",
                 summary.holds.count
             ), 256));
             for target in &summary.holds.sample {

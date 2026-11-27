@@ -303,7 +303,7 @@ pub(super) fn resolution_recovery_refusal(
     Ok(api_error(
         ErrorCode::TargetUnresolved,
         format!(
-            "{cause} on {pane}; fresh-seat repair: `herdr-threads human seat resolve --pane {pane} --new-seat --operator`; {repair}; `herdr-threads daemon health` lists every unresolved seat; baseline holds lift when no unresolved seats remain"
+            "{cause} on {pane}; fresh-seat repair: `herdr-threads human seat resolve --pane {pane} --new-seat --operator`; {repair}; `herdr-threads daemon health` lists every unresolved seat; a hold lifts when the seat saved at its pane is restored or retires"
         ),
     ))
 }

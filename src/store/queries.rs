@@ -4587,7 +4587,7 @@ fn diagnostics(
                     &receipts,
                 )?;
                 items.push(Cand {
-                    item: Diagnostic { subject: "restore_holds".into(), detail_data: format!("held_targets={} sample={targets}; baseline holds lift when no unresolved seats remain; inspect `herdr-threads daemon health`; fresh-seat repair: `herdr-threads human seat resolve --pane PANE --new-seat --operator`", holds.count) },
+                    item: Diagnostic { subject: "restore_holds".into(), detail_data: format!("held_targets={} sample={targets}; a hold lifts when the seat saved at its pane is restored or retires; inspect `herdr-threads daemon health`; fresh-seat repair: `herdr-threads human seat resolve --pane PANE --new-seat --operator`", holds.count) },
                     argv: diagnostics_argv(q, &raw), raw,
                     before: DiagnosticsWalk { phase, recovery_done: false, invitation_after, receipts: receipts.clone(), high: invitation_high.max(receipts.physical_high_water.max(receipts.manifest_high_water) as u64) },
                 });

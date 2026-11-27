@@ -442,6 +442,15 @@ baseline and observed targets are keyed by the Herdr server (`host_id`), because
 within one server: a coherent snapshot of one server resolves, unresolves or retires only the local seats whose
 `host_id` is that server, and never touches another server's seats, holds or baseline.
 
+Per-target holds (2026-11-27, ht-iygh D2, the user's decision). The baseline hold holds every unowned baseline
+target only until the server's reconciliation pass of the current recovery boot and epoch has run (before it, a
+seat can still read resolved on the dead incarnation). After the pass, a baseline target is held only while an
+unresolved, not waiting, local seat of that server is saved at it (`baseline_target_held_sql!` in
+`store::effective`, read by `effective_recovery_disposition` and the held-target count): every other pane resolves
+and enrolls as one created after the baseline would. One unresolved seat holds its own saved pane, never the whole
+server. The flag itself (`baseline_hold_unclaimed`) and its lift are unchanged, so the pre-pass liveness freeze stays.
+Accepted limit *Restore hold covers saved targets only* (below).
+
 For a new recovery boot/epoch with no nonretired local seats on that server and no baseline hold,
 the saved-seat reconciliation pass is empty. Its marker is committed in the coherent publication's
 transaction, so a cold host's first continuity decision can establish a no-match without waiting for
@@ -3115,6 +3124,12 @@ These are decisions, not bugs. Each is safe to rely on only as stated.
   child workers, so any `summary` call by the seat may open its catch-up row. Harmless: workers exist only
   after the parent's own `summary` entered the row, and an active row keeps its frontier, so repeated or
   worker calls never move it.
+- **Restore hold covers saved targets only (ht-iygh D2).** Herdr target ids are unique only within one
+  incarnation. Herdr 0.9.5's session restore keeps pane ids across a cold restart, but threads does not prove it. If a
+  seat's pane comes back under another id and a fresh agent starts there, that agent gets a new seat: the role
+  splits. The old seat stays unresolved and, because its saved target is absent, target-absence retirement (G5)
+  retires it reversibly after 10 observed minutes. From then on only a resurrect brings it back. A resumed session of
+  the old seat in that pane still reattaches by C1 before that, ahead of enrollment.
 - **Summary blocks name the seat, not the invocation.** A block records its author seat and declared model;
   it does not record whether a child wrote it, because the CLI cannot know.
 - **Optional runtime qualification may be absent.** Core contracts can operate cooperatively without
