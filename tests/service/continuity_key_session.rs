@@ -24,7 +24,7 @@ use herdr_threads::{
             ContinuityKeyReservation, ReleaseContinuityKey, ReserveContinuityKey,
             SERVICE_SESSION_CAPABILITY_V2, SERVICE_SESSION_CAPABILITY_V3,
             ServiceContinuityAlertsQuery, ServiceOperation, ServiceRegister, ServiceRequest,
-            ServiceResult, ServiceWireRequest, ServiceWireResponse,
+            ServiceResult, ServiceSessionLevel, ServiceWireRequest, ServiceWireResponse,
         },
         time::{CallBudget, Cancellation, Clock, MonoInstant},
         wire::PROTOCOL_VERSION,
@@ -230,13 +230,23 @@ impl Fixture {
         self,
         flow: impl FnOnce(PersistentServiceClient, Rc<Fixture>) -> F,
     ) {
+        self.run_client_at(ServiceSessionLevel::V3, flow);
+    }
+
+    /// `run_client` with a client registering `level`.
+    pub(super) fn run_client_at<F: Future<Output = ()>>(
+        self,
+        level: ServiceSessionLevel,
+        flow: impl FnOnce(PersistentServiceClient, Rc<Fixture>) -> F,
+    ) {
         let client = PersistentServiceClient::new(
             self.endpoint.clone(),
             Arc::clone(&self.clock),
             self.instance.parse().unwrap(),
             None,
             ServiceIntentJournal::open(self._root.0.join("intents")).unwrap(),
-        );
+        )
+        .with_level(level);
         self.drive(|fixture| flow(client, fixture));
     }
 

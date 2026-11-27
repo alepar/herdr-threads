@@ -7,12 +7,13 @@ use super::continuity_key_session::{Fixture, Session, fixture};
 use herdr_threads::{
     client::service::{PersistentServiceClient, ServiceCallError},
     protocol::{
-        ids::{ContinuityKey, OperationId, SeatId},
+        ids::{ContinuityKey, HostLocator, HostTargetId, OperationId, SeatId},
         pagination::PageRequest,
         results::{ApiError, ErrorCode},
         service::{
-            FinalizeRetirement, ReleaseContinuityKey, ReserveContinuityKey, SeatUnretired,
-            ServiceContinuityAlertsQuery, ServiceOperation, ServiceResult, UnretireSeat,
+            FinalizeRetirement, ReleaseContinuityKey, ReserveContinuityKey, ResurrectSeat,
+            SERVICE_SESSION_CAPABILITY_V4, SeatUnretired, ServiceContinuityAlertsQuery,
+            ServiceOperation, ServiceResult, ServiceSessionLevel, UnretireSeat,
         },
     },
 };
@@ -418,5 +419,58 @@ fn payload_mismatch_is_refused() {
         assert_eq!(fixture.row_state("s2").as_deref(), Some("reversible"));
         assert_eq!(fixture.row_state("s1").as_deref(), Some("unretired"));
         assert_eq!(fixture.journaled("op"), 1);
+    });
+}
+
+fn resurrect_op(operation: &str, seat: &str) -> ServiceOperation {
+    ServiceOperation::ResurrectSeat(ResurrectSeat {
+        seat: SeatId::new(seat),
+        target: HostTargetId::new("pane-new"),
+        host: HostLocator::parse("/run/herdr-test.sock").unwrap(),
+        replace: None,
+        operation: OperationId::new(operation),
+    })
+}
+
+/// Kills (ht-lzhi): a client that cannot register v4, or `with_level` changing the default. The
+/// default client's ResurrectSeat is refused for its v3 session naming v4; a v4 client's passes the
+/// level gate and reaches the resurrect path, which cannot reach the fixture's (absent) Herdr host.
+#[test]
+fn persistent_client_registers_the_chosen_level() {
+    let v3 = fixture();
+    v3.seed_seat("live", "resolved", Some("pane-live"));
+    v3.run_client(|client, fixture| async move {
+        client.register(&fixture.budget()).await.unwrap();
+        match client
+            .submit(resurrect_op("resurrect-v3", "live"), &fixture.budget())
+            .await
+        {
+            Err(ServiceCallError::Api { error, .. }) => {
+                assert_eq!(error.code, ErrorCode::Unsupported);
+                assert!(
+                    error.detail.contains(SERVICE_SESSION_CAPABILITY_V4),
+                    "{}",
+                    error.detail
+                );
+            }
+            other => panic!("expected a v3 refusal, got {other:?}"),
+        }
+    });
+
+    let v4 = fixture();
+    v4.seed_seat("live", "resolved", Some("pane-live"));
+    v4.run_client_at(ServiceSessionLevel::V4, |client, fixture| async move {
+        client.register(&fixture.budget()).await.unwrap();
+        match client
+            .submit(resurrect_op("resurrect-v4", "live"), &fixture.budget())
+            .await
+        {
+            Err(ServiceCallError::Api { error, pending }) => {
+                assert_eq!(error.code, ErrorCode::HostUnavailable, "{}", error.detail);
+                assert_eq!(pending, None);
+            }
+            other => panic!("expected a resurrect refusal, got {other:?}"),
+        }
+        assert!(client.registration().await.is_some());
     });
 }

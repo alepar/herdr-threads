@@ -1,5 +1,11 @@
 # Changelog
 
+## Unreleased
+
+### Added
+
+- **Service client level (ht-lzhi).** `PersistentServiceClient::with_level(ServiceSessionLevel::V4)` registers `service_session_v4`, so one shared client can call `ResurrectSeat`. The default stays v3; a daemon that does not serve the level refuses at register, with no fallback.
+
 ## v3.5.0
 
 Minor release: a closed tab's seat can be resurrected.

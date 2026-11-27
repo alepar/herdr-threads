@@ -9,9 +9,9 @@ use crate::{
         pagination::Page,
         results::{ApiError, DeliveryInspection, ErrorCode, MessageSummary},
         service::{
-            SERVICE_SESSION_CAPABILITY_V3, ServiceHistoryQuery, ServiceMessageSent,
-            ServiceOperation, ServiceReceiptsQuery, ServiceRegister, ServiceRegistration,
-            ServiceRequest, ServiceResult, ServiceSend, ServiceWireRequest, ServiceWireResponse,
+            ServiceHistoryQuery, ServiceMessageSent, ServiceOperation, ServiceReceiptsQuery,
+            ServiceRegister, ServiceRegistration, ServiceRequest, ServiceResult, ServiceSend,
+            ServiceSessionLevel, ServiceWireRequest, ServiceWireResponse,
         },
         time::{CallBudget, Clock},
         wire::PROTOCOL_VERSION,
@@ -413,6 +413,7 @@ pub struct PersistentServiceClient {
     instance: crate::node::NodeUuid,
     expected_boot: Option<Uuid>,
     journal: ServiceIntentJournal,
+    level: ServiceSessionLevel,
     session: Mutex<Option<Session>>,
 }
 impl PersistentServiceClient {
@@ -429,8 +430,15 @@ impl PersistentServiceClient {
             instance,
             expected_boot,
             journal,
+            level: ServiceSessionLevel::V3,
             session: Mutex::new(None),
         }
+    }
+    /// The session level `register` negotiates; `V3` unless set. A daemon that does not serve the
+    /// level refuses at register ("unsupported service capability"), with no fallback to a lower one.
+    pub fn with_level(mut self, level: ServiceSessionLevel) -> Self {
+        self.level = level;
+        self
     }
     pub fn journal(&self) -> &ServiceIntentJournal {
         &self.journal
@@ -544,8 +552,8 @@ impl PersistentServiceClient {
     }
     /// Registration is connection-local. An ambiguous response closes the socket;
     /// the caller can reconnect after that close, without a durable mutation key.
-    /// Registers `service_session_v3`: an old daemon rejects it with
-    /// "unsupported service capability" and there is no silent fallback to v2 or v1.
+    /// Registers the client's level (`service_session_v3` by default, see `with_level`): an old
+    /// daemon rejects it with "unsupported service capability" and there is no silent fallback.
     pub async fn register(&self, budget: &CallBudget) -> Result<ServiceRegistration, ApiError> {
         let mut held = self.admit(budget).await?;
         if let Some(session) = held.as_ref() {
@@ -557,7 +565,7 @@ impl PersistentServiceClient {
             _ = budget.cancellation.cancelled() => return Err(error(ErrorCode::Cancelled, "request cancelled before connect")),
         };
         let request = self.request(ServiceRequest::Register(ServiceRegister {
-            capability: SERVICE_SESSION_CAPABILITY_V3.into(),
+            capability: self.level.capability().into(),
         }));
         let response = self.exchange(&mut stream, &request, budget).await?;
         match response.result {
@@ -977,8 +985,9 @@ mod tests {
         pagination::PageRequest,
         service::{
             ContinuityKeyReservation, EnsureManagedThread, FinalizeRetirement, ManagedThread,
-            ReleaseContinuityKey, ReserveContinuityKey, SeatUnretired,
-            ServiceContinuityAlertsQuery, ServiceMembershipQuery, UnretireSeat,
+            ReleaseContinuityKey, ReserveContinuityKey, SERVICE_SESSION_CAPABILITY_V3,
+            SERVICE_SESSION_CAPABILITY_V4, SeatUnretired, ServiceContinuityAlertsQuery,
+            ServiceMembershipQuery, UnretireSeat,
         },
         time::{Cancellation, MonoInstant, UtcMillis},
     };
@@ -1835,6 +1844,29 @@ mod tests {
             respond(&mut stream, &register, BOOT, Ok(registration())).await;
         });
         let client = make_client(socket, &root.join("intents"));
+        client.register(&budget()).await.unwrap();
+        server.await.unwrap();
+        fs::remove_dir_all(root).unwrap();
+    }
+
+    /// Kills: `with_level` ignored at register (the frame still names v3).
+    #[tokio::test]
+    async fn register_negotiates_the_chosen_level() {
+        let root = temp();
+        fs::create_dir_all(&root).unwrap();
+        let socket = root.join("socket");
+        let listener = UnixListener::bind(&socket).unwrap();
+        let server = tokio::spawn(async move {
+            let (mut stream, _) = listener.accept().await.unwrap();
+            let register = incoming(&mut stream).await;
+            assert!(
+                matches!(&register.service, ServiceRequest::Register(ServiceRegister { capability })
+                    if capability == SERVICE_SESSION_CAPABILITY_V4),
+                "{register:?}"
+            );
+            respond(&mut stream, &register, BOOT, Ok(registration())).await;
+        });
+        let client = make_client(socket, &root.join("intents")).with_level(ServiceSessionLevel::V4);
         client.register(&budget()).await.unwrap();
         server.await.unwrap();
         fs::remove_dir_all(root).unwrap();
