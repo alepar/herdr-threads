@@ -1009,11 +1009,18 @@ mod tests {
             .unwrap()
             .unwrap();
         let scope = &preparation.target.scope;
+        // The probe must answer Unknown on every host: this process's own group is live,
+        // but the recorded start never matches its real birth. The fixture scope's pid 10
+        // does not exist on macOS, where the probe rightly proves it gone (ht-l8qi).
         journal
             .started(&WakeHelperWitness {
-                process: scope.process,
+                process: crate::protocol::authority::LivenessFingerprint {
+                    pid: std::process::id(),
+                    start: scope.process.start,
+                },
                 kernel_boot: scope.kernel_boot.clone(),
-                pgid: scope.process.pid,
+                // SAFETY: getpgrp has no preconditions.
+                pgid: unsafe { libc::getpgrp() } as u32,
             })
             .unwrap();
         slot.publish_pre_arm(
