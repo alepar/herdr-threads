@@ -976,7 +976,18 @@ fn reattached(harness: &str, before: Value, restored: Value) -> (World, String) 
     assert_eq!(code, 0, "{stderr}");
     world.restart_herdr(vec![restored, pane("w1:p2", "term-b2")]);
     world.wait_reconciled();
-    assert_eq!(world.seat_state(&a), "unresolved");
+    // The restart unresolved A; when the restored pane reports SA, host session continuity
+    // (ht-iygh D1) may already have restored it, and the resume below confirms that restore.
+    let state = world.seat_state(&a);
+    assert!(
+        state == "unresolved"
+            || state == "resolved"
+                && repairs(&world, &a)
+                    .last()
+                    .is_some_and(|(kind, _, _)| kind == "host_session_continuity"),
+        "{state}: {:?}",
+        repairs(&world, &a)
+    );
     let (code, _, stderr) = world.hook(harness, "w1:p1", &session_start(harness, "SA", "resume"));
     assert_eq!(code, 0, "{stderr}");
     assert_eq!(world.seat_state(&a), "resolved");
@@ -1792,6 +1803,10 @@ fn pane_agent_observation_reads_the_same_in_me_init_launch_and_diagnostics() {
             world.hook("claude", pane, &session_start("claude", session, "resume"));
         assert_eq!(code, 0, "{stderr}");
     }
+    // w1:p1: Herdr reports S1 there, so host session continuity (ht-iygh D1) may restore the seat
+    // before the resume hook's C1 claim, which then only confirms it (no seat history). That
+    // decision rests on the same reading the `match` diagnostic records, so either is the
+    // reading. w1:p2 (no agent) and w1:p3 (read error) leave D1 nothing to decide.
     let diagnostics: Vec<_> = seats
         .iter()
         .map(|seat| {
@@ -1800,10 +1815,23 @@ fn pane_agent_observation_reads_the_same_in_me_init_launch_and_diagnostics() {
                 "resolved",
                 "{seat}: a read never blocks"
             );
-            repairs(&world, seat).last().unwrap().2.clone().unwrap()
+            let rows = repairs(&world, seat);
+            match rows.last() {
+                Some((kind, None, None)) if kind == "host_session_continuity" => "match".to_owned(),
+                Some((_, _, Some(diagnostic))) => diagnostic.clone(),
+                _ => panic!("{seat}: {rows:?}"),
+            }
         })
         .collect();
     assert_eq!(diagnostics, ["match", "absent", "read_error"]);
+    for seat in &seats[1..] {
+        assert!(
+            !repairs(&world, seat)
+                .iter()
+                .any(|(kind, _, _)| kind == "host_session_continuity"),
+            "{seat}: no agent session reported, nothing for D1"
+        );
+    }
 }
 
 /// The mod's `watch` child for `session` in `pane`, as the Claude mod runs it inside that
