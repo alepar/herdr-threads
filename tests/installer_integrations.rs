@@ -1388,6 +1388,16 @@ impl Site {
         let root = self.root();
         let mut command = herdr_threads::test_support::spawn::command("/bin/bash");
         herdr_threads::test_support::isolation::scrub_env(&mut command);
+        // The XDG base directories derive from the scratch HOME: an inherited XDG_STATE_HOME
+        // (release-qualify exports one) would move the baked state dir out of the site (ht-jdjp).
+        for name in [
+            "XDG_STATE_HOME",
+            "XDG_CONFIG_HOME",
+            "XDG_DATA_HOME",
+            "XDG_CACHE_HOME",
+        ] {
+            command.env_remove(name);
+        }
         let out = command
             .arg(concat!(env!("CARGO_MANIFEST_DIR"), "/scripts/install.sh"))
             .args(["--prefix"])
