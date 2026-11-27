@@ -666,7 +666,7 @@ fn unavailable_seats(world: &World, thread: &str) -> Vec<String> {
 }
 
 /// F6 walking skeleton (TRUST-POLICY C1-C4): a Herdr incarnation change leaves
-/// three joined seats unresolved and every unowned target held; a resumed
+/// three joined seats unresolved and their saved targets held; a resumed
 /// Claude session reattaches its own seat; one collision is abandoned by
 /// retiring the old seat, the other by `--replace`; the last unresolved seat
 /// resolving lifts the hold, ordinary resolution works again, and a message
@@ -752,8 +752,10 @@ fn f6_walking_skeleton() {
     }
 
     // Herdr restarts: a new server process, new terminals, the same pane names.
+    // ht-iygh D1: A's restored pane names no session yet, so A's own resume (C1) reattaches
+    // it rather than host session continuity.
     world.restart_herdr(vec![
-        claude("w1:p1", "term-a2", "SA"),
+        restored("w1:p1", "term-a2"),
         pane("w1:p2", "term-b2"),
         pane("w1:p3", "term-c2"),
         pane("w1:p5", "term-e2"),
@@ -767,7 +769,9 @@ fn f6_walking_skeleton() {
         1,
         "the baseline holds unowned targets"
     );
-    let held = world.run(None, None, &["seat", "resolve", "--pane", "w1:p5"]);
+    // ht-iygh D2: after the pass only a target an unresolved seat is saved at is held, so
+    // the refusal is checked on C's pane (w1:p5 is no longer held).
+    let held = world.run(None, None, &["seat", "resolve", "--pane", "w1:p3"]);
     held.refused("ordinary resolution of a held target");
     assert_eq!(
         world.count("SELECT count(*) FROM seats WHERE state='resolved'"),
@@ -782,9 +786,10 @@ fn f6_walking_skeleton() {
         world.open_binding(&a),
         vec![("claude".into(), "cooperative_top_level".into(), "SA".into())]
     );
+    // ht-iygh D1: Herdr reports no session in the restored pane, so the diagnostic is absent.
     assert_eq!(
         repairs(&world, &a).last(),
-        Some(&("cooperative_continuity".into(), None, Some("match".into())))
+        Some(&("cooperative_continuity".into(), None, Some("absent".into())))
     );
     assert_eq!(world.seat_state(&b), "unresolved");
     assert_eq!(world.seat_state(&c), "unresolved");
@@ -1193,20 +1198,20 @@ fn carried_forward_binding_still_matches_session_after_later_incarnation_change(
     );
     assert_eq!(world.hold_unclaimed(), 0);
 
-    // Later the Herdr incarnation changes; the resumed session finds its seat.
-    world.restart_herdr(vec![
-        claude("w1:p1", "term-a2", "SA"),
-        pane("w1:p2", "term-b2"),
-    ]);
+    // Later the Herdr incarnation changes; the resumed session finds its seat. ht-iygh D1:
+    // the restored pane names no session yet, so the match is C1's, not host session
+    // continuity's (which would otherwise restore the seat before the resume arrives).
+    world.restart_herdr(vec![restored("w1:p1", "term-a2"), pane("w1:p2", "term-b2")]);
     world.wait_reconciled();
     assert_eq!(world.seat_state(&a), "unresolved");
     assert_eq!(world.hold_unclaimed(), 1);
     let (code, _, stderr) = world.hook("claude", "w1:p1", &session_start("claude", "SA", "resume"));
     assert_eq!(code, 0, "{stderr}");
     assert_eq!(world.seat_state(&a), "resolved");
+    // ht-iygh D1: Herdr reports no session in the restored pane, so the diagnostic is absent.
     assert_eq!(
         repairs(&world, &a).last(),
-        Some(&("cooperative_continuity".into(), None, Some("match".into())))
+        Some(&("cooperative_continuity".into(), None, Some("absent".into())))
     );
     assert_eq!(world.hold_unclaimed(), 0);
 }
@@ -1928,19 +1933,32 @@ fn idle_mod_session_reattaches_through_its_watch_and_is_woken() {
         .run(None, Some(a_pane), &["accept", &thread])
         .data("accept");
 
-    world.restart_herdr(vec![
-        claude("w1:p1", "term-a2", "SA"),
-        pane("w1:p2", "term-b2"),
-    ]);
+    // ht-iygh D1: the restored pane names no session yet, so SA's own watch (C1) reattaches.
+    world.restart_herdr(vec![restored("w1:p1", "term-a2"), pane("w1:p2", "term-b2")]);
     world.wait_reconciled();
     assert_eq!(world.seat_state(&a), "unresolved");
     // The daemon is gone (as it was when pane teardown killed it): nothing else runs.
     world.stop();
-
-    // Another session in the pane claims nothing: its watch stays refused and the seat
-    // unresolved (it starts the daemon, D1b). The watch waits a bounded 2 s for the daemon it
-    // ensures and reports `daemon_unavailable` when that runs out, as on a loaded machine; the
-    // mod then runs it again after its backoff, so only that refusal is retried here (ht-lmwi).
+    assert_eq!(world.seat_state(&a), "unresolved");
+    let watch = world.watch_until_connected("w1:p1", "SA", 20);
+    assert_eq!(world.seat_state(&a), "resolved");
+    assert_eq!(
+        world.open_binding(&a),
+        vec![("claude".into(), "cooperative_top_level".into(), "SA".into())]
+    );
+    assert_eq!(world.continuity_decisions(), 1);
+    assert_eq!(
+        world.count(&format!(
+            "SELECT count(*) FROM seats WHERE id='{a}' AND target_id='w1:p1'"
+        )),
+        1
+    );
+    // Another session in the pane claims nothing while the seat's own session is connected:
+    // its watch stays refused and the binding stays SA's. ht-iygh D3: before SA reattached, a
+    // fresh session's claim at the only unresolved seat's saved pane would take that seat
+    // (`pane_continuity`), so this runs after SA's watch connects. A watch reports
+    // `daemon_unavailable` when its bounded wait runs out on a loaded machine; the mod then
+    // runs it again after its backoff, so only that refusal is retried here (ht-lmwi).
     let mut unavailable = 0;
     let (other, first) = loop {
         let other = world.watch("w1:p1", "S2");
@@ -1961,19 +1979,10 @@ fn idle_mod_session_reattaches_through_its_watch_and_is_woken() {
         "{first}"
     );
     drop(other);
-    assert_eq!(world.seat_state(&a), "unresolved");
-    let watch = world.watch_until_connected("w1:p1", "SA", 20);
     assert_eq!(world.seat_state(&a), "resolved");
     assert_eq!(
         world.open_binding(&a),
         vec![("claude".into(), "cooperative_top_level".into(), "SA".into())]
-    );
-    assert_eq!(world.continuity_decisions(), 1);
-    assert_eq!(
-        world.count(&format!(
-            "SELECT count(*) FROM seats WHERE id='{a}' AND target_id='w1:p1'"
-        )),
-        1
     );
 
     // B gets its seat back from the operator and sends A an ACK request (p0).
@@ -2341,10 +2350,11 @@ fn kept_claim_of_another_boot_is_dropped_undecided() {
         )
         .unwrap();
     }
-    world.herdr.set_panes(vec![
-        claude("w1:p1", "term-a2", "SA"),
-        pane("w1:p2", "term-b2"),
-    ]);
+    // ht-iygh D1: the restored pane's agent record names no session, else host session
+    // continuity would restore the seat after the claim is dropped.
+    world
+        .herdr
+        .set_panes(vec![restored("w1:p1", "term-a2"), pane("w1:p2", "term-b2")]);
     world.herdr.spawn(); // leak-guard: fixture method, spawns via spawn_owned
     world.kick_observation();
     world.wait_for_recovery("the kept claim of another boot to be dropped", |world| {
@@ -2426,9 +2436,10 @@ fn kept_keyed_claim_is_decided_after_lag_with_no_further_event() {
     );
 }
 
-/// ht-dtx0 acceptance 4: a different session's kept claim never takes the seat, a kept claim
-/// of the seat's own session whose process has exited is dropped undecided, and Herdr's agent
-/// field naming the seat's own session moves nothing without a live claim.
+/// ht-dtx0 acceptance 4: a different session's kept claim never takes the seat while a kept
+/// claim names the seat's own session, and a kept claim of the seat's own session whose
+/// process has exited is dropped undecided. Herdr's agent field naming the seat's own session
+/// then restores the seat (ht-iygh D1, host session continuity), not the claims.
 #[test]
 fn kept_claim_of_another_session_takes_nothing() {
     let mut world = World::start(
@@ -2464,18 +2475,43 @@ fn kept_claim_of_another_session_takes_nothing() {
     ]);
     world.herdr.spawn(); // leak-guard: fixture method, spawns via spawn_owned
     world.kick_observation();
-    world.wait_for_recovery("the kept claim to be refused", |world| {
-        world.kept_claims() == 0 && world.seat_state(&a) == "unresolved"
-    });
+    // ht-iygh D1: with both kept claims gone, Herdr's agent record naming SA, the seat's own
+    // last session, in its saved pane restores the seat (host session continuity), opening a
+    // disconnected binding for SA; S2 gets nothing.
+    world.wait_for_recovery(
+        "the kept claims to go and SA's seat to be restored",
+        |world| world.kept_claims() == 0 && world.seat_state(&a) == "resolved",
+    );
     std::thread::sleep(Duration::from_secs(2));
-    assert_eq!(world.seat_state(&a), "unresolved");
+    assert_eq!(
+        repairs(&world, &a).last(),
+        Some(&("host_session_continuity".into(), None, None))
+    );
+    assert_eq!(
+        world.open_binding(&a),
+        vec![(
+            "claude".into(),
+            "host_session_continuity".into(),
+            "SA".into()
+        )]
+    );
     assert_eq!(world.continuity_decisions(), 0);
-    // With the epoch reconciled, a session no seat knows is refused definitively at intake
-    // and nothing is kept.
+    assert_eq!(
+        world.count("SELECT count(*) FROM allocation_decisions WHERE kind='pane_continuity'"),
+        0
+    );
+    assert_eq!(
+        world.count("SELECT count(*) FROM occupant_bindings WHERE native_session='S2'"),
+        0
+    );
+    // With the epoch reconciled, a session no seat knows is decided at intake and nothing is
+    // kept. ht-iygh D1/D3: the pane's seat is resolved again, so the new session joins it as
+    // in any pane with a resolved seat; it is no longer refused.
     world.wait_reconciled();
     world.hook_unanswered("claude", "w1:p1", &session_start("claude", "S3", "resume"));
     assert_eq!(world.kept_claims(), 0);
-    assert_eq!(world.seat_state(&a), "unresolved");
+    assert_eq!(world.seat_state(&a), "resolved");
+    assert_eq!(world.continuity_decisions(), 0);
 }
 
 /// ht-wpq4: captures every 300 ms and a 2 s restored-pane grace.
