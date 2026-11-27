@@ -2,7 +2,7 @@
 # One row per release asset: version, asset name (<asset>.tar.gz under
 # https://releases.herdr.dev/core/<version>/), SHA-256 of the tarball. Each value is
 # the one in that release's manifest.json, cross-checked by downloading the tarball.
-# 0.1.21 is the version of the vendored schema (tests/fixtures/hc/hc-0.1.21.openrpc.json).
+# 0.1.22 is the version of the vendored schema (tests/fixtures/hc/hc-0.1.22.openrpc.json).
 0.1.15	herdr-core-linux-aarch64	e4939faa57cd1597eb2a07ea34b84cc8f861992c943a08f5e685b41d4d0bfa4f
 0.1.15	herdr-core-linux-x86_64	efbb1382da3d5053cb20c60c166a62ec34e73d8299977fb1f5abed28ddec8d66
 0.1.16	herdr-core-linux-aarch64	b6573137d70baff24fb346c957a9879af6bdc4c641188cdf9e47a7b2a677bc92
@@ -17,3 +17,5 @@
 0.1.20	herdr-core-linux-x86_64	ac6b86890c451a37584620aaa438b71bc0d0bd430a2e7c1d7e095f052c414e74
 0.1.21	herdr-core-linux-aarch64	e844a2bfab48a226097679d076bc83042fe57fccef5387ef802e5b24e78b529a
 0.1.21	herdr-core-linux-x86_64	78424755c10a40dde38a0bdb55c20ac19706e9ae05ed68fc2acf1fcff0d941c1
+0.1.22	herdr-core-linux-aarch64	98757985245d45f8d73dd85e68b139b7f167c28488bb89edd9834c3f5a5cf4cf
+0.1.22	herdr-core-linux-x86_64	3054ec3992ce80c5715d721caa9dcefa6056721d15dc113f4750afce763ba5df

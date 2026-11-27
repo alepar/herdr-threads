@@ -1,5 +1,5 @@
 //! The hc JSON-RPC client against `fake_hc` (in-thread and as the `fake-hc`
-//! binary), and the contract of both with the vendored 0.1.21 OpenRPC schema.
+//! binary), and the contract of both with the vendored 0.1.22 OpenRPC schema.
 //! The schema check is evidence, not a version gate: extra schema fields pass.
 
 use herdr_threads::host::hc::{HcClient, HcError, HcEvent, HcEventKind, RunRequest};
@@ -232,7 +232,7 @@ fn never_sends_forbidden_methods() {
 fn schema() -> Value {
     let text = std::fs::read_to_string(concat!(
         env!("CARGO_MANIFEST_DIR"),
-        "/tests/fixtures/hc/hc-0.1.21.openrpc.json"
+        "/tests/fixtures/hc/hc-0.1.22.openrpc.json"
     ))
     .unwrap();
     serde_json::from_str(&text).unwrap()
@@ -241,7 +241,7 @@ fn schema() -> Value {
 #[test]
 fn every_sent_method_and_param_in_vendored_schema() {
     let schema = schema();
-    assert_eq!(schema["info"]["version"], "0.1.21");
+    assert_eq!(schema["info"]["version"], "0.1.22");
     let methods = schema["methods"].as_array().unwrap();
     let params_of = |name: &str| -> Option<BTreeSet<String>> {
         methods.iter().find(|m| m["name"] == name).map(|m| {

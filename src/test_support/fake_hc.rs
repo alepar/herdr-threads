@@ -464,13 +464,13 @@ impl Inner {
     }
 
     fn hello(&self) -> Value {
-        json!({"generation": 1, "version": "0.1.21", "core": self.core(), "framed": false,
+        json!({"generation": 1, "version": "0.1.22", "core": self.core(), "framed": false,
                "methods": SERVED_METHODS, "features": ["events"]})
     }
 
     fn status(&self) -> Value {
         let live = self.terminals.iter().filter(|t| t.state == "live").count();
-        json!({"core": self.core(), "version": "0.1.21", "pid": std::process::id(),
+        json!({"core": self.core(), "version": "0.1.22", "pid": std::process::id(),
                "uptime_ms": 1, "holders": [], "holder": null, "live": live,
                "finished": self.terminals.len() - live})
     }
