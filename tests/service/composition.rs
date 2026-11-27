@@ -1816,9 +1816,20 @@ impl ActualNativeFixture {
         Self::start_with(held_snapshot, saved, Vec::new())
     }
     fn start_with(held_snapshot: bool, saved: usize, panes: Vec<serde_json::Value>) -> Self {
+        Self::start_saved_at(held_snapshot, saved, None, panes)
+    }
+    /// `first_saved_at` saves the first seat at that target instead of an
+    /// absent one.
+    fn start_saved_at(
+        held_snapshot: bool,
+        saved: usize,
+        first_saved_at: Option<&str>,
+        panes: Vec<serde_json::Value>,
+    ) -> Self {
         Self::start_configured(
             held_snapshot,
             saved,
+            first_saved_at,
             panes,
             Arc::new(SystemClock::new()),
             ServiceConfig::default(),
@@ -1827,6 +1838,7 @@ impl ActualNativeFixture {
     fn start_configured(
         held_snapshot: bool,
         saved: usize,
+        first_saved_at: Option<&str>,
         panes: Vec<serde_json::Value>,
         clock: Arc<dyn Clock>,
         config: ServiceConfig,
@@ -1858,7 +1870,7 @@ impl ActualNativeFixture {
             .open_writer()
             .unwrap();
         for n in 0..saved {
-            db.execute("INSERT INTO seats(id,instance_id,state,role,target_id,generation,target_generation,created_at,home_node,is_local,host_id) VALUES (?1,?2,'resolved','native',?3,1,1,0,(SELECT id FROM local_node),1,(SELECT min(host_id) FROM herdr_hosts))", rusqlite::params![format!("saved-{n}"),instance.to_string(),format!("absent-{n}")]).unwrap();
+            db.execute("INSERT INTO seats(id,instance_id,state,role,target_id,generation,target_generation,created_at,home_node,is_local,host_id) VALUES (?1,?2,'resolved','native',?3,1,1,0,(SELECT id FROM local_node),1,(SELECT min(host_id) FROM herdr_hosts))", rusqlite::params![format!("saved-{n}"),instance.to_string(),first_saved_at.filter(|_| n == 0).map_or_else(|| format!("absent-{n}"), str::to_owned)]).unwrap();
         }
         drop(db);
         let listener = std::os::unix::net::UnixListener::bind(&endpoint).unwrap();
@@ -2342,8 +2354,14 @@ fn actual_native_snapshot_cancellation_closes_peer_before_elected_worker_join_an
 #[cfg(any(target_os = "macos", target_os = "linux"))]
 #[test]
 fn actual_native_verified_baseline_holds_targets_and_cannot_retire_proofless_seats() {
-    let mut fixture =
-        ActualNativeFixture::start_with(false, 17, vec![actual_pane("w4:p1", "terminal")]);
+    // ht-iygh D2: after the pass a baseline target is held only while an
+    // unresolved seat is saved at it, so one proofless seat is saved at w4:p1.
+    let mut fixture = ActualNativeFixture::start_saved_at(
+        false,
+        17,
+        Some("w4:p1"),
+        vec![actual_pane("w4:p1", "terminal")],
+    );
     fixture.wait_for("17 unresolved saved seats", |db| {
         db.query_row(
             "SELECT count(*) FROM seats WHERE state='unresolved'",
@@ -2739,6 +2757,7 @@ fn elected_shutdown_joins_idle_monitor_before_releasing_native_host() {
     let mut fixture = ActualNativeFixture::start_configured(
         false,
         0,
+        None,
         vec![actual_pane("w4:p1", "term_a")],
         clock,
         ServiceConfig::default().with_idle_exit_after(Duration::from_millis(80)),

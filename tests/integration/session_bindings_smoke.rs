@@ -1799,10 +1799,10 @@ fn config7_herdr_restart_keeps_seats_in_restore_hold() {
         "{}",
         smoke.dump("herdr_hosts")
     );
-    // While held, nothing re-enrolls on the old pane id (the binding rows stay for a restore):
-    // a resume is told the mapping is unresolved and opens no binding, and a new claim of the
-    // pane is refused. The resumed session is one the seat never held: a session the seat
-    // does hold matches C1 on the held pane and reattaches (ht-54r.78).
+    // While held, nothing re-enrolls on a held pane id (the binding rows stay for a restore):
+    // a new claim of the pane is refused, and the held seat opens no binding. ht-iygh D3: a
+    // fresh session at the saved pane of the only unresolved seat there takes that seat
+    // (`pane_continuity`), so the refusal is checked on the peer's still-held pane.
     let stranger = Agent::claude("sess-stranger", &pane);
     let out = smoke.hook(&stranger, &claude_start("sess-stranger", "resume"));
     assert_eq!(
@@ -1811,18 +1811,35 @@ fn config7_herdr_restart_keeps_seats_in_restore_hold() {
         "a hook never fails its harness: {}",
         out.text()
     );
-    assert!(out.stdout.contains("Unresolved"), "{}", out.text());
-    assert!(
-        smoke.bindings(&seat).is_empty(),
-        "{:?}",
-        smoke.bindings(&seat)
+    assert!(!out.stdout.contains("Unresolved"), "{}", out.text());
+    assert_eq!(smoke.seat_state(&seat), "resolved");
+    let reopened = smoke.bindings(&seat);
+    assert_eq!(reopened.len(), 1, "{reopened:?}");
+    assert_eq!(reopened[0].session, "sess-stranger", "{reopened:?}");
+    assert_eq!(
+        smoke.count(
+            "SELECT COUNT(*) FROM allocation_decisions WHERE seat_id=?1 AND kind='pane_continuity'",
+            &[&seat]
+        ),
+        1
     );
     assert_eq!(
         smoke.all_bindings(&seat).len(),
-        2,
+        3,
+        "the old rows are kept, not deleted"
+    );
+    assert_eq!(smoke.seat_state(&peer_seat), "unresolved");
+    assert!(
+        smoke.bindings(&peer_seat).is_empty(),
+        "{:?}",
+        smoke.bindings(&peer_seat)
+    );
+    assert_eq!(
+        smoke.all_bindings(&peer_seat).len(),
+        1,
         "the rows are kept, not deleted"
     );
-    let claim = smoke.human(None, &["seat", "resolve", "--pane", &pane]);
+    let claim = smoke.human(None, &["seat", "resolve", "--pane", &peer_pane]);
     assert_ne!(claim.code, 0, "{}", claim.text());
     assert!(
         claim.text().contains("target_unresolved"),

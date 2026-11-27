@@ -7368,7 +7368,21 @@ mod continuity {
                         hook.stderr
                     );
                     let recovered = i64::from(session == "S-1");
-                    assert_eq!(fx.count("SELECT count(*) FROM seats"), 1);
+                    // ht-iygh D2: the saved seat is saved at no target, so after
+                    // the pass the pane is not held and NEW enrolls a fresh seat
+                    // (a compact never enrolls).
+                    let fresh = i64::from(session != "S-1" && *source != "compact");
+                    assert_eq!(
+                        fx.count("SELECT count(*) FROM seats"),
+                        1 + fresh,
+                        "{harness} {source} {session}: {}",
+                        hook.stderr
+                    );
+                    assert_eq!(
+                        fx.count("SELECT count(*) FROM seats WHERE id<>'saved' AND state='resolved' AND target_id='w1:p1'"),
+                        fresh,
+                        "{harness} {source} {session}"
+                    );
                     assert_eq!(
                         fx.count("SELECT count(*) FROM seats WHERE id='saved' AND state='resolved' AND target_id='w1:p1'"),
                         recovered,
@@ -7388,9 +7402,13 @@ mod continuity {
                         fx.count("SELECT count(*) FROM allocation_decisions WHERE kind='cooperative_continuity'"),
                         recovered
                     );
-                    assert_eq!(fx.count(ORDINARY_ALLOCATIONS), 0);
+                    assert_eq!(fx.count(ORDINARY_ALLOCATIONS), fresh);
                     assert_eq!(
                         fx.count("SELECT count(*) FROM occupant_bindings WHERE ended_at IS NULL"),
+                        recovered + fresh
+                    );
+                    assert_eq!(
+                        fx.count("SELECT count(*) FROM occupant_bindings WHERE seat_id='saved' AND ended_at IS NULL"),
                         recovered
                     );
                     assert_eq!(
@@ -7410,8 +7428,23 @@ mod continuity {
     #[test]
     fn zero_or_multiple_matches_leave_pane_held_with_todays_diagnostic() {
         for harness in HARNESSES {
+            // ht-iygh D2/D3: after the pass a pane is held only while an
+            // unresolved seat is saved at it, and a fresh session takes the one
+            // seat saved there, so two seats are saved at the pane to keep it held.
+            let saved_at_pane = |db: &rusqlite::Connection, instance: &str, seat, session| {
+                saved_seat(db, instance, seat, harness, session);
+                db.execute(
+                    "UPDATE seats SET target_id=?2,unresolved_reason='other' WHERE id=?1",
+                    [seat, PANE],
+                )
+                .unwrap();
+            };
             // Zero: the resumed session is nobody's last binding.
-            let fx = reattaching_fixture(harness, Agent::Session("S-1".into()));
+            let fx = Fixture::start(&[(PANE, Agent::Session("S-1".into()))], |db, instance| {
+                saved_at_pane(db, instance, "saved", "S-1");
+                saved_at_pane(db, instance, "other", "S-2");
+            });
+            fx.wait_reconciled();
             let none = fx.hook(harness, PANE, &session_start(harness, "S-other", "resume"));
             assert_eq!(none.code, Some(0), "{}", none.stderr);
             assert!(
@@ -7433,8 +7466,8 @@ mod continuity {
             drop(fx);
             // Several: a second unresolved seat carries the same last session.
             let fx = Fixture::start(&[(PANE, Agent::NoSession)], |db, instance| {
-                saved_seat(db, instance, "saved", harness, "S-1");
-                saved_seat(db, instance, "twin", harness, "S-1");
+                saved_at_pane(db, instance, "saved", "S-1");
+                saved_at_pane(db, instance, "twin", "S-1");
             });
             fx.wait_reconciled();
             let many = fx.hook(harness, PANE, &session_start(harness, "S-1", "resume"));

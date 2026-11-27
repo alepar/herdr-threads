@@ -397,7 +397,9 @@ impl Fixture {
         });
         if hold_baseline {
             let db = rusqlite::Connection::open(&paths.database_path).unwrap();
-            db.execute("INSERT INTO seats(id,instance_id,state,role,generation,created_at,home_node,is_local,host_id) VALUES ('saved',?1,'unresolved','native',1,0,(SELECT id FROM local_node),1,(SELECT min(host_id) FROM herdr_hosts))", [instance.to_string()]).unwrap();
+            // ht-iygh D2: after the pass a baseline target is held only while
+            // an unresolved seat is saved at it, so the seat is saved at w1:p1.
+            db.execute("INSERT INTO seats(id,instance_id,state,role,target_id,generation,created_at,home_node,is_local,host_id) VALUES ('saved',?1,'unresolved','native','w1:p1',1,0,(SELECT id FROM local_node),1,(SELECT min(host_id) FROM herdr_hosts))", [instance.to_string()]).unwrap();
         }
         if seed {
             // Each seed call gets its own budget: one deadline across the whole
@@ -1169,7 +1171,9 @@ fn real_ipc_exact_resolution_replay_after_retirement_and_hold_is_historical_with
     hold.execute("UPDATE herdr_hosts SET baseline_hold_unclaimed=1", [])
         .unwrap();
     hold.execute(
-        "INSERT INTO seats(id,instance_id,state,unresolved_reason,role,generation,created_at,home_node,is_local,host_id) SELECT 'still-unresolved',instance_id,'unresolved','other','native',1,0,(SELECT id FROM local_node),1,(SELECT min(host_id) FROM herdr_hosts) FROM seats WHERE id=?1",
+        // ht-iygh D2: after the pass only a target an unresolved seat is
+        // saved at stays held, so the seat is saved at the retired seat's pane.
+        "INSERT INTO seats(id,instance_id,state,unresolved_reason,role,target_id,generation,created_at,home_node,is_local,host_id) SELECT 'still-unresolved',instance_id,'unresolved','other','native',target_id,1,0,(SELECT id FROM local_node),1,(SELECT min(host_id) FROM herdr_hosts) FROM seats WHERE id=?1",
         [first.as_str()],
     )
     .unwrap();
@@ -2400,7 +2404,14 @@ fn elected_driver_reconciles_multiple_saved_pages_and_reopens_with_fresh_capture
     }
     let db = fixture.db();
     for n in 0..33 {
-        db.execute("INSERT INTO seats(id,instance_id,state,role,target_id,generation,target_generation,created_at,home_node,is_local,host_id) VALUES (?1,?2,'resolved','native',?3,1,1,0,(SELECT id FROM local_node),1,(SELECT min(host_id) FROM herdr_hosts))", rusqlite::params![format!("saved-{n}"),fixture.descriptor.node_uuid.to_string(),format!("missing-{n}")]).unwrap();
+        // ht-iygh D2: saved-0 is saved at w1:p1, so that pane stays held
+        // after the pass (a pane no unresolved seat is saved at resolves).
+        let target = if n == 0 {
+            "w1:p1".to_owned()
+        } else {
+            format!("missing-{n}")
+        };
+        db.execute("INSERT INTO seats(id,instance_id,state,role,target_id,generation,target_generation,created_at,home_node,is_local,host_id) VALUES (?1,?2,'resolved','native',?3,1,1,0,(SELECT id FROM local_node),1,(SELECT min(host_id) FROM herdr_hosts))", rusqlite::params![format!("saved-{n}"),fixture.descriptor.node_uuid.to_string(),target]).unwrap();
     }
     fixture.host.snapshot_held.store(false, Ordering::SeqCst);
     loop {

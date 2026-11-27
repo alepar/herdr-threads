@@ -7640,6 +7640,9 @@ fn ordinary_resolution_enforces_durable_allocation_classes_after_reopen() {
                     [],
                 )
                 .unwrap();
+                // ht-iygh D2: after the pass a baseline target is held only while
+                // an unresolved seat is saved at it.
+                conn.execute("INSERT INTO seats(id,instance_id,state,role,target_id,generation,created_at,home_node,is_local,host_id) VALUES ('prior-seat','34750f98bd59fcfc946da45aaabe933b','unresolved','native','pane-new',1,0,(SELECT id FROM local_node),1,(SELECT min(host_id) FROM herdr_hosts))", []).unwrap();
             }
             "released" => {
                 conn.execute("INSERT INTO recovery_baseline_releases(host_id,baseline_generation_id,target_id,decision_seq) SELECT host_id,recovery_baseline_generation_id,'pane-new',1 FROM herdr_hosts WHERE node_id='34750f98bd59fcfc946da45aaabe933b'",[]).unwrap();
@@ -7658,7 +7661,7 @@ fn ordinary_resolution_enforces_durable_allocation_classes_after_reopen() {
         if state == "created-after" {
             assert!(matches!(result.unwrap(), Outcome::Resolved(_)));
         } else {
-            let error = result.unwrap_err();
+            let error = result.expect_err(state);
             assert_eq!(error.code, ErrorCode::TargetUnresolved, "{state}");
             if state == "unresolved-target-after" {
                 assert!(
@@ -7677,7 +7680,7 @@ fn ordinary_resolution_enforces_durable_allocation_classes_after_reopen() {
             assert_eq!(
                 conn.query_row("SELECT count(*) FROM seats", [], |r| r.get::<_, i64>(0))
                     .unwrap(),
-                i64::from(state == "unresolved-target-after")
+                i64::from(matches!(state, "unresolved-target-after" | "held-baseline"))
             );
             assert_eq!(
                 conn.query_row("SELECT count(*) FROM operations", [], |r| r

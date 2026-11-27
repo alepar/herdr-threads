@@ -2484,6 +2484,12 @@ const RESTORED_PANE_ENV: &[(&str, &str)] = &[
     ("HT_TEST_RESTORED_PANE_GRACE_MS", "2000"),
 ];
 
+/// A restored Claude pane whose agent record names no session yet. ht-iygh D1: a record naming
+/// the seat's own session would restore the seat (host session continuity) instead of watching.
+fn restored(id: &str, terminal: &str) -> Value {
+    agent_pane(id, terminal, "claude", None)
+}
+
 impl World {
     fn restored_watches(&self) -> i64 {
         self.count("SELECT count(*) FROM restored_pane_watch")
@@ -2516,8 +2522,8 @@ impl World {
             assert_eq!(code, 0, "{stderr}");
         }
         world.restart_herdr(vec![
-            claude("w1:p1", "term-a2", "SA"),
-            claude("w1:p2", "term-b2", "SB"),
+            restored("w1:p1", "term-a2"),
+            restored("w1:p2", "term-b2"),
         ]);
         world.wait_reconciled();
         assert_eq!(world.seat_state(&a), "unresolved");
@@ -2544,10 +2550,9 @@ fn unresolved_seat_retires_when_its_restored_pane_closes_and_the_hold_lifts() {
         2,
         "the watches survive the restart"
     );
-    world.herdr.set_panes(vec![
-        claude("w1:p2", "term-b2", "SB"),
-        pane("w1:p3", "term-c"),
-    ]);
+    world
+        .herdr
+        .set_panes(vec![restored("w1:p2", "term-b2"), pane("w1:p3", "term-c")]);
     world.wait_for("A to retire", |world| world.seat_state(&a) == "retired");
     assert_eq!(
         world.closure_evidence(&a).as_deref(),
@@ -2599,7 +2604,7 @@ fn a_seat_whose_session_claims_during_the_grace_is_never_retired() {
     ];
     let (world, a, _b) = World::restored_pair("htrg", env);
     world.herdr.set_panes(vec![
-        claude("w1:p2", "term-b2", "SB"),
+        restored("w1:p2", "term-b2"),
         claude("w1:p3", "term-c", "SA"),
     ]);
     world.wait_for("the closure to be observed", |world| {
