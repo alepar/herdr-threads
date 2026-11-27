@@ -14105,13 +14105,73 @@ fn restore_hold_refusal_names_cause_blockers_and_exact_operator_repairs() {
         "{}",
         err.detail
     );
+    // ht-iygh D4: a seat saved at another target (here none) is no rebind
+    // candidate for this pane.
     assert!(
+        !err.detail.contains("blocking-seat"),
+        "{}",
         err.detail
-            .contains("herdr-threads seat inspect blocking-seat")
     );
     assert!(
         err.detail
-            .contains("herdr-threads human seat rebind blocking-seat --pane pane-new --operator")
+            .contains("no unresolved seat is saved at pane-new"),
+        "{}",
+        err.detail
+    );
+    drop(store);
+    drop(conn);
+    let _ = std::fs::remove_file(path);
+}
+
+#[test]
+fn restore_hold_refusal_names_only_the_seat_saved_at_the_target() {
+    use crate::ports::{OrdinaryResolutionAttempt as Attempt, OrdinaryResolutionGuard, StorePort};
+    use crate::protocol::commands::ResolveSeat;
+    let (_context, conn, path, store, observation, budget) = ordinary_resolution_fixture();
+    let request = ResolveSeat {
+        host: crate::test_support::test_host_locator(),
+        target: observation.target.clone(),
+        operation: OperationId::new("held-resolve-saved"),
+        locator_hint: None,
+        tmux_hint: None,
+        continuity_key: None,
+    };
+    let (current, admission) = ordinary_resolution_read(&store, &observation, 2, &budget);
+    conn.execute(
+        "UPDATE herdr_hosts SET baseline_hold_unclaimed=1 WHERE node_id='34750f98bd59fcfc946da45aaabe933b'",
+        [],
+    )
+    .unwrap();
+    // Lower ordinals first: seats saved at other panes must not crowd out
+    // the one saved at the refused pane (ht-iygh D4).
+    for (seat, target) in [
+        ("foreign-a", "pane-a"),
+        ("foreign-b", "pane-b"),
+        ("foreign-c", "pane-c"),
+        ("saved-seat", "pane-new"),
+    ] {
+        conn.execute("INSERT INTO seats(id,instance_id,state,role,generation,created_at,home_node,is_local,host_id,target_id) VALUES (?1,'34750f98bd59fcfc946da45aaabe933b','unresolved','native',1,0,(SELECT id FROM local_node),1,(SELECT min(host_id) FROM herdr_hosts),?2)", rusqlite::params![seat, target]).unwrap();
+    }
+    let err = store
+        .resolve_seat(
+            request.clone(),
+            Attempt::Observed(
+                OrdinaryResolutionGuard::try_new(&request, current, &admission).unwrap(),
+            ),
+            &budget,
+        )
+        .unwrap_err();
+    assert_eq!(err.code, ErrorCode::TargetUnresolved);
+    assert!(
+        err.detail
+            .contains("herdr-threads human seat rebind saved-seat --pane pane-new --operator"),
+        "{}",
+        err.detail
+    );
+    assert!(
+        !err.detail.contains("foreign-"),
+        "{}",
+        err.detail
     );
     drop(store);
     drop(conn);

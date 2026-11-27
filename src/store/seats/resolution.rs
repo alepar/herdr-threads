@@ -283,9 +283,11 @@ pub(super) fn resolution_recovery_refusal(
 ) -> Result<ApiError, ApiError> {
     let pane = shlex::try_quote(target)
         .map_err(|_| api_error(ErrorCode::InvalidRequest, "invalid target"))?;
-    let mut blockers = tx.prepare(&format!("SELECT id FROM seats WHERE host_id=?1 AND {LOCAL_SEAT} AND state='unresolved' AND NOT {} ORDER BY ordinal LIMIT 3", super::reversible::waiting_seat_sql!("seats.id"))).map_err(store_error)?;
+    // Only seats saved at this target are plausible rebind candidates here
+    // (ht-iygh D4); seats saved at other panes are listed by daemon health.
+    let mut blockers = tx.prepare(&format!("SELECT id FROM seats WHERE host_id=?1 AND target_id=?2 AND {LOCAL_SEAT} AND state='unresolved' AND NOT {} ORDER BY ordinal LIMIT 3", super::reversible::waiting_seat_sql!("seats.id"))).map_err(store_error)?;
     let seats = blockers
-        .query_map([host.get()], |row| row.get::<_, String>(0))
+        .query_map(params![host.get(), target], |row| row.get::<_, String>(0))
         .map_err(store_error)?
         .collect::<Result<Vec<_>, _>>()
         .map_err(store_error)?;
@@ -293,10 +295,15 @@ pub(super) fn resolution_recovery_refusal(
             let seat = shlex::try_quote(seat).unwrap_or_else(|_| "SEAT".into());
             format!("inspect `herdr-threads seat inspect {seat}`; rebind if this is its pane: `herdr-threads human seat rebind {seat} --pane {pane} --operator`")
         }).collect::<Vec<_>>().join("; ");
+    let repair = if repair.is_empty() {
+        format!("no unresolved seat is saved at {pane}")
+    } else {
+        repair
+    };
     Ok(api_error(
         ErrorCode::TargetUnresolved,
         format!(
-            "{cause} on {pane}; fresh-seat repair: `herdr-threads human seat resolve --pane {pane} --new-seat --operator`; {repair}; `herdr-threads daemon health` lists unresolved blockers (up to 3 shown here); baseline holds lift when no unresolved seats remain"
+            "{cause} on {pane}; fresh-seat repair: `herdr-threads human seat resolve --pane {pane} --new-seat --operator`; {repair}; `herdr-threads daemon health` lists every unresolved seat; baseline holds lift when no unresolved seats remain"
         ),
     ))
 }
