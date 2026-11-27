@@ -2496,6 +2496,14 @@ impl StorePort for SqliteStore {
             budget,
         )
     }
+    fn connect_restored_for_channel(
+        &self,
+        claim: &crate::protocol::authority::CallerClaim,
+        budget: &CallBudget,
+    ) -> Result<bool, ApiError> {
+        let mut writer = self.writer(budget)?;
+        seats::connect_restored_for_channel(&self.context, &mut writer, &self.instance, claim)
+    }
     fn decide_host_session_continuity(
         &self,
         request: crate::ports::HostSessionContinuityRequest,

@@ -1962,19 +1962,36 @@ impl LocalService for DomainService {
         } else {
             crate::ports::ModChannelMode::Legacy
         };
-        let view = match mode {
-            crate::ports::ModChannelMode::Legacy => self.store.mod_binding_view(
-                &claim.seat,
-                crate::ports::ModBindingRef::Claim(claim),
-                budget,
-            ),
-            crate::ports::ModChannelMode::PresentationV2 => self.store.presentation_seat_view(
-                &claim.seat,
-                crate::ports::ModBindingRef::Claim(claim),
-                budget,
-            ),
+        let read_view = || {
+            match mode {
+                crate::ports::ModChannelMode::Legacy => self.store.mod_binding_view(
+                    &claim.seat,
+                    crate::ports::ModBindingRef::Claim(claim),
+                    budget,
+                ),
+                crate::ports::ModChannelMode::PresentationV2 => self.store.presentation_seat_view(
+                    &claim.seat,
+                    crate::ports::ModBindingRef::Claim(claim),
+                    budget,
+                ),
+            }
+            .map_err(|_| Refusal::Busy)
+        };
+        let mut view = read_view()?;
+        // ht-iygh: the session's own registration confirms a host session restore of its seat,
+        // whose binding is open but disconnected; the store connects only that exact binding.
+        if claim.instance == self.instance
+            && view
+                .as_ref()
+                .and_then(|view| view.binding.as_ref())
+                .is_some_and(|binding| !binding.holds_channel())
+            && self
+                .store
+                .connect_restored_for_channel(claim, budget)
+                .map_err(|_| Refusal::Busy)?
+        {
+            view = read_view()?;
         }
-        .map_err(|_| Refusal::Busy)?;
         let Some(view) = view else {
             return Err(Refusal::Unresolved);
         };

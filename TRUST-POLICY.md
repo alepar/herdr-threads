@@ -603,8 +603,13 @@ no `registered_at`, seeded from the ended binding's read positions (lineage), di
 `host_session_restore`. That binding is a dormant wake target
 (A4 *Wake*), so `p <= T` wakes the idle session and `p > T` does not; the seat stays unavailable and the binding
 confers no receipt authority until the session's own lifecycle or turn check-in in the pane matches it (same seat,
-harness and session) and connects it as an ordinary check-in, with no second binding. A second restart before that
-turn ends the restored binding with it, and the binding still names the session, so the next pass judges it again.
+harness and session) and connects it as an ordinary check-in, with no second binding. The session's own C1 claim at
+that pane (a resume, a `same_session` event or a push-channel watch claim) and its push-channel watch registration
+(`cooperative_mod_channel`, from inside the harness process) for that exact binding confirm the restore the same way:
+the binding connects as a lifecycle reconnect, nothing moves and no seat history is written; another session's claim
+there is refused as at any owned pane. An idle push-channel session has no turn, so its channel registration is what
+connects it. A second restart before that turn ends the restored binding with it, and the binding still names the
+session, so the next pass judges it again.
 
 **Reversible retirement (ht-ma6i.3, ht-eu3v).** Every `Closed` retirement (same-incarnation close, closure proof,
 restored-pane close, target absence, hc finality) is reversible: a keyed one until the service that owns the key acts,

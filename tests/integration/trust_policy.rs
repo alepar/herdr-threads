@@ -2097,8 +2097,16 @@ fn reboot_with_daemon_down_idle_mod_session_reattaches_through_its_watch() {
         "env_disabled",
         "unsupported",
     ];
-    let reattached =
-        |world: &World| world.seat_state(&a) == "resolved" && world.continuity_decisions() >= 1;
+    // ht-iygh: the seat comes back by the session's own C1 claim or, when Herdr's record of SA in
+    // the pane is judged first, by host session continuity, whose restored binding the watch's
+    // registration then connects. Either is the session's seat in its pane.
+    let reattached = |world: &World| {
+        world.seat_state(&a) == "resolved"
+            && (world.continuity_decisions() >= 1
+                || world.count(
+                    "SELECT count(*) FROM allocation_decisions WHERE kind='host_session_continuity'",
+                ) >= 1)
+    };
     let mut seen = Vec::new();
     let mut live = None;
     for _ in 0..30 {

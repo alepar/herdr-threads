@@ -4012,6 +4012,15 @@ pub trait StorePort: ModStoreReads + Send + Sync {
         after: Option<SeatId>,
         budget: &CallBudget,
     ) -> Result<Vec<HostSessionCandidate>, ApiError>;
+    /// TRUST-POLICY C1 host session continuity: a push channel's registration for exactly the
+    /// binding a restore opened for its session connects that binding first. True when it did.
+    fn connect_restored_for_channel(
+        &self,
+        _claim: &crate::protocol::authority::CallerClaim,
+        _budget: &CallBudget,
+    ) -> Result<bool, ApiError> {
+        Ok(false)
+    }
     /// TRUST-POLICY C1 host session continuity: resolve the judged seat at its saved target and
     /// open its session's binding disconnected, in one transaction.
     fn decide_host_session_continuity(

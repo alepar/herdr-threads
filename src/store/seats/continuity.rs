@@ -96,6 +96,182 @@ fn session_may_become_candidate(
     .map_err(store_error)
 }
 
+/// The resolved owner of `target` (and its generation) whose open top-level binding of exactly
+/// (`harness`, `session`) is the one host session continuity restored, still disconnected
+/// (`host_session_restore`) at the seat's generation.
+fn restored_for_session(
+    tx: &Transaction<'_>,
+    host: crate::ports::HostId,
+    target: &str,
+    harness: &str,
+    session: &str,
+) -> Result<Option<(SeatId, i64)>, ApiError> {
+    tx.query_row(
+        &format!("SELECT s.id,s.generation FROM seats s JOIN occupant_bindings b ON b.seat_id=s.id WHERE s.host_id=?1 AND s.target_id=?2 AND s.{LOCAL_SEAT} AND s.state='resolved' \
+         AND b.ended_at IS NULL AND b.role='top_level' AND b.agent_id='' AND b.harness=?3 AND b.native_session=?4 \
+         AND b.liveness='disconnected' AND b.disconnect_reason='host_session_restore' AND b.generation=s.generation LIMIT 1"),
+        params![host.get(), target, harness, session],
+        |r| Ok((SeatId::new(r.get::<_, String>(0)?), r.get(1)?)),
+    )
+    .optional()
+    .map_err(store_error)
+}
+
+/// The session's own C1 claim at the pane host session continuity restored its seat onto: a
+/// lifecycle reconnect of that binding (cooperative evidence, as a check-in), no seat move, no
+/// seat history. Availability is anchored as for a C1 reattachment.
+fn confirm_restored_binding(
+    tx: &Transaction<'_>,
+    at: crate::store::connection::DecisionInstant,
+    instance: &str,
+    command: &crate::protocol::commands::ContinuityCheckIn,
+    seat: &SeatId,
+    generation: i64,
+    placement: bindings::BindingPlacement,
+) -> Result<CommandResult, ApiError> {
+    let fingerprint = command.liveness.ok_or_else(|| {
+        api_error(
+            ErrorCode::LivenessFingerprintRequired,
+            "a native session's reattachment must carry its liveness fingerprint",
+        )
+    })?;
+    let claim = crate::protocol::authority::CallerClaim {
+        instance: instance.to_owned(),
+        host: command.host.clone(),
+        seat: seat.clone(),
+        binding_generation: placement.generation,
+        role: crate::protocol::authority::CallerRole::TopLevel,
+        harness: command.harness,
+        native_session: command.native_session.clone(),
+        execution: command.execution.clone(),
+        target: command.target.clone(),
+        agent_id: None,
+        liveness: Some(fingerprint),
+    };
+    connect_restored(tx, at, instance, &claim, generation, placement)
+}
+
+/// Connects the restored binding `claim` names, as a lifecycle reconnect, and anchors the seat's
+/// availability. Shared by the session's C1 claim and its push channel's registration.
+fn connect_restored(
+    tx: &Transaction<'_>,
+    at: crate::store::connection::DecisionInstant,
+    instance: &str,
+    claim: &crate::protocol::authority::CallerClaim,
+    generation: i64,
+    placement: bindings::BindingPlacement,
+) -> Result<CommandResult, ApiError> {
+    let seat = &claim.seat;
+    bindings::resolve_claim(
+        tx,
+        &bindings::ResolveRequest {
+            claim,
+            lifecycle: true,
+            fork: false,
+            placement: &placement,
+            lineage: None,
+        },
+        at.utc,
+    )?;
+    let seq = schema::next_decision_seq(tx, instance)?;
+    anchor_seat_availability(
+        tx,
+        seat,
+        seq,
+        at.utc,
+        generation,
+        crate::protocol::authority::COOPERATIVE_TOP_LEVEL_PROVENANCE,
+    )?;
+    schema::clear_open_unavailability_for_seat(tx, seat.as_str(), at.utc)?;
+    tx.execute(
+        "UPDATE seats SET unavailability_open=0 WHERE id=?1",
+        [seat.as_str()],
+    )
+    .map_err(store_error)?;
+    Ok(CommandResult::ContinuityReattached(
+        crate::protocol::results::ContinuityReattachment {
+            seat: seat.clone(),
+            binding_generation: placement.generation,
+            fast_forward: None,
+        },
+    ))
+}
+
+/// TRUST-POLICY C1 host session continuity (ht-iygh): a push-channel harness's watch registering
+/// for exactly the binding host session continuity restored for its session (still disconnected,
+/// `host_session_restore`) is that session's own claim from inside its process, as its C1 watch
+/// claim is: the binding connects as a lifecycle reconnect, so the channel can register. An idle
+/// session of such a harness has no turn to connect it otherwise. True when it connected.
+pub fn connect_restored_for_channel(
+    context: &StoreContext,
+    conn: &mut Connection,
+    instance: &str,
+    claim: &crate::protocol::authority::CallerClaim,
+) -> Result<bool, ApiError> {
+    if claim.instance != instance
+        || claim.agent_id.is_some()
+        || claim.role != crate::protocol::authority::CallerRole::TopLevel
+        || claim.liveness.is_none()
+    {
+        return Ok(false);
+    }
+    type Row = (i64, i64, String, String, String, String, i64);
+    let find = |tx: &Transaction<'_>| -> Result<Option<Row>, ApiError> {
+        tx.query_row(
+            &format!("SELECT s.generation,b.target_generation,b.target_id,b.terminal_id,b.incarnation,b.host_boot,b.host_epoch FROM seats s JOIN occupant_bindings b ON b.seat_id=s.id \
+             WHERE s.id=?1 AND s.instance_id=?2 AND s.{LOCAL_SEAT} AND s.state='resolved' AND b.target_id=s.target_id \
+             AND b.ended_at IS NULL AND b.role='top_level' AND b.agent_id='' AND b.harness=?3 AND b.native_session=?4 \
+             AND b.liveness='disconnected' AND b.disconnect_reason='host_session_restore' AND b.generation=s.generation \
+             AND b.terminal_id IS NOT NULL AND b.incarnation IS NOT NULL"),
+            params![claim.seat.as_str(), instance, claim.harness.as_str(), claim.native_session.as_str()],
+            |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?, r.get(3)?, r.get(4)?, r.get(5)?, r.get(6)?)),
+        )
+        .optional()
+        .map_err(store_error)
+    };
+    context.execute_decision(
+        conn,
+        |tx| find(tx),
+        |tx, at, found| {
+            let Some((generation, target_generation, target, terminal, incarnation, boot, epoch)) =
+                found
+            else {
+                return Ok(false);
+            };
+            let as_u64 = |v: i64| {
+                u64::try_from(v)
+                    .map_err(|_| api_error(ErrorCode::StoreCorrupt, "negative binding number"))
+            };
+            let claim = crate::protocol::authority::CallerClaim {
+                binding_generation: as_u64(generation)?,
+                ..claim.clone()
+            };
+            connect_restored(
+                tx,
+                at,
+                instance,
+                &claim,
+                generation,
+                bindings::BindingPlacement {
+                    generation: as_u64(generation)?,
+                    target_generation: as_u64(target_generation)?,
+                    target,
+                    terminal,
+                    incarnation,
+                    host_boot: boot,
+                    host_epoch: as_u64(epoch)?,
+                    execution: claim.execution.as_str().to_owned(),
+                    provenance: crate::protocol::authority::COOPERATIVE_TOP_LEVEL_PROVENANCE
+                        .to_owned(),
+                    observed_at: at.utc,
+                    registered_at: Some(at.utc),
+                },
+            )?;
+            Ok(true)
+        },
+    )
+}
+
 /// Whether a local, non-retired seat of `host` other than a named one is saved at `target`.
 fn pane_has_saved_seat(
     tx: &Transaction<'_>,
@@ -964,6 +1140,11 @@ pub fn decide_continuity(
             // Herdr incarnation that the pass will unresolve (a restored
             // pane that kept its id, ht-p63): pending, not final.
             if !target_free(tx, host, target.as_str())? {
+                // ht-iygh: the session's own claim confirms host session continuity's restore of
+                // its seat at this pane; phase 2 connects the restored binding, nothing moves.
+                if restored_for_session(tx, host, target.as_str(), harness, session)?.is_some() {
+                    return Ok(());
+                }
                 return Err(if reconciliation_lags(tx, host)? {
                     api_error(
                         ErrorCode::ServiceBusy,
@@ -1090,6 +1271,47 @@ pub fn decide_continuity(
                     },
                 )
                 .map_err(|reason| api_error(ErrorCode::StaleHostObservation, reason))?;
+            if let Some((seat, generation)) =
+                restored_for_session(tx, host, target.as_str(), harness, session)?
+            {
+                let (terminal, incarnation) = match &structural_proof {
+                    Some(proof) => (
+                        proof.terminal().as_str().to_owned(),
+                        proof.incarnation().to_owned(),
+                    ),
+                    None => {
+                        let (terminal, incarnation) = binding_evidence(
+                            fresh.terminal_id.as_deref(),
+                            fresh.incarnation.as_deref(),
+                        )?;
+                        (terminal.to_owned(), incarnation.to_owned())
+                    }
+                };
+                return confirm_restored_binding(
+                    tx,
+                    at,
+                    &instance,
+                    &command,
+                    &seat,
+                    generation,
+                    bindings::BindingPlacement {
+                        generation: u64::try_from(generation).map_err(|_| {
+                            api_error(ErrorCode::StoreCorrupt, "negative seat generation")
+                        })?,
+                        target_generation: expected_generation,
+                        target: target.as_str().to_owned(),
+                        terminal,
+                        incarnation,
+                        host_boot: expected_boot.as_str().to_owned(),
+                        host_epoch: expected_epoch,
+                        execution: command.execution.as_str().to_owned(),
+                        provenance: crate::protocol::authority::COOPERATIVE_TOP_LEVEL_PROVENANCE
+                            .to_owned(),
+                        observed_at: at.utc,
+                        registered_at: Some(at.utc),
+                    },
+                );
+            }
             let keyed = selection.keyed_seat(tx, &instance, host, &command, &conflict)?;
             let selected = selection.select(tx, &instance, host, &command, keyed.as_ref())?;
             // ht-ma6i.47: a session reattach binds a free presented key now, not at a later

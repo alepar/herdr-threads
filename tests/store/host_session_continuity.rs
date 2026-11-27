@@ -807,3 +807,121 @@ fn a_restored_binding_gets_the_content_free_wake_and_turn_delivery() {
     }
     assert!(registry.binding_turn_delivery("codex", restored));
 }
+
+/// Review 1 suite finding: a session whose only path is a C1 claim (a push-channel harness's watch,
+/// whose registration needs a connected binding and whose idle session has no turn) confirms the
+/// restore of its own seat. Its `same_session` claim at the restored pane connects the restored
+/// binding instead of being refused as an owned target; nothing moves, no second binding opens.
+/// Another session's claim at that pane is still refused.
+#[test]
+fn the_sessions_own_c1_claim_confirms_the_restore_and_connects_its_binding() {
+    use crate::protocol::{
+        authority::{Harness, LivenessFingerprint},
+        commands::ContinuityCheckIn,
+        ids::{ExecutionId, NativeSessionId},
+    };
+    let mut fx = Fx::new(&["p1"]);
+    let seat = fx.codex_seat("p1", "sess-a");
+    fx.handoff(&["p1"]);
+    fx.decide(&seat, "sess-a").unwrap();
+    let restored = fx.open(&seat)[0].0.clone();
+    let (_, generation) = fx.state(&seat);
+    let claim = |fx: &mut Fx, session: &str, operation: &str| {
+        let (fresh, _) = fx.read("p1");
+        let command = ContinuityCheckIn {
+            host: crate::test_support::test_host_locator(),
+            target: HostTargetId::new("p1"),
+            harness: Harness::Codex,
+            native_session: NativeSessionId::new(session),
+            source: ContinuityCheckIn::SAME_SESSION_SOURCE.into(),
+            operation: OperationId::new(operation),
+            execution: ExecutionId::new("00000000-0000-4000-8000-000000000001"),
+            liveness: Some(LivenessFingerprint::TEST),
+            continuity_key: None,
+        };
+        let guard =
+            crate::ports::ContinuityTargetGuard::try_new(INSTANCE, fx.host, &command, fresh)
+                .unwrap();
+        seats::decide_continuity(
+            &fx.context,
+            &mut fx.conn,
+            INSTANCE,
+            crate::ports::ContinuityRequest {
+                command,
+                guard,
+                diagnostic: "match",
+                evidence: crate::ports::ContinuityEvidence::Cooperative,
+                host_agent_session: Some(session.to_owned()),
+                host_agent_kind: Some("codex".into()),
+            },
+        )
+    };
+    let other = claim(&mut fx, "sess-other", "c1-other").unwrap_err();
+    assert_eq!(other.code, ErrorCode::TargetAlreadyOwned, "{other:?}");
+    let result = claim(&mut fx, "sess-a", "c1-own").unwrap();
+    assert!(
+        matches!(&result, CommandResult::ContinuityReattached(r) if r.seat == seat),
+        "{result:?}"
+    );
+    let open = fx.open(&seat);
+    assert_eq!(open.len(), 1, "no second binding: {open:?}");
+    let (binding, liveness, reason, provenance, registered, fingerprinted) = &open[0];
+    assert_eq!(binding, &restored);
+    assert_eq!(liveness, "connected");
+    assert_eq!(reason, &None);
+    assert_eq!(provenance, "cooperative_top_level");
+    assert!(*registered && *fingerprinted);
+    assert_eq!(
+        fx.state(&seat),
+        ("resolved".to_owned(), generation),
+        "nothing moved"
+    );
+    // The replay answers the same.
+    assert_eq!(claim(&mut fx, "sess-a", "c1-own").unwrap(), result);
+}
+
+/// Review 1 suite finding: a push channel's registration for exactly the restored binding (the
+/// session's own claim from its process) connects it; any other claim connects nothing.
+#[test]
+fn a_channel_registration_for_the_restored_binding_connects_it() {
+    use crate::protocol::{
+        authority::{CallerClaim, CallerRole, Harness, LivenessFingerprint},
+        ids::{ExecutionId, NativeSessionId},
+    };
+    let mut fx = Fx::new(&["p1"]);
+    let seat = fx.codex_seat("p1", "sess-a");
+    fx.handoff(&["p1"]);
+    fx.decide(&seat, "sess-a").unwrap();
+    let restored = fx.open(&seat)[0].0.clone();
+    let claim = |session: &str| CallerClaim {
+        host: crate::test_support::test_host_locator(),
+        instance: INSTANCE.into(),
+        seat: seat.clone(),
+        binding_generation: 0,
+        role: CallerRole::TopLevel,
+        harness: Harness::Codex,
+        native_session: NativeSessionId::new(session),
+        execution: ExecutionId::new("00000000-0000-4000-8000-000000000001"),
+        target: HostTargetId::new("p1"),
+        agent_id: None,
+        liveness: Some(LivenessFingerprint::TEST),
+    };
+    assert!(
+        !seats::connect_restored_for_channel(&fx.context, &mut fx.conn, INSTANCE, &claim("sess-x"))
+            .unwrap()
+    );
+    assert!(
+        seats::connect_restored_for_channel(&fx.context, &mut fx.conn, INSTANCE, &claim("sess-a"))
+            .unwrap()
+    );
+    let open = fx.open(&seat);
+    assert_eq!(open.len(), 1, "{open:?}");
+    assert_eq!(open[0].0, restored);
+    assert_eq!(open[0].1, "connected");
+    assert_eq!(open[0].3, "cooperative_top_level");
+    // Once connected there is nothing left to confirm.
+    assert!(
+        !seats::connect_restored_for_channel(&fx.context, &mut fx.conn, INSTANCE, &claim("sess-a"))
+            .unwrap()
+    );
+}
