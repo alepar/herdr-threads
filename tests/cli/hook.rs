@@ -8518,6 +8518,14 @@ mod registered_resume {
                     if self.control("key-busy.json") {
                         return Err(ApiError::new(ErrorCode::ServiceBusy, "fixture lag"));
                     }
+                    if self.control("rebound-under-claim.json") {
+                        // A service restore (ht-0f0r) committed after the hook read the pane.
+                        self.resolved.store(true, Ordering::SeqCst);
+                        return Err(ApiError::new(
+                            ErrorCode::TargetAlreadyOwned,
+                            "continuity target w9:p1 already belongs to registered-seat; no seat moved",
+                        ));
+                    }
                     if c.source == "same_session" && self.control("legacy-continuity.json") {
                         return Err(ApiError::new(
                             ErrorCode::InvalidRequest,
@@ -9290,6 +9298,30 @@ mod registered_resume {
                     }
                 }
                 assert_no_enrollment_intents(&f);
+            }
+        }
+    }
+
+    /// Kills (ht-0f0r D6): a lifecycle event whose C1 claim lost the race to a service restore of
+    /// its pane (answered `TargetAlreadyOwned`) failing instead of checking in onto the pane's
+    /// owner; a plain turn allocating in that case.
+    #[test]
+    fn continuity_claim_beaten_by_a_restore_checks_in_on_lifecycle() {
+        for event in ["SyntheticStart", "SyntheticResume", "SyntheticTool"] {
+            let f = Fixture::new(false);
+            write_fixture_json(&f.root.join("rebound-under-claim.json"), &true).unwrap();
+            let outcome = f.run(
+                registration(),
+                &input(event, "top_level", Some("fourth-resume-session")),
+            );
+            assert_eq!(f.service.requests().len(), 1, "{event}");
+            if event == "SyntheticTool" {
+                assert_eq!(enrollment_counts(&f), (0, 0), "{event}");
+                assert!(outcome.diagnostic.is_some(), "{event}");
+            } else {
+                assert_eq!(outcome.diagnostic, None, "{event}");
+                assert_eq!(enrollment_counts(&f), (1, 1), "{event}");
+                assert_eq!(f.saved().unwrap().seat, "registered-seat", "{event}");
             }
         }
     }

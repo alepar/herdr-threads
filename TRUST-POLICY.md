@@ -119,6 +119,11 @@ Amended 2026-11-05 for reversible retirement (ht-ma6i.3): a `Closed` retirement 
 key defers its job until the owning service un-retires or finalizes it (*Reversible retirement*, under C2); provenance
 `service_unretire` and `service_finalize`; four accepted limits; every final retirement releases the key.
 
+Amended 2026-11-26 for the service restore of a restart-held seat (ht-0f0r): `ResurrectSeat` also rebinds an
+unresolved seat held by a Herdr restart (C2) onto its own saved pane, the operator's unresolved rebind taken by a v4
+session (C1 *Service restore*); one new C2 hold-release path; `service_rebind` covers it with no `service_unretire`;
+new service result `SeatAlreadyResolved`; one accepted limit (*Service restore of a held seat*); no new peer wire value.
+
 Amended 2026-11-25 for seat resurrect (ht-eu3v): every `Closed` retirement is reversible; a keyless one is *timed*,
 its obligations expiring 24 h and the seat finalizing 7 d after the close; `seat rebind --operator` (and the
 `service_session_v4` `ResurrectSeat`) un-retires and rebinds a reversibly retired seat in one decision; any service
@@ -265,6 +270,7 @@ added identity fields; the opt-in read changes no binding, receipt, membership o
 | Service un-retire (ht-ma6i.3) | `UnretireSeat` by the service that owns the seat's continuity key, for a reversibly retired seat. The mapping only clears: the seat comes back unresolved with no target and no binding; it is placed later by a C1 path like any unresolved seat. | `service_unretire` |
 | Operator resurrect (ht-eu3v) | `ht human seat rebind OLD --pane P [--replace NEW] --operator` on a reversibly retired OLD (keyed or keyless): one decision un-retires OLD (as `UnretireSeat` does, deadlines of what is still pending shifting) and rebinds it onto P (`--replace` retires NEW finally first, C3). No binding opens; the next lifecycle check-in in P enrolls onto OLD. A finally retired OLD is refused. | `operator_unretire` then `operator_rebind`, both `operator:local-user:<uid>` |
 | Service resurrect (ht-eu3v) | `ResurrectSeat` from a `service_session_v4` session: the operator resurrect's decision, through the same fresh target observation, under the session's decision guard, for a reversibly retired seat only. A keyless seat: any v4 session; a keyed one: its key's owner. Its `replace` names only a bare NEW (no memberships, `InvalidRequest` otherwise) whose key, if any, is the service's own (`Unauthorized` otherwise). | `service_unretire` then `service_rebind`, both `service:<author>` |
+| Service restore (ht-0f0r) | `ResurrectSeat` from a `service_session_v4` session for a local seat unresolved on a Herdr pane host, naming exactly its saved host and target, while that target is held (C2: an unreleased hold row or an unreleased baseline member while the baseline hold stands), after the host's first reconciliation pass of the current recovery epoch, with no kept C1 claim on the target or of the seat (its top-level sessions or its key). The operator's rebind of an unresolved seat, through the same fresh target observation, under the session's decision guard; no binding opens and the next lifecycle check-in in the pane enrolls onto the seat. The evidence is the service's explicit call naming the seat and its pane, never an inference by threads. Authority as *Service resurrect*. A seat already resolved on exactly that target answers `SeatAlreadyResolved` and changes nothing; lag or a kept claim answers `ServiceBusy`; `replace` is refused; anything else `NotFound` | `service_rebind`, `service:<author>` |
 
 Named rule. The named host is not host evidence and never closes by absence: reconcile plans no
 `BeginRetirement` and no `MarkUnresolved` for it, and the store refuses `RetireReason::Closed` for a named seat (only
@@ -429,7 +435,8 @@ seat whose continuity is not structurally proven becomes unresolved, and the dae
 of current targets. Every unowned target in that baseline is **held**: ordinary resolution (`seat resolve`,
 `launch`, top-level `SessionStart` enrollment, `ht human me init`) refuses it with inspect / rebind / fresh-seat guidance. Panes authoritatively created
 after the baseline are not held. Holds are durable and survive daemon restart. A hold is released by:
-operator rebind or fresh seat on that target; cooperative continuity on that target (C1); or, per Herdr server,
+operator rebind or fresh seat on that target; cooperative continuity on that target (C1); a service restore of the
+seat saved at that target (C1 *Service restore*); or, per Herdr server,
 when no unresolved nonretired seats of that server remain (implemented, nothing left to protect). Holds, the
 baseline and observed targets are keyed by the Herdr server (`host_id`), because target ids are unique only
 within one server: a coherent snapshot of one server resolves, unresolves or retires only the local seats whose
@@ -825,7 +832,7 @@ records there are replay machinery, never its identity.
 | `service_unretire` | seat history (`allocation_decisions`) only | The service that owns the seat's continuity key undid its reversible retirement. Records the row's closure target; places nothing. Never on receipts. |
 | `service_finalize` | seat history (`allocation_decisions`) only | The service that owns the seat's continuity key made its reversible or unretired retirement final, or (ht-eu3v) any service session finalized a keyless one, recorded with `service:<author>`. An operator's finalization records `operator:local-user:<uid>` under `operator_retire` instead. Never on receipts. |
 | `operator_unretire` | seat history (`allocation_decisions`) only | The operator un-retired a reversibly retired seat in a `seat rebind --operator` resurrect (ht-eu3v), with `operator:local-user:<uid>`; the rebind follows as `operator_rebind` in the same decision. Never on receipts. |
-| `service_rebind` | seat history (`allocation_decisions`) only | A `service_session_v4` `ResurrectSeat` rebound the seat it un-retired (recorded `service_unretire` with `service:<author>` just before), with `service:<author>` (ht-eu3v). Its `replace` records NEW's final retirement as `operator_retire` with `service:<author>`. The decision runs under the session's decision guard, so a revoked or superseded session commits nothing, and it journals under the session's own operation scope. Never on receipts. |
+| `service_rebind` | seat history (`allocation_decisions`) only | A `service_session_v4` `ResurrectSeat` rebound the seat it un-retired (recorded `service_unretire` with `service:<author>` just before), with `service:<author>` (ht-eu3v); or, with no `service_unretire` before it, restored an unresolved restart-held seat onto its own saved pane (C1 *Service restore*, ht-0f0r), as the operator's rebind of an unresolved seat records `operator_rebind` alone. Its `replace` records NEW's final retirement as `operator_retire` with `service:<author>`. The decision runs under the session's decision guard, so a revoked or superseded session commits nothing, and it journals under the session's own operation scope. Never on receipts. |
 | `window_finalize` | seat history (`allocation_decisions`) only | The deadline lane finalized a timed (keyless) reversible retirement 7 d after its close (ht-eu3v). No author. Never on receipts. |
 | `structural_process_continuity` | seat rebinds only | The seat's top-level binding process (same fingerprint) was observed as, or in the session of, the shell Herdr reports for the pane, on that shell's controlling terminal, after a new incarnation (C1 process continuity, ht-hsyg). The reopened binding keeps its own `cooperative_top_level` provenance. Never on receipts. |
 | `structural_shell_continuity` | seat rebinds only | The shell Herdr reports for the seat's saved target was observed to be the process the seat's fingerprint recorded (same pid and start stamp), leading its session on the recorded controlling terminal, after a new incarnation (C1 *Shell continuity*, ht-ma6i.1). No binding opens. Never on receipts. |
@@ -2537,6 +2544,12 @@ introduced.
   from its own log whose later entries (a `seat.unretired`, ACKs after a resurrect) stay unreachable for more than a
   full window after the replay expires and then finalizes a seat that is live elsewhere in the history: replayed rows
   wait 24 h and 7 d from the replay, not from the cutover, which bounds this to a peer down that long after a restore.
+- Service restore of a held seat (ht-0f0r). Herdr target ids prove nothing across a new incarnation (C2), and threads
+  does not prove that Herdr kept a pane's id across a cold restart. herdr-graph observes that it does; if Herdr gave the
+  saved id to another pane, a service's restore seats the old seat on that pane. The evidence is the service's explicit
+  call, never an inference by threads. This is the limit the operator's `seat rebind` of an unresolved seat already
+  carries, now reachable by a v4 session, the same class `ResurrectSeat` brought in (ht-eu3v). The structural
+  continuity paths do not carry it.
 - A node that does not know the reversible kinds (ht-ma6i.7). A pre-3.1 node parks `seat.retired_reversible` and
   `seat.unretired`, shows the seat live until `seat.retired` arrives and keeps its overdue running; a message it sends
   meanwhile reaches the home node as an ordinary fact whose receipt stays frozen with the rest. After the upgrade it
@@ -3464,6 +3477,16 @@ rather than a new verb, and graph gets a v4 service operation. Rejected: un-doin
 would un-write receipts senders already saw), a stored per-row clock (a replayed row would never finalize), expiry in
 bounded quanta (a resurrect between quanta would split home from peers), and automatic resurrect by a resumed session
 id (a follow-up). Design: `docs/superpowers/specs/2026-11-25-seat-resurrect-design.md`.
+
+### Service restore of a restart-held seat (2026-11-26, ht-0f0r)
+
+After a Herdr restart a fresh, non-resume agent start in a held pane waited for an operator `seat rebind`, while
+herdr-graph knew which seat it had put in that pane. The user asked for frictionless restarts. Decision: `ResurrectSeat`
+also takes the operator's rebind of an unresolved seat, for the seat's own saved pane only, held, on a Herdr host, after
+the reconciliation pass and with no kept claim, so the restore never races a structural or cooperative path that would
+decide the same seat; a resume that already won answers a distinct no-op. Rejected: any free pane (the restart case
+needs only its own), a new verb or session level (the request shape is unchanged), and inferring the seat from the
+pane. Design: `docs/superpowers/specs/2026-11-26-service-restore-held-seat-design.md`.
 
 ### Process continuity across a Herdr live handoff (2026-10-31, ht-hsyg)
 

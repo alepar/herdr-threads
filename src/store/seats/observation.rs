@@ -1416,7 +1416,11 @@ struct RestoredPaneFacts {
 /// old row may be a live session's only claim (it never refreshes
 /// `received_at`). Failing safe here costs a delay, never a seat. A row blocks
 /// when it names a top-level session of the seat or carries the seat's key.
-fn kept_claim_blocks(conn: &Connection, host: HostId, seat: &SeatId) -> Result<bool, ApiError> {
+pub(super) fn kept_claim_blocks(
+    conn: &Connection,
+    host: HostId,
+    seat: &SeatId,
+) -> Result<bool, ApiError> {
     conn.query_row(
         "SELECT EXISTS(SELECT 1 FROM kept_continuity_claims k WHERE k.host_id=?1 AND (EXISTS(SELECT 1 FROM occupant_bindings b WHERE b.seat_id=?2 AND b.role='top_level' AND b.agent_id='' AND b.harness=k.harness AND b.native_session=k.native_session) OR k.continuity_key=(SELECT key FROM continuity_keys WHERE seat_id=?2)))",
         params![host.get(), seat.as_str()],

@@ -634,6 +634,9 @@ impl DomainService {
             budget,
         )? {
             CommandResult::OperatorRebound(seat) => Ok(ServiceResult::SeatResurrected(seat)),
+            CommandResult::OperatorAlreadyResolved(seat) => {
+                Ok(ServiceResult::SeatAlreadyResolved(seat))
+            }
             _ => Err(error(
                 ErrorCode::StoreCorrupt,
                 "unexpected resurrect result",

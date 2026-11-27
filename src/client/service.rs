@@ -997,7 +997,7 @@ fn result_matches(request: &ServiceWireRequest, result: &ServiceResult) -> bool 
             ServiceResult::ContinuityAlerts(_)
         ) | (
             ServiceRequest::Operation(ServiceOperation::ResurrectSeat(_)),
-            ServiceResult::SeatResurrected(_)
+            ServiceResult::SeatResurrected(_) | ServiceResult::SeatAlreadyResolved(_)
         )
     )
 }
@@ -1645,26 +1645,31 @@ mod tests {
         fs::remove_dir_all(root).unwrap();
     }
 
-    /// Kills (ht-lzhi roast FYI): a v4 client's ResurrectSeat answered `SeatResurrected` read as an
-    /// unexpected result (a missing `result_matches` arm) or left pending.
+    /// Kills (ht-lzhi roast FYI, ht-0f0r): a v4 client's ResurrectSeat answered `SeatResurrected` or
+    /// `SeatAlreadyResolved` read as an unexpected result (a missing `result_matches` arm) or left
+    /// pending.
     #[tokio::test]
     async fn v4_client_submits_resurrect() {
+        for answer in [
+            ServiceResult::SeatResurrected(SeatId::new("s1")),
+            ServiceResult::SeatAlreadyResolved(SeatId::new("s1")),
+        ] {
+            v4_resurrect_answered(answer).await;
+        }
+    }
+
+    async fn v4_resurrect_answered(answer: ServiceResult) {
         let root = temp();
         fs::create_dir_all(&root).unwrap();
         let socket = root.join("socket");
         let listener = UnixListener::bind(&socket).unwrap();
+        let reply = answer.clone();
         let server = tokio::spawn(async move {
             let (mut stream, _) = listener.accept().await.unwrap();
             let register = incoming(&mut stream).await;
             respond(&mut stream, &register, BOOT, Ok(registration())).await;
             let operation = incoming(&mut stream).await;
-            respond(
-                &mut stream,
-                &operation,
-                BOOT,
-                Ok(ServiceResult::SeatResurrected(SeatId::new("s1"))),
-            )
-            .await;
+            respond(&mut stream, &operation, BOOT, Ok(reply)).await;
         });
         let client = make_client(socket, &root.join("intents")).with_level(ServiceSessionLevel::V4);
         client.register(&budget()).await.unwrap();
@@ -1673,7 +1678,7 @@ mod tests {
             .await
             .unwrap();
         assert_eq!(key, OperationId::new("resurrect-1"));
-        assert_eq!(result, ServiceResult::SeatResurrected(SeatId::new("s1")));
+        assert_eq!(result, answer);
         assert!(client.journal().pending().unwrap().is_empty());
         server.await.unwrap();
         drop(client);

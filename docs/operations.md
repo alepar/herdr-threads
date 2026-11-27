@@ -303,7 +303,7 @@ The first abandons the old seat. The second abandons the new role: it retires NE
 | `service_unretire` | the key's service un-retired a reversibly retired seat, or a v4 service resurrected one (label `service:<author>`) |
 | `service_finalize` | the key's service finalized a reversible retirement, or a service finalized a keyless one (label `service:<author>`) |
 | `operator_unretire` | the operator resurrected a reversibly retired seat; the `operator_rebind` row that follows placed it |
-| `service_rebind` | a v4 service's `ResurrectSeat` placed the seat it un-retired |
+| `service_rebind` | a v4 service's `ResurrectSeat` placed the seat it un-retired, or (no `service_unretire` before it) restored a restart-held seat onto its own pane |
 | `window_finalize` | a keyless seat's reversible retirement finalized 7 days after its close |
 | `operator_human_override` | a person's `me init --operator` replaced an agent binding |
 

@@ -4,6 +4,7 @@
 
 ### Added
 
+- **Frictionless Herdr restart for service-managed seats (ht-0f0r).** After a Herdr restart, a v4 service's `ResurrectSeat` also restores a seat the restart left unresolved and held, onto its own saved pane, so a fresh (non-resume) agent launched there enrolls onto the old seat without an operator `seat rebind`. A resumed session that reattached first answers the new `SeatAlreadyResolved`. A hook whose continuity claim loses that race now checks in onto the pane's owner instead of failing.
 - **Service client level (ht-lzhi).** `PersistentServiceClient::with_level(ServiceSessionLevel::V4)` registers `service_session_v4`, so one shared client can call `ResurrectSeat`. The default stays v3; a daemon that does not serve the level refuses at register, with no fallback.
 
 ## v3.5.0

@@ -1,6 +1,6 @@
 # Service rebind of a restart-held seat (ht-0f0r)
 
-Status: draft, revised after design roast 1
+Status: agreed with the coordinator 2026-11-26 (message mnSGeNxlZDVD); revised after design roast 1
 (docs/superpowers/reviews/2026-11-26-service-restore-held-seat-roast-design-1.md). Requirements from herdr-graph: seat snSGuWQplkCA, thread dS9jx1CvnZb, messages mnSGwik5XhjI and
 mnSGYFlLQ3RJ (relayed as mnSGs4KFcCzc). User (relayed): "herdr restarts need to be frictionless".
 

@@ -155,6 +155,8 @@ pub fn mutate_operator_guarded(
     // A service actor's decision guard, taken inside the transaction and held through commit.
     let held: std::cell::RefCell<Option<Box<dyn crate::ports::ServiceDecisionGuard + '_>>> =
         std::cell::RefCell::new(None);
+    // The service rebind's case, decided in the check and read by the decision (one transaction).
+    let service_case = std::cell::Cell::new(None::<ServiceCase>);
     let result = schema::execute_idempotent_transaction(
         context,
         conn,
@@ -214,6 +216,12 @@ pub fn mutate_operator_guarded(
                     "repair target changed or owned",
                 ));
             }
+            if let (Some(author), Some(seat)) = (actor.service_author(), &seat) {
+                let case = service_case_of(tx, &instance, seat, host, target.as_str(), &replace)?;
+                reversible::require_v4_authority(tx, seat, author)?;
+                service_case.set(Some(case));
+            }
+            let already_resolved = service_case.get() == Some(ServiceCase::AlreadyResolved);
             if let Some(replace) = &replace {
                 // The target is owned by NEW by design; it must be NEW and
                 // nobody else, and NEW must not be the seat being rebound.
@@ -230,7 +238,7 @@ pub fn mutate_operator_guarded(
                         "replace target is not owned by NEW",
                     ));
                 }
-            } else if !target_free(tx, host, target.as_str())? {
+            } else if !already_resolved && !target_free(tx, host, target.as_str())? {
                 return Err(owned_target_refusal(
                     tx,
                     host,
@@ -255,18 +263,10 @@ pub fn mutate_operator_guarded(
                     )
                     .optional()
                     .map_err(store_error)?;
-                if let Some(author) = actor.service_author() {
-                    // A service resurrects only a reversibly retired seat, under its authority.
-                    if reversible::row_state(tx, seat)? != Some(reversible::RowState::Reversible) {
-                        return Err(api_error(
-                            ErrorCode::NotFound,
-                            "seat has no reversible retirement to resurrect",
-                        ));
-                    }
-                    reversible::require_v4_authority(tx, seat, author)?;
-                }
                 match state.as_ref().map(|(state, _)| state.as_str()) {
                     Some("unresolved") => {}
+                    // A service's restore that a resumed session already won (ht-0f0r D5).
+                    Some("resolved") if already_resolved => {}
                     // Resurrect (ht-eu3v): a reversibly retired seat un-retires in the decision.
                     Some("retired")
                         if reversible::row_state(tx, seat)?
@@ -331,6 +331,10 @@ pub fn mutate_operator_guarded(
                     },
                 )
                 .map_err(|reason| api_error(ErrorCode::StaleHostObservation, reason))?;
+            if let (Some(ServiceCase::AlreadyResolved), Some(seat)) = (service_case.get(), &seat) {
+                // ht-0f0r D5: nothing to restore; only the operation's result is recorded.
+                return Ok(CommandResult::OperatorAlreadyResolved(seat.clone()));
+            }
             if let Some(replace) = &replace {
                 // One deciding transaction: NEW retires and OLD claims the
                 // target with no unowned window; a concurrent resolve
@@ -429,6 +433,99 @@ pub fn mutate_operator_guarded(
     drop(held);
     crate::store::operator::validate_result(&typed_command, &result)?;
     Ok(result)
+}
+
+/// Which rebind a service session asks for (TRUST-POLICY C1 *Service resurrect*, *Service
+/// restore*).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum ServiceCase {
+    /// A reversibly retired seat un-retires and rebinds (ht-eu3v).
+    Resurrect,
+    /// An unresolved seat held by a Herdr restart rebinds onto its own saved pane (ht-0f0r).
+    Restore,
+    /// The seat is already resolved on that pane (a resumed session won the race): a no-op.
+    AlreadyResolved,
+}
+
+/// The service rebind's case, or its refusal (ht-0f0r design D2, D3, D5). The service's explicit
+/// call is the evidence, as for `ResurrectSeat`; nothing here infers a seat for a pane.
+fn service_case_of(
+    tx: &Transaction<'_>,
+    instance: &str,
+    seat: &SeatId,
+    host: HostId,
+    target: &str,
+    replace: &Option<SeatId>,
+) -> Result<ServiceCase, ApiError> {
+    if reversible::row_state(tx, seat)? == Some(reversible::RowState::Reversible) {
+        return Ok(ServiceCase::Resurrect);
+    }
+    let not_found = || {
+        api_error(
+            ErrorCode::NotFound,
+            "seat has no reversible retirement or restart hold on that pane to act on",
+        )
+    };
+    let row: Option<(String, Option<String>, i64, String)> = tx
+        .query_row(
+            &format!("SELECT s.state,s.target_id,s.host_id,h.kind FROM seats s JOIN herdr_hosts h ON h.host_id=s.host_id WHERE s.id=?1 AND s.instance_id=?2 AND s.{LOCAL_SEAT}"),
+            params![seat.as_str(), instance],
+            |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?, r.get(3)?)),
+        )
+        .optional()
+        .map_err(store_error)?;
+    let Some((state, saved_target, saved_host, kind)) = row else {
+        return Err(not_found());
+    };
+    // Only the seat's own saved pane, on a Herdr pane host (never named or herdr-core).
+    if saved_target.as_deref() != Some(target)
+        || saved_host != host.get()
+        || HostKind::from_stored(&kind) != HostKind::Herdr
+        || replace.is_some() && state != "unresolved"
+    {
+        return Err(not_found());
+    }
+    // Until the first pass of the recovery epoch, a resolved mapping may be a pre-restart one the
+    // pass will unresolve, and the seats it will hold may not be unresolved yet.
+    if reconciliation_lags(tx, host)? {
+        return Err(api_error(
+            ErrorCode::ServiceBusy,
+            "recovery reconciliation of the current host epoch has not finished; retry",
+        ));
+    }
+    match state.as_str() {
+        "resolved" => Ok(ServiceCase::AlreadyResolved),
+        "unresolved" => {
+            if replace.is_some() {
+                return Err(api_error(
+                    ErrorCode::InvalidRequest,
+                    "a service restores a held seat without replace",
+                ));
+            }
+            if !matches!(
+                effective::effective_recovery_disposition(tx, host, target)?,
+                effective::EffectiveRecoveryDisposition::ExplicitHold
+                    | effective::EffectiveRecoveryDisposition::BaselineHeld
+            ) {
+                return Err(not_found());
+            }
+            let kept_on_target: bool = tx
+                .query_row(
+                    "SELECT EXISTS(SELECT 1 FROM kept_continuity_claims WHERE host_id=?1 AND target_id=?2)",
+                    params![host.get(), target],
+                    |r| r.get(0),
+                )
+                .map_err(store_error)?;
+            if kept_on_target || observation::kept_claim_blocks(tx, host, seat)? {
+                return Err(api_error(
+                    ErrorCode::ServiceBusy,
+                    "a kept continuity claim is decided first; retry",
+                ));
+            }
+            Ok(ServiceCase::Restore)
+        }
+        _ => Err(not_found()),
+    }
 }
 
 /// TRUST-POLICY N (cross-kind rebind refusal): a named seat never rebinds onto a pane or terminal

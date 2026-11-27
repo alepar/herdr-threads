@@ -134,6 +134,8 @@ pub enum CommandResult {
     Archived(ThreadId),
     Reopened(ThreadId),
     OperatorRebound(SeatId),
+    /// A service's restore of a held seat found it already resolved on that pane (ht-0f0r).
+    OperatorAlreadyResolved(SeatId),
     OperatorFreshSeat(SeatId),
     OperatorInvited(InvitationId),
     OperatorRetired(SeatId),

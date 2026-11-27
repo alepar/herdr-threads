@@ -436,6 +436,9 @@ pub enum ServiceResult {
     ContinuityAlerts(Page<ContinuityAlert>),
     /// `ResurrectSeat`: the seat now resolved on the target.
     SeatResurrected(SeatId),
+    /// `ResurrectSeat` of a restart-held seat already resolved on the target, as a resumed session
+    /// reattached it (ht-0f0r): nothing changed.
+    SeatAlreadyResolved(SeatId),
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -978,6 +981,13 @@ mod contract_tests {
         let result = json!({"kind": "seat_resurrected", "data": "s1"});
         let decoded: ServiceResult = serde_json::from_value(result.clone()).unwrap();
         assert_eq!(decoded, ServiceResult::SeatResurrected(SeatId::new("s1")));
+        assert_eq!(serde_json::to_value(decoded).unwrap(), result);
+        let result = json!({"kind": "seat_already_resolved", "data": "s1"});
+        let decoded: ServiceResult = serde_json::from_value(result.clone()).unwrap();
+        assert_eq!(
+            decoded,
+            ServiceResult::SeatAlreadyResolved(SeatId::new("s1"))
+        );
         assert_eq!(serde_json::to_value(decoded).unwrap(), result);
     }
 

@@ -2118,6 +2118,14 @@ fn check_in(
                 // The daemon alone decides whether this target is genuinely new.
                 None
             }
+            Reattach::Refused(error)
+                if error.code == ErrorCode::TargetAlreadyOwned && enroll == Enroll::Lifecycle =>
+            {
+                // The pane gained a resolved owner after it was read (a service restore,
+                // ht-0f0r): as in the Resolved arm, the ordinary resolver decides under its
+                // fresh canonical guards and checks in onto the pane's owner.
+                None
+            }
             Reattach::Refused(error) if error.code == ErrorCode::NotFound => {
                 // No C1 candidate means use the ordinary path. A lifecycle
                 // resolver must explain held targets itself; a witnessed turn

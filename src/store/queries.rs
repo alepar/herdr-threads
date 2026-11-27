@@ -714,6 +714,7 @@ pub fn query_operation_status(
                     crate::protocol::results::ContinuityReattachment { seat: v, .. },
                 )
                 | CommandResult::OperatorRebound(v)
+                | CommandResult::OperatorAlreadyResolved(v)
                 | CommandResult::OperatorRetired(v)
                 | CommandResult::OperatorFreshSeat(v) => Some(v.as_str().to_owned()),
                 _ => None,

@@ -82,6 +82,9 @@ pub(crate) fn validate_result(
 ) -> Result<(), ApiError> {
     let valid = match (command, result) {
         (OperatorCommand::Rebind(c), CommandResult::OperatorRebound(seat)) => seat == &c.seat,
+        (OperatorCommand::Rebind(c), CommandResult::OperatorAlreadyResolved(seat)) => {
+            seat == &c.seat
+        }
         (OperatorCommand::Retire(c), CommandResult::OperatorRetired(seat)) => seat == &c.seat,
         (OperatorCommand::Replace(c), CommandResult::OperatorRebound(seat)) => seat == &c.seat,
         (OperatorCommand::FreshSeat(_), CommandResult::OperatorFreshSeat(_))

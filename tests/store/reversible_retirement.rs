@@ -2717,3 +2717,221 @@ fn a_guard_for_another_author_is_refused() {
     );
     assert_eq!(f.row_state("s1"), Some(RowState::Reversible));
 }
+
+/// How a Herdr restart left a seat's pane held (ht-0f0r design D2).
+#[derive(Clone, Copy, Debug)]
+enum Held {
+    /// An explicit `recovery_holds` row.
+    Row,
+    /// Only as a member of the retained baseline (the seat was still resolved at capture).
+    Baseline,
+}
+
+impl Fx {
+    /// `seat` unresolved by a Herdr restart, its own pane (`target = seat`) held `how`.
+    fn restart_held(&self, seat: &str, how: Held) {
+        let db = self.db();
+        db.execute("UPDATE seats SET state='unresolved',unresolved_reason='other',generation=generation+1 WHERE id=?1", [seat]).unwrap();
+        match how {
+            Held::Row => {
+                db.execute("INSERT INTO recovery_holds(host_id,target_id,baseline_boot,baseline_epoch,reason) VALUES ((SELECT min(host_id) FROM herdr_hosts),?1,'b',1,'unresolved saved seat continuity')", [seat]).unwrap();
+            }
+            Held::Baseline => {
+                db.execute("INSERT OR IGNORE INTO snapshot_generations(id,host_id,host_boot,epoch,observation_sequence,incarnation,expected_targets,staged_targets,status,captured_lifecycle_revision,captured_invalidation_revision,created_at) VALUES ('baseline',(SELECT min(host_id) FROM herdr_hosts),'b',1,1,'inc',1,1,'published',0,0,0)", []).unwrap();
+                db.execute("INSERT INTO snapshot_targets(generation_id,target_id,terminal_id,generation,observation_sequence,occupancy,ui_state,observed_at) VALUES ('baseline',?1,'term-'||?1,1,1,'empty_shell','idle',0)", [seat]).unwrap();
+                db.execute("UPDATE herdr_hosts SET recovery_baseline_generation_id='baseline',baseline_hold_unclaimed=1", []).unwrap();
+            }
+        }
+    }
+    /// The host's first reconciliation pass of the current recovery epoch has not run.
+    fn lagging(&self) {
+        self.db()
+            .execute(
+                "UPDATE herdr_hosts SET recovery_boot='b',recovery_epoch=1,reconciled_boot=NULL,reconciled_epoch=NULL",
+                [],
+            )
+            .unwrap();
+    }
+    fn seat_generation(&self, seat: &str) -> i64 {
+        self.db()
+            .query_row("SELECT generation FROM seats WHERE id=?1", [seat], |r| {
+                r.get(0)
+            })
+            .unwrap()
+    }
+}
+
+/// Kills (ht-0f0r): a service refused a restart-held seat on its own pane; a hold read only from
+/// `recovery_holds` (the baseline-held headline case refused); the hold left in place; open
+/// bindings kept; a `service_unretire` recorded for a seat that was never retired; a replay
+/// deciding twice.
+#[test]
+fn service_restores_a_restart_held_seat_onto_its_own_pane() {
+    for how in [Held::Row, Held::Baseline] {
+        let f = fx(&["s1"]);
+        f.restart_held("s1", how);
+        assert_eq!(
+            f.service_rebind(&f.gate, "s1", "s1", None, "restore")
+                .unwrap(),
+            CommandResult::OperatorRebound(SeatId::new("s1")),
+            "{how:?}"
+        );
+        assert_eq!(f.seat_state("s1"), "resolved", "{how:?}");
+        assert_eq!(f.text("SELECT target_id FROM seats WHERE id='s1'"), "s1");
+        assert_eq!(
+            f.decisions("s1"),
+            vec![(
+                "service_rebind".into(),
+                Some(format!("service:{}", f.connection.author().as_str()))
+            )],
+            "{how:?}"
+        );
+        assert_eq!(
+            effective::effective_recovery_disposition(
+                &f.db(),
+                crate::test_support::test_host_id(),
+                "s1"
+            )
+            .unwrap(),
+            effective::EffectiveRecoveryDisposition::Owned("s1".into()),
+            "{how:?}"
+        );
+        assert_eq!(
+            f.int(
+                "SELECT count(*) FROM recovery_holds WHERE target_id='s1' AND released_at IS NULL"
+            ),
+            0,
+            "{how:?}"
+        );
+        assert_eq!(
+            f.int("SELECT count(*) FROM occupant_bindings WHERE seat_id='s1' AND ended_at IS NULL"),
+            0,
+            "{how:?}: the old binding ends; the next check-in enrolls"
+        );
+        let generation = f.seat_generation("s1");
+        assert_eq!(
+            f.service_rebind(&f.gate, "s1", "s1", None, "restore")
+                .unwrap(),
+            CommandResult::OperatorRebound(SeatId::new("s1")),
+            "{how:?}: replay"
+        );
+        assert_eq!(f.seat_generation("s1"), generation, "{how:?}: decided once");
+        assert_eq!(f.decisions("s1").len(), 1, "{how:?}");
+    }
+}
+
+/// Kills (ht-0f0r D2, D3): a restore onto another pane, of an unheld seat, during the recovery lag,
+/// past a kept continuity claim (on the pane, or of the seat's own session elsewhere), or with
+/// `replace`; a refusal that writes.
+#[test]
+fn service_restore_refusals() {
+    let author = |f: &Fx, op: &str, pane: &str, replace: Option<&str>| {
+        f.service_rebind(&f.gate, "s1", pane, replace, op)
+            .unwrap_err()
+    };
+    let assert_untouched = |f: &Fx, case: &str| {
+        assert_eq!(f.seat_state("s1"), "unresolved", "{case}");
+        assert!(f.decisions("s1").is_empty(), "{case}");
+    };
+
+    let f = fx(&["s1"]);
+    f.restart_held("s1", Held::Row);
+    assert_eq!(author(&f, "other", "p9", None).code, ErrorCode::NotFound);
+    assert_untouched(&f, "another pane");
+
+    let f = fx(&["s1"]);
+    f.db()
+        .execute("UPDATE seats SET state='unresolved',unresolved_reason='other',generation=generation+1 WHERE id='s1'", [])
+        .unwrap();
+    assert_eq!(author(&f, "unheld", "s1", None).code, ErrorCode::NotFound);
+    assert_untouched(&f, "not held");
+
+    let f = fx(&["s1"]);
+    f.restart_held("s1", Held::Row);
+    f.lagging();
+    assert_eq!(author(&f, "lag", "s1", None).code, ErrorCode::ServiceBusy);
+    assert_untouched(&f, "lag");
+
+    let f = fx(&["s1"]);
+    f.restart_held("s1", Held::Row);
+    f.db().execute("INSERT INTO kept_continuity_claims(host_id,target_id,harness,native_session,command_json,received_at) VALUES ((SELECT min(host_id) FROM herdr_hosts),'s1','claude','other-session','{}',100)", []).unwrap();
+    assert_eq!(
+        author(&f, "kept-here", "s1", None).code,
+        ErrorCode::ServiceBusy
+    );
+    assert_untouched(&f, "kept claim on the pane");
+
+    let f = fx(&["s1"]);
+    f.restart_held("s1", Held::Row);
+    // The seat's own top-level session (seed binding: codex, `n`) kept at another pane.
+    f.db().execute("INSERT INTO kept_continuity_claims(host_id,target_id,harness,native_session,command_json,received_at) VALUES ((SELECT min(host_id) FROM herdr_hosts),'elsewhere','codex','n','{}',100)", []).unwrap();
+    assert_eq!(
+        author(&f, "kept-own", "s1", None).code,
+        ErrorCode::ServiceBusy
+    );
+    assert_untouched(&f, "kept claim of the seat");
+
+    let f = fx(&["s1", "s3"]);
+    f.bare("s3");
+    f.restart_held("s1", Held::Row);
+    let refused = author(&f, "replace", "s3", Some("s3"));
+    assert_eq!(refused.code, ErrorCode::NotFound, "{}", refused.detail);
+    assert_untouched(&f, "replace onto another pane");
+}
+
+/// Kills (ht-0f0r): a keyed held seat restored by a service that does not own its key.
+#[test]
+fn service_restore_of_a_keyed_seat_is_its_owners() {
+    let f = fx(&["s2"]);
+    f.key("s2");
+    f.restart_held("s2", Held::Row);
+    let stranger_gate = Gate(ServiceAuthorId::new("stranger"));
+    assert_eq!(
+        f.service_rebind_by(Some("stranger"), &stranger_gate, "s2", "s2", None, "x")
+            .unwrap_err()
+            .code,
+        ErrorCode::Unauthorized
+    );
+    assert_eq!(f.seat_state("s2"), "unresolved");
+    f.service_rebind(&f.gate, "s2", "s2", None, "owner")
+        .unwrap();
+    assert_eq!(f.seat_state("s2"), "resolved");
+}
+
+/// Kills (ht-0f0r D5): a seat a resumed session already reattached on that pane refused, or
+/// rebound again (a generation step, a decision row); the no-op answered under the recovery lag,
+/// where the mapping may be pre-restart; a seat resolved elsewhere answered as a no-op.
+#[test]
+fn service_restore_of_an_already_resolved_seat_is_a_no_op() {
+    let f = fx(&["s1"]);
+    let generation = f.seat_generation("s1");
+    assert_eq!(
+        f.service_rebind(&f.gate, "s1", "s1", None, "late").unwrap(),
+        CommandResult::OperatorAlreadyResolved(SeatId::new("s1"))
+    );
+    assert_eq!(
+        f.service_rebind(&f.gate, "s1", "s1", None, "late").unwrap(),
+        CommandResult::OperatorAlreadyResolved(SeatId::new("s1")),
+        "replay"
+    );
+    assert_eq!(f.seat_generation("s1"), generation);
+    assert!(f.decisions("s1").is_empty());
+    assert_eq!(
+        f.int("SELECT count(*) FROM occupant_bindings WHERE seat_id='s1' AND ended_at IS NULL"),
+        1,
+        "the live binding stays"
+    );
+    assert_eq!(
+        f.service_rebind(&f.gate, "s1", "p9", None, "elsewhere")
+            .unwrap_err()
+            .code,
+        ErrorCode::NotFound
+    );
+    f.lagging();
+    assert_eq!(
+        f.service_rebind(&f.gate, "s1", "s1", None, "lagging")
+            .unwrap_err()
+            .code,
+        ErrorCode::ServiceBusy
+    );
+}
