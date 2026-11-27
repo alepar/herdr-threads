@@ -1,0 +1,50 @@
+{
+  "bin_version": "herdr-threads 3.6.0",
+  "claude_session_1": "8d9d0175-babb-4060-a2fb-1a430b99eb12",
+  "claude_session_2": "a7cd08da-4e7d-4306-ada6-74ac71ddcfc2",
+  "claude_session_start_command": "'/var/home/alepar/AleCode/herdr-threads/.worktrees/ht-iygh/bin/herdr-threads' '--state-dir' '/tmp/hrr.1q9iuw21/ht-state' '--host-endpoint' '/tmp/hrr.1q9iuw21/h.sock' 'hook-event' 'claude' 'SessionStart'",
+  "codex_rollouts": [
+    "rollout-2026-11-27T07-15-53-01a21d93-c7e5-7f32-a9eb-19b771480f3c.jsonl"
+  ],
+  "codex_session": "01a21d93-c7e5-7f32-a9eb-19b771480f3c",
+  "herdr_integration_install_codex": {
+    "err": "",
+    "out": "installed codex integration hook to /tmp/hrr.1q9iuw21/home/.codex/herdr-agent-state.sh\nensured codex hooks at /tmp/hrr.1q9iuw21/home/.codex/hooks.json\nensured codex config at /tmp/hrr.1q9iuw21/home/.codex/config.toml",
+    "rc": 0
+  },
+  "herdr_version": "herdr 0.9.5",
+  "pane_a": "w1:p1",
+  "pane_b": "w1:p2",
+  "seat_a": "s760FsylCIen",
+  "seat_at_B_after_fresh": "s760FwCjspgd",
+  "seat_b": "s760FwCjspgd",
+  "send_p0": {
+    "err": "",
+    "out": "{\"result\":{\"data\":\"m760Ner9ijf8\",\"kind\":\"message_sent\",\"selection\":{\"invitation\":null,\"outcome\":\"already_joined\"},\"thread\":\"dy43gZbAYuO\"},\"version\":9}",
+    "rc": 0
+  },
+  "send_p1": {
+    "err": "",
+    "out": "{\"result\":{\"data\":\"m760NemOb2BR\",\"kind\":\"message_sent\",\"selection\":{\"invitation\":null,\"outcome\":\"already_joined\"},\"thread\":\"dy43gZbAYuO\"},\"version\":9}",
+    "rc": 0
+  },
+  "sender_me_init": {
+    "err": "",
+    "out": "\"warning_count\":0,\"warning_count_has_more\":false,\"warnings\":{\"items\":[],\"next_cursor\":null,\"next_argv\":null,\"high_water_ordinal\":0,\"scope_revision\":null,\"has_more\":false,\"stop_reason\":\"complete\",\"consistency\":\"bounded_live\"},\"inbox\":{\"items\":[],\"next_cursor\":null,\"next_argv\":null,\"high_water_ordinal\":0,\"scope_revision\":null,\"has_more\":false,\"stop_reason\":\"complete\",\"consistency\":\"bounded_live\"}}}}",
+    "rc": 0
+  },
+  "sender_pane": "w2:p1",
+  "sender_seat": "s7606YuZaHDo",
+  "server_1_exit": 0,
+  "server_pid_1": 4148612,
+  "server_pid_2": 4149364,
+  "terminal_ids_after": {
+    "w1:p1": "term_6614389e3bc1c1",
+    "w1:p2": "term_6614389e3bfa82"
+  },
+  "terminal_ids_before": {
+    "w1:p1": "term_661438921898b1",
+    "w1:p2": "term_66143892191c02"
+  },
+  "workspace": "w1"
+}

@@ -1,0 +1,19 @@
+[
+  [
+    4149462,
+    [
+      "/bin/sh"
+    ]
+  ],
+  [
+    4149464,
+    [
+      "/var/home/alepar/.local/bin/codex",
+      "--no-daemon",
+      "--approve-for-me",
+      "--dangerously-bypass-hook-trust",
+      "resume",
+      "01a21d93-c7e5-7f32-a9eb-19b771480f3c"
+    ]
+  ]
+]

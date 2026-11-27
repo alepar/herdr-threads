@@ -1,0 +1,8 @@
+[features]
+hooks = true
+
+[projects."/tmp/hrr.1q9iuw21/work"]
+trust_level = "trusted"
+
+[notice]
+hide_rate_limit_model_nudge = true

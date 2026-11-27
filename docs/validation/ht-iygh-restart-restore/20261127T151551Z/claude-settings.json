@@ -1,0 +1,115 @@
+{
+  "env": {
+    "CLAUDE_CODE_PLUGIN_DIRS": "/tmp/hrr.1q9iuw21/ht-state/claude-mod/herdr-threads"
+  },
+  "hooks": {
+    "PreToolUse": [
+      {
+        "hooks": [
+          {
+            "command": "'/var/home/alepar/AleCode/herdr-threads/.worktrees/ht-iygh/bin/herdr-threads' '--state-dir' '/tmp/hrr.1q9iuw21/ht-state' '--host-endpoint' '/tmp/hrr.1q9iuw21/h.sock' 'hook-event' 'claude' 'PreToolUse'",
+            "timeout": 10,
+            "type": "command"
+          }
+        ],
+        "matcher": "*"
+      }
+    ],
+    "SessionStart": [
+      {
+        "hooks": [
+          {
+            "command": "'/var/home/alepar/AleCode/herdr-threads/.worktrees/ht-iygh/bin/herdr-threads' '--state-dir' '/tmp/hrr.1q9iuw21/ht-state' '--host-endpoint' '/tmp/hrr.1q9iuw21/h.sock' 'hook-event' 'claude' 'SessionStart'",
+            "timeout": 10,
+            "type": "command"
+          }
+        ]
+      }
+    ],
+    "Stop": [
+      {
+        "hooks": [
+          {
+            "command": "'/var/home/alepar/AleCode/herdr-threads/.worktrees/ht-iygh/bin/herdr-threads' '--state-dir' '/tmp/hrr.1q9iuw21/ht-state' '--host-endpoint' '/tmp/hrr.1q9iuw21/h.sock' 'hook-event' 'claude' 'Stop'",
+            "timeout": 10,
+            "type": "command"
+          }
+        ]
+      }
+    ],
+    "StopFailure": [
+      {
+        "hooks": [
+          {
+            "command": "'/var/home/alepar/AleCode/herdr-threads/.worktrees/ht-iygh/bin/herdr-threads' '--state-dir' '/tmp/hrr.1q9iuw21/ht-state' '--host-endpoint' '/tmp/hrr.1q9iuw21/h.sock' 'hook-event' 'claude' 'StopFailure'",
+            "timeout": 10,
+            "type": "command"
+          }
+        ]
+      }
+    ],
+    "SubagentStart": [
+      {
+        "hooks": [
+          {
+            "command": "'/var/home/alepar/AleCode/herdr-threads/.worktrees/ht-iygh/bin/herdr-threads' '--state-dir' '/tmp/hrr.1q9iuw21/ht-state' '--host-endpoint' '/tmp/hrr.1q9iuw21/h.sock' 'hook-event' 'claude' 'SubagentStart'",
+            "timeout": 10,
+            "type": "command"
+          }
+        ]
+      }
+    ],
+    "SubagentStop": [
+      {
+        "hooks": [
+          {
+            "command": "'/var/home/alepar/AleCode/herdr-threads/.worktrees/ht-iygh/bin/herdr-threads' '--state-dir' '/tmp/hrr.1q9iuw21/ht-state' '--host-endpoint' '/tmp/hrr.1q9iuw21/h.sock' 'hook-event' 'claude' 'SubagentStop'",
+            "timeout": 10,
+            "type": "command"
+          }
+        ]
+      }
+    ],
+    "UserPromptSubmit": [
+      {
+        "hooks": [
+          {
+            "command": "'/var/home/alepar/AleCode/herdr-threads/.worktrees/ht-iygh/bin/herdr-threads' '--state-dir' '/tmp/hrr.1q9iuw21/ht-state' '--host-endpoint' '/tmp/hrr.1q9iuw21/h.sock' 'hook-event' 'claude' 'UserPromptSubmit'",
+            "timeout": 10,
+            "type": "command"
+          }
+        ]
+      }
+    ]
+  },
+  "permissions": {
+    "allow": [
+      "Bash(herdr-threads)",
+      "Bash(herdr-threads *)",
+      "Bash(ht)",
+      "Bash(ht *)"
+    ],
+    "ask": [
+      "Bash(herdr-threads human)",
+      "Bash(herdr-threads human *)",
+      "Bash(herdr-threads setup)",
+      "Bash(herdr-threads setup *)",
+      "Bash(herdr-threads unsetup)",
+      "Bash(herdr-threads unsetup *)",
+      "Bash(herdr-threads doctor fix)",
+      "Bash(herdr-threads doctor fix *)",
+      "Bash(herdr-threads internal installer-integrations)",
+      "Bash(herdr-threads internal installer-integrations *)",
+      "Bash(ht human)",
+      "Bash(ht human *)",
+      "Bash(ht setup)",
+      "Bash(ht setup *)",
+      "Bash(ht unsetup)",
+      "Bash(ht unsetup *)",
+      "Bash(ht doctor fix)",
+      "Bash(ht doctor fix *)",
+      "Bash(ht internal installer-integrations)",
+      "Bash(ht internal installer-integrations *)"
+    ]
+  }
+}

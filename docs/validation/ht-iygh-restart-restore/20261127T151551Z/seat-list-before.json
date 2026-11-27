@@ -1,0 +1,71 @@
+{
+  "result": {
+    "data": {
+      "consistency": "bounded_live",
+      "has_more": false,
+      "high_water_ordinal": 2,
+      "items": [
+        {
+          "active": true,
+          "availability": "available",
+          "bindings": [
+            {
+              "connected": true,
+              "harness": "claude",
+              "role": "top_level"
+            }
+          ],
+          "continuity": "resolved",
+          "created_at": 1795792561588,
+          "directory": {
+            "activity_at": 1795792561600,
+            "harness": "claude",
+            "machine": "blacky",
+            "node": "760",
+            "pane": "w1:p2",
+            "state": "idle",
+            "tab": "1",
+            "workspace": "rr-W"
+          },
+          "generation": 1,
+          "retired_at": null,
+          "seat": "s760FwCjspgd",
+          "target": "w1:p2"
+        },
+        {
+          "active": true,
+          "availability": "available",
+          "bindings": [
+            {
+              "connected": true,
+              "harness": "codex",
+              "role": "top_level"
+            }
+          ],
+          "continuity": "resolved",
+          "created_at": 1795792558525,
+          "directory": {
+            "activity_at": 1795792558536,
+            "harness": "codex",
+            "machine": "blacky",
+            "node": "760",
+            "pane": "w1:p1",
+            "state": "idle",
+            "tab": "1",
+            "workspace": "rr-W"
+          },
+          "generation": 1,
+          "retired_at": null,
+          "seat": "s760FsylCIen",
+          "target": "w1:p1"
+        }
+      ],
+      "next_argv": null,
+      "next_cursor": null,
+      "scope_revision": null,
+      "stop_reason": "complete"
+    },
+    "kind": "seats"
+  },
+  "version": 9
+}

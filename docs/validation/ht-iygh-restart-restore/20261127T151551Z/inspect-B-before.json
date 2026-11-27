@@ -1,0 +1,82 @@
+{
+  "result": {
+    "data": {
+      "history": {
+        "consistency": "bounded_live",
+        "has_more": false,
+        "high_water_ordinal": 2,
+        "items": [
+          {
+            "data": {
+              "ended_at": null,
+              "execution": "1acd9f6a-2959-54ae-8bad-0327e165ec85",
+              "generation": 1,
+              "host_boot": "herdr-server:pid=4148612:start=1795792550.480000:uid=1001",
+              "host_epoch": 1,
+              "incarnation": "herdr-server:pid=4148612:start=1795792550.480000:uid=1001",
+              "native_session": "8d9d0175-babb-4060-a2fb-1a430b99eb12",
+              "observed_at": 1795792561600,
+              "ordinal": 2,
+              "provenance": "cooperative_top_level",
+              "registered_at": 1795792561600,
+              "target": "w1:p2",
+              "terminal": "term_66143892191c02"
+            },
+            "kind": "binding"
+          },
+          {
+            "data": {
+              "decided_at": 1795792561588,
+              "decision_kind": "ordinary",
+              "generation": 1,
+              "host_boot": "herdr-server:pid=4148612:start=1795792550.480000:uid=1001",
+              "host_epoch": 1,
+              "operator_label": null,
+              "ordinal": 2,
+              "target": "w1:p2"
+            },
+            "kind": "repair"
+          }
+        ],
+        "next_argv": null,
+        "next_cursor": null,
+        "scope_revision": null,
+        "stop_reason": "complete"
+      },
+      "hold": null,
+      "mapping": {
+        "detail_argv": null,
+        "state": "resolved",
+        "target": "w1:p2"
+      },
+      "open_binding": {
+        "harness": "claude",
+        "provenance": "cooperative_top_level",
+        "target": "w1:p2"
+      },
+      "retirement": null,
+      "summary": {
+        "active": true,
+        "availability": "available",
+        "bindings": [
+          {
+            "binding_id": "f464b39726ff75b77a4e6eee622144f4",
+            "connected": true,
+            "harness": "claude",
+            "native_session": "8d9d0175-babb-4060-a2fb-1a430b99eb12",
+            "provenance": "cooperative_top_level",
+            "role": "top_level"
+          }
+        ],
+        "continuity": "resolved",
+        "created_at": 1795792561588,
+        "generation": 1,
+        "retired_at": null,
+        "seat": "s760FwCjspgd",
+        "target": "w1:p2"
+      }
+    },
+    "kind": "seat_inspect"
+  },
+  "version": 9
+}

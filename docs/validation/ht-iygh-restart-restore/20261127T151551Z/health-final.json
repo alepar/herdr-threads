@@ -1,0 +1,71 @@
+{
+  "result": {
+    "data": {
+      "boot_id": "954024ee-9109-422d-b9b9-b7f78e903cbf",
+      "database": {
+        "detail": null,
+        "state": "ready"
+      },
+      "harness": {
+        "claude": "cooperative",
+        "codex": "cooperative"
+      },
+      "held_targets": 0,
+      "host": {
+        "coherent_enumeration": "supported",
+        "current_execution": "unsupported",
+        "reachability": "ready",
+        "receipt_registration": "unsupported",
+        "safe_prompt": "supported",
+        "version": "0.9.5 (protocol 22)"
+      },
+      "host_timeouts": null,
+      "hosts": [
+        {
+          "coherent_enumeration": "supported",
+          "current_execution": "unsupported",
+          "endpoint": "/tmp/hrr.1q9iuw21/h.sock",
+          "host_id": 3,
+          "last_reconciliation_at": 1795792805092,
+          "reachability": "ready",
+          "safe_prompt": "supported",
+          "version": "0.9.5 (protocol 22)"
+        }
+      ],
+      "instance_id": "012d9cc2f1943372f6dccec339c8fce4",
+      "last_reconciliation_at": 1795792805092,
+      "last_scheduler_tick_at": 1795792804890,
+      "limitations": [],
+      "notes": [
+        "harness claude: claude: contract_declared; runtime metadata unavailable; rich optional capabilities unavailable",
+        "harness codex: codex: contract_declared; runtime metadata unavailable; rich optional capabilities unavailable",
+        "harness hermes: hermes executable present; callback qualification unavailable; runtime metadata, enablement and native behavior unobserved",
+        "harness agy: agy: contract_declared; runtime metadata unavailable; rich optional capabilities unavailable",
+        "harness opencode: opencode: contract_declared; runtime metadata unavailable; rich optional capabilities unavailable",
+        "harness pi: pi: contract_declared; runtime metadata unavailable",
+        "receipt cooperative: declared input contracts; accept/ACK is recorded as cooperative_top_level; runtime and native model receipt unverified; contracts: claude declared, codex declared, hermes admission unknown, agy declared, opencode declared, pi declared",
+        "wake cooperative: prompts only Herdr's detected idle/done claude, codex, hermes, agy or pi agent in the seat's terminal, rechecked immediately before submission; native execution and composer contents are unverified"
+      ],
+      "protocol_version": 9,
+      "queue_depth": null,
+      "queue_rejections": null,
+      "retirement_degraded": null,
+      "retirement_pending": null,
+      "schema": {
+        "detail": null,
+        "state": "ready"
+      },
+      "settings": {
+        "invitation_default_ms": 300000,
+        "minimum_wake_delay_ms": 30000,
+        "receipt_default_ms": 300000,
+        "wake_batch_delay_ms": 0
+      },
+      "software_version": "3.6.0",
+      "state": "healthy",
+      "unresolved_seats": 0
+    },
+    "kind": "health"
+  },
+  "version": 9
+}

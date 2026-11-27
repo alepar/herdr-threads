@@ -1,0 +1,23 @@
+{
+  "agent": "codex",
+  "agent_session": {
+    "agent": "codex",
+    "kind": "id",
+    "source": "herdr:codex",
+    "value": "01a21d93-c7e5-7f32-a9eb-19b771480f3c"
+  },
+  "agent_status": "unknown",
+  "cwd": "/tmp/hrr.1q9iuw21/work",
+  "focused": true,
+  "foreground_cwd": "/tmp/hrr.1q9iuw21/work",
+  "interactive_ready": true,
+  "name": "rr-codex",
+  "pane_id": "w1:p1",
+  "revision": 2,
+  "state_change_seq": 1,
+  "tab_id": "w1:t1",
+  "terminal_id": "term_6614389e3bc1c1",
+  "terminal_title": "Reply with ok | work",
+  "terminal_title_stripped": "Reply with ok | work",
+  "workspace_id": "w1"
+}

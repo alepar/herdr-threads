@@ -1,0 +1,113 @@
+{
+  "result": {
+    "data": {
+      "history": {
+        "consistency": "bounded_live",
+        "has_more": false,
+        "high_water_ordinal": 3,
+        "items": [
+          {
+            "data": {
+              "ended_at": 1795792566899,
+              "execution": "2d7645f6-0a9f-530d-b8b8-d7c12a6b8416",
+              "generation": 1,
+              "host_boot": "herdr-server:pid=4148612:start=1795792550.480000:uid=1001",
+              "host_epoch": 1,
+              "incarnation": "herdr-server:pid=4148612:start=1795792550.480000:uid=1001",
+              "native_session": "01a21d93-c7e5-7f32-a9eb-19b771480f3c",
+              "observed_at": 1795792558536,
+              "ordinal": 1,
+              "provenance": "cooperative_top_level",
+              "registered_at": 1795792558536,
+              "target": "w1:p1",
+              "terminal": "term_661438921898b1"
+            },
+            "kind": "binding"
+          },
+          {
+            "data": {
+              "decided_at": 1795792558525,
+              "decision_kind": "ordinary",
+              "generation": 1,
+              "host_boot": "herdr-server:pid=4148612:start=1795792550.480000:uid=1001",
+              "host_epoch": 1,
+              "operator_label": null,
+              "ordinal": 1,
+              "target": "w1:p1"
+            },
+            "kind": "repair"
+          },
+          {
+            "data": {
+              "ended_at": null,
+              "execution": "2d7645f6-0a9f-530d-b8b8-d7c12a6b8416",
+              "generation": 3,
+              "host_boot": "herdr-server:pid=4149364:start=1795792563.670000:uid=1001",
+              "host_epoch": 1,
+              "incarnation": "herdr-server:pid=4149364:start=1795792563.670000:uid=1001",
+              "native_session": "01a21d93-c7e5-7f32-a9eb-19b771480f3c",
+              "observed_at": 1795792789871,
+              "ordinal": 3,
+              "provenance": "cooperative_top_level",
+              "registered_at": 1795792795738,
+              "target": "w1:p1",
+              "terminal": "term_6614389e3bc1c1"
+            },
+            "kind": "binding"
+          },
+          {
+            "data": {
+              "decided_at": 1795792566910,
+              "decision_kind": "host_session_continuity",
+              "generation": 1,
+              "host_boot": "herdr-server:pid=4149364:start=1795792563.670000:uid=1001",
+              "host_epoch": 1,
+              "operator_label": null,
+              "ordinal": 3,
+              "target": "w1:p1"
+            },
+            "kind": "repair"
+          }
+        ],
+        "next_argv": null,
+        "next_cursor": null,
+        "scope_revision": null,
+        "stop_reason": "complete"
+      },
+      "hold": null,
+      "mapping": {
+        "detail_argv": null,
+        "state": "resolved",
+        "target": "w1:p1"
+      },
+      "open_binding": {
+        "harness": "codex",
+        "provenance": "cooperative_top_level",
+        "target": "w1:p1"
+      },
+      "retirement": null,
+      "summary": {
+        "active": true,
+        "availability": "available",
+        "bindings": [
+          {
+            "binding_id": "dc35d43e749ab73cb97978b7d29b5a4e",
+            "connected": true,
+            "harness": "codex",
+            "native_session": "01a21d93-c7e5-7f32-a9eb-19b771480f3c",
+            "provenance": "cooperative_top_level",
+            "role": "top_level"
+          }
+        ],
+        "continuity": "resolved",
+        "created_at": 1795792558525,
+        "generation": 3,
+        "retired_at": null,
+        "seat": "s760FsylCIen",
+        "target": "w1:p1"
+      }
+    },
+    "kind": "seat_inspect"
+  },
+  "version": 9
+}

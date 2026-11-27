@@ -1,0 +1,110 @@
+[
+  {
+    "A": "resolved",
+    "A_connected": false,
+    "A_decisions": [
+      "host_session_continuity"
+    ],
+    "B": "unresolved",
+    "codex_status": "unknown",
+    "held_targets": 1,
+    "unresolved_seats": 1,
+    "utc": "2026-11-27T15:16:07Z"
+  },
+  {
+    "A": "resolved",
+    "A_connected": false,
+    "A_decisions": [
+      "host_session_continuity"
+    ],
+    "B": "unresolved",
+    "codex_status": "idle",
+    "held_targets": 1,
+    "unresolved_seats": 1,
+    "utc": "2026-11-27T15:16:17Z"
+  },
+  {
+    "A": "resolved",
+    "A_connected": false,
+    "A_decisions": [
+      "host_session_continuity"
+    ],
+    "B": "unresolved",
+    "codex_status": "idle",
+    "held_targets": 1,
+    "unresolved_seats": 1,
+    "utc": "2026-11-27T15:16:27Z"
+  },
+  {
+    "A": "resolved",
+    "A_connected": false,
+    "A_decisions": [
+      "host_session_continuity"
+    ],
+    "B": "unresolved",
+    "codex_status": "idle",
+    "held_targets": 1,
+    "unresolved_seats": 1,
+    "utc": "2026-11-27T15:16:37Z"
+  },
+  {
+    "A": "resolved",
+    "A_connected": false,
+    "A_decisions": [
+      "host_session_continuity"
+    ],
+    "B": "unresolved",
+    "codex_status": "idle",
+    "held_targets": 1,
+    "unresolved_seats": 1,
+    "utc": "2026-11-27T15:16:47Z"
+  },
+  {
+    "A": "resolved",
+    "A_connected": false,
+    "A_decisions": [
+      "host_session_continuity"
+    ],
+    "B": "unresolved",
+    "codex_status": "idle",
+    "held_targets": 1,
+    "unresolved_seats": 1,
+    "utc": "2026-11-27T15:16:57Z"
+  },
+  {
+    "A": "resolved",
+    "A_connected": false,
+    "A_decisions": [
+      "host_session_continuity"
+    ],
+    "B": "unresolved",
+    "codex_status": "idle",
+    "held_targets": 1,
+    "unresolved_seats": 1,
+    "utc": "2026-11-27T15:17:07Z"
+  },
+  {
+    "A": "resolved",
+    "A_connected": false,
+    "A_decisions": [
+      "host_session_continuity"
+    ],
+    "B": "unresolved",
+    "codex_status": "idle",
+    "held_targets": 1,
+    "unresolved_seats": 1,
+    "utc": "2026-11-27T15:17:17Z"
+  },
+  {
+    "A": "resolved",
+    "A_connected": false,
+    "A_decisions": [
+      "host_session_continuity"
+    ],
+    "B": "unresolved",
+    "codex_status": "idle",
+    "held_targets": 1,
+    "unresolved_seats": 1,
+    "utc": "2026-11-27T15:17:27Z"
+  }
+]

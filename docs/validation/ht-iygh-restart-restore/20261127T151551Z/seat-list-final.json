@@ -1,0 +1,98 @@
+{
+  "result": {
+    "data": {
+      "consistency": "bounded_live",
+      "has_more": false,
+      "high_water_ordinal": 3,
+      "items": [
+        {
+          "active": true,
+          "availability": "available",
+          "bindings": [
+            {
+              "connected": true,
+              "harness": "human",
+              "role": "top_level"
+            }
+          ],
+          "continuity": "resolved",
+          "created_at": 1795792661596,
+          "directory": {
+            "activity_at": 1795792661605,
+            "harness": "human",
+            "machine": "blacky",
+            "node": "760",
+            "pane": "w2:p1",
+            "state": "idle",
+            "tab": "1",
+            "workspace": "rr-sender"
+          },
+          "generation": 1,
+          "retired_at": null,
+          "seat": "s7606YuZaHDo",
+          "target": "w2:p1"
+        },
+        {
+          "active": true,
+          "availability": "available",
+          "bindings": [
+            {
+              "connected": true,
+              "harness": "claude",
+              "role": "top_level"
+            }
+          ],
+          "continuity": "resolved",
+          "created_at": 1795792561588,
+          "directory": {
+            "activity_at": 1795792658975,
+            "harness": "claude",
+            "machine": "blacky",
+            "node": "760",
+            "pane": "w1:p2",
+            "state": "idle",
+            "tab": "1",
+            "workspace": "rr-W"
+          },
+          "generation": 3,
+          "retired_at": null,
+          "seat": "s760FwCjspgd",
+          "target": "w1:p2"
+        },
+        {
+          "active": true,
+          "availability": "available",
+          "bindings": [
+            {
+              "connected": true,
+              "harness": "codex",
+              "role": "top_level"
+            }
+          ],
+          "continuity": "resolved",
+          "created_at": 1795792558525,
+          "directory": {
+            "activity_at": 1795792795738,
+            "harness": "codex",
+            "machine": "blacky",
+            "node": "760",
+            "pane": "w1:p1",
+            "state": "idle",
+            "tab": "1",
+            "workspace": "rr-W"
+          },
+          "generation": 3,
+          "retired_at": null,
+          "seat": "s760FsylCIen",
+          "target": "w1:p1"
+        }
+      ],
+      "next_argv": null,
+      "next_cursor": null,
+      "scope_revision": null,
+      "stop_reason": "complete"
+    },
+    "kind": "seats"
+  },
+  "version": 9
+}

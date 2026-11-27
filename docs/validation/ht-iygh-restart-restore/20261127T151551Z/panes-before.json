@@ -1,0 +1,49 @@
+{
+  "id": "cli:pane:list",
+  "result": {
+    "panes": [
+      {
+        "agent": "codex",
+        "agent_session": {
+          "agent": "codex",
+          "kind": "id",
+          "source": "herdr:codex",
+          "value": "01a21d93-c7e5-7f32-a9eb-19b771480f3c"
+        },
+        "agent_status": "idle",
+        "cwd": "/tmp/hrr.1q9iuw21/work",
+        "focused": true,
+        "foreground_cwd": "/tmp/hrr.1q9iuw21/work",
+        "pane_id": "w1:p1",
+        "revision": 3,
+        "scroll": {
+          "max_offset_from_bottom": 0,
+          "offset_from_bottom": 0,
+          "viewport_rows": 40
+        },
+        "tab_id": "w1:t1",
+        "terminal_id": "term_661438921898b1",
+        "terminal_title": "Reply with ok | work",
+        "terminal_title_stripped": "Reply with ok | work",
+        "workspace_id": "w1"
+      },
+      {
+        "agent_status": "unknown",
+        "cwd": "/tmp/hrr.1q9iuw21/work",
+        "focused": false,
+        "foreground_cwd": "/tmp/hrr.1q9iuw21/work",
+        "pane_id": "w1:p2",
+        "revision": 0,
+        "scroll": {
+          "max_offset_from_bottom": 0,
+          "offset_from_bottom": 0,
+          "viewport_rows": 38
+        },
+        "tab_id": "w1:t1",
+        "terminal_id": "term_66143892191c02",
+        "workspace_id": "w1"
+      }
+    ],
+    "type": "pane_list"
+  }
+}
