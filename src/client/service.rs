@@ -440,6 +440,19 @@ impl PersistentServiceClient {
         self.level = level;
         self
     }
+    /// An operation above the client's level is refused here, before it is journaled or sent, with
+    /// the daemon's own refusal: sent, the daemon's level refusal would complete and consume its key
+    /// (or, on replay, settle an intent the first submission may have applied).
+    fn admits(&self, operation: &ServiceOperation) -> Result<(), ApiError> {
+        let required = ServiceSessionLevel::required_by(operation);
+        if required > self.level {
+            return Err(error(
+                ErrorCode::Unsupported,
+                &format!("operation requires {}", required.capability()),
+            ));
+        }
+        Ok(())
+    }
     pub fn journal(&self) -> &ServiceIntentJournal {
         &self.journal
     }
@@ -675,6 +688,11 @@ impl PersistentServiceClient {
                 error: error(ErrorCode::InvalidRequest, "query has no mutation key"),
                 pending: None,
             })?;
+        self.admits(&operation)
+            .map_err(|error| ServiceCallError::Api {
+                error,
+                pending: None,
+            })?;
         let mut held = self
             .admit(budget)
             .await
@@ -805,6 +823,13 @@ impl PersistentServiceClient {
                 ),
                 pending: Some(key.clone()),
             });
+        }
+        if let ServiceRequest::Operation(operation) = &saved.request.service {
+            self.admits(operation)
+                .map_err(|error| ServiceCallError::Api {
+                    error,
+                    pending: Some(key.clone()),
+                })?;
         }
         if matches!(
             &saved.request.service,
@@ -1572,6 +1597,130 @@ mod tests {
             ServiceResult::Membership(_)
         ));
         assert!(client.registration().await.is_some());
+        server.await.unwrap();
+        drop(client);
+        fs::remove_dir_all(root).unwrap();
+    }
+
+    fn resurrect(key: &str) -> ServiceOperation {
+        ServiceOperation::ResurrectSeat(crate::protocol::service::ResurrectSeat {
+            seat: SeatId::new("s1"),
+            target: crate::protocol::ids::HostTargetId::new("pane-1"),
+            host: crate::protocol::ids::HostLocator::parse("/run/herdr.sock").unwrap(),
+            replace: None,
+            operation: OperationId::new(key),
+        })
+    }
+
+    /// Kills (ht-lzhi roast): a submit above the client's level journaled and sent, so the daemon's
+    /// level refusal completes and consumes the caller's operation key.
+    #[tokio::test]
+    async fn submit_above_the_client_level_is_refused_before_the_journal() {
+        let root = temp();
+        fs::create_dir_all(&root).unwrap();
+        let socket = root.join("socket");
+        let listener = UnixListener::bind(&socket).unwrap();
+        let server = tokio::spawn(async move {
+            let (mut stream, _) = listener.accept().await.unwrap();
+            let register = incoming(&mut stream).await;
+            respond(&mut stream, &register, BOOT, Ok(registration())).await;
+            let again = tokio::time::timeout(Duration::from_millis(200), read_frame(&mut stream));
+            assert!(!matches!(again.await, Ok(Ok(_))), "the operation was sent");
+        });
+        let client = make_client(socket, &root.join("intents"));
+        client.register(&budget()).await.unwrap();
+        match client.submit(resurrect("resurrect-1"), &budget()).await {
+            Err(ServiceCallError::Api { error, pending }) => {
+                assert_eq!(error.code, ErrorCode::Unsupported);
+                assert_eq!(error.detail, "operation requires service_session_v4");
+                assert_eq!(pending, None);
+            }
+            other => panic!("expected a local level refusal, got {other:?}"),
+        }
+        assert!(client.journal().pending().unwrap().is_empty());
+        assert!(client.journal().completed().unwrap().is_empty());
+        assert!(client.registration().await.is_some());
+        server.await.unwrap();
+        drop(client);
+        fs::remove_dir_all(root).unwrap();
+    }
+
+    /// Kills (ht-lzhi roast FYI): a v4 client's ResurrectSeat answered `SeatResurrected` read as an
+    /// unexpected result (a missing `result_matches` arm) or left pending.
+    #[tokio::test]
+    async fn v4_client_submits_resurrect() {
+        let root = temp();
+        fs::create_dir_all(&root).unwrap();
+        let socket = root.join("socket");
+        let listener = UnixListener::bind(&socket).unwrap();
+        let server = tokio::spawn(async move {
+            let (mut stream, _) = listener.accept().await.unwrap();
+            let register = incoming(&mut stream).await;
+            respond(&mut stream, &register, BOOT, Ok(registration())).await;
+            let operation = incoming(&mut stream).await;
+            respond(
+                &mut stream,
+                &operation,
+                BOOT,
+                Ok(ServiceResult::SeatResurrected(SeatId::new("s1"))),
+            )
+            .await;
+        });
+        let client = make_client(socket, &root.join("intents")).with_level(ServiceSessionLevel::V4);
+        client.register(&budget()).await.unwrap();
+        let (key, result) = client
+            .submit(resurrect("resurrect-1"), &budget())
+            .await
+            .unwrap();
+        assert_eq!(key, OperationId::new("resurrect-1"));
+        assert_eq!(result, ServiceResult::SeatResurrected(SeatId::new("s1")));
+        assert!(client.journal().pending().unwrap().is_empty());
+        server.await.unwrap();
+        drop(client);
+        fs::remove_dir_all(root).unwrap();
+    }
+
+    /// Kills (ht-lzhi roast): a v4 intent left pending, replayed by a client rebuilt at the default
+    /// level, sent to the daemon and completed as its level refusal although the first submission
+    /// may have applied.
+    #[tokio::test]
+    async fn replay_above_the_client_level_keeps_the_intent_pending() {
+        let root = temp();
+        fs::create_dir_all(&root).unwrap();
+        let socket = root.join("socket");
+        let listener = UnixListener::bind(&socket).unwrap();
+        let server = tokio::spawn(async move {
+            let (mut first, _) = listener.accept().await.unwrap();
+            let register = incoming(&mut first).await;
+            respond(&mut first, &register, BOOT, Ok(registration())).await;
+            let _original = incoming(&mut first).await;
+            drop(first); // the outcome is unknown
+            let (mut second, _) = listener.accept().await.unwrap();
+            let register = incoming(&mut second).await;
+            respond(&mut second, &register, BOOT, Ok(registration())).await;
+            let again = tokio::time::timeout(Duration::from_millis(200), read_frame(&mut second));
+            assert!(!matches!(again.await, Ok(Ok(_))), "the replay was sent");
+        });
+        let key = OperationId::new("resurrect-1");
+        let client =
+            make_client(socket.clone(), &root.join("intents")).with_level(ServiceSessionLevel::V4);
+        client.register(&budget()).await.unwrap();
+        let failure = client
+            .submit(resurrect("resurrect-1"), &budget())
+            .await
+            .unwrap_err();
+        assert_eq!(failure.pending_operation(), Some(&key));
+        drop(client);
+        let client = make_client(socket, &root.join("intents"));
+        client.register(&budget()).await.unwrap();
+        match client.replay(&key, &budget()).await {
+            Err(ServiceCallError::Api { error, pending }) => {
+                assert_eq!(error.code, ErrorCode::Unsupported);
+                assert_eq!(pending, Some(key.clone()));
+            }
+            other => panic!("expected a local level refusal, got {other:?}"),
+        }
+        assert_eq!(client.journal().pending().unwrap(), vec![key.clone()]);
         server.await.unwrap();
         drop(client);
         fs::remove_dir_all(root).unwrap();
