@@ -4476,6 +4476,7 @@ mod cross_server_continuity {
             NODE,
             ContinuityRequest {
                 host_agent_session: None,
+                host_agent_kind: None,
                 command: command.clone(),
                 guard,
                 diagnostic: "match",

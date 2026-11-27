@@ -222,39 +222,91 @@ fn a_holding_key_conflict_on_the_pane_leaves_it_to_its_key() {
 #[test]
 fn herdr_naming_the_seats_own_session_in_the_pane_makes_pane_continuity_stand_aside() {
     use crate::protocol::results::ErrorCode;
-    let decide =
-        |context: &StoreContext, conn: &mut Connection, operation: &str, reported: &str| {
-            let command = fresh("held-pane", "sess-new", operation);
-            let guard = crate::ports::ContinuityTargetGuard::try_new(
-                "34750f98bd59fcfc946da45aaabe933b",
-                crate::test_support::test_host_id(),
-                &command,
-                b5_fresh_observation("held-pane"),
-            )
-            .unwrap();
-            crate::store::seats::decide_continuity(
-                context,
-                conn,
-                "34750f98bd59fcfc946da45aaabe933b",
-                crate::ports::ContinuityRequest {
-                    host_agent_session: Some(reported.to_owned()),
-                    command,
-                    guard,
-                    diagnostic: "mismatch",
-                    evidence: crate::ports::ContinuityEvidence::Cooperative,
-                },
-            )
-        };
+    let decide = |context: &StoreContext,
+                  conn: &mut Connection,
+                  operation: &str,
+                  reported: &str,
+                  kind: &str| {
+        let command = fresh("held-pane", "sess-new", operation);
+        let guard = crate::ports::ContinuityTargetGuard::try_new(
+            "34750f98bd59fcfc946da45aaabe933b",
+            crate::test_support::test_host_id(),
+            &command,
+            b5_fresh_observation("held-pane"),
+        )
+        .unwrap();
+        crate::store::seats::decide_continuity(
+            context,
+            conn,
+            "34750f98bd59fcfc946da45aaabe933b",
+            crate::ports::ContinuityRequest {
+                host_agent_session: Some(reported.to_owned()),
+                host_agent_kind: Some(kind.to_owned()),
+                command,
+                guard,
+                diagnostic: "mismatch",
+                evidence: crate::ports::ContinuityEvidence::Cooperative,
+            },
+        )
+    };
     let (context, mut conn, path) = d3_fixture();
-    let refused = decide(&context, &mut conn, "d3-own", "sess-1").unwrap_err();
+    let refused = decide(&context, &mut conn, "d3-own", "sess-1", "claude").unwrap_err();
     assert_eq!(refused.code, ErrorCode::NotFound, "{refused:?}");
     assert!(kinds(&conn).is_empty());
-    let taken = decide(&context, &mut conn, "d3-other", "sess-unrelated").unwrap();
+    // Review 1, item 2: the seat's session cached under another kind (a fresh agent of another
+    // harness in the pane) is no live session of the seat.
+    let taken = decide(&context, &mut conn, "d3-kind", "sess-1", "codex").unwrap();
     assert!(
         matches!(&taken, CommandResult::ContinuityReattached(r) if r.seat.as_str() == "s1"),
         "{taken:?}"
     );
     assert_eq!(kinds(&conn), vec!["pane_continuity".to_owned()]);
+    drop(conn);
+    let _ = std::fs::remove_file(path);
+}
+
+/// Review 1, item 3: a kept claim of the seat's own session on another Herdr server of the node is
+/// a live session of the seat (C1 can reattach across servers), so pane continuity stands aside.
+#[test]
+fn a_kept_claim_of_the_seats_session_on_another_server_blocks_pane_continuity() {
+    use crate::protocol::results::ErrorCode;
+    let (context, mut conn, path) = d3_fixture();
+    conn.execute(
+        "INSERT INTO herdr_hosts(node_id,endpoint,created_at,host_boot,host_epoch) VALUES ((SELECT id FROM local_node),'other-server',0,'b2',1)",
+        [],
+    )
+    .unwrap();
+    conn.execute(
+        "INSERT INTO kept_continuity_claims(host_id,target_id,harness,native_session,command_json,received_at) VALUES ((SELECT max(host_id) FROM herdr_hosts),'p9','claude','sess-1','{}',1)",
+        [],
+    )
+    .unwrap();
+    let refused = c1_decide(
+        &context,
+        &mut conn,
+        &fresh("held-pane", "sess-new", "d3-xhost"),
+        "absent",
+    )
+    .unwrap_err();
+    assert_eq!(refused.code, ErrorCode::NotFound, "{refused:?}");
+    assert!(kinds(&conn).is_empty());
+    drop(conn);
+    let _ = std::fs::remove_file(path);
+}
+
+/// Review 1, item 4: a claim presenting a continuity key is its key service's role; pane
+/// continuity never gives it a keyless seat's history.
+#[test]
+fn a_keyed_claim_never_takes_a_seat_by_pane_continuity() {
+    use crate::protocol::results::ErrorCode;
+    let (context, mut conn, path) = d3_fixture();
+    let command = crate::protocol::commands::ContinuityCheckIn {
+        continuity_key: Some(crate::protocol::ids::ContinuityKey::new("k-fresh")),
+        ..fresh("held-pane", "sess-new", "d3-keyed")
+    };
+    let refused = c1_decide(&context, &mut conn, &command, "absent").unwrap_err();
+    assert_eq!(refused.code, ErrorCode::NotFound, "{refused:?}");
+    assert!(kinds(&conn).is_empty());
     drop(conn);
     let _ = std::fs::remove_file(path);
 }

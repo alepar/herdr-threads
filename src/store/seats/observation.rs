@@ -3157,7 +3157,11 @@ pub fn record_snapshot(
                 let prior: bool = tx.query_row("SELECT EXISTS(SELECT 1 FROM recovery_baseline_targets WHERE host_id=?1 AND target_id=?2 AND baseline_boot=?3)",
                     params![host.get(),target.target.as_str(),snapshot.boot.as_str()], |r| r.get(0)).map_err(store_error)?;
                 if !new_baseline && prior { continue; }
-                let disposition = if owned { "already_owned" } else if new_baseline && unresolved { "held_for_repair" }
+                // TRUST-POLICY C2 per-target holds (ht-iygh D2): only a target an unresolved seat is
+                // saved at is held for repair; any other unowned target is unclaimed.
+                let saved_unresolved: bool = unresolved && tx.query_row(&format!("SELECT EXISTS(SELECT 1 FROM seats WHERE host_id=?1 AND {LOCAL_SEAT} AND target_id=?2 AND state='unresolved' AND NOT {})", waiting_seat_sql!("seats.id")),
+                    params![host.get(),target.target.as_str()], |r| r.get(0)).map_err(store_error)?;
+                let disposition = if owned { "already_owned" } else if new_baseline && saved_unresolved { "held_for_repair" }
                     else if new_baseline { "unambiguous_unclaimed" } else { "created_after_baseline" };
                 tx.execute("INSERT INTO recovery_baseline_targets(host_id,target_id,baseline_boot,baseline_epoch,captured_at,disposition) VALUES (?1,?2,?3,?4,?5,?6) \
                     ON CONFLICT(host_id,target_id) DO UPDATE SET baseline_boot=excluded.baseline_boot,baseline_epoch=excluded.baseline_epoch,captured_at=excluded.captured_at,disposition=excluded.disposition",

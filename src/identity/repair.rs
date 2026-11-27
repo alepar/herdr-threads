@@ -1125,7 +1125,7 @@ impl OrdinaryIdentity {
         evidence: crate::ports::ContinuityEvidence,
     ) -> (Result<CommandResult, ApiError>, bool) {
         let target = command.target.clone();
-        let (diagnostic, host_agent_session) =
+        let (diagnostic, host_agent_session, host_agent_kind) =
             self.agent_session_diagnostic(&target, &command, budget);
         let result = self.with_read_inner(
             &target,
@@ -1144,6 +1144,7 @@ impl OrdinaryIdentity {
                 self.store.decide_continuity(
                     ContinuityRequest {
                         host_agent_session: host_agent_session.clone(),
+                        host_agent_kind: host_agent_kind.clone(),
                         command,
                         guard,
                         diagnostic,
@@ -1166,7 +1167,7 @@ impl OrdinaryIdentity {
         target: &HostTargetId,
         command: &ContinuityCheckIn,
         budget: &CallBudget,
-    ) -> (&'static str, Option<String>) {
+    ) -> (&'static str, Option<String>, Option<String>) {
         // Its own bounded budget (at most 750 ms) so a slow read cannot
         // consume the whole request budget.
         let bounded = CallBudget {
@@ -1186,13 +1187,13 @@ impl OrdinaryIdentity {
         match self.host.observe_pane_agent(target, &context) {
             Ok(Some(agent)) => match agent.agent_session {
                 Some(session) if session == command.native_session.as_str() => {
-                    ("match", Some(session))
+                    ("match", Some(session), agent.kind)
                 }
-                Some(session) => ("mismatch", Some(session)),
-                None => ("absent", None),
+                Some(session) => ("mismatch", Some(session), agent.kind),
+                None => ("absent", None, agent.kind),
             },
-            Ok(None) => ("absent", None),
-            Err(_) => ("read_error", None),
+            Ok(None) => ("absent", None, None),
+            Err(_) => ("read_error", None, None),
         }
     }
 

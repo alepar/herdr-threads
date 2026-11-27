@@ -879,6 +879,7 @@ fn agent_exit_with_pane_open_keeps_the_seat() {
             INSTANCE,
             crate::ports::ContinuityRequest {
                 host_agent_session: None,
+                host_agent_kind: None,
                 command,
                 guard,
                 diagnostic: "match",

@@ -1952,6 +1952,10 @@ pub struct ContinuityRequest {
     /// diagnostic (hint only). Pane continuity (ht-iygh D3) stands aside when it names a session of
     /// the seat it would give the claim: that session is live in this pane.
     pub host_agent_session: Option<String>,
+    /// Herdr's reported agent kind for that pane, read with it (hint only): pane continuity stands
+    /// aside only when the kind is the one the matching binding's harness declares
+    /// (`HarnessAdapter::host_agent_kind`), the predicate host session continuity applies.
+    pub host_agent_kind: Option<String>,
 }
 
 /// What a C1 reattachment rests on; it selects the provenance recorded in seat history.

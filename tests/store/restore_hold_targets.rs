@@ -72,3 +72,35 @@ fn a_waiting_or_retired_seat_holds_nothing_after_the_pass() {
     drop(conn);
     let _ = std::fs::remove_file(path);
 }
+
+/// Review 1 (ht-iygh D2): a new baseline captured while an unresolved seat already exists writes an
+/// explicit hold only for the saved target of an unresolved seat, never for every unowned target.
+#[test]
+fn a_new_baseline_writes_explicit_holds_only_for_saved_targets() {
+    let (context, mut conn, path, _) = fixture(100);
+    conn.execute(
+        "UPDATE seats SET state='unresolved',target_id='pane-saved' WHERE id='s1'",
+        [],
+    )
+    .unwrap();
+    crate::store::seats::record_snapshot(
+        &context,
+        &mut conn,
+        NODE,
+        crate::test_support::test_host_id(),
+        snapshot_for_test(1, &["pane-saved", "pane-free"]),
+    )
+    .unwrap();
+    let rows: Vec<String> = conn
+        .prepare(
+            "SELECT target_id FROM recovery_holds WHERE released_at IS NULL ORDER BY target_id",
+        )
+        .unwrap()
+        .query_map([], |r| r.get(0))
+        .unwrap()
+        .collect::<Result<_, _>>()
+        .unwrap();
+    assert_eq!(rows, vec!["pane-saved".to_owned()]);
+    drop(conn);
+    let _ = std::fs::remove_file(path);
+}

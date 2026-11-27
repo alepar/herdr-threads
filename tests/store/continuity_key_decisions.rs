@@ -236,6 +236,7 @@ impl Fx {
             INSTANCE,
             ContinuityRequest {
                 host_agent_session: None,
+                host_agent_kind: None,
                 command: command.clone(),
                 guard,
                 diagnostic: "absent",
