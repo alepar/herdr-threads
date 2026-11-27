@@ -244,7 +244,21 @@ pub(crate) fn validate_phase(
         ));
     }
     super::validate_live(db, &identity(request), saved.thread.as_ref())?;
-    seats::eligible_delivery_recipient(db, &request.claim.instance, &request.plan().recipient)
+    recipient_guard(db, request)
+}
+/// The recipient predicate of an automatic phase. `handoff --existing` (a `Delivery` original)
+/// mails a seat that still exists, in any mapping state (D5); a launch (a `Handoff` original)
+/// keeps the live-pane predicate for the seat it launched.
+fn recipient_guard(db: &Connection, request: &AutomaticDeliveryMutation) -> Result<(), ApiError> {
+    let recipient = &request.plan().recipient;
+    match request.original {
+        crate::protocol::handoff::AutomaticOriginal::Delivery(_) => {
+            seats::existing_seat_recipient(db, &request.claim.instance, recipient)
+        }
+        crate::protocol::handoff::AutomaticOriginal::Handoff(_) => {
+            seats::eligible_delivery_recipient(db, &request.claim.instance, recipient)
+        }
+    }
 }
 pub(crate) fn inner(request: &AutomaticDeliveryMutation) -> Result<PermitMutation, ApiError> {
     crate::store::verified::validated("automatic-delivery-request", request, |r| r.validate())?;
@@ -287,11 +301,7 @@ pub(crate) fn query(
                     &identity(request),
                     saved.as_ref().and_then(|v| v.thread.as_ref()),
                 )?;
-                seats::eligible_delivery_recipient(
-                    db,
-                    &request.claim.instance,
-                    &request.plan().recipient,
-                )?;
+                recipient_guard(db, request)?;
             }
             Ok(CommandResult::SeatResolved(
                 request.plan().recipient.clone(),
@@ -438,11 +448,7 @@ pub(crate) fn mutate(
                         }
                     }
                     super::validate_live(tx, &id, None)?;
-                    seats::eligible_delivery_recipient(
-                        tx,
-                        &request.claim.instance,
-                        &request.plan().recipient,
-                    )?;
+                    recipient_guard(tx, request)?;
                     insert(
                         tx,
                         &id,

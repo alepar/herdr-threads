@@ -210,7 +210,8 @@ pub(crate) fn validate_delivery_effect(
             ));
         }
     }
-    super::seats::eligible_delivery_recipient(db, &identity.claim.instance, &identity.recipient)
+    // `handoff --existing --thread`: mail to a seat that still exists (D5).
+    super::seats::existing_seat_recipient(db, &identity.claim.instance, &identity.recipient)
 }
 
 fn recorded_create(

@@ -418,10 +418,7 @@ fn direct_send_is_refused_as_retired() {
         .native_send("s2", &frozen, Some("s1"), &[], None, "window")
         .unwrap_err();
     assert_eq!(window.code, ErrorCode::TargetUnresolved, "{window:?}");
-    assert_eq!(
-        window.detail,
-        "delivery recipient unresolved, held or invalidated"
-    );
+    assert_eq!(window.detail, "delivery recipient retired");
     let today = f
         .native_send("s2", &finalized, Some("s4"), &[], None, "final")
         .unwrap_err();

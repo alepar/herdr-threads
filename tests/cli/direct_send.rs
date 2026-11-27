@@ -959,14 +959,7 @@ fn completed_output_loss_replays_history_without_new_effects() {
 
 #[test]
 fn invalid_target_and_caller_refuse_before_intent_or_pair() {
-    for case in [
-        "self",
-        "missing",
-        "retired",
-        "unresolved",
-        "held",
-        "stale-caller",
-    ] {
+    for case in ["self", "missing", "retired", "stale-caller"] {
         let f = Fixture::new(false);
         match case {
             "retired" => {
@@ -975,13 +968,6 @@ fn invalid_target_and_caller_refuse_before_intent_or_pair() {
                     [],
                 )
                 .unwrap();
-            }
-            "unresolved" => {
-                f.db.execute("UPDATE seats SET state='unresolved' WHERE id='seat-b'", [])
-                    .unwrap();
-            }
-            "held" => {
-                f.db.execute("INSERT INTO recovery_holds(host_id,target_id,baseline_boot,baseline_epoch,reason) VALUES ((SELECT min(host_id) FROM herdr_hosts WHERE node_id=?1),'seat-b','b',1,'operator')", [herdr_threads::node::NodeUuid::from_u128(1).to_string()]).unwrap();
             }
             "stale-caller" => {
                 f.db.execute("UPDATE seats SET generation=2 WHERE id='seat-a'", [])
@@ -1008,6 +994,38 @@ fn invalid_target_and_caller_refuse_before_intent_or_pair() {
             "{case}"
         );
         assert_eq!(f.count("direct_threads"), 0, "{case}");
+    }
+}
+
+/// D5 (ht-iygh): a seat that still exists receives direct mail whatever its mapping state; the
+/// message queues to the seat as for a thread send.
+#[test]
+fn unresolved_waiting_and_held_peers_are_valid_lazy_targets() {
+    for case in ["unresolved", "waiting", "held"] {
+        let f = Fixture::new(false);
+        match case {
+            "unresolved" => {
+                f.db.execute("UPDATE seats SET state='unresolved' WHERE id='seat-b'", [])
+                    .unwrap();
+            }
+            "waiting" => {
+                f.db.execute(
+                    "UPDATE seats SET state='unresolved', target_id=NULL WHERE id='seat-b'",
+                    [],
+                )
+                .unwrap();
+            }
+            _ => {
+                f.db.execute("INSERT INTO recovery_holds(host_id,target_id,baseline_boot,baseline_epoch,reason) VALUES ((SELECT min(host_id) FROM herdr_hosts WHERE node_id=?1),'seat-b','b',1,'operator')", [herdr_threads::node::NodeUuid::from_u128(1).to_string()]).unwrap();
+            }
+        }
+        let sent = f.run(
+            &["send", "--seat", "seat-b", "--body", "hello"],
+            &mut vec![],
+        );
+        assert!(sent.is_ok(), "{case}: {sent:?}");
+        assert_eq!(f.lazy_seats(), ["seat-a", "seat-b"], "{case}");
+        assert_eq!(f.count("direct_threads"), 1, "{case}");
     }
 }
 

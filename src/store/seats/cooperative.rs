@@ -229,6 +229,42 @@ pub(crate) fn require_local_threshold_seat(
     ))
 }
 
+/// Mail's recipient predicate (D5, ht-iygh): a seat that still exists receives mail. A local,
+/// nonretired seat of `instance` qualifies in any mapping state (resolved, unresolved with or
+/// without a target, on a held target or behind a stale observation); its mail queues to the seat
+/// and is delivered once it is resolved or rebound. A remote seat qualifies iff its row is
+/// `remote`. Retired, missing and foreign seats refuse as [`eligible_delivery_recipient`] does.
+/// A path that needs a live pane (launch, attachment) keeps [`eligible_delivery_recipient`].
+pub(crate) fn existing_seat_recipient(
+    db: &Connection,
+    instance: &str,
+    seat: &SeatId,
+) -> Result<(), ApiError> {
+    let row: Option<(String, Option<i64>, Option<i64>)> = db
+        .query_row(
+            "SELECT state,retired_at,retired_seq FROM seats WHERE id=?1 AND instance_id=?2",
+            params![seat.as_str(), instance],
+            |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?)),
+        )
+        .optional()
+        .map_err(store_error)?;
+    match row {
+        None => Err(api_error(
+            ErrorCode::TargetUnresolved,
+            "delivery recipient missing or foreign",
+        )),
+        Some((state, None, None))
+            if matches!(state.as_str(), "resolved" | "unresolved" | "remote") =>
+        {
+            Ok(())
+        }
+        Some(_) => Err(api_error(
+            ErrorCode::TargetUnresolved,
+            "delivery recipient retired",
+        )),
+    }
+}
+
 /// Delivery's current recipient predicate uses canonical continuity without
 /// allocating, binding or requiring a working session on an unbound seat.
 pub(crate) fn eligible_delivery_recipient(

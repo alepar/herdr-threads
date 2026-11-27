@@ -97,28 +97,9 @@ impl RemoteResolver {
     /// Whether this node's own published seat `seat` can take a handoff now: the delivery
     /// recipient rule the daemon applies when it delivers (`eligible_delivery_recipient`).
     fn check(&self, seat: &str) -> AddrOutcome {
-        let decided = self.store.sync_read(&self.budget(), |conn, _| {
-            let row = seat_row(conn, seat).map_err(crate::store::connection::store_error)?;
-            Ok(match row {
-                None | Some(SeatRow { local: false, .. }) => {
-                    Err(format!("seat {seat} does not live on this machine"))
-                }
-                Some(SeatRow {
-                    published: false, ..
-                }) => Err(format!("seat {seat} is not shared with other machines")),
-                Some(_) => {
-                    let instance: String = conn
-                        .query_row("SELECT id FROM local_node", [], |r| r.get(0))
-                        .map_err(crate::store::connection::store_error)?;
-                    crate::store::seats::eligible_delivery_recipient(
-                        conn,
-                        &instance,
-                        &crate::protocol::ids::SeatId::new(seat),
-                    )
-                    .map_err(|error| error.detail)
-                }
-            })
-        });
+        let decided = self
+            .store
+            .sync_read(&self.budget(), |conn, _| check_seat(conn, seat));
         match decided {
             Ok(Ok(())) => AddrOutcome::Eligible,
             Ok(Err(reason)) => AddrOutcome::Ineligible { reason },
@@ -296,6 +277,36 @@ fn pool(
             omitted: 0,
         },
     }
+}
+
+/// The decision behind [`RemoteResolver::check`]: `Ok(Err(reason))` when this node's seat `seat`
+/// cannot take a handoff now.
+pub(crate) fn check_seat(
+    conn: &rusqlite::Connection,
+    seat: &str,
+) -> Result<Result<(), String>, ApiError> {
+    let row = seat_row(conn, seat).map_err(crate::store::connection::store_error)?;
+    Ok(match row {
+        None | Some(SeatRow { local: false, .. }) => {
+            Err(format!("seat {seat} does not live on this machine"))
+        }
+        Some(SeatRow {
+            published: false, ..
+        }) => Err(format!("seat {seat} is not shared with other machines")),
+        Some(_) => {
+            let instance: String = conn
+                .query_row("SELECT id FROM local_node", [], |r| r.get(0))
+                .map_err(crate::store::connection::store_error)?;
+            // Asked only for `handoff --existing` to this node's seat: mail to a seat that
+            // still exists (D5).
+            crate::store::seats::existing_seat_recipient(
+                conn,
+                &instance,
+                &crate::protocol::ids::SeatId::new(seat),
+            )
+            .map_err(|error| error.detail)
+        }
+    })
 }
 
 impl AddrResolver for RemoteResolver {

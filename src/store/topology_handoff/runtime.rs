@@ -442,11 +442,8 @@ impl BootstrapStorePort for SqliteStore {
                             identity,
                             identity.thread.as_ref(),
                         )?;
-                        seats::eligible_delivery_recipient(
-                            tx,
-                            &self.instance,
-                            &identity.recipient,
-                        )?;
+                        // The preparation of the same `--existing` delivery (D5).
+                        seats::existing_seat_recipient(tx, &self.instance, &identity.recipient)?;
                         Ok(CommandResult::SeatResolved(identity.recipient.clone()))
                     }
                     _ => Err(ApiError::invalid_request("not a delivery query")),

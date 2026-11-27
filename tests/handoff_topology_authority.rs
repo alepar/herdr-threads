@@ -2907,3 +2907,60 @@ fn core_session_keeps_its_v1_v2_answers() {
     assert!(session.bootstrap().is_none());
     assert!(session.target_bootstrap().is_some());
 }
+
+/// D5 (ht-iygh): `handoff --existing` reaches a seat that still exists in any mapping state; a
+/// retired peer is still refused.
+#[test]
+fn automatic_existing_delivery_reaches_an_unresolved_or_held_peer() {
+    for (state, sql) in [
+        (
+            "unresolved",
+            "UPDATE seats SET state='unresolved' WHERE id='peer'",
+        ),
+        (
+            "held",
+            "INSERT INTO recovery_holds(host_id,target_id,baseline_boot,baseline_epoch,reason) VALUES ((SELECT min(host_id) FROM herdr_hosts),'peer-pane','b',1,'unresolved saved seat continuity')",
+        ),
+    ] {
+        let f = Fixture::new();
+        let request = automatic_request(&f);
+        f.db.execute_batch(sql).unwrap();
+        assert_eq!(
+            automatic_call(&f, request.clone()).unwrap(),
+            CommandResult::SeatResolved(request.plan().recipient.clone()),
+            "{state}: prepare"
+        );
+        automatic_call(&f, request.begin()).unwrap_or_else(|e| panic!("{state}: {e:?}"));
+        let ensured =
+            automatic_call(&f, request.ensure()).unwrap_or_else(|e| panic!("{state}: {e:?}"));
+        let thread = automatic_selected_thread(&ensured).unwrap().clone();
+        let sent =
+            automatic_call(&f, request.send(thread)).unwrap_or_else(|e| panic!("{state}: {e:?}"));
+        assert!(
+            matches!(sent, CommandResult::MessageSent(_)),
+            "{state}: {sent:?}"
+        );
+        assert!(
+            matches!(automatic_call(&f, request.complete()).unwrap(), CommandResult::Handoff(ref v) if v.state==HandoffState::Completed),
+            "{state}"
+        );
+        assert_eq!(
+            f.db.query_row(
+                "SELECT count(*) FROM messages m JOIN memberships ms ON ms.thread_id=m.thread_id WHERE m.kind='ordinary' AND m.body='work' AND ms.seat_id='peer' AND ms.state='joined'",
+                [],
+                |r| r.get::<_, i64>(0)
+            )
+            .unwrap(),
+            1,
+            "{state}: the handoff message is published to the peer's pair"
+        );
+    }
+    let f = Fixture::new();
+    let request = automatic_request(&f);
+    f.db.execute(
+        "UPDATE seats SET state='retired',retired_at=1 WHERE id='peer'",
+        [],
+    )
+    .unwrap();
+    assert!(automatic_call(&f, request).is_err());
+}

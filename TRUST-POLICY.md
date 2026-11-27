@@ -476,6 +476,12 @@ recovery boot and epoch, a resolved seat whose `MarkUnresolved` keeps being refu
 lift, kept and process continuity and the restored-pane grace: it looks resolved on a dead incarnation, so lifting
 holds or finalizing a no-match past it could seat a session twice. The operator repairs that seat.
 
+Restore holds block resolution, not mail (ht-iygh D5): direct send (`send --seat`, pair ensure) and `handoff
+--existing`, local or through the home node's check, reach a nonretired seat that is unresolved or on a held target,
+as a thread send does; the mail queues to the seat id the sender named, ACK deadlines run from send time (A6) and the
+sender sees `recipient_unavailable`. Pane-form addressing of a held pane and handoffs that launch a pane keep their
+live-pane checks.
+
 **Pane-close retirement (ht-54r.14).** A pane absent from a coherent snapshot of the *same* Herdr
 incarnation retires its seat, however many session bindings the seat holds. The retirement fence disconnects
 every connected binding with reason `seat_retired` through the one `store::bindings::disconnect` transition
@@ -3149,18 +3155,18 @@ These are decisions, not bugs. Each is safe to rely on only as stated.
   retired (the liveness sweep disconnects it once its fingerprinted process is gone, without ending it); a later
   `launch` into the seat records another placeholder, and a wake for it is refused when Herdr's agent kind
   differs from the recorded harness.
-- **Restore costs operator time.** A genuinely new role in a restored pane waits for an explicit choice when
-  cooperative continuity does not apply.
-- **Any invocation of a seat can enter catch-up.** CLI calls cannot tell a seat's top-level agent from its
-  child workers, so any `summary` call by the seat may open its catch-up row. Harmless: workers exist only
-  after the parent's own `summary` entered the row, and an active row keeps its frontier, so repeated or
-  worker calls never move it.
 - **Restore hold covers saved targets only (ht-iygh D2).** Herdr target ids are unique only within one
   incarnation. Herdr 0.9.5's session restore keeps pane ids across a cold restart, but threads does not prove it. If a
   seat's pane comes back under another id and a fresh agent starts there, that agent gets a new seat: the role
   splits. The old seat stays unresolved and, because its saved target is absent, target-absence retirement (G5)
   retires it reversibly after 10 observed minutes. From then on only a resurrect brings it back. A resumed session of
   the old seat in that pane still reattaches by C1 before that, ahead of enrollment.
+- **Restore costs operator time.** A genuinely new role in a restored pane waits for an explicit choice when
+  cooperative continuity does not apply.
+- **Any invocation of a seat can enter catch-up.** CLI calls cannot tell a seat's top-level agent from its
+  child workers, so any `summary` call by the seat may open its catch-up row. Harmless: workers exist only
+  after the parent's own `summary` entered the row, and an active row keeps its frontier, so repeated or
+  worker calls never move it.
 - **Summary blocks name the seat, not the invocation.** A block records its author seat and declared model;
   it does not record whether a child wrote it, because the CLI cannot know.
 - **Optional runtime qualification may be absent.** Core contracts can operate cooperatively without

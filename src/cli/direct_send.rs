@@ -251,7 +251,7 @@ fn inspect<C: LocalClient + ?Sized>(
     client: &C,
     clock: &dyn Clock,
     seat: &SeatId,
-    allow_remote: bool,
+    recipient: bool,
 ) -> Result<crate::protocol::results::SeatInspection, RunError> {
     let result = client.call(
         Command::SeatInspect(SeatInspectQuery {
@@ -266,19 +266,30 @@ fn inspect<C: LocalClient + ?Sized>(
     let CommandResult::SeatInspect(v) = result else {
         return Err(super::invalid_request("missing direct seat inspection"));
     };
-    // A recipient seat of another node has no binding here: it is `remote`, with
-    // no target, and is addressed by id alone (its home node delivers).
-    let remote = allow_remote
-        && v.summary.continuity == ContinuityStatus::Remote
-        && v.mapping.state == ContinuityStatus::Remote;
+    let retired = v.summary.retired_at.is_some() || v.retirement.is_some();
+    if recipient {
+        // A recipient that still exists receives mail in any mapping state (D5): unresolved,
+        // waiting or held mail queues to the seat. A seat of another node has no binding here:
+        // it is `remote`, with no target, and is addressed by id alone (its home node delivers).
+        let existing = matches!(
+            (v.summary.continuity, v.mapping.state),
+            (ContinuityStatus::Remote, ContinuityStatus::Remote)
+                | (
+                    ContinuityStatus::Resolved | ContinuityStatus::Unresolved,
+                    ContinuityStatus::Resolved | ContinuityStatus::Unresolved
+                )
+        );
+        if v.summary.seat != *seat || !existing || retired {
+            return Err(super::invalid_request("direct seat is retired or missing"));
+        }
+        return Ok(v);
+    }
     if v.summary.seat != *seat
-        || !(remote
-            || (v.summary.continuity == ContinuityStatus::Resolved
-                && v.mapping.state == ContinuityStatus::Resolved
-                && v.summary.target.is_some()
-                && v.summary.target == v.mapping.target))
-        || v.summary.retired_at.is_some()
-        || v.retirement.is_some()
+        || !(v.summary.continuity == ContinuityStatus::Resolved
+            && v.mapping.state == ContinuityStatus::Resolved
+            && v.summary.target.is_some()
+            && v.summary.target == v.mapping.target)
+        || retired
         || v.hold.is_some()
     {
         return Err(super::invalid_request(

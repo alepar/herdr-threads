@@ -1241,8 +1241,11 @@ fn unretired_seat_gets_no_rebind_suggestion() {
     assert!(!refusal.detail.contains("s1"), "{}", refusal.detail);
     drop(tx);
     assert_eq!(summary(&f), 0);
-    // The same seat without the row is a blocker: both reads see it.
+    // The same seat without the row is a blocker: both reads see it (the refusal names only a
+    // seat saved at the refused pane, ht-iygh D4).
     db.execute("DELETE FROM reversible_retirements WHERE seat_id='s1'", [])
+        .unwrap();
+    db.execute("UPDATE seats SET target_id='pane' WHERE id='s1'", [])
         .unwrap();
     let tx = db.unchecked_transaction().unwrap();
     let refusal =

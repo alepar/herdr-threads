@@ -346,7 +346,8 @@ fn joined_delivery_skips_invite_and_stages_exact_body_without_launch() {
 }
 #[test]
 fn unsafe_recipient_preparation_refuses_before_any_write() {
-    for state in [ContinuityStatus::Unresolved, ContinuityStatus::Retired] {
+    {
+        let state = ContinuityStatus::Retired;
         let mut client = Client::new(true);
         client.inspection.summary.continuity = state;
         client.inspection.mapping.state = state;
@@ -370,6 +371,39 @@ fn unsafe_recipient_preparation_refuses_before_any_write() {
             )
             .is_err()
         );
+    }
+}
+
+/// D5 (ht-iygh): `handoff --existing` prepares a delivery to a seat that still exists while its
+/// mapping is unresolved (with or without a target), as for a thread send.
+#[test]
+fn unresolved_recipient_preparation_queues_like_a_thread_send() {
+    for target in [true, false] {
+        let mut client = Client::new(true);
+        client.inspection.summary.continuity = ContinuityStatus::Unresolved;
+        client.inspection.mapping.state = ContinuityStatus::Unresolved;
+        if !target {
+            client.inspection.summary.target = None;
+            client.inspection.mapping.target = None;
+        }
+        let claim = fixture::claim();
+        let namespace = fixture::payload().handoff.namespace;
+        let topology = crate::host::observation::HostTopology {
+            spaces: vec![],
+            tabs: vec![],
+            panes: vec![],
+        };
+        let prepared = prepare(
+            &request(),
+            Preparation {
+                claim: &claim,
+                namespace: &namespace,
+                topology: &topology,
+                client: &client,
+                clock: &TestClock,
+            },
+        );
+        assert!(prepared.is_ok(), "target={target}: {prepared:?}");
     }
 }
 
@@ -461,7 +495,7 @@ fn new_unbound_delivery_reuses_exact_children_after_each_lost_reply() {
 }
 
 #[test]
-fn held_foreign_and_launch_only_requests_refuse_before_mutation() {
+fn foreign_and_launch_only_requests_refuse_before_mutation_and_held_prepares() {
     let topology = crate::host::observation::HostTopology {
         spaces: vec![],
         tabs: vec![],
@@ -476,6 +510,7 @@ fn held_foreign_and_launch_only_requests_refuse_before_mutation() {
         )
         .unwrap(),
     );
+    // D5 (ht-iygh): a restore hold blocks resolution, not mail.
     assert!(
         prepare(
             &request(),
@@ -487,7 +522,7 @@ fn held_foreign_and_launch_only_requests_refuse_before_mutation() {
                 clock: &TestClock
             }
         )
-        .is_err()
+        .is_ok()
     );
     let client = Client::new(false);
     let mut foreign = namespace.clone();

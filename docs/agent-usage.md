@@ -287,7 +287,7 @@ herdr-threads send --seat SEAT --require-ack SEAT --body "Please confirm receipt
 herdr-threads human send --seat SEAT --body "A question"
 ```
 
-`--seat` selects the recipient, never the caller. Choose either `send THREAD` (unchanged ordinary thread delivery) or `send --seat SEAT`; a thread and seat cannot be combined. Direct send reuses the instance's canonical channel for that exact pair of seats, independent of names or topics. It never adopts an unrelated manually created thread or follows a retired seat to a replacement. Missing, retired, foreign, unresolved, held or self targets refuse; a resolved unbound recipient is valid.
+`--seat` selects the recipient, never the caller. Choose either `send THREAD` (unchanged ordinary thread delivery) or `send --seat SEAT`; a thread and seat cannot be combined. Direct send reuses the instance's canonical channel for that exact pair of seats, independent of names or topics. It never adopts an unrelated manually created thread or follows a retired seat to a replacement. Missing, retired, foreign or self targets refuse. A seat that still exists is valid in any mapping state: resolved (bound or not), unresolved, or held after a Herdr restart; its mail queues and arrives once the seat is resolved or rebound. An ACK deadline still runs from send time, and the sender sees `recipient_unavailable` as for an unavailable thread member.
 
 Send defaults to priority 1: it freezes the target in the audience without waking it or promising receipt, acceptance or task adoption. `-p N` (0..9, 0 most urgent) sets the priority; an idle seat wakes only for priority at or below its `nudge-threshold` (default 0; negative = every item), and `--nudge` is `-p 0`. Direct `--require-ack` may name only the target seat (duplicates deduplicate); sender/third-seat requests and `--require-ack-pane` refuse (compared after names freeze to seat IDs). Body, deadline and relay rules remain the ordinary send rules.
 
@@ -369,8 +369,9 @@ focus the new tab. No caller identity or routing environment is copied into it.
 
 Delivery requires exactly one existing canonical seat or pane. `--space` and
 `--tab` qualify `--pane` or narrow a `--seat` name. It never allocates,
-moves, rebinds or registers a seat, and unresolved, held, retired or foreign seats
-refuse. Delivery never launches or restarts the peer. It forbids `--kind`,
+moves, rebinds or registers a seat. Retired, missing or foreign seats refuse; an
+unresolved or held seat receives the staged work, which waits until it is resolved
+or rebound. Delivery never launches or restarts the peer. It forbids `--kind`,
 `--harness-binary`, `--name` and `--agent-arg`, ignores launch-option environment,
 and reports `outcome: staged` with participation `joined`, `invited_pending` or
 `staged_unbound`. An unbound resolved seat may receive work; the report does not

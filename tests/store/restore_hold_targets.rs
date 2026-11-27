@@ -15,11 +15,8 @@ fn armed_baseline(targets: &[&str]) -> (StoreContext, Connection, PathBuf) {
     )
     .unwrap();
     // s1 (unresolved by the baseline helper) is saved at `pane-saved`.
-    conn.execute(
-        "UPDATE seats SET target_id='pane-saved' WHERE id='s1'",
-        [],
-    )
-    .unwrap();
+    conn.execute("UPDATE seats SET target_id='pane-saved' WHERE id='s1'", [])
+        .unwrap();
     (context, conn, path)
 }
 

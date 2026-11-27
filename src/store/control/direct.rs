@@ -180,7 +180,8 @@ pub(crate) fn validate_pair_send(
                 "direct recipient and ACK audience must name only the other pair seat",
             ));
         }
-        crate::store::seats::eligible_delivery_recipient(db, &request.claim.instance, recipient)?;
+        // D5: a seat that still exists receives mail in any mapping state.
+        crate::store::seats::existing_seat_recipient(db, &request.claim.instance, recipient)?;
         require_pair_lifecycle(db, &request.thread, caller, recipient)?;
     }
     Ok(())
@@ -284,7 +285,7 @@ pub fn open_pair(
             "direct recipient must differ from caller",
         ));
     }
-    crate::store::seats::eligible_delivery_recipient(tx, instance, recipient)?;
+    crate::store::seats::existing_seat_recipient(tx, instance, recipient)?;
     let (a, b) = if caller < recipient {
         (caller, recipient)
     } else {

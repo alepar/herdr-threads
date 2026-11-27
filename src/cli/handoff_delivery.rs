@@ -321,17 +321,22 @@ fn inspect<C: LocalClient + ?Sized>(
         check_remote(client, clock, seat)?;
         return Ok(found);
     }
+    // A seat that still exists receives the delivery in any mapping state (D5): unresolved,
+    // waiting or held, its mail queues to the seat until it is resolved or rebound.
     if &found.summary.seat != seat
-        || found.summary.continuity != ContinuityStatus::Resolved
-        || found.mapping.state != ContinuityStatus::Resolved
+        || !matches!(
+            found.summary.continuity,
+            ContinuityStatus::Resolved | ContinuityStatus::Unresolved
+        )
+        || !matches!(
+            found.mapping.state,
+            ContinuityStatus::Resolved | ContinuityStatus::Unresolved
+        )
         || found.summary.retired_at.is_some()
         || found.retirement.is_some()
-        || found.hold.is_some()
-        || found.mapping.target.is_none()
-        || found.mapping.target != found.summary.target
     {
         return Err(super::invalid_request(
-            "delivery needs an existing resolved, nonretired, unheld seat",
+            "delivery needs an existing nonretired seat",
         ));
     }
     Ok(found)

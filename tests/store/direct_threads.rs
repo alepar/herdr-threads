@@ -535,18 +535,11 @@ fn ensure_invalid_targets_and_claims_have_no_effects() {
             "s2",
             "UPDATE seats SET state='retired',retired_at=1 WHERE id='s2'",
         ),
-        ("s2", "UPDATE seats SET state='unresolved' WHERE id='s2'"),
-        (
-            "s2",
-            "INSERT INTO recovery_holds(host_id,target_id,baseline_boot,baseline_epoch,reason) VALUES ((SELECT min(host_id) FROM herdr_hosts),'s2','b',1,'held')",
-        ),
+        // An unresolved, held or invalidated seat still exists and receives mail (D5,
+        // `existing_seat_mail`).
         (
             "s2",
             "PRAGMA foreign_keys=OFF; UPDATE seats SET instance_id='foreign' WHERE id='s2'",
-        ),
-        (
-            "s2",
-            "UPDATE observed_targets SET generation=2 WHERE target_id='s2'",
         ),
         (
             "s2",
@@ -1013,21 +1006,14 @@ fn exact_ensure_replay_survives_binding_change_but_fresh_send_refuses() {
 }
 
 #[test]
-fn direct_publication_rechecks_archive_target_retirement_unresolve_and_hold() {
+fn direct_publication_rechecks_archive_and_target_retirement() {
     for (sql, expected) in [
         ("UPDATE threads SET archived=1", ErrorCode::Archived),
         (
             "UPDATE seats SET state='retired',retired_at=1 WHERE id='s2'",
             ErrorCode::TargetUnresolved,
         ),
-        (
-            "UPDATE seats SET state='unresolved' WHERE id='s2'",
-            ErrorCode::TargetUnresolved,
-        ),
-        (
-            "INSERT INTO recovery_holds(host_id,target_id,baseline_boot,baseline_epoch,reason) VALUES ((SELECT min(host_id) FROM herdr_hosts),'s2','b',1,'held')",
-            ErrorCode::TargetUnresolved,
-        ),
+        // Unresolve and hold no longer refuse (D5, `existing_seat_mail`).
     ] {
         let (store, db, path) = store_fixture();
         let t = thread(ensure(&store, "s1", "s2", "guard").unwrap());
@@ -1210,3 +1196,6 @@ fn rejoin_never_reshows_a_lazy_row_displayed_out_of_order() {
 
 #[path = "pair_auto_join.rs"]
 mod pair_auto_join;
+
+#[path = "existing_seat_mail.rs"]
+mod existing_seat_mail;

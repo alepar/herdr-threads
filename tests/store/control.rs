@@ -14058,7 +14058,10 @@ fn restore_hold_health_names_unowned_targets_and_excludes_released_owned_and_for
     assert_eq!(health.held_targets, Some(2));
     let text = health.limitations.join("\n");
     assert!(text.contains("held-a") && text.contains("held-b"), "{text}");
-    assert!(text.contains("a hold lifts when the seat saved at its pane is restored or retires"), "{text}");
+    assert!(
+        text.contains("a hold lifts when the seat saved at its pane is restored or retires"),
+        "{text}"
+    );
     assert_eq!(health.validate(), Ok(()));
     drop(conn);
     let _ = std::fs::remove_file(path);
@@ -14146,11 +14149,7 @@ fn restore_hold_refusal_names_only_the_seat_saved_at_the_target() {
         "{}",
         err.detail
     );
-    assert!(
-        !err.detail.contains("foreign-"),
-        "{}",
-        err.detail
-    );
+    assert!(!err.detail.contains("foreign-"), "{}", err.detail);
     drop(store);
     drop(conn);
     let _ = std::fs::remove_file(path);
