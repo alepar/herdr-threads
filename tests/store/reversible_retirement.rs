@@ -2732,6 +2732,8 @@ impl Fx {
     fn restart_held(&self, seat: &str, how: Held) {
         let db = self.db();
         db.execute("UPDATE seats SET state='unresolved',unresolved_reason='other',generation=generation+1 WHERE id=?1", [seat]).unwrap();
+        // The recovery epoch's first pass has run (its marker names the current boot and epoch).
+        db.execute("UPDATE herdr_hosts SET recovery_boot='b',recovery_epoch=1,reconciled_boot='b',reconciled_epoch=1", []).unwrap();
         match how {
             Held::Row => {
                 db.execute("INSERT INTO recovery_holds(host_id,target_id,baseline_boot,baseline_epoch,reason) VALUES ((SELECT min(host_id) FROM herdr_hosts),?1,'b',1,'unresolved saved seat continuity')", [seat]).unwrap();
@@ -2808,6 +2810,18 @@ fn service_restores_a_restart_held_seat_onto_its_own_pane() {
             0,
             "{how:?}: the old binding ends; the next check-in enrolls"
         );
+        if let Held::Baseline = how {
+            assert_eq!(
+                f.int("SELECT count(*) FROM recovery_baseline_releases WHERE baseline_generation_id='baseline' AND target_id='s1'"),
+                1,
+                "the baseline member is released"
+            );
+            assert_eq!(
+                f.int("SELECT baseline_hold_unclaimed FROM herdr_hosts"),
+                0,
+                "the baseline hold lifts once no unresolved seat remains"
+            );
+        }
         let generation = f.seat_generation("s1");
         assert_eq!(
             f.service_rebind(&f.gate, "s1", "s1", None, "restore")
@@ -2874,9 +2888,32 @@ fn service_restore_refusals() {
     let f = fx(&["s1", "s3"]);
     f.bare("s3");
     f.restart_held("s1", Held::Row);
-    let refused = author(&f, "replace", "s3", Some("s3"));
+    let refused = author(&f, "replace-elsewhere", "s3", Some("s3"));
     assert_eq!(refused.code, ErrorCode::NotFound, "{}", refused.detail);
     assert_untouched(&f, "replace onto another pane");
+    let refused = author(&f, "replace-own", "s1", Some("s3"));
+    assert_eq!(
+        refused.code,
+        ErrorCode::InvalidRequest,
+        "{}",
+        refused.detail
+    );
+    assert_eq!(
+        refused.detail,
+        "a service restores a held seat without replace"
+    );
+    assert_untouched(&f, "replace on its own pane");
+    assert_eq!(f.seat_state("s3"), "resolved", "NEW is not retired");
+
+    // A resolved seat with `replace` is not the no-op.
+    let f = fx(&["s1", "s3"]);
+    f.bare("s3");
+    let refused = f
+        .service_rebind(&f.gate, "s1", "s1", Some("s3"), "resolved-replace")
+        .unwrap_err();
+    assert_eq!(refused.code, ErrorCode::NotFound, "{}", refused.detail);
+    assert!(f.decisions("s1").is_empty());
+    assert_eq!(f.seat_state("s3"), "resolved");
 }
 
 /// Kills (ht-0f0r): a keyed held seat restored by a service that does not own its key.

@@ -90,3 +90,6 @@ Store-level, in `tests/store/reversible_retirement.rs` style fixtures:
 7. Hook in-flight order: the C1 claim of a lifecycle event in a pane read with no seat answered `TargetAlreadyOwned`
    goes on to the ordinary resolver and checks in onto P's owner.
 8. Service session (tests/service): a v4 client gets `SeatAlreadyResolved` and the refusal codes over the wire.
+   Dropped at implementation: the tests/service fixture host is unavailable, so a `ResurrectSeat` there stops at host
+   routing before the store. The store results (tests 1-5), the client's `result_matches` arm and the wire round trip
+   (`src/client/service.rs`, `src/protocol/service.rs`) are tested; the dispatch mapping is the three-line arm between.
