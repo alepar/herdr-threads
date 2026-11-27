@@ -1,9 +1,34 @@
 # Seat restoration after a Herdr restart (ht-iygh)
 
-Status: draft for the coordinator (snSGTpBk7xGd). D1-D3 await the user's decision (root cause and trade-offs sent as
-message mnSGrsoflUST in thread dAV70ibpnBK); D4 and D5 change no invariant. Source: the user's request relayed by the
-Mac aisw tab (sQ0VWtXSQNJM, messages mQ0VgzEsnRBF and mQ0VCUlwoIxh); evidence in mQ0VEmAThRnA and mQ0V9Zq7aYUP
-(files under `/Users/alepar/AleCode/aisw/ht-iygh-diag/` on the Mac).
+Status: revision 2. The user decided D1 (auto-restore, not D1b), D2 and D3 on 2026-11-27 (relayed by the
+coordinator, message mnSGeMLKOAke). Design roast 1 (docs/superpowers/reviews/2026-11-27-seat-restore-roast-design-1.md)
+is folded in below; where the tables further down differ, this section wins. Source: the user's request relayed by
+the Mac aisw tab (sQ0VWtXSQNJM, messages mQ0VgzEsnRBF and mQ0VCUlwoIxh); evidence in mQ0VEmAThRnA and mQ0V9Zq7aYUP.
+
+## Revision 2 (as implemented)
+
+- D1: no migration of the publication. The lane reads Herdr's `agent.get` once per candidate seat, after shell
+  continuity. A Herdr agent kind is declared per harness (`HarnessAdapter::host_agent_kind`: Codex, Claude). Keyed
+  seats and targets with a hold-bearing key-conflict row are excluded (roast 12). The decision opens the session's
+  binding with provenance `host_session_continuity` (A3 row), disconnected with the new reason `host_session_restore`.
+  `dormant_top_level` and `seat_owes_display_sql!` accept that reason, so p <= T wakes it and p > T does not (roast 3,
+  4). No agent or no session reported yet is retried next pass; only a reported other session or kind is declined
+  for 10 minutes. Herdr's cached session is the recorded accepted limit (roast 1): a fresh agent of the same harness
+  in the saved pane gets the outcome D3 grants anyway, and a pre-turn `/resume` into another seat's session behaves
+  as in a pane with no restart.
+- D2: in production every restore hold is the baseline flag; explicit hold rows come only from a test-only legacy
+  path. After the pass of the current recovery epoch, a baseline member is held only while an unresolved, not
+  waiting, local seat is saved at it. Before the pass every member stays held, and the flag and its lift are
+  unchanged, so the pre-pass liveness freeze and ht-0f0r's precondition stay (roast 6, 7). The accepted limit names
+  target-absence retirement (roast 8).
+- D3: lives in the C1 transaction as a `SelectedSeat::Pane` arm. It requires: no binding of a non-retired seat names
+  the claim's session; exactly one unresolved seat (`other`, keyless, not waiting, not a person seat) is saved at the
+  target; no kept claim names its sessions or, other than the claim's own, the target; none of its bindings is
+  connected. During lag such a claim answers `ServiceBusy` and is kept, then decided after the pass. No harness guard,
+  because the Mac's w1A:p2 case is a Claude in a pane last run by Codex, and no recency bound (roast 9).
+- D5: a separate predicate `existing_seat_recipient` for direct send, pair ensure, `handoff --existing` (including
+  the automatic `Delivery` original) and the remote check. Launch and attachment keep `eligible_delivery_recipient`.
+  ACK deadlines follow A6, from send time (roast 2, 10).
 
 ## Requested outcomes
 

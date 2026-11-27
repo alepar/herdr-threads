@@ -166,6 +166,11 @@ pub const STRUCTURAL_SHELL_CONTINUITY_PROVENANCE: &str = "structural_shell_conti
 /// binding the decision opens, disconnected (`host_session_restore`); never on receipts, and it
 /// confers no receipt authority until the session's own check-in connects that binding.
 pub const HOST_SESSION_CONTINUITY_PROVENANCE: &str = "host_session_continuity";
+/// TRUST-POLICY C1 pane continuity (ht-iygh D3): a fresh top-level session's lifecycle claim at
+/// the pane that is the saved target of exactly one unresolved seat, with no live session of that
+/// seat that threads knows of. Seat history (`allocation_decisions.kind`) only; the claiming
+/// session's own binding is the ordinary `cooperative_top_level` one.
+pub const PANE_CONTINUITY_PROVENANCE: &str = "pane_continuity";
 /// TRUST-POLICY A3: Herdr's guarded `agent.start` in this pane was observed
 /// starting the harness and the agent has not checked in. Bindings only (an
 /// unregistered occupant binding the daemon opens after a correlated launch,

@@ -266,6 +266,7 @@ added identity fields; the opt-in read changes no binding, receipt, membership o
 | Process continuity (ht-hsyg) | After a new or unknown Herdr incarnation, a top-level harness binding (not human, `managed_launch` or subagent) of an unresolved seat (reason `other`) that its latest unresolve ended while open and connected, placed under an earlier incarnation than the current one, has a live fingerprinted process (same pid and start stamp, recorded under the current kernel boot id) that is the shell Herdr reports for the seat's saved target in the current incarnation or belongs to the session that shell leads, on that shell's controlling terminal; no other such binding of another seat saved at that target has its process in that pane (or unreadable), no kept C1 claim names the target, the pane has no resolved owner, and the session's unique C1 match is that seat at the judged generation | `structural_process_continuity` |
 | Shell continuity (ht-ma6i.1) | After a new or unknown Herdr incarnation, an unresolved local unnamed seat (reason `other`) on a Herdr host, with a saved target, a recorded fingerprint of an earlier incarnation there and a newest top-level binding that is not `human`, has no live undeclined process continuity candidate, and the shell Herdr reports at that target is the fingerprinted process (same pid and start stamp, recorded under the current kernel boot id), leading its session, on the recorded controlling terminal; no other non-retired seat's fingerprint of the same kernel boot names that process, no other seat saved at that target has its process in that pane (or unreadable), no kept C1 claim names the target, and the pane has no resolved owner. A key conflict row on the target does not block it, and the decision clears the row. No binding opens (*Shell continuity* below) | `structural_shell_continuity` |
 | Host session continuity (ht-iygh) | After a new or unknown Herdr incarnation, an unresolved local unnamed seat (reason `other`) on a Herdr host, holding no continuity key, with a newest top-level binding that is not `human` and a saved target the current publication shows; Herdr's agent record for that pane (one `agent.get` read) names a session equal to the native session of a top-level binding of the seat (not human, `managed_launch` or subagent) that its latest unresolve ended, placed under an earlier incarnation, and a kind equal to the Herdr agent kind that binding's harness adapter declares (`host_agent_kind`; today Codex and Claude). No other non-retired seat has a binding naming that session, no other unresolved seat is saved at the target, no kept C1 claim names the target or one of the seat's top-level sessions, the target has no hold-bearing key conflict row, and the pane has no resolved owner (*Host session continuity* below) | `host_session_continuity` |
+| Pane continuity (ht-iygh D3) | After the host's reconciliation pass of the current recovery epoch, a top-level lifecycle or turn claim on a Herdr host whose harness and native session no binding of a non-retired seat names, at a pane with no resolved owner that is the saved target of exactly one unresolved, local, unnamed, keyless, not waiting, non-person seat left by a new incarnation (reason `other`), when no live session of that seat is known: no kept C1 claim names one of its top-level sessions or, other than the claim's own, the target, and none of its bindings is connected. The claiming session's own binding opens as for any C1 reattachment. During lag such a claim answers `ServiceBusy` and is kept, so the worker decides it after the pass with no further event (*Pane continuity* below) | `pane_continuity` (seat history only) |
 | Continuity key (ht-ma6i.2) | A top-level claim on a Herdr host presenting a reserved key bound to an unresolved seat, at a pane with no resolved owner, its native session matching no unresolved seat but the key's own, or matching the key's seat among others (the key's seat is then chosen). The session need not match any binding: the key is the evidence (*Continuity key* below) | `cooperative_continuity_key` |
 | Operator decision | `ht human seat rebind`, `ht human seat resolve --new-seat`, `ht human seat retire`, `ht human seat rebind --replace` (each with `--operator`). These repairs attribute no person and are not refused in an agent session; the person-attribution override `ht human me init --operator` is (A4 *Agent to human*) | `operator:local-user:<uid>` |
 | Service un-retire (ht-ma6i.3) | `UnretireSeat` by the service that owns the seat's continuity key, for a reversibly retired seat. The mapping only clears: the seat comes back unresolved with no target and no binding; it is placed later by a C1 path like any unresolved seat. | `service_unretire` |
@@ -355,7 +356,8 @@ replay continuity. Resume keeps its existing fresh-target probe even when the ma
 appears resolved, and a lifecycle event presenting a continuity key probes the same way: a restored
 pane keeps its id, so a fresh keyed agent's pane can read resolved until the first pass, and its
 claim must be kept then, because it may have no later event. Both claims use the same canonical unique-candidate and ownership
-guards; neither permits a new native session to take an old seat. Subagents, child
+guards; neither permits a new native session to take an old seat except through *Pane continuity*
+(ht-iygh D3), which needs the pane to be the saved target of exactly one unresolved seat. Subagents, child
 agent ids, `plugin_context:` sessions, human and `managed_launch` candidate bindings
 remain excluded. Claims and replay are cooperative, not process attestation. Existing
 resume operation digests stay compatible; `same_session` has a separate digest domain.
@@ -3095,7 +3097,8 @@ These are decisions, not bugs. Each is safe to rely on only as stated.
   for the claimed (old) session in the same process and pane. The pane's role is the right one; the open binding
   names the old session until the new session's next check-in on the now-resolved pane replaces it (one watch
   restart, or the next hook). Wakes typed into the pane reach the live session. The new session never takes a
-  seat through C1: only a binding of the claimed session matches.
+  seat through session-matching C1: only a binding of the claimed session matches (pane continuity, ht-iygh D3, is
+  the separate pane-locator path).
 - **A kept claim is decided at most one backoff step after Herdr returns (ht-dtx0).** The observation lane
   retries a frozen capture with capped backoff (up to 30 s); the kept claims are decided after the first
   reconciliation pass that follows.
@@ -3161,8 +3164,17 @@ These are decisions, not bugs. Each is safe to rely on only as stated.
   splits. The old seat stays unresolved and, because its saved target is absent, target-absence retirement (G5)
   retires it reversibly after 10 observed minutes. From then on only a resurrect brings it back. A resumed session of
   the old seat in that pane still reattaches by C1 before that, ahead of enrollment.
-- **Restore costs operator time.** A genuinely new role in a restored pane waits for an explicit choice when
-  cooperative continuity does not apply.
+- **Restore costs operator time only for real ambiguity (ht-iygh D3).** A fresh agent in a restored pane takes the
+  seat saved there by *Pane continuity*; an operator choice is needed only when two unresolved seats are saved at
+  that pane, the seat holds a continuity key (its service decides), or a live session of the seat is known.
+- **Pane continuity attributes a restored pane's seat to a new session (ht-iygh D3).** The pane locator is the
+  evidence, as in a pane with no restart: a genuinely new role started in a restored pane inherits the old seat's
+  threads, memberships and pending obligations, and its first ACK of the old seat's mail is attributed to the old
+  seat by a session that never saw that mail before (the mail is delivered to it first). "No live session" is what
+  threads knows (kept claims and connected bindings), not Herdr's view of other panes: a session of the old seat
+  resumed in another pane and not yet heard from later finds the seat taken and enrolls where it is. With per-target
+  holds (C2) the two decisions together leave no restart hold on a fresh start: it gets its pane's seat, or a new
+  seat in a pane no unresolved seat is saved at.
 - **Any invocation of a seat can enter catch-up.** CLI calls cannot tell a seat's top-level agent from its
   child workers, so any `summary` call by the seat may open its catch-up row. Harmless: workers exist only
   after the parent's own `summary` entered the row, and an active row keeps its frontier, so repeated or
@@ -3551,6 +3563,19 @@ every C1 guard, and opens that session's binding disconnected as a dormant wake 
 rejection of waking on Herdr's agent field (*Managed launch binding*) for that one shape; the accepted limit *Host
 session continuity trusts Herdr's cached session* records the cost. Rejected: waiting for the session's first turn
 (the reported symptom). Design:
+`docs/superpowers/specs/2026-11-27-seat-restore-after-restart-design.md`.
+
+### Pane continuity and per-target holds (2026-11-27, ht-iygh D2, D3)
+
+A fresh `claude` started in its seat's own restored pane was refused check-in (`target has unresolved seat mapping`)
+and needed a user-typed operator rebind after every cold Herdr restart, while one unresolved seat held every pane of
+the server. Decision (user, 2026-11-27, framed as the no-restart behaviour: a new session in a pane joins that pane's
+seat): C1 *Pane continuity* gives a fresh top-level claim the one unresolved seat saved at its pane when no live
+session of that seat is known, and C2 holds only the saved targets of unresolved seats once the pass has run. Kept
+guards: no resolved owner, no kept claim, a unique saved seat, the pass of the current recovery epoch; keyed seats stay
+their service's. Rejected: a harness-equality guard (the reported case was a Claude in a pane last run by Codex) and a
+recency bound (a daemon restart moves the recovery epoch). Accepted limits *Pane continuity attributes a restored
+pane's seat to a new session* and *Restore hold covers saved targets only*. Design:
 `docs/superpowers/specs/2026-11-27-seat-restore-after-restart-design.md`.
 
 ### Process continuity across a Herdr live handoff (2026-10-31, ht-hsyg)

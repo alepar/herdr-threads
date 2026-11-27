@@ -96,6 +96,90 @@ fn session_may_become_candidate(
     .map_err(store_error)
 }
 
+/// Whether a local, non-retired seat of `host` other than a named one is saved at `target`.
+fn pane_has_saved_seat(
+    tx: &Transaction<'_>,
+    host: crate::ports::HostId,
+    target: &str,
+) -> Result<bool, ApiError> {
+    tx.query_row(
+        &format!("SELECT EXISTS(SELECT 1 FROM seats WHERE host_id=?1 AND target_id=?2 AND {LOCAL_SEAT} AND state IN ('resolved','unresolved') AND name IS NULL)"),
+        params![host.get(), target],
+        |r| r.get(0),
+    )
+    .map_err(store_error)
+}
+
+/// TRUST-POLICY C1 pane continuity (ht-iygh D3, the user's decision of 2026-11-27): a top-level
+/// claim whose session no seat's binding names, at a Herdr pane that is the saved target of exactly
+/// one unresolved, local, unnamed, keyless, not waiting, non-person seat a new incarnation left
+/// (reason `other`), after the host's pass of the current recovery epoch, takes that seat when no
+/// live session of it is known: no kept claim names one of its top-level sessions or, other than
+/// this claim's own, the target. A no-restart pane behaves the same way: a new session there joins
+/// the pane's seat.
+fn pane_continuity_seat(
+    tx: &Transaction<'_>,
+    instance: &str,
+    host: crate::ports::HostId,
+    command: &crate::protocol::commands::ContinuityCheckIn,
+) -> Result<Option<SeatId>, ApiError> {
+    if reconciliation_lags(tx, host)? {
+        return Ok(None);
+    }
+    let named_session: bool = tx
+        .query_row(
+            "SELECT EXISTS(SELECT 1 FROM occupant_bindings b JOIN seats s ON s.id=b.seat_id WHERE s.instance_id=?1 AND s.state<>'retired' AND b.harness=?2 AND b.native_session=?3)",
+            params![instance, command.harness.as_str(), command.native_session.as_str()],
+            |r| r.get(0),
+        )
+        .map_err(store_error)?;
+    if named_session {
+        return Ok(None);
+    }
+    let mut statement = tx
+        .prepare(&format!(
+            "SELECT s.id FROM seats s JOIN herdr_hosts h ON h.host_id=s.host_id \
+             WHERE s.instance_id=?1 AND s.host_id=?2 AND s.target_id=?3 AND s.state='unresolved' \
+             AND s.unresolved_reason='other' AND {SHELL_SEAT_SCOPE} AND {NOT_A_PERSON_SEAT} \
+             AND NOT {} LIMIT 2",
+            super::reversible::waiting_seat_sql!("s.id")
+        ))
+        .map_err(store_error)?;
+    let seats = statement
+        .query_map(
+            params![instance, host.get(), command.target.as_str()],
+            |r| r.get::<_, String>(0),
+        )
+        .map_err(store_error)?
+        .collect::<Result<Vec<_>, _>>()
+        .map_err(store_error)?;
+    let [seat] = seats.as_slice() else {
+        return Ok(None);
+    };
+    let seat = SeatId::new(seat.clone());
+    if continuity_keys::key_of_seat(tx, &seat)?.is_some() {
+        return Ok(None);
+    }
+    let live: bool = tx
+        .query_row(
+            "SELECT EXISTS(SELECT 1 FROM kept_continuity_claims k WHERE k.host_id=?1 AND ( \
+               (k.target_id=?2 AND NOT (k.harness=?3 AND k.native_session=?4)) \
+               OR EXISTS(SELECT 1 FROM occupant_bindings b WHERE b.seat_id=?5 AND b.role='top_level' AND b.agent_id='' \
+                  AND b.harness=k.harness AND b.native_session=k.native_session))) \
+             OR EXISTS(SELECT 1 FROM occupant_bindings b WHERE b.seat_id=?5 AND b.ended_at IS NULL AND b.liveness='connected')",
+            params![
+                host.get(),
+                command.target.as_str(),
+                command.harness.as_str(),
+                command.native_session.as_str(),
+                seat.as_str()
+            ],
+            |r| r.get(0),
+        )
+        .map_err(store_error)?;
+    Ok((!live).then_some(seat))
+}
+
 /// Schema deltas 12 (ht-hsyg), 16 (ht-ma6i.5), 19 (ht-eu3v) and 20 (ht-iygh): copy every seat-history decision into the table
 /// that admits the new kinds. Ordinals are kept, so the AUTOINCREMENT sequence follows.
 pub(crate) fn copy_allocation_decisions(conn: &Connection) -> Result<(), ApiError> {
@@ -336,6 +420,9 @@ enum SelectedSeat {
     Keyed(SeatId),
     None,
     Several(Vec<SeatId>),
+    /// TRUST-POLICY C1 pane continuity (ht-iygh D3): the session matches no seat, and the claim's
+    /// target is the saved pane of exactly one unresolved seat with no live session.
+    Pane(SeatId),
 }
 
 impl ContinuitySelection {
@@ -415,6 +502,9 @@ impl ContinuitySelection {
             None,
         )?;
         match candidates.len() {
+            // Pane continuity rests on the claim's own target, never on a pinned judgement.
+            0 if self.pinned.is_none() => Ok(pane_continuity_seat(tx, instance, host, command)?
+                .map_or(SelectedSeat::None, SelectedSeat::Pane)),
             0 => Ok(SelectedSeat::None),
             1 => {
                 let seat = candidates.remove(0);
@@ -856,7 +946,9 @@ pub fn decide_continuity(
                 ));
             }
             let seat = match selection.select(tx, &instance, host, &command, keyed.as_ref())? {
-                SelectedSeat::One(seat) | SelectedSeat::Keyed(seat) => seat,
+                SelectedSeat::One(seat) | SelectedSeat::Keyed(seat) | SelectedSeat::Pane(seat) => {
+                    seat
+                }
                 SelectedSeat::None => {
                     // Until the first reconciliation pass of the current
                     // recovery epoch has run, "no unresolved seat" only says the
@@ -865,9 +957,13 @@ pub fn decide_continuity(
                     // seats, never adds bindings, so a session no seat's
                     // binding names can never become a candidate: its answer
                     // is final now, whatever the lag (ht-kaw9).
+                    // ht-iygh D3: while it lags, a claim at the saved pane of an unresolved
+                    // (or still resolved, pre-pass) seat may become a pane continuity claim once
+                    // the pass has run, so it is kept rather than refused.
                     return Err(
                         if reconciliation_lags(tx, host)?
-                            && session_may_become_candidate(tx, &instance, harness, session)?
+                            && (session_may_become_candidate(tx, &instance, harness, session)?
+                                || pane_has_saved_seat(tx, host, target.as_str())?)
                         {
                             api_error(
                                 ErrorCode::ServiceBusy,
@@ -966,6 +1062,9 @@ pub fn decide_continuity(
                     seat,
                     crate::protocol::authority::COOPERATIVE_CONTINUITY_KEY_PROVENANCE,
                 ),
+                SelectedSeat::Pane(seat) => {
+                    (seat, crate::protocol::authority::PANE_CONTINUITY_PROVENANCE)
+                }
                 SelectedSeat::None | SelectedSeat::Several(_) => {
                     return Err(api_error(ErrorCode::Conflict, "continuity match changed"));
                 }

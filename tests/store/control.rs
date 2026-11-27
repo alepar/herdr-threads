@@ -14657,3 +14657,6 @@ fn continuity_keys_alert_only_row_clears_when_its_owner_moves() {
 
 #[path = "restore_hold_targets.rs"]
 mod restore_hold_targets;
+
+#[path = "pane_continuity.rs"]
+mod pane_continuity;

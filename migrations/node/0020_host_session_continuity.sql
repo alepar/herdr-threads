@@ -6,7 +6,7 @@ CREATE TABLE allocation_decisions_new (
     host_id INTEGER NOT NULL REFERENCES herdr_hosts(host_id),
     target_id TEXT NOT NULL,
     seat_id TEXT NOT NULL,
-    kind TEXT NOT NULL CHECK(kind IN ('ordinary', 'operator_fresh', 'operator_rebind', 'operator_retire', 'operator_human_override', 'cooperative_continuity', 'structural_process_continuity', 'structural_shell_continuity', 'cooperative_continuity_key', 'service_unretire', 'service_finalize', 'operator_unretire', 'window_finalize', 'service_rebind', 'host_session_continuity')),
+    kind TEXT NOT NULL CHECK(kind IN ('ordinary', 'operator_fresh', 'operator_rebind', 'operator_retire', 'operator_human_override', 'cooperative_continuity', 'structural_process_continuity', 'structural_shell_continuity', 'cooperative_continuity_key', 'service_unretire', 'service_finalize', 'operator_unretire', 'window_finalize', 'service_rebind', 'host_session_continuity', 'pane_continuity')),
     decided_at INTEGER NOT NULL,
     host_boot TEXT NOT NULL,
     epoch INTEGER NOT NULL CHECK(epoch >= 0),
