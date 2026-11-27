@@ -8,7 +8,7 @@
   [
     4149464,
     [
-      "/var/home/alepar/.local/bin/codex",
+      "~/.local/bin/codex",
       "--no-daemon",
       "--approve-for-me",
       "--dangerously-bypass-hook-trust",

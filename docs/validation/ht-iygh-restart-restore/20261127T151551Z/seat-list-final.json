@@ -20,7 +20,7 @@
           "directory": {
             "activity_at": 1795792661605,
             "harness": "human",
-            "machine": "blacky",
+            "machine": "<host>",
             "node": "760",
             "pane": "w2:p1",
             "state": "idle",
@@ -47,7 +47,7 @@
           "directory": {
             "activity_at": 1795792658975,
             "harness": "claude",
-            "machine": "blacky",
+            "machine": "<host>",
             "node": "760",
             "pane": "w1:p2",
             "state": "idle",
@@ -74,7 +74,7 @@
           "directory": {
             "activity_at": 1795792795738,
             "harness": "codex",
-            "machine": "blacky",
+            "machine": "<host>",
             "node": "760",
             "pane": "w1:p1",
             "state": "idle",

@@ -1,9 +1,12 @@
 #!/usr/bin/env python3
 """Reproduce ht-iygh: seats after a cold Herdr restart with session restore, in a PRIVATE Herdr server.
 
-  python3 scripts/restart-restore-e2e.py --expect current|fixed [--bin PATH] [--herdr PATH] [--keep]
+  python3 scripts/restart-restore-e2e.py --expect current|fixed --codex-auth-home DIR [--bin PATH]
+      [--herdr PATH] [--keep]
 
-Run from an ordinary shell, never inside Herdr. Everything lives under one fresh root /tmp/hrr.XXXXXX: the
+Run from an ordinary shell, never inside Herdr, and outside any agent's process tree (for example
+`setsid -f env -i HOME="$HOME" PATH="$PATH" python3 ...`), or the CLI attributes its calls to that agent.
+`--codex-auth-home` names a Codex home whose auth.json is copied, mode 0600, into the scratch CODEX_HOME. Everything lives under one fresh root /tmp/hrr.XXXXXX: the
 Herdr API socket, config (`default_shell = '/bin/sh'`, no user plugins), XDG config/state/runtime dirs, a
 scratch HOME with CODEX_HOME=$HOME/.codex and a scratch CLAUDE_CONFIG_DIR, and the herdr-threads state dir.
 Inherited HERDR_*, HC_*, CODEX_*, CLAUDE* caller variables are scrubbed. The shared Herdr server, the real
@@ -17,7 +20,8 @@ Scenario: workspace W with pane A (a real Codex, one tiny prompt) and pane B (a 
 SessionStart hook under a `CLAUDE_PID` shell). Cold restart: `herdr server stop`, then a new `herdr server` on
 the same root. Observe the seats, start a fresh stand-in Claude in B, send p1 then p0 to A's seat from a person
 seat made after the restart, and record whether Codex wakes. Evidence: docs/validation/ht-iygh-restart-restore/
-<UTC>/ (report.md, raw JSON, pane captures; credentials redacted). Exit 0 iff every assertion of --expect holds.
+<UTC>/ (report.md, raw JSON, pane captures; credentials redacted; the repo root reads <repo>, $HOME ~, the
+hostname <host>). Exit 0 iff every assertion of --expect holds.
 Cleanup always runs (with --keep too): daemon, Herdr server, every process naming the root, the root itself.
 """
 from __future__ import annotations
@@ -29,6 +33,7 @@ import re
 import shlex
 import shutil
 import signal
+import socket
 import subprocess
 import sys
 import tempfile
@@ -37,7 +42,6 @@ import uuid
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parent.parent
-CODEX_AUTH = Path("/var/home/alepar/.aisw/profiles/codex/codex-2/auth.json")
 SCRUB_PREFIXES = ("HERDR_", "HC_", "CODEX_", "CLAUDE", "TMUX")
 SCRUB_NAMES = ("AI_AGENT", "HERMES_SESSION_ID", "ANTIGRAVITY_CONVERSATION_ID", "ANTIGRAVITY_AGENT",
                "PI_CODING_AGENT", "OPENCODE", "ANTHROPIC_API_KEY", "OPENROUTER_API_KEY", "GEMINI_API_KEY")
@@ -123,7 +127,8 @@ class Driver:
     def redact(self, text):
         for s in self.secrets:
             text = text.replace(s, "[REDACTED]")
-        return re.sub(r"eyJ[A-Za-z0-9_\-]{20,}\.[A-Za-z0-9_\-.]+", "[REDACTED-JWT]", text)
+        text = re.sub(r"eyJ[A-Za-z0-9_\-]{20,}\.[A-Za-z0-9_\-.]+", "[REDACTED-JWT]", text)
+        return scrub_paths(text)
 
     def save(self, name, data):
         text = data if isinstance(data, str) else json.dumps(data, indent=2, sort_keys=True)
@@ -291,7 +296,7 @@ class Driver:
 
     # ---------- setup ----------
     def setup(self):
-        self.secrets = [s for d in walk(json.loads(CODEX_AUTH.read_text()))
+        self.secrets = [s for d in walk(json.loads(self.args.codex_auth.read_text()))
                         for s in d.values() if isinstance(s, str) and len(s) >= 16]
         (self.state / "node").mkdir(mode=0o700, exist_ok=True)
         (self.state / "node/settings.json").write_text(json.dumps({"sync": {"discover": False}}) + "\n")
@@ -308,7 +313,7 @@ class Driver:
         self.facts["herdr_integration_install_codex"] = {"rc": rc, "out": out.strip()[-500:], "err": err.strip()[-500:]}
         dest = self.codex_home / "auth.json"
         fd = os.open(dest, os.O_WRONLY | os.O_CREAT | os.O_EXCL | os.O_NOFOLLOW, 0o600)
-        with os.fdopen(fd, "wb") as f, open(CODEX_AUTH, "rb") as src:
+        with os.fdopen(fd, "wb") as f, open(self.args.codex_auth, "rb") as src:
             shutil.copyfileobj(src, f)
         cfg = self.codex_home / "config.toml"
         text = cfg.read_text() if cfg.exists() else ""
@@ -659,6 +664,19 @@ class Driver:
         return ok
 
 
+def scrub_paths(text):
+    """Evidence is committed to a public repository: the repo root reads <repo>, $HOME reads ~ and
+    the hostname reads <host>."""
+    home = str(Path.home())
+    text = text.replace(str(ROOT), "<repo>")
+    if home and home != "/":
+        text = text.replace(home, "~")
+    host = socket.gethostname()
+    if host:
+        text = re.sub(rf"\b{re.escape(host)}\b", "<host>", text)
+    return text
+
+
 def main():
     ap = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     ap.add_argument("--expect", choices=("current", "fixed"), required=True)
@@ -666,13 +684,18 @@ def main():
     ap.add_argument("--herdr", help="herdr binary (default: the one on PATH)")
     ap.add_argument("--observe-s", type=int, default=90)
     ap.add_argument("--evidence-dir")
-    ap.add_argument("--keep", action="store_true", help="copy the scratch root (minus credentials) into the evidence")
+    ap.add_argument("--codex-auth-home", required=True,
+                    help="Codex home whose auth.json is copied (mode 0600) into the scratch CODEX_HOME; read only")
+    ap.add_argument("--keep", action="store_true",
+                    help="copy the scratch root (minus credentials, paths not scrubbed) into the evidence; local diagnosis only")
     args = ap.parse_args()
     if os.environ.get("HERDR_ENV") == "1" or os.environ.get("HERDR_PANE_ID"):
         print("restart-restore-e2e: run from an ordinary shell, not inside Herdr", file=sys.stderr)
         return 2
-    if not os.access(args.bin, os.X_OK) or not CODEX_AUTH.exists():
-        print(f"restart-restore-e2e: need an executable --bin ({args.bin}) and {CODEX_AUTH}", file=sys.stderr)
+    args.codex_auth = Path(args.codex_auth_home).expanduser() / "auth.json"
+    if not os.access(args.bin, os.X_OK) or not args.codex_auth.is_file():
+        print(f"restart-restore-e2e: need an executable --bin ({args.bin}) and --codex-auth-home/auth.json",
+              file=sys.stderr)
         return 2
     d = Driver(args)
     for k, argv in (("bin_version", [d.bin, "--version"]), ("herdr_version", [d.herdr_bin, "--version"])):

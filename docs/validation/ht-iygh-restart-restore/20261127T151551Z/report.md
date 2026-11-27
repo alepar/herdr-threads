@@ -1,8 +1,8 @@
 # ht-iygh restart-restore e2e (20261127T151551Z)
 
 - expect: `fixed`  result: **PASS**
-- candidate: `/var/home/alepar/AleCode/herdr-threads/.worktrees/ht-iygh/bin/herdr-threads` (herdr-threads 3.6.0)
-- herdr: `/var/home/alepar/.local/bin/herdr` (herdr 0.9.5)
+- candidate: `<repo>/bin/herdr-threads` (herdr-threads 3.6.0)
+- herdr: `~/.local/bin/herdr` (herdr 0.9.5)
 
 - PASS [both, gates] pre: A has a seat (Codex hook enrolled): `seat=s760FsylCIen session=01a21d93-c7e5-7f32-a9eb-19b771480f3c`
 - PASS [both, gates] pre: B has a seat (stand-in SessionStart): `seat=s760FwCjspgd hook_rc=0`
@@ -10,7 +10,7 @@
 - PASS [both, gates] restart: new Herdr server process: `pid 4148612 -> 4149364`
 - PASS [both, gates] restart: pane ids kept: `A=w1:p1 B=w1:p2`
 - PASS [both, gates] restart: terminal ids new: `before={'w1:p1': 'term_661438921898b1', 'w1:p2': 'term_66143892191c02'} after={'w1:p1': 'term_6614389e3bc1c1', 'w1:p2': 'term_6614389e3bfa82'}`
-- PASS [both, gates] restart: pane A runs `codex ... resume <session>`: `/var/home/alepar/.local/bin/codex --no-daemon --approve-for-me --dangerously-bypass-hook-trust resume 01a21d93-c7e5-7f32-a9eb-19b771480f3c`
+- PASS [both, gates] restart: pane A runs `codex ... resume <session>`: `~/.local/bin/codex --no-daemon --approve-for-me --dangerously-bypass-hook-trust resume 01a21d93-c7e5-7f32-a9eb-19b771480f3c`
 - PASS [both, gates] restart: herdr agent get A agent_session == session: `agent=codex agent_session=01a21d93-c7e5-7f32-a9eb-19b771480f3c`
 - PASS [info, not gating] observe: codex stayed idle (no prompt sent): `idle`
 - FAIL [current, not gating] current: A's seat unresolved, not restored: `state=resolved decisions=['host_session_continuity']`

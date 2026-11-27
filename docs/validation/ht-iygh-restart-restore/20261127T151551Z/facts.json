@@ -2,7 +2,7 @@
   "bin_version": "herdr-threads 3.6.0",
   "claude_session_1": "8d9d0175-babb-4060-a2fb-1a430b99eb12",
   "claude_session_2": "a7cd08da-4e7d-4306-ada6-74ac71ddcfc2",
-  "claude_session_start_command": "'/var/home/alepar/AleCode/herdr-threads/.worktrees/ht-iygh/bin/herdr-threads' '--state-dir' '/tmp/hrr.1q9iuw21/ht-state' '--host-endpoint' '/tmp/hrr.1q9iuw21/h.sock' 'hook-event' 'claude' 'SessionStart'",
+  "claude_session_start_command": "'<repo>/bin/herdr-threads' '--state-dir' '/tmp/hrr.1q9iuw21/ht-state' '--host-endpoint' '/tmp/hrr.1q9iuw21/h.sock' 'hook-event' 'claude' 'SessionStart'",
   "codex_rollouts": [
     "rollout-2026-11-27T07-15-53-01a21d93-c7e5-7f32-a9eb-19b771480f3c.jsonl"
   ],

@@ -7,7 +7,7 @@
       {
         "hooks": [
           {
-            "command": "'/var/home/alepar/AleCode/herdr-threads/.worktrees/ht-iygh/bin/herdr-threads' '--state-dir' '/tmp/hrr.1q9iuw21/ht-state' '--host-endpoint' '/tmp/hrr.1q9iuw21/h.sock' 'hook-event' 'claude' 'PreToolUse'",
+            "command": "'<repo>/bin/herdr-threads' '--state-dir' '/tmp/hrr.1q9iuw21/ht-state' '--host-endpoint' '/tmp/hrr.1q9iuw21/h.sock' 'hook-event' 'claude' 'PreToolUse'",
             "timeout": 10,
             "type": "command"
           }
@@ -19,7 +19,7 @@
       {
         "hooks": [
           {
-            "command": "'/var/home/alepar/AleCode/herdr-threads/.worktrees/ht-iygh/bin/herdr-threads' '--state-dir' '/tmp/hrr.1q9iuw21/ht-state' '--host-endpoint' '/tmp/hrr.1q9iuw21/h.sock' 'hook-event' 'claude' 'SessionStart'",
+            "command": "'<repo>/bin/herdr-threads' '--state-dir' '/tmp/hrr.1q9iuw21/ht-state' '--host-endpoint' '/tmp/hrr.1q9iuw21/h.sock' 'hook-event' 'claude' 'SessionStart'",
             "timeout": 10,
             "type": "command"
           }
@@ -30,7 +30,7 @@
       {
         "hooks": [
           {
-            "command": "'/var/home/alepar/AleCode/herdr-threads/.worktrees/ht-iygh/bin/herdr-threads' '--state-dir' '/tmp/hrr.1q9iuw21/ht-state' '--host-endpoint' '/tmp/hrr.1q9iuw21/h.sock' 'hook-event' 'claude' 'Stop'",
+            "command": "'<repo>/bin/herdr-threads' '--state-dir' '/tmp/hrr.1q9iuw21/ht-state' '--host-endpoint' '/tmp/hrr.1q9iuw21/h.sock' 'hook-event' 'claude' 'Stop'",
             "timeout": 10,
             "type": "command"
           }
@@ -41,7 +41,7 @@
       {
         "hooks": [
           {
-            "command": "'/var/home/alepar/AleCode/herdr-threads/.worktrees/ht-iygh/bin/herdr-threads' '--state-dir' '/tmp/hrr.1q9iuw21/ht-state' '--host-endpoint' '/tmp/hrr.1q9iuw21/h.sock' 'hook-event' 'claude' 'StopFailure'",
+            "command": "'<repo>/bin/herdr-threads' '--state-dir' '/tmp/hrr.1q9iuw21/ht-state' '--host-endpoint' '/tmp/hrr.1q9iuw21/h.sock' 'hook-event' 'claude' 'StopFailure'",
             "timeout": 10,
             "type": "command"
           }
@@ -52,7 +52,7 @@
       {
         "hooks": [
           {
-            "command": "'/var/home/alepar/AleCode/herdr-threads/.worktrees/ht-iygh/bin/herdr-threads' '--state-dir' '/tmp/hrr.1q9iuw21/ht-state' '--host-endpoint' '/tmp/hrr.1q9iuw21/h.sock' 'hook-event' 'claude' 'SubagentStart'",
+            "command": "'<repo>/bin/herdr-threads' '--state-dir' '/tmp/hrr.1q9iuw21/ht-state' '--host-endpoint' '/tmp/hrr.1q9iuw21/h.sock' 'hook-event' 'claude' 'SubagentStart'",
             "timeout": 10,
             "type": "command"
           }
@@ -63,7 +63,7 @@
       {
         "hooks": [
           {
-            "command": "'/var/home/alepar/AleCode/herdr-threads/.worktrees/ht-iygh/bin/herdr-threads' '--state-dir' '/tmp/hrr.1q9iuw21/ht-state' '--host-endpoint' '/tmp/hrr.1q9iuw21/h.sock' 'hook-event' 'claude' 'SubagentStop'",
+            "command": "'<repo>/bin/herdr-threads' '--state-dir' '/tmp/hrr.1q9iuw21/ht-state' '--host-endpoint' '/tmp/hrr.1q9iuw21/h.sock' 'hook-event' 'claude' 'SubagentStop'",
             "timeout": 10,
             "type": "command"
           }
@@ -74,7 +74,7 @@
       {
         "hooks": [
           {
-            "command": "'/var/home/alepar/AleCode/herdr-threads/.worktrees/ht-iygh/bin/herdr-threads' '--state-dir' '/tmp/hrr.1q9iuw21/ht-state' '--host-endpoint' '/tmp/hrr.1q9iuw21/h.sock' 'hook-event' 'claude' 'UserPromptSubmit'",
+            "command": "'<repo>/bin/herdr-threads' '--state-dir' '/tmp/hrr.1q9iuw21/ht-state' '--host-endpoint' '/tmp/hrr.1q9iuw21/h.sock' 'hook-event' 'claude' 'UserPromptSubmit'",
             "timeout": 10,
             "type": "command"
           }
