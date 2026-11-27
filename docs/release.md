@@ -2,6 +2,31 @@
 
 ## Current release status
 
+[v3.7.0 is published](https://github.com/alepar/herdr-threads/releases/tag/v3.7.0) from source `93bd37093`, a minor release: **seats come back on their own after a cold Herdr restart** (ht-iygh). One-way store upgrade to node schema 20 (migration 0020: the `allocation_decisions` kinds `host_session_continuity` and `pane_continuity`). No peer wire change; peer wire frozen in `tests/fixtures/peer_wire/3.7.0` (generated at `be11958cc`; the `--at v3.7.0 --check` differs only in the MANIFEST's `at`/`commit` lines). Five changes:
+- C1 *Host session continuity* restores a keyless seat whose saved pane Herdr reports running that seat's last hook-registered session, and opens it as a dormant wake target. The session's next hook, or a Claude mod's channel registration, connects it.
+- C1 *Pane continuity* gives a fresh top-level session the one unresolved keyless seat saved at its pane.
+- C2 per-target holds: after the reconciliation pass only unresolved seats' saved panes stay held.
+- Direct sends and `handoff --existing` reach unresolved or held seats.
+- A refused check-in names only the seat saved at that pane.
+
+The user decided D1-D3 (the two new provenance values and the per-target hold limit); TRUST-POLICY is amended in the same commits with the accepted limits *Host session continuity trusts Herdr's cached session*, *Restore hold covers saved targets only* and *Pane continuity attributes a restored pane's seat to a new session*. Reported from the Mac after a reboot left every seat unresolved and one seat holding every pane.
+
+Review and fixes:
+- The owner ran a design roast and a diff roast, and reproduced a cold restart on a private Herdr (`scripts/restart-restore-e2e.py --expect fixed`).
+- An independent review by main found no Blocking and two Should-fix, both fixed with causal tests: a host-wide explicit hold writer, and pane continuity standing aside without a kind check. It also found a cross-server liveness gap and the keyed-claim case, both fixed.
+- The owner's full suite then caught a real defect: an idle Claude mod session restored before its watch claimed it could never connect its channel. Fixed.
+- Unfiltered suite 9943/9943 with clean leak checks on the merged source.
+- CI on the merge failed deterministically on a test race: the new restore can win against a test's resume hook. Fixed test-only in `236c77a66`.
+
+**Qualification** on `be11958cc` (`release-qualify --self-test`): fmt, neutral, wire-compat, both clippy variants, default features, candidate, upstream, wake self-test, Herdr matrix, package lifecycle and installers passed. The suite passed 9943/9943 in 1096 s (reported FAIL only for the 300 s budget). Wake e2e against Herdr 0.9.5: Codex 60/60, Claude 60/60.
+
+**CI**:
+- Run [46057436514](https://github.com/alepar/herdr-threads/actions/runs/46057436514) passed.
+- On `236c77a66`, one shard needed a rerun after an apt 403 from the runner's package mirror before any test ran.
+- Release run [46060269760](https://github.com/alepar/herdr-threads/actions/runs/46060269760) passed.
+
+The archives check out: digests, 14 files, VERSION 3.7.0, modes, licenses, install.sh equals main's, clean credential scan.
+
 [v3.6.0 is published](https://github.com/alepar/herdr-threads/releases/tag/v3.6.0) from source `7c3c09082`, a minor release: **optional queue wake for macOS Codex** (ht-8t52) and **service restore of a seat held by a Herdr restart** (ht-0f0r), plus `PersistentServiceClient::with_level` for a v4 service session (ht-lzhi), herdr-core 0.1.22 in the tested set, and the macOS symlinked-path fix (a herdr-core terminal's CLI no longer misses its own seat). No store schema change and no peer wire change; peer wire frozen in `tests/fixtures/peer_wire/3.6.0` (generated at `8891bb114`; the `--at v3.6.0 --check` differs only in the MANIFEST's `at`/`commit` lines). `ResurrectSeat` gains the result `SeatAlreadyResolved` (service protocol, v4 only). TRUST-POLICY amended with the changes: the restart-held case of `service_rebind`, the macOS queue limits (undetected in-place executable rewrite, zombie-group delay) and the shared queue limit that concurrent decisions can stale a reservation, which then falls back to native typed wake (follow-up ht-c877).
 
 **Qualification** on `8891bb114` (`release-qualify --self-test`): fmt, neutral, wire-compat, both clippy variants, default features, candidate, upstream, wake self-test, Herdr matrix, package lifecycle and installers passed. The suite ran 9902/9904: the two failures (`install_sh_runs_setup_without_herdr`, `install_sh_with_stub_herdr_byte_identical`) read the `XDG_STATE_HOME` that `release-qualify` itself exports; both pass on the candidate with it unset and fail with it set (ht-jdjp; the v3.5.0 record's attribution of these two to `CODEX_HOME` was wrong). Wake e2e against Herdr 0.9.5: Codex 60/60, Claude 60/60. macOS queue wake was qualified by its owner on the Mac at `838000591`: native clippy and tests, `wake-e2e.py --harness codex --queue-proof` 60/60 (26 rows queue Accepted, 2 `mixed-order` rows native through the accepted stale-authority fallback), `resume-idle`/`resume-quit` 2/2. ht-0f0r and ht-lzhi: owner design and PR roasts, independent review by main, unfiltered Linux suite with clean leak checks on the merged source. **CI** run [45941523367](https://github.com/alepar/herdr-threads/actions/runs/45941523367) passed; release run [45943637040](https://github.com/alepar/herdr-threads/actions/runs/45943637040) passed. The archives check out (digests, 14 files, VERSION 3.6.0, modes, licenses, install.sh equals main's, clean credential scan).
