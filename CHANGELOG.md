@@ -1,5 +1,25 @@
 # Changelog
 
+## v3.7.0
+
+Minor release: seats come back on their own after a cold Herdr restart.
+
+One-way store upgrade to node schema 20. Older binaries that support at most schema 19 refuse an upgraded store.
+
+### Added
+
+- **Resumed sessions get their seats back after a cold Herdr restart (ht-iygh).** Herdr keeps pane ids across a restart but gives the panes new terminals, so every seat became unresolved, and a resumed Codex TUI runs no hook until its next turn. Now, once the restart is reconciled, a keyless seat whose saved pane Herdr reports running that seat's last hook-registered session (same harness kind) is restored automatically (provenance `host_session_continuity`). Its binding opens as a dormant wake target, so a `p <= T` item wakes the idle session, and the session's next hook, or a Claude mod's channel registration, connects it. The seat confers no receipt authority until then.
+- **A fresh agent in a restored pane takes that pane's seat (ht-iygh).** A new top-level session in a pane that is the saved spot of exactly one unresolved keyless seat, with no live session of that seat known, takes that seat (provenance `pane_continuity`), as a new session in a pane does without a restart. It no longer needs an operator `seat rebind`. A claim carrying a continuity key is left to its service.
+
+### Changed
+
+- **Restart holds are per pane (ht-iygh).** After the restart reconciliation pass, only the saved panes of unresolved seats stay held. One unresolved seat no longer blocks check-in in every pane on the server. Before the pass every pane stays held, as before.
+- **Mail reaches unresolved and held seats (ht-iygh).** `send --seat`, pair creation and `handoff --existing` now deliver to a nonretired seat that is unresolved or on a held pane, as a thread send already did. The mail waits for the seat and the sender sees `recipient_unavailable`. Handoffs that launch a pane keep their live-pane checks. Across nodes, an older home node still refuses until it upgrades.
+
+### Fixed
+
+- **A refused check-in names the right rebind candidate (ht-iygh).** It lists only the seat saved at that pane, instead of the first three unresolved seats on the server.
+
 ## v3.6.0
 
 Minor release: macOS queue wake for Codex, and service restore of a seat held by a Herdr restart.
