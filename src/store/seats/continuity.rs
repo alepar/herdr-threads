@@ -157,7 +157,9 @@ fn pane_continuity_seat(
         return Ok(None);
     };
     let seat = SeatId::new(seat.clone());
-    if continuity_keys::key_of_seat(tx, &seat)?.is_some() {
+    if continuity_keys::key_of_seat(tx, &seat)?.is_some()
+        || continuity_keys::hold_kind(tx, host, command.target.as_str())?.is_some()
+    {
         return Ok(None);
     }
     let live: bool = tx
@@ -1663,7 +1665,9 @@ pub fn decide_shell_continuity(
 /// that the seat's latest unresolve ended (placed at the generation it bumped from) under an
 /// earlier incarnation than the published one, while it was open: connected (`seat_unresolved`) or
 /// itself a restored binding no check-in had connected yet (`host_session_restore`).
-const HOST_SESSION_BINDING: &str = "b.role='top_level' AND b.agent_id='' AND b.harness<>'human' AND b.observation_provenance<>'managed_launch' \
+// Hook-registered sessions only (a `cooperative_top_level` binding, or one a previous restore
+// reopened): their next hook connects the restored binding, and their wake is content-free.
+const HOST_SESSION_BINDING: &str = "b.role='top_level' AND b.agent_id='' AND b.harness<>'human' AND b.observation_provenance IN ('cooperative_top_level','host_session_continuity') \
      AND b.native_session<>'' AND substr(b.native_session,1,15)<>'plugin_context:' \
      AND b.ended_at IS NOT NULL AND b.disconnect_reason IN ('seat_unresolved','host_session_restore') \
      AND b.generation=s.generation-1 AND b.incarnation IS NOT NULL AND b.incarnation<>g.incarnation";
@@ -1749,10 +1753,10 @@ fn host_session_candidate_stands(
     seat: &SeatId,
     harness: &str,
     session: &str,
-) -> Result<Option<String>, ApiError> {
+) -> Result<Option<(String, String)>, ApiError> {
     tx.query_row(
         &format!(
-            "SELECT b.execution_id FROM seats s JOIN herdr_hosts h ON h.host_id=s.host_id \
+            "SELECT b.execution_id,b.binding_id FROM seats s JOIN herdr_hosts h ON h.host_id=s.host_id \
              JOIN snapshot_generations g ON g.id=h.active_snapshot_id AND g.status='published' \
              JOIN snapshot_targets t ON t.generation_id=g.id AND t.target_id=s.target_id \
              JOIN occupant_bindings b ON b.seat_id=s.id \
@@ -1760,7 +1764,7 @@ fn host_session_candidate_stands(
              AND b.harness=?4 AND b.native_session=?5 ORDER BY b.ordinal DESC LIMIT 1"
         ),
         params![seat.as_str(), host.get(), target, harness, session],
-        |r| r.get(0),
+        |r| Ok((r.get(0)?, r.get(1)?)),
     )
     .optional()
     .map_err(store_error)
@@ -1858,6 +1862,9 @@ pub fn decide_host_session_continuity(
     let session_id = crate::protocol::ids::NativeSessionId::parse(native_session.clone())
         .map_err(|_| api_error(ErrorCode::InvalidRequest, "invalid native session"))?;
     let execution = std::cell::RefCell::new(String::new());
+    // The ended binding the restore succeeds: the new one inherits its read positions and display
+    // marks, as a C1 reopen keeps them.
+    let ended = std::cell::RefCell::new(String::new());
     schema::execute_idempotent_transaction(
         context,
         conn,
@@ -1917,7 +1924,8 @@ pub fn decide_host_session_continuity(
                     "host session evidence no longer names this seat's binding; no seat moved",
                 ));
             };
-            *execution.borrow_mut() = standing;
+            *execution.borrow_mut() = standing.0;
+            *ended.borrow_mut() = standing.1;
             if generation == i64::MAX {
                 return Err(api_error(
                     ErrorCode::SequenceExhausted,
@@ -2010,13 +2018,15 @@ pub fn decide_host_session_continuity(
                 observed_at: at.utc,
                 registered_at: None,
             };
+            let lineage = crate::protocol::ids::BindingId::parse(ended.borrow().clone())
+                .map_err(|_| api_error(ErrorCode::StoreCorrupt, "invalid ended binding id"))?;
             let enrolled = bindings::enroll(
                 tx,
                 &bindings::EnrollRequest {
                     key: &key,
                     role: bindings::BindingRole::TopLevel,
                     parent: None,
-                    lineage: None,
+                    lineage: Some(&lineage),
                     fingerprint: None,
                     placement: &placement,
                     trigger: bindings::EnrollTrigger::PlainCall,

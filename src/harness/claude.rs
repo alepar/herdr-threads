@@ -995,7 +995,7 @@ impl HarnessAdapter for ClaudeAdapter {
     /// A hook-registered binding's turn start injects the pending items (`UserPromptSubmit`), so
     /// its native wake is content-free; other evidence keeps the `inbox` marker.
     fn binding_wake_text(&self, provenance: Option<&str>) -> &'static str {
-        if provenance == Some(crate::protocol::authority::COOPERATIVE_TOP_LEVEL_PROVENANCE) {
+        if crate::protocol::authority::hook_registered(provenance) {
             crate::notification::policy::WAKE_UP
         } else {
             crate::notification::policy::MARKER

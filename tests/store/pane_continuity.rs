@@ -193,3 +193,25 @@ fn a_session_of_another_seat_never_takes_the_pane_seat_by_pane_continuity() {
     drop(conn);
     let _ = std::fs::remove_file(path);
 }
+
+#[test]
+fn a_holding_key_conflict_on_the_pane_leaves_it_to_its_key() {
+    use crate::protocol::results::ErrorCode;
+    let (context, mut conn, path) = d3_fixture();
+    conn.execute(
+        "INSERT INTO continuity_key_conflicts(host_id,target_id,key,kind,seat_id,first_seen_at,updated_at) VALUES ((SELECT min(host_id) FROM herdr_hosts),'held-pane','k-1','key_live_elsewhere','s2',1,1)",
+        [],
+    )
+    .unwrap();
+    let refused = c1_decide(
+        &context,
+        &mut conn,
+        &fresh("held-pane", "sess-new", "d3-keyrow"),
+        "absent",
+    )
+    .unwrap_err();
+    assert_eq!(refused.code, ErrorCode::NotFound, "{refused:?}");
+    assert!(kinds(&conn).is_empty());
+    drop(conn);
+    let _ = std::fs::remove_file(path);
+}

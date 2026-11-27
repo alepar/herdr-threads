@@ -1457,7 +1457,7 @@ impl HarnessAdapter for CodexAdapter {
         &["CODEX_HOME"]
     }
     fn binding_wake_text(&self, provenance: Option<&str>) -> &'static str {
-        if provenance == Some(crate::protocol::authority::COOPERATIVE_TOP_LEVEL_PROVENANCE) {
+        if crate::protocol::authority::hook_registered(provenance) {
             crate::notification::policy::WAKE_UP
         } else {
             crate::notification::policy::MARKER
@@ -1466,7 +1466,7 @@ impl HarnessAdapter for CodexAdapter {
     /// Only a hook-registered binding (`cooperative_top_level`) has turn hooks; a plain-CLI or
     /// managed-launch binding reads its mail through `inbox` alone.
     fn binding_turn_delivery(&self, provenance: Option<&str>) -> bool {
-        provenance == Some(crate::protocol::authority::COOPERATIVE_TOP_LEVEL_PROVENANCE)
+        crate::protocol::authority::hook_registered(provenance)
     }
     /// Herdr's session restore re-runs `codex resume <session>` in the saved pane and reports
     /// that session as the pane's `agent_session`; the TUI runs no hook until its first turn.

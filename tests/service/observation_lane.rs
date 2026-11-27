@@ -1613,8 +1613,8 @@ fn a_mismatch_decides_nothing_and_is_declined_ten_minutes() {
         assert_eq!(rig.agent_reads(), 2, "{what}: read again after ten minutes");
     }
 
-    // Herdr reporting no agent or no session yet (a resume still starting) is no decline:
-    // the next pass reads again, and decides once the session is reported.
+    // Herdr reporting no agent or no session yet (a resume still starting) is no ten-minute
+    // decline: the pane is read again after a minute, and decides once the session is reported.
     for (what, session) in [("no agent", None), ("no session", Some(None))] {
         let mut rig = Rig::new();
         rig.start();
@@ -1630,12 +1630,13 @@ fn a_mismatch_decides_nothing_and_is_declined_ten_minutes() {
                 },
             );
         }
-        for reads in 1..=2 {
-            rig.identity.decide_host_session_continuity().unwrap();
-            assert_eq!(rig.agent_reads(), reads, "{what}: retried next pass");
-        }
-        rig.agent_at("pane", "codex", "sess-a");
         rig.identity.decide_host_session_continuity().unwrap();
+        rig.identity.decide_host_session_continuity().unwrap();
+        assert_eq!(rig.agent_reads(), 1, "{what}: not re-read within a minute");
+        rig.agent_at("pane", "codex", "sess-a");
+        rig.clock.0.fetch_add(60 * 1000, Ordering::SeqCst);
+        rig.identity.decide_host_session_continuity().unwrap();
+        assert_eq!(rig.agent_reads(), 2, "{what}: read again after a minute");
         assert_eq!(rig.seat_state("resumed"), "resolved", "{what}");
     }
 

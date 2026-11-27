@@ -166,6 +166,15 @@ pub const STRUCTURAL_SHELL_CONTINUITY_PROVENANCE: &str = "structural_shell_conti
 /// binding the decision opens, disconnected (`host_session_restore`); never on receipts, and it
 /// confers no receipt authority until the session's own check-in connects that binding.
 pub const HOST_SESSION_CONTINUITY_PROVENANCE: &str = "host_session_continuity";
+/// Whether a binding's provenance is a hook-registered top-level session: `cooperative_top_level`,
+/// or `host_session_continuity`, which restores only such a session (ht-iygh D1). Selects wake text
+/// and turn delivery only, never authority.
+pub fn hook_registered(provenance: Option<&str>) -> bool {
+    matches!(
+        provenance,
+        Some(COOPERATIVE_TOP_LEVEL_PROVENANCE | HOST_SESSION_CONTINUITY_PROVENANCE)
+    )
+}
 /// TRUST-POLICY C1 pane continuity (ht-iygh D3): a fresh top-level session's lifecycle claim at
 /// the pane that is the saved target of exactly one unresolved seat, with no live session of that
 /// seat that threads knows of. Seat history (`allocation_decisions.kind`) only; the claiming

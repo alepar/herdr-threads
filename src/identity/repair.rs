@@ -117,6 +117,9 @@ pub struct OrdinaryIdentity {
     /// out, by (seat, generation, native session), with when: same cap, TTL and eviction as
     /// `process_declined`.
     host_session_declined: std::sync::Mutex<std::collections::HashMap<HostSessionDeclineKey, u64>>,
+    /// When a seat's pane last showed no agent or no session (ht-iygh D1): read again after
+    /// [`HOST_SESSION_ABSENT_RETRY_MS`].
+    host_session_absent: std::sync::Mutex<std::collections::HashMap<HostSessionDeclineKey, u64>>,
     /// The last seat C1 host session continuity walked; `None` starts over.
     host_session_cursor: std::sync::Mutex<Option<SeatId>>,
     /// The kernel facts shell continuity reads.
@@ -134,6 +137,9 @@ type HostSessionDeclineKey = (SeatId, u64, String);
 const PROCESS_DECLINED_CAP: usize = 1024;
 /// How long a C1 process continuity decline stands before the candidate is read again.
 const PROCESS_DECLINE_TTL_MS: u64 = 10 * 60 * 1000;
+/// How soon host session continuity reads a pane again whose Herdr agent record named no agent or no
+/// session (ht-iygh D1): a resume can still be starting.
+const HOST_SESSION_ABSENT_RETRY_MS: u64 = 60 * 1000;
 
 impl OrdinaryIdentity {
     pub fn new(
@@ -162,6 +168,7 @@ impl OrdinaryIdentity {
             shell_record_cursor: std::sync::Mutex::new(None),
             shell_decide_cursor: std::sync::Mutex::new(None),
             host_session_declined: std::sync::Mutex::new(std::collections::HashMap::new()),
+            host_session_absent: std::sync::Mutex::new(std::collections::HashMap::new()),
             host_session_cursor: std::sync::Mutex::new(None),
             processes: Arc::new(crate::host::process_table::HostProcessTable),
             observation_cadence_millis: crate::identity::reconcile::DEFAULT_SNAPSHOT_CADENCE_MILLIS,
@@ -952,11 +959,13 @@ impl OrdinaryIdentity {
                 break;
             }
             let open = candidate.sessions.iter().any(|(_, session)| {
-                !decline_stands(
-                    &self.host_session_declined,
-                    &host_session_decline_key(candidate, session),
-                    now,
-                )
+                let key = host_session_decline_key(candidate, session);
+                !decline_stands(&self.host_session_declined, &key, now)
+                    && !self.host_session_absent.lock().is_ok_and(|absent| {
+                        absent.get(&key).is_some_and(|at| {
+                            now.saturating_sub(*at) < HOST_SESSION_ABSENT_RETRY_MS
+                        })
+                    })
             });
             if open {
                 self.judge_host_session_candidate(candidate, &budget);
@@ -988,12 +997,21 @@ impl OrdinaryIdentity {
         let Some((harness, session)) = matched else {
             // Right after a cold restart Herdr may not report the resumed agent or its session
             // yet (on the 2026-11-21 Mac restart the pass ran before Codex finished resuming):
-            // no agent, no kind or no session is retried next pass; only a reported other
-            // session or kind is a mismatch to decline.
+            // no agent, no kind or no session is read again after a minute; only a reported
+            // other session or kind is a mismatch declined for ten.
             let reported = observed
                 .as_ref()
                 .is_some_and(|agent| agent.agent_session.is_some() && agent.kind.is_some());
             if !reported {
+                // Re-read after a minute, not ten: the resume may still be starting, but a pane
+                // whose agent is gone must not cost an `agent.get` every pass.
+                for (_, session) in &candidate.sessions {
+                    remember_decline(
+                        &self.host_session_absent,
+                        host_session_decline_key(candidate, session),
+                        self.clock.monotonic_now().0,
+                    );
+                }
                 return;
             }
             for (_, session) in &candidate.sessions {

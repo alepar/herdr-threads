@@ -430,12 +430,11 @@ fn candidates_list_only_unkeyed_agent_seats_at_a_published_target() {
         vec![&eligible]
     );
     assert_eq!(candidates[0].target.as_str(), "p1");
+    // Only hook-registered sessions: the plain-CLI `cooperative_env_session` binding has no hook
+    // to connect a restored binding (roast diff 1, finding 2).
     assert_eq!(
         candidates[0].sessions,
-        vec![
-            ("claude".to_owned(), "sess-b".to_owned()),
-            ("codex".to_owned(), "sess-a".to_owned())
-        ]
+        vec![("codex".to_owned(), "sess-a".to_owned())]
     );
     // Before the new incarnation nothing is listed: the unresolve's binding must be of an earlier one.
     let mut same = Fx::new(&["p1"]);
@@ -791,4 +790,20 @@ fn the_sessions_own_check_in_connects_the_restored_binding() {
         lazy_delivery::dormant_top_level(&fx.conn, seat.as_str()).unwrap(),
         None
     );
+}
+
+/// Roast diff 1, finding 1: a restored binding's wake is content-free (R18), as for the
+/// hook-registered binding it succeeds, and it keeps turn delivery.
+#[test]
+fn a_restored_binding_gets_the_content_free_wake_and_turn_delivery() {
+    let registry = crate::harness::registry::builtins();
+    let restored = Some(crate::protocol::authority::HOST_SESSION_CONTINUITY_PROVENANCE);
+    for harness in ["codex", "claude"] {
+        assert_eq!(
+            registry.binding_wake_text(harness, restored),
+            crate::notification::policy::WAKE_UP,
+            "{harness}"
+        );
+    }
+    assert!(registry.binding_turn_delivery("codex", restored));
 }
