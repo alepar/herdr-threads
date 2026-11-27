@@ -4475,6 +4475,7 @@ mod cross_server_continuity {
             &mut servers.conn,
             NODE,
             ContinuityRequest {
+                host_agent_session: None,
                 command: command.clone(),
                 guard,
                 diagnostic: "match",

@@ -9411,6 +9411,7 @@ fn c1_decide(
         conn,
         "34750f98bd59fcfc946da45aaabe933b",
         crate::ports::ContinuityRequest {
+            host_agent_session: None,
             command: command.clone(),
             guard,
             diagnostic,
@@ -9688,6 +9689,7 @@ fn process_continuity_lists_the_unresolved_bindings_and_records_its_own_kind() {
             &mut conn,
             "34750f98bd59fcfc946da45aaabe933b",
             crate::ports::ContinuityRequest {
+                host_agent_session: None,
                 command,
                 guard,
                 diagnostic: "absent",
@@ -9723,6 +9725,7 @@ fn process_continuity_lists_the_unresolved_bindings_and_records_its_own_kind() {
             &mut conn,
             "34750f98bd59fcfc946da45aaabe933b",
             crate::ports::ContinuityRequest {
+                host_agent_session: None,
                 command,
                 guard,
                 diagnostic: "absent",
@@ -9756,6 +9759,7 @@ fn process_continuity_lists_the_unresolved_bindings_and_records_its_own_kind() {
         &mut conn,
         "34750f98bd59fcfc946da45aaabe933b",
         crate::ports::ContinuityRequest {
+            host_agent_session: None,
             command,
             guard,
             diagnostic: "absent",
@@ -9851,6 +9855,7 @@ fn process_continuity_refuses_named_and_cross_kind_seats() {
             conn,
             INSTANCE,
             crate::ports::ContinuityRequest {
+                host_agent_session: None,
                 command,
                 guard,
                 diagnostic: "absent",

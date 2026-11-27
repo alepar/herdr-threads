@@ -1125,7 +1125,8 @@ impl OrdinaryIdentity {
         evidence: crate::ports::ContinuityEvidence,
     ) -> (Result<CommandResult, ApiError>, bool) {
         let target = command.target.clone();
-        let diagnostic = self.agent_session_diagnostic(&target, &command, budget);
+        let (diagnostic, host_agent_session) =
+            self.agent_session_diagnostic(&target, &command, budget);
         let result = self.with_read_inner(
             &target,
             budget,
@@ -1142,6 +1143,7 @@ impl OrdinaryIdentity {
                 let _turn = self.writer.enter_foreground(budget, self.clock.as_ref())?;
                 self.store.decide_continuity(
                     ContinuityRequest {
+                        host_agent_session: host_agent_session.clone(),
                         command,
                         guard,
                         diagnostic,
@@ -1157,13 +1159,14 @@ impl OrdinaryIdentity {
     }
 
     /// Compare Herdr's reported agent session for the pane with the claimed native
-    /// session id. Diagnostic only (C1): the value is stored for seat inspect.
+    /// session id. Diagnostic only (C1): the value is stored for seat inspect. The reported
+    /// session itself goes with the request as a hint for pane continuity to stand aside.
     fn agent_session_diagnostic(
         &self,
         target: &HostTargetId,
         command: &ContinuityCheckIn,
         budget: &CallBudget,
-    ) -> &'static str {
+    ) -> (&'static str, Option<String>) {
         // Its own bounded budget (at most 750 ms) so a slow read cannot
         // consume the whole request budget.
         let bounded = CallBudget {
@@ -1182,12 +1185,14 @@ impl OrdinaryIdentity {
         };
         match self.host.observe_pane_agent(target, &context) {
             Ok(Some(agent)) => match agent.agent_session {
-                Some(session) if session == command.native_session.as_str() => "match",
-                Some(_) => "mismatch",
-                None => "absent",
+                Some(session) if session == command.native_session.as_str() => {
+                    ("match", Some(session))
+                }
+                Some(session) => ("mismatch", Some(session)),
+                None => ("absent", None),
             },
-            Ok(None) => "absent",
-            Err(_) => "read_error",
+            Ok(None) => ("absent", None),
+            Err(_) => ("read_error", None),
         }
     }
 

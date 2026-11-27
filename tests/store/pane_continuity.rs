@@ -215,3 +215,46 @@ fn a_holding_key_conflict_on_the_pane_leaves_it_to_its_key() {
     drop(conn);
     let _ = std::fs::remove_file(path);
 }
+
+/// Herdr reports the seat's own session in the claimed pane: it is live there, so the fresh claim
+/// takes nothing and host session continuity (or that session's own claim) restores the seat.
+/// Another reported session (a stale cache, or the claimant's own) does not stop it.
+#[test]
+fn herdr_naming_the_seats_own_session_in_the_pane_makes_pane_continuity_stand_aside() {
+    use crate::protocol::results::ErrorCode;
+    let decide =
+        |context: &StoreContext, conn: &mut Connection, operation: &str, reported: &str| {
+            let command = fresh("held-pane", "sess-new", operation);
+            let guard = crate::ports::ContinuityTargetGuard::try_new(
+                "34750f98bd59fcfc946da45aaabe933b",
+                crate::test_support::test_host_id(),
+                &command,
+                b5_fresh_observation("held-pane"),
+            )
+            .unwrap();
+            crate::store::seats::decide_continuity(
+                context,
+                conn,
+                "34750f98bd59fcfc946da45aaabe933b",
+                crate::ports::ContinuityRequest {
+                    host_agent_session: Some(reported.to_owned()),
+                    command,
+                    guard,
+                    diagnostic: "mismatch",
+                    evidence: crate::ports::ContinuityEvidence::Cooperative,
+                },
+            )
+        };
+    let (context, mut conn, path) = d3_fixture();
+    let refused = decide(&context, &mut conn, "d3-own", "sess-1").unwrap_err();
+    assert_eq!(refused.code, ErrorCode::NotFound, "{refused:?}");
+    assert!(kinds(&conn).is_empty());
+    let taken = decide(&context, &mut conn, "d3-other", "sess-unrelated").unwrap();
+    assert!(
+        matches!(&taken, CommandResult::ContinuityReattached(r) if r.seat.as_str() == "s1"),
+        "{taken:?}"
+    );
+    assert_eq!(kinds(&conn), vec!["pane_continuity".to_owned()]);
+    drop(conn);
+    let _ = std::fs::remove_file(path);
+}

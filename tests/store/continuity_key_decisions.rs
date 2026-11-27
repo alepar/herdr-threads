@@ -235,6 +235,7 @@ impl Fx {
             &mut self.conn,
             INSTANCE,
             ContinuityRequest {
+                host_agent_session: None,
                 command: command.clone(),
                 guard,
                 diagnostic: "absent",

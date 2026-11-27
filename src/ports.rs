@@ -1948,6 +1948,10 @@ pub struct ContinuityRequest {
     pub guard: ContinuityTargetGuard,
     pub diagnostic: &'static str,
     pub evidence: ContinuityEvidence,
+    /// The native session Herdr's agent record reports for the claim's pane, read with the
+    /// diagnostic (hint only). Pane continuity (ht-iygh D3) stands aside when it names a session of
+    /// the seat it would give the claim: that session is live in this pane.
+    pub host_agent_session: Option<String>,
 }
 
 /// What a C1 reattachment rests on; it selects the provenance recorded in seat history.

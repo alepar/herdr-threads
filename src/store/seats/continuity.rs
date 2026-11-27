@@ -122,6 +122,7 @@ fn pane_continuity_seat(
     instance: &str,
     host: crate::ports::HostId,
     command: &crate::protocol::commands::ContinuityCheckIn,
+    host_agent_session: Option<&str>,
 ) -> Result<Option<SeatId>, ApiError> {
     if reconciliation_lags(tx, host)? {
         return Ok(None);
@@ -161,6 +162,20 @@ fn pane_continuity_seat(
         || continuity_keys::hold_kind(tx, host, command.target.as_str())?.is_some()
     {
         return Ok(None);
+    }
+    // Herdr reports one of the seat's own sessions in this very pane: that session is live here,
+    // and host session continuity (or its own claim) restores the seat for it.
+    if let Some(reported) = host_agent_session {
+        let own: bool = tx
+            .query_row(
+                "SELECT EXISTS(SELECT 1 FROM occupant_bindings WHERE seat_id=?1 AND role='top_level' AND agent_id='' AND native_session=?2)",
+                params![seat.as_str(), reported],
+                |r| r.get(0),
+            )
+            .map_err(store_error)?;
+        if own {
+            return Ok(None);
+        }
     }
     let live: bool = tx
         .query_row(
@@ -413,6 +428,8 @@ struct ContinuitySelection {
     decision_kind: &'static str,
     pinned: Option<(SeatId, i64)>,
     keyed: bool,
+    /// Herdr's reported session for the claim's pane (hint; ht-iygh D3 stands aside on it).
+    host_agent_session: Option<String>,
 }
 
 /// What a transaction phase selected. Each phase turns a miss into its own refusal.
@@ -434,11 +451,13 @@ impl ContinuitySelection {
                 decision_kind: crate::protocol::authority::COOPERATIVE_CONTINUITY_PROVENANCE,
                 pinned: None,
                 keyed: false,
+                host_agent_session: None,
             },
             crate::ports::ContinuityEvidence::Key => Self {
                 decision_kind: crate::protocol::authority::COOPERATIVE_CONTINUITY_PROVENANCE,
                 pinned: None,
                 keyed: true,
+                host_agent_session: None,
             },
             crate::ports::ContinuityEvidence::Process {
                 seat,
@@ -447,6 +466,7 @@ impl ContinuitySelection {
                 decision_kind: crate::protocol::authority::STRUCTURAL_PROCESS_CONTINUITY_PROVENANCE,
                 pinned: Some((seat.clone(), checked_host_number(*seat_generation)?)),
                 keyed: false,
+                host_agent_session: None,
             },
         })
     }
@@ -505,8 +525,14 @@ impl ContinuitySelection {
         )?;
         match candidates.len() {
             // Pane continuity rests on the claim's own target, never on a pinned judgement.
-            0 if self.pinned.is_none() => Ok(pane_continuity_seat(tx, instance, host, command)?
-                .map_or(SelectedSeat::None, SelectedSeat::Pane)),
+            0 if self.pinned.is_none() => Ok(pane_continuity_seat(
+                tx,
+                instance,
+                host,
+                command,
+                self.host_agent_session.as_deref(),
+            )?
+            .map_or(SelectedSeat::None, SelectedSeat::Pane)),
             0 => Ok(SelectedSeat::None),
             1 => {
                 let seat = candidates.remove(0);
@@ -851,7 +877,8 @@ pub fn decide_continuity(
 ) -> Result<CommandResult, ApiError> {
     let command = request.command.clone();
     let diagnostic = request.diagnostic;
-    let selection = ContinuitySelection::of(&request.evidence)?;
+    let mut selection = ContinuitySelection::of(&request.evidence)?;
+    selection.host_agent_session = request.host_agent_session.take();
     let instance = request.guard.instance().to_owned();
     if instance != elected_instance {
         return Err(api_error(
