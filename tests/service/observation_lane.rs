@@ -1587,22 +1587,12 @@ fn a_resumed_session_herdr_reports_restores_its_seat_on_the_lane() {
 #[test]
 fn a_mismatch_decides_nothing_and_is_declined_ten_minutes() {
     type Scene = fn(&Rig);
-    let scenes: [(&str, Scene); 4] = [
+    let scenes: [(&str, Scene); 2] = [
         ("another harness kind", |rig| {
             rig.agent_at("pane", "claude", "sess-a")
         }),
         ("another session", |rig| {
             rig.agent_at("pane", "codex", "sess-b")
-        }),
-        ("no agent", |_| {}),
-        ("no session", |rig| {
-            rig.host.agents.lock().unwrap().insert(
-                "pane".into(),
-                PaneAgentObservation {
-                    kind: Some("codex".into()),
-                    agent_session: None,
-                },
-            );
         }),
     ];
     for (what, scene) in scenes {
@@ -1621,6 +1611,32 @@ fn a_mismatch_decides_nothing_and_is_declined_ten_minutes() {
         rig.clock.0.fetch_add(10 * 60 * 1000, Ordering::SeqCst);
         rig.identity.decide_host_session_continuity().unwrap();
         assert_eq!(rig.agent_reads(), 2, "{what}: read again after ten minutes");
+    }
+
+    // Herdr reporting no agent or no session yet (a resume still starting) is no decline:
+    // the next pass reads again, and decides once the session is reported.
+    for (what, session) in [("no agent", None), ("no session", Some(None))] {
+        let mut rig = Rig::new();
+        rig.start();
+        rig.wait_idle(1);
+        rig.stop();
+        left_by_cold_restart(&rig, "resumed", "sess-a");
+        if let Some(session) = session {
+            rig.host.agents.lock().unwrap().insert(
+                "pane".into(),
+                PaneAgentObservation {
+                    kind: Some("codex".into()),
+                    agent_session: session,
+                },
+            );
+        }
+        for reads in 1..=2 {
+            rig.identity.decide_host_session_continuity().unwrap();
+            assert_eq!(rig.agent_reads(), reads, "{what}: retried next pass");
+        }
+        rig.agent_at("pane", "codex", "sess-a");
+        rig.identity.decide_host_session_continuity().unwrap();
+        assert_eq!(rig.seat_state("resumed"), "resolved", "{what}");
     }
 
     // A failed read is no decline.

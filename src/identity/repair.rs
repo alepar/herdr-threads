@@ -986,6 +986,16 @@ impl OrdinaryIdentity {
             })
         });
         let Some((harness, session)) = matched else {
+            // Right after a cold restart Herdr may not report the resumed agent or its session
+            // yet (on the 2026-11-21 Mac restart the pass ran before Codex finished resuming):
+            // no agent, no kind or no session is retried next pass; only a reported other
+            // session or kind is a mismatch to decline.
+            let reported = observed
+                .as_ref()
+                .is_some_and(|agent| agent.agent_session.is_some() && agent.kind.is_some());
+            if !reported {
+                return;
+            }
             for (_, session) in &candidate.sessions {
                 self.decline_host_session(candidate, session);
             }
