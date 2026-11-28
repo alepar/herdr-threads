@@ -2,6 +2,28 @@
 
 ## Current release status
 
+[v3.8.0 is published](https://github.com/alepar/herdr-threads/releases/tag/v3.8.0) from source `7f9c95f9f`, a minor release: **per-seat configuration with queue wake switched on per seat, and Codex `/side` wake routing** (ht-z41e), plus **agy idle wake under a custom statusline** (ht-rot9). One-way store upgrade to node schema 23 (migrations 0021-0023: `seat_config`, `/side` queue routing, binding auxiliary session). New capability `seat.config_v1`; no peer wire struct change; peer wire frozen in `tests/fixtures/peer_wire/3.8.0` (generated at `848f11ee7`; the `--at v3.8.0 --check` differs only in the MANIFEST's `at`/`commit` lines). Changes:
+- `ht config seat list|get|set|unset` and `ht human config seat set|unset [--seat S]`; settings `nudge_threshold` (agent tier) and `programmatic_wake` (human tier, default off), with operator provenance.
+- The node-level `programmatic_wake` is obsolete (parsed and ignored; `doctor` says so). Queue wake is enabled per seat.
+- Native wake defers while a Codex `/side` chat is displayed; `/side` queue wake routes to the root session.
+- The agy composer reader anchors on the rule-bounded prompt box, so a user statusline in place of agy's default footer no longer makes every screen unreadable (`wake=unreadable`); a running turn is recognised by its spinner row.
+
+Review and fixes:
+- ht-z41e ran as a super-auto epic (39 implementation beads, each reviewed and merged). The user waived the whole-epic review gate ht-z41e.28, whose provenance gap came from the skill, not the code. Run record: `docs/superpowers/runs/2026-11-26-per-seat-config-side-wake/`.
+- Main held the merge until the run's evidence was scrubbed of local paths and host names, including inside the compressed captures, and squash-merged it as `525a12ae6`. The owner's unfiltered suite passed 10078/10078 on the branch, and the Codex `--queue-proof` matrix 59/60 with the one flake passing 3/3 on rerun.
+- The owner found that the build wrapper leaked the caller's agent environment into tests. That was fixed outside the repo.
+- ht-rot9 came from a live report: office/agy stopped waking from idle. Fixtures are genuine agy captures with a statusline (idle empty, draft, busy, help overlay). The fixer ran the 361 agy/composer tests and read the live pane as Empty.
+- CI on the merge failed only on `cargo fmt` drift in `tests/cli/skill.rs`, fixed in `195981f8e`.
+
+**Qualification** on `848f11ee7` (`release-qualify --self-test`): fmt, neutral, wire-compat, both clippy variants, default features, candidate, upstream, wake self-test, Herdr matrix, package lifecycle and installers passed. The suite passed 10081/10081 in 1164 s (reported FAIL only for the 300 s budget). Wake e2e against Herdr 0.9.5: Codex 60/60, Claude 60/60. The live office/agy wake test was not run: that pane was closed before install.
+
+**CI**:
+- Run [46115717753](https://github.com/alepar/herdr-threads/actions/runs/46115717753) passed on `195981f8e`.
+- Run [46127067989](https://github.com/alepar/herdr-threads/actions/runs/46127067989) passed on `7f9c95f9f`.
+- Release run [46128821444](https://github.com/alepar/herdr-threads/actions/runs/46128821444) passed.
+
+The archives check out: digests, 14 files, VERSION 3.8.0, modes, licenses, install.sh equals main's, clean credential scan.
+
 [v3.7.0 is published](https://github.com/alepar/herdr-threads/releases/tag/v3.7.0) from source `93bd37093`, a minor release: **seats come back on their own after a cold Herdr restart** (ht-iygh). One-way store upgrade to node schema 20 (migration 0020: the `allocation_decisions` kinds `host_session_continuity` and `pane_continuity`). No peer wire change; peer wire frozen in `tests/fixtures/peer_wire/3.7.0` (generated at `be11958cc`; the `--at v3.7.0 --check` differs only in the MANIFEST's `at`/`commit` lines). Five changes:
 - C1 *Host session continuity* restores a keyless seat whose saved pane Herdr reports running that seat's last hook-registered session, and opens it as a dormant wake target. The session's next hook, or a Claude mod's channel registration, connects it.
 - C1 *Pane continuity* gives a fresh top-level session the one unresolved keyless seat saved at its pane.
