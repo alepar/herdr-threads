@@ -207,7 +207,10 @@ fn skill_states_per_seat_settings_and_side_deferral() {
     ] {
         assert!(SKILL_MD.contains(needle), "missing {needle}");
     }
-    assert!(!SKILL_MD.contains("which asks the person"), "stale ask claim");
+    assert!(
+        !SKILL_MD.contains("which asks the person"),
+        "stale ask claim"
+    );
 }
 
 // Kills: a bare-wake rule that misses the opening of a harness's delivered
