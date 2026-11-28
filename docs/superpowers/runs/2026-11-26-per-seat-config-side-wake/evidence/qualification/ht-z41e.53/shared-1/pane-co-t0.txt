@@ -1,0 +1,40 @@
+› You are a test recipient in an automated herdr-threads wake e2e run (the us… │
+• Exited (status 2) herdr-threads nudge-threshold 0                            │ This will remove it from Side chats.
+  └ herdr-threads: no resolved seat is mapped to pane w2G:p3; run `herdr-threa…│ Archive “Run side-queue/group 15…”?
+    + 1 line (^t to expand)                                                    │
+                                                                               │  Cancel    Archive
+• Ran herdr-threads --state-dir /tmp/ht-wake-e2e.9hyinm83/state --host-endpoin…│
+  └ nudge_threshold: 0 (unchanged)                                             │ ←/→ choose · Enter confirm …
+    + Show details                                                             │
+                                                                               │
+• SETUP-DONE nudge_threshold=0                                                 │
+                                                                               │
+  Worked for 11s • 15:20                                                       │
+                                                                               │
+                                                                               │
+› herdr-threads: wake up                                                       │
+                                                                               │
+                                                                               │
+• I’ll accept the test invitation.                                             │
+                                                                               │
+• Ran herdr-threads --state-dir /tmp/ht-wake-e2e.9hyinm83/state accept tVXNKx1…│
+  └ accepted                                                                   │
+    value: "iVXNEAYsUfAR"                                                      │
+    + Show details                                                             │
+                                                                               │
+• Accepted.                                                                    │
+                                                                               │
+  Worked for 5s • 15:20                                                        │
+                                                                               │
+• RECEIVED [herdr-threads] message mVXNL6bOcjoy in tVXNKx1DUU6C from           │
+  sVXNWUVC74VW [p0] [human]: side-queue/group 151948-e8d4                      │
+                                                                               │
+  Worked for 2s • 15:21                                                        │
+                                                                               │
+                                                                               │
+›                                                                              │
+                                                                               │
+  GPT-6.2-Sol default · ~/AleCode/herdr-threads/.worktrees/super-auto-per-seat-│
+  config-side-wake/.worktrees/super-auto-per-seat-config-side-wake--task-ht-   │
+  z41e.53 · Accept Wake E2E Invitations                                        │
+                                                                               │

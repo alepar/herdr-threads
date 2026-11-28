@@ -1,0 +1,15 @@
+{"utc_ms": 1795821594648, "pane": "w2G:p3", "event": "SessionStart", "session": "01a21f4e-d933-7d32-8788-2dc92d2aca67", "source": "startup", "transcript_path": "present"}
+{"utc_ms": 1795821594780, "pane": "w2G:p3", "event": "UserPromptSubmit", "session": "01a21f4e-d933-7d32-8788-2dc92d2aca67", "source": null, "transcript_path": "present"}
+{"utc_ms": 1795821597782, "pane": "w2G:p3", "event": "PreToolUse", "session": "01a21f4e-d933-7d32-8788-2dc92d2aca67", "source": null, "transcript_path": "present"}
+{"utc_ms": 1795821601095, "pane": "w2G:p3", "event": "PreToolUse", "session": "01a21f4e-d933-7d32-8788-2dc92d2aca67", "source": null, "transcript_path": "present"}
+{"utc_ms": 1795821604182, "pane": "w2G:p3", "event": "PreToolUse", "session": "01a21f4e-d933-7d32-8788-2dc92d2aca67", "source": null, "transcript_path": "present"}
+{"utc_ms": 1795821605703, "pane": "w2G:p3", "event": "Stop", "session": "01a21f4e-d933-7d32-8788-2dc92d2aca67", "source": null, "transcript_path": "present"}
+{"utc_ms": 1795821610057, "pane": "w2G:p3", "event": "UserPromptSubmit", "session": "01a21f4e-d933-7d32-8788-2dc92d2aca67", "source": null, "transcript_path": "present"}
+{"utc_ms": 1795821613711, "pane": "w2G:p3", "event": "PreToolUse", "session": "01a21f4e-d933-7d32-8788-2dc92d2aca67", "source": null, "transcript_path": "present"}
+{"utc_ms": 1795821615106, "pane": "w2G:p3", "event": "Stop", "session": "01a21f4e-d933-7d32-8788-2dc92d2aca67", "source": null, "transcript_path": "present"}
+{"utc_ms": 1795821620677, "pane": "w2G:p3", "event": "SessionStart", "session": "01a21f4f-4361-7253-865e-04814bb2dc68", "source": "fork", "transcript_path": "present"}
+{"utc_ms": 1795821620819, "pane": "w2G:p3", "event": "UserPromptSubmit", "session": "01a21f4f-4361-7253-865e-04814bb2dc68", "source": null, "transcript_path": "present"}
+{"utc_ms": 1795821624268, "pane": "w2G:p3", "event": "PreToolUse", "session": "01a21f4f-4361-7253-865e-04814bb2dc68", "source": null, "transcript_path": "present"}
+{"utc_ms": 1795821626049, "pane": "w2G:p3", "event": "Stop", "session": "01a21f4f-4361-7253-865e-04814bb2dc68", "source": null, "transcript_path": "present"}
+{"utc_ms": 1795821670123, "pane": "w2G:p3", "event": "UserPromptSubmit", "session": "01a21f4e-d933-7d32-8788-2dc92d2aca67", "source": null, "transcript_path": "present"}
+{"utc_ms": 1795821672428, "pane": "w2G:p3", "event": "Stop", "session": "01a21f4e-d933-7d32-8788-2dc92d2aca67", "source": null, "transcript_path": "present"}

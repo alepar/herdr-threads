@@ -1,0 +1,16 @@
+diff --git a/CHANGELOG.md b/CHANGELOG.md
+index 01ea9d162..9ad215c63 100644
+--- a/CHANGELOG.md
++++ b/CHANGELOG.md
+@@ -1,5 +1,11 @@
+ # Changelog
+ 
++## Unreleased
++
++### Changed
++
++- **Queue wake is per seat (ht-z41e.4).** `programmatic_wake` in `node/settings.json` no longer takes effect (it still parses; `doctor` flags it as obsolete). Enable it per seat with `ht human config seat set --seat S programmatic_wake on`. Users who enabled the node key must set it on each seat. The daemon reads the seat's value on every attempt and again at arm, so a toggle needs no restart; an unreadable value falls back to native wake. `doctor` lists the seats that have it on, and a flip lifts an `unreceived` wake suppression for that seat. No CLI wrote the node key, so none needed to refuse it.
++
+ ## v3.6.0
+ 
+ Minor release: macOS queue wake for Codex, and service restore of a seat held by a Herdr restart.

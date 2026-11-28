@@ -204,6 +204,7 @@ fn locate_caller_refuses_a_non_core_socket() {
 
 fn claim(role: CallerRole, liveness: Option<LivenessFingerprint>) -> CallerClaim {
     CallerClaim {
+        auxiliary_session: false,
         instance: INSTANCE.into(),
         host: HostLocator::parse(NAMED_HOST_LOCATOR).unwrap(),
         seat: SeatId::new("s"),

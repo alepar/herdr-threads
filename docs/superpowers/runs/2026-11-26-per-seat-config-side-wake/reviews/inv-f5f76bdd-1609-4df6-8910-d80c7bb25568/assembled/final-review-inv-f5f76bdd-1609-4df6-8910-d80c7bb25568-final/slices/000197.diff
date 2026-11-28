@@ -1,0 +1,12 @@
+diff --git a/tests/service/named_startup.rs b/tests/service/named_startup.rs
+index be489f6fd..eaf09de2b 100644
+--- a/tests/service/named_startup.rs
++++ b/tests/service/named_startup.rs
+@@ -152,6 +152,7 @@ impl Rig {
+                     expected_binding_generation: 1,
+                 },
+                 claim: CallerClaim {
++                    auxiliary_session: false,
+                     host: HostLocator::parse(NAMED_HOST_LOCATOR).unwrap(),
+                     instance: self.node.clone(),
+                     seat,

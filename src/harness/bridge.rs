@@ -270,6 +270,7 @@ pub fn caller_claim(
         _ => return Err(ContextError::Invalid),
     };
     Ok(CallerClaim {
+        auxiliary_session: false,
         instance: context.instance.to_string(),
         host,
         seat: SeatId::parse(context.seat.clone()).map_err(|_| ContextError::Invalid)?,
@@ -425,13 +426,26 @@ pub fn prepare_event_as(
                         expected_binding_generation: seed.binding_generation,
                     },
                 };
-                Ok((contexts.claim(&next).map_err(context_io)?, mode))
+                let claim = event_claim(contexts, &next, event).map_err(context_io)?;
+                Ok((claim, mode))
             },
         )?;
         pending_request(journal, &reference)
     })?;
     validate_event(&request, event)?;
     Ok(Some(request))
+}
+/// The claim a decoded hook event sends. The auxiliary-session evidence belongs to the event, so
+/// this is the only place it is copied onto a claim; the send site gates it on the daemon's
+/// `seat.auxiliary_session_v1` (`drop_unadvertised_auxiliary`).
+pub(crate) fn event_claim(
+    contexts: &ContextJournal,
+    context: &OccupantContext,
+    event: &LifecycleEvent,
+) -> Result<CallerClaim, ContextError> {
+    let mut claim = contexts.claim(context)?;
+    claim.auxiliary_session = event.auxiliary_session;
+    Ok(claim)
 }
 /// Observer-only local hint, never a native predecessor or canonical claim.
 pub fn record_declared_reset(
@@ -506,7 +520,8 @@ pub fn prepare_qualified_turn(
                             expected_binding_generation: seed.binding_generation,
                         },
                     };
-                    Ok((contexts.claim(&next).map_err(context_io)?, mode))
+                    let claim = event_claim(contexts, &next, event).map_err(context_io)?;
+                    Ok((claim, mode))
                 },
             )?;
             pending_request(journal, &reference)
@@ -564,7 +579,11 @@ pub fn decode_request(request: &PendingCheckIn) -> Result<Command, ContextError>
     // the frozen claim keeps the one it was prepared with.
     let mut frozen = check.claim.clone();
     frozen.liveness = None;
-    if frozen != caller_claim(&request.context, check.claim.host.clone())?
+    // The auxiliary-session evidence belongs to the event, not to the context the claim rebuilds
+    // from: the rebuilt claim takes the frozen bit, so it stays in the replayed command.
+    let mut expected = caller_claim(&request.context, check.claim.host.clone())?;
+    expected.auxiliary_session = frozen.auxiliary_session;
+    if frozen != expected
         || check.operation.as_str() != request.operation_id.to_string()
         || check.mode != mode
     {
@@ -633,8 +652,9 @@ fn cached_event<C: LocalClient + ?Sized>(
     }
     let mut api_error = None;
     let response = contexts.dispatch(&event.event_id, &mut |pending: &PendingCheckIn| {
-        let command = decode_request(pending)?;
+        let mut command = decode_request(pending)?;
         let budget = observed_budget(turn, pending.mode, clock)?;
+        crate::cli::site_capability::drop_unadvertised_auxiliary(&mut command, client, &budget);
         if let Err(error) = crate::cli::site_capability::require_readonly(&command, client, &budget)
         {
             let detail = error.detail.clone();
@@ -1281,7 +1301,22 @@ pub fn tool_boundary_check_in<C: LocalClient + ?Sized>(
     {
         return Err(ContextError::LifecycleRequired.into());
     }
-    let claim = contexts.claim(&saved)?;
+    let claim = event_claim(contexts, &saved, event)?;
+    // The CheckIn is built before the digest read so one capability gate covers the bit on both
+    // the CheckIn and the digest claim (an older daemon refuses unknown claim fields).
+    let mut command = Command::CheckIn(crate::protocol::commands::CheckIn {
+        lineage_parent: None,
+        readonly: crate::cli::caller_location::CallerEnv::from_process().readonly(),
+        mode: WireMode::Current,
+        claim,
+        operation: OperationId::new(Uuid::new_v4().to_string()),
+        continuity_key: contexts.continuity_key().cloned(),
+    });
+    crate::cli::site_capability::drop_unadvertised_auxiliary(&mut command, client, budget);
+    let Command::CheckIn(gated) = &command else {
+        return Err(ContextError::Invalid.into());
+    };
+    let claim = gated.claim.clone();
     let mark_key = saved.mark_key();
     let stored = contexts.attention_mark(&mark_key);
     let last = if coalesce { stored } else { None };
@@ -1370,14 +1405,6 @@ pub fn tool_boundary_check_in<C: LocalClient + ?Sized>(
         }
         mark = Some((mark_key, next));
     }
-    let command = Command::CheckIn(crate::protocol::commands::CheckIn {
-        lineage_parent: None,
-        readonly: crate::cli::caller_location::CallerEnv::from_process().readonly(),
-        mode: WireMode::Current,
-        claim,
-        operation: OperationId::new(Uuid::new_v4().to_string()),
-        continuity_key: contexts.continuity_key().cloned(),
-    });
     crate::cli::site_capability::require_readonly(&command, client, budget)
         .map_err(BridgeError::Api)?;
     let result = client

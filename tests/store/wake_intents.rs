@@ -7,7 +7,10 @@ use std::sync::Arc;
 
 #[path = "../fixtures/wake_intent.rs"]
 mod fixture_support;
-pub(crate) use fixture_support::{INSTANCE, IntentClock, budget, fixture, native_report, open};
+pub(crate) use fixture_support::{
+    ArmingControl, INSTANCE, IntentClock, budget, enroll_payload, fixture, fixture_with,
+    native_report, open, set_programmatic_wake,
+};
 
 #[test]
 fn wake_intent_schema_is_independent_of_live_origin_rows() {
@@ -107,6 +110,33 @@ fn committed_arm_is_never_authorized_twice_even_after_reopen() {
     assert_eq!(row.phase, herdr_threads::ports::WakeIntentPhase::Armed);
     assert_eq!(row.arm_nonce, Some(ticket.nonce));
     assert_eq!(row.preparation, p);
+}
+
+// Kills: arming an intent for a seat whose `programmatic_wake` was turned off after selection
+// (TRUST-POLICY, queue wake stale authority): the refusal is the `queue wake no longer
+// authorized` NoEffect path, and the same prepared row arms once the seat is on again.
+#[test]
+fn intent_armed_after_the_seat_flips_off_takes_the_stale_authority_fallback() {
+    let (store, _path, r, p) = fixture();
+    let first = prepare(&store, &r, &p);
+    set_programmatic_wake(&store, r.seat.as_str(), false);
+    assert!(
+        StorePort::arm_wake_intent(&store, &r, first.revision, uuid::Uuid::new_v4(), &budget())
+            .unwrap()
+            .is_none(),
+        "flag off at arm"
+    );
+    let row = StorePort::wake_intent(&store, &r.attempt, &budget())
+        .unwrap()
+        .unwrap();
+    assert_eq!(row.phase, herdr_threads::ports::WakeIntentPhase::Prepared);
+    set_programmatic_wake(&store, r.seat.as_str(), true);
+    assert!(
+        StorePort::arm_wake_intent(&store, &r, first.revision, uuid::Uuid::new_v4(), &budget())
+            .unwrap()
+            .is_some(),
+        "flag on again"
+    );
 }
 
 #[test]

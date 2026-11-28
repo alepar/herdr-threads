@@ -1,0 +1,12 @@
+diff --git a/src/harness/claude.rs b/src/harness/claude.rs
+index ebaf9f51f..81d4db6b5 100644
+--- a/src/harness/claude.rs
++++ b/src/harness/claude.rs
+@@ -464,6 +464,7 @@ fn parse_hooks_2_1_283(
+         _ => return Err(ContextError::Invalid),
+     };
+     Ok(LifecycleEvent {
++        auxiliary_session: false,
+         harness: Harness::Claude,
+         source,
+         kind,

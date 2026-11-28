@@ -1,0 +1,12 @@
+diff --git a/tests/service/presentation_owner_budget_controls.rs b/tests/service/presentation_owner_budget_controls.rs
+index 15ae3a08e..937f0416b 100644
+--- a/tests/service/presentation_owner_budget_controls.rs
++++ b/tests/service/presentation_owner_budget_controls.rs
+@@ -184,6 +184,7 @@ impl Fixture {
+             PresentationConsumer::Watch => Harness::Claude,
+         };
+         let claim = CallerClaim {
++            auxiliary_session: false,
+             host: herdr_threads::test_support::test_host_locator(),
+             instance: "34750f98bd59fcfc946da45aaabe933b".into(),
+             seat: SeatId::new("s"),

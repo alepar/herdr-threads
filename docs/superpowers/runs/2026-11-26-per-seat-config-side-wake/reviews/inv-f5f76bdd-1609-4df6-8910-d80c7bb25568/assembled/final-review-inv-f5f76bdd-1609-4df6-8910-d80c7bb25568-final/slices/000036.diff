@@ -1,0 +1,15 @@
+diff --git a/docs/superpowers/runs/2026-11-26-per-seat-config-side-wake/friction.md b/docs/superpowers/runs/2026-11-26-per-seat-config-side-wake/friction.md
+new file mode 100644
+index 000000000..139b86b3b
+--- /dev/null
++++ b/docs/superpowers/runs/2026-11-26-per-seat-config-side-wake/friction.md
+@@ -0,0 +1,9 @@
++# friction log — 2026-11-26-per-seat-config-side-wake
++- [design] coverage r1: reviewer B's NEEDS-SPEC ht-z41e.7 was not re-dispatched; its question (no-marker fallback, arrival TRUST-POLICY) was filed and fixed as c3/c12
++- [design] roast-design r1 rung: Workflow
++- [code] mergeCheck covers cargo check default + all-features; CI's clippy -D warnings and check-harness-neutral/wire-compat are per-task implementer checks, not merge checks
++- [code] concurrency 3 (shared host: durak training; heavy holds 2 build slots)
++- [roast-code] base drift: main moved 4e4f628a4 → afeed32ac (2 test-isolation commits); roast diffs against the fork point; absorb after phase 5 (base drift rule)
++- [roast-code] r1 rung: Workflow
++- [fix-loop] amend-check r1 reject 'supersedes: malformed line: none' caused by the orchestrator's prompt (template shows supersedes as a list; code loop needs 'supersedes: none'); specs restored, designer re-dispatched once
++- [fix-loop] redesign-code-1 filed ht-z41e.21-.29; .27 (full suite) and .28 (whole-epic review) are skill-owned duties, relabelled sp:gate and closed by the orchestrator at phase 6; .29 gated on ht-z41e.9

@@ -1,0 +1,12 @@
+diff --git a/tests/daemon/multi_host.rs b/tests/daemon/multi_host.rs
+index 16bce3c05..3583f1e21 100644
+--- a/tests/daemon/multi_host.rs
++++ b/tests/daemon/multi_host.rs
+@@ -610,6 +610,7 @@ impl Rig {
+         liveness: LivenessFingerprint,
+     ) -> CallerClaim {
+         CallerClaim {
++            auxiliary_session: false,
+             instance: self.instance.clone(),
+             host: host.clone(),
+             seat: seat.clone(),

@@ -1,0 +1,3 @@
+no leaked test temp files (no ledger for this run)
+no leaked test processes
+exit 0

@@ -1,0 +1,12 @@
+diff --git a/tests/service/peer_handoff.rs b/tests/service/peer_handoff.rs
+index 105297f65..ef825d6ed 100644
+--- a/tests/service/peer_handoff.rs
++++ b/tests/service/peer_handoff.rs
+@@ -233,6 +233,7 @@ fn request(n: u128, requester_seat: &str) -> LaunchRequest {
+ 
+ fn claim(seat: &str) -> CallerClaim {
+     CallerClaim {
++        auxiliary_session: false,
+         host: crate::test_support::test_host_locator(),
+         instance: INSTANCE.into(),
+         seat: SeatId::new(seat),

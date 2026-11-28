@@ -1225,6 +1225,7 @@ fn stop_hook_active(value: &Value) -> bool {
 
 fn parse_shape(value: &Value, event_id: &str) -> Result<LifecycleEvent, ContextError> {
     let name = required(value, "hook_event_name")?;
+    let hook_event = name.clone();
     let role = declared_role(value)?;
     let (source, kind, role) = match name.as_str() {
         "SessionStart" => {
@@ -1260,7 +1261,44 @@ fn parse_shape(value: &Value, event_id: &str) -> Result<LifecycleEvent, ContextE
         event_id: event_id.into(),
         capability: Capability::SourceSupported,
         agent_id: None,
+        auxiliary_session: auxiliary_session(&hook_event, value),
     })
+}
+
+/// Auxiliary-session evidence of one hook payload (ht-z41e.21): `transcript_path` present and
+/// JSON `null` on a top-level SessionStart, UserPromptSubmit, PreToolUse or Stop event. Spike S1
+/// saw it null on every `/side` event and non-null on every root event; a root run without a
+/// transcript (`codex exec --ephemeral`) emits null too, which costs it only queue routing. An
+/// absent key or a path is no evidence, and a child event (it names an agent) carries none.
+fn auxiliary_session(name: &str, value: &Value) -> bool {
+    if !matches!(
+        name,
+        "SessionStart" | "UserPromptSubmit" | "PreToolUse" | "Stop"
+    ) || value.get("agent_id").is_some_and(|id| !id.is_null())
+    {
+        return false;
+    }
+    match value.get("transcript_path") {
+        Some(Value::Null) => true,
+        // A Codex that persists the side chat's rollout (observed live, ht-z41e.43: its hook
+        // payloads then carry a path) names it in the rollout's own first line, so a fork's
+        // `SessionStart` is also auxiliary when that line says `thread_source: tui_side_chat`.
+        // A fork of any other kind, an unreadable file or a different shape is no evidence.
+        Some(Value::String(path)) => {
+            name == "SessionStart"
+                && value.get("source").and_then(Value::as_str) == Some("fork")
+                && !path.is_empty()
+                && Path::new(path).is_absolute()
+                && super::attribution::transcript_head_json(Path::new(path))
+                    .and_then(|head| {
+                        head.pointer("/payload/thread_source")
+                            .and_then(Value::as_str)
+                            .map(|source| source == "tui_side_chat")
+                    })
+                    .unwrap_or(false)
+        }
+        _ => false,
+    }
 }
 
 /// Codex's declared hook groups (SessionStart, SubagentStart, PreToolUse, UserPromptSubmit,
@@ -1520,6 +1558,28 @@ impl HarnessAdapter for CodexAdapter {
         session: &crate::protocol::ids::NativeSessionId,
     ) -> Option<super::wake::WakeReplayScope> {
         wake::replay_scope_for_session(session)
+    }
+    /// The root is the one top-level binding of the process that is neither a concurrent nor an
+    /// auxiliary session, and only when every other binding is an auxiliary one. The spike
+    /// (ht-z41e.6, S1) separates root from `/side` by `transcript_path` (non-null on every root
+    /// hook event, null on every side event), persisted as `auxiliary_session` on whichever event
+    /// first showed it. A non-`/side` fork (`concurrent_session` with a path) is a conversation
+    /// the user works in, so it beside its original names no root; two plain bindings, none, or a
+    /// root that itself reads auxiliary name none either (fail closed to native).
+    fn wake_process_root(&self, candidates: &[super::adapter::RootCandidate<'_>]) -> Option<usize> {
+        let mut plain = candidates
+            .iter()
+            .enumerate()
+            .filter(|(_, c)| !c.concurrent_session && !c.auxiliary_session);
+        let (index, _) = plain.next()?;
+        if plain.next().is_some() {
+            return None;
+        }
+        candidates
+            .iter()
+            .enumerate()
+            .all(|(i, c)| i == index || c.auxiliary_session)
+            .then_some(index)
     }
     fn wake_control(&self) -> Option<&dyn super::wake::WakeControl> {
         #[cfg(any(target_os = "linux", target_os = "macos"))]

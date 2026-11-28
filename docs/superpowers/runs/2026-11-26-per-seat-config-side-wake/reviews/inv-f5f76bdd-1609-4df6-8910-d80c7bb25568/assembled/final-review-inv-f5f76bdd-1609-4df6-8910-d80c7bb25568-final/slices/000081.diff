@@ -1,0 +1,12 @@
+diff --git a/src/harness/agy/decode.rs b/src/harness/agy/decode.rs
+index a586c0dbe..1dec81e0d 100644
+--- a/src/harness/agy/decode.rs
++++ b/src/harness/agy/decode.rs
+@@ -133,6 +133,7 @@ pub(super) fn decode(_: &AgyAdmission, input: &HookInput) -> Result<DecodedEvent
+         metadata: EventMetadata {
+             native_turn_id: None,
+             turn_end: false,
++            auxiliary_session: false,
+             skill_pointer,
+             callback_deadline: None,
+             context_source: event.as_str().into(),

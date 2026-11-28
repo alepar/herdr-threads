@@ -248,3 +248,46 @@ fn m11_golden() {
     assert_eq!(text.len(), 53 + "reviewer".len());
     assert_eq!(handoff_into_refusal(&name("a")).len(), 54);
 }
+
+// Kills: a named/tmux seat arming the queue transport through a host admission it does not have
+// (the default refuses, so the seat wakes natively through its own tmux gate).
+#[test]
+fn named_host_never_admits_a_queue_wake() {
+    let (host, source) = host_with(&[("seat_1", "worker")]);
+    let target = crate::ports::SafeWakeTarget {
+        seat: SeatId::new("seat_1"),
+        target: HostTargetId::new("%1"),
+        host_boot: crate::protocol::ids::HostBootId::new("boot"),
+        generation: 1,
+        terminal: crate::protocol::ids::TerminalId::new("term"),
+        incarnation: "inc".into(),
+        basis: crate::ports::WakeTargetBasis::CooperativeAgent,
+        epoch: 1,
+        observation_sequence: 1,
+        bound_harness: Some("codex".into()),
+    };
+    for siblings in [true, false] {
+        let error = host
+            .admit_queue_wake(&target, siblings, &context())
+            .unwrap_err();
+        assert_eq!(
+            error.code,
+            crate::protocol::results::ErrorCode::TargetUnsafe
+        );
+        assert!(
+            error
+                .detail
+                .contains("host queue wake admission unavailable"),
+            "{}",
+            error.detail
+        );
+    }
+    assert!(
+        host.tmux.lock().unwrap().is_empty(),
+        "no tmux binding was consulted"
+    );
+    assert!(
+        source.asked.lock().unwrap().is_empty(),
+        "the seat source was not asked"
+    );
+}

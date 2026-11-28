@@ -1,0 +1,44 @@
+diff --git a/src/harness/codex/composer.rs b/src/harness/codex/composer.rs
+index 214f3f601..8497dc93d 100644
+--- a/src/harness/codex/composer.rs
++++ b/src/harness/codex/composer.rs
+@@ -6,12 +6,14 @@ use crate::harness::{
+ };
+ use std::ops::Range;
+ const CODEX_PROMPT: &str = "›";
+-/// Codex's empty-composer placeholders, exact text: the main conversation's
+-/// and a `/side` conversation's (Codex 0.163 `chatwidget/constructor.rs`
+-/// `PLACEHOLDER`, `SIDE_PLACEHOLDER`; captured in
+-/// `docs/evidence/ansi-composer/`). The sub-agent view's placeholder is
+-/// deliberately absent: Codex blocks a typed submit there.
+-const CODEX_PLACEHOLDERS: &[&str] = &["Ask Codex to do anything", "Ask a follow-up question"];
++/// Codex's empty-composer placeholder, exact text: the main conversation's (Codex 0.163
++/// `chatwidget/constructor.rs` `PLACEHOLDER`; captured in `docs/evidence/ansi-composer/`).
++/// A `/side` chat's placeholder (`SIDE_PLACEHOLDER`, `Ask a follow-up question`) is deliberately
++/// absent: the side chat is not the wake target (the root session is), so a side composer reads as
++/// text and a native wake owed meanwhile is refused before sending and retried on the refusal
++/// backoff until the side chat closes. The sub-agent view's placeholder is absent too: Codex blocks
++/// a typed submit there.
++const CODEX_PLACEHOLDERS: &[&str] = &["Ask Codex to do anything"];
+ /// The rows of the last `› ` composer: its first row and two-space rows until
+ /// a blank row.
+ fn codex_rows(lines: &[&str]) -> Option<(Vec<String>, Range<usize>)> {
+@@ -121,12 +123,15 @@ mod tests {
+         };
+     }
+ 
+-    // Catches a `/side` conversation's placeholder refusing every wake as typed text.
++    // Catches a /side chat's placeholder read as an empty composer (a wake typed into the side chat).
+     #[test]
+-    fn captured_side_placeholder_is_empty_and_a_side_draft_is_text() {
++    fn captured_side_placeholder_is_not_empty_and_a_side_draft_is_text() {
+         let read = |text| read_composer(Harness::Codex, text, Some(120));
+         assert_eq!(read(capture!("empty")), ComposerRead::Empty);
+-        assert_eq!(read(capture!("side")), ComposerRead::Empty);
++        assert_eq!(
++            read(capture!("side")),
++            ComposerRead::Text("Ask a follow-up question".into())
++        );
+         assert_eq!(
+             read(capture!("draft")),
+             ComposerRead::Text("hello draft".into())

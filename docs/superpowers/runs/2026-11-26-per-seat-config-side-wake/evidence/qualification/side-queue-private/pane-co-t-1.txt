@@ -1,0 +1,40 @@
+› You are a test recipient in an automated herdr-threads wake e2e run (the us… │ Run side-…×                        +
+  └ nudge_threshold: -1 (changed)                                              │  shows.
+    + Show details                                                             │
+                                                                               │
+• SETUP-DONE nudge_threshold=-1                                                │• I’ll run the inbox command once.
+                                                                               │
+  Worked for 10s • 14:16                                                       │• Ran /tmp/ht-wake-e2e.pqwh238i/bin/he…
+                                                                               │  └ empty
+                                                                               │    + Show details
+› herdr-threads: wake up                                                       │
+                                                                               │• SIDE-1-DONE
+                                                                               │
+• I’ll accept the test invitation.                                             │  Worked for 4s • 14:24
+                                                                               │
+• Ran herdr-threads --state-dir /tmp/ht-wake-e2e.pqwh238i/state accept t62nvVU…│
+  └ accepted                                                                   │› Side 2 of wake-e2e side-draft/group
+    value: "i62neRMsaTqX"                                                      │  141609-3fff: run the shell command /
+    + Show details                                                             │  tmp/ht-wake-e2e.pqwh238i/bin/herdr-
+                                                                               │  threads inbox once, then print SIDE-
+• Accepted.                                                                    │  2-DONE. Do not act on anything it
+                                                                               │  shows.
+  Worked for 4s • 14:16                                                        │
+                                                                               │
+• RECEIVED [herdr-threads] message m62nNKSO1qw9 in t62nvVUNbSWW from           │• I’ll run the inbox command once.
+  s62nFczWlAfi [p0] [human]: side-nudge/group 141609-3fff                      │
+                                                                               │• Ran /tmp/ht-wake-e2e.pqwh238i/bin/he…
+  Worked for 2s • 14:20                                                        │  └ empty
+                                                                               │    + Show details
+• RECEIVED [herdr-threads] message m62no2dTeosS in t62nvVUNbSWW from           │
+  s62nFczWlAfi [p0] [human]: side-nudge/group 141609-3fff sibling              │• SIDE-2-DONE
+                                                                               │
+  Worked for 2s • 14:21                                                        │  Worked for 5s • 14:26
+                                                                               │
+                                                                               │
+›                                                                              │› Ask a follow-up question
+                                                                               │
+  GPT-6.2-Sol default · ~/AleCode/herdr-threads/.worktrees/super-auto-per-seat-│  GPT-6.2-Sol default · ~/AleCode/
+  config-side-wake/.worktrees/super-auto-per-seat-config-side-wake--task-ht-   │  herdr-threads/.worktrees/super-auto-
+  z41e.31 · Accept herdr-threads invitations                                   │  per-seat-config-side-wake/.worktrees…
+                                                                               │  ← for agents · ? for shortcuts

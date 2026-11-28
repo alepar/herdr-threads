@@ -1,0 +1,146 @@
+diff --git a/docs/superpowers/runs/2026-11-26-per-seat-config-side-wake/2026-11-26-per-seat-config-side-wake-roast-design-1.md b/docs/superpowers/runs/2026-11-26-per-seat-config-side-wake/2026-11-26-per-seat-config-side-wake-roast-design-1.md
+new file mode 100644
+index 000000000..f861cb1d9
+--- /dev/null
++++ b/docs/superpowers/runs/2026-11-26-per-seat-config-side-wake/2026-11-26-per-seat-config-side-wake-roast-design-1.md
+@@ -0,0 +1,139 @@
++super-roast verdict: Should-fix (3 confirmed)
++mode: design        iteration: 1 of 3
++profile (assumed): production, as supplied by the caller with no further detail. No low-blast-radius demotion was applied to resilience, observability or cost findings. The severity floors were checked and none matched a confirmed finding.
++inputs: docs/superpowers/runs/2026-11-26-per-seat-config-side-wake/2026-11-26-per-seat-config-side-wake-design.md + docs/superpowers/runs/2026-11-26-per-seat-config-side-wake/roast-design-1-tree.md @ f6b455e0a
++coverage: scouts 8/8 (premortem, completeness, yagni, failure-mode, feasibility, domain:distributed-systems, domain:auth/permissions, domain:cli-tooling) · raw 121 → deduped 69 → panel 38 · spot 31 · promoted 0 · judge completion 100% · remainder-capped: 0 · review readiness: coverage complete, provenance available — basis: "settled tree @f6b455e0a5cebaa6bd9d941cfa52dbbdfd8bc356: docs/superpowers/runs/2026-11-26-per-seat-config-side-wake/2026-11-26-per-seat-config-side-wake-design.md, docs/superpowers/runs/2026-11-26-per-seat-config-side-wake/roast-design-1-tree.md"
++independence: same-family (Claude) — seat-differentiated panel · rung: Workflow
++seat-agreement: panels 38 · rr 0.92 · rg 0.66 · fg 0.63 · unanimous 0.61 · ground-loo 0.66 (n=35) · reproduce 2/36/0 · refute 1/37/0 · ground 15/23/0
++lane-yield (found/confirmed/unique/refuted): premortem 13/2/0/11 · completeness 20/1/0/18 · yagni 13/1/0/11 · failure-mode 17/1/0/16 · feasibility 17/2/0/15 · domain:distributed-systems 14/2/0/11 · domain:auth/permissions 13/1/0/11 · domain:cli-tooling 14/3/0/10
++
++## Confirmed findings            ← consumed by super-design, one task per finding
++- [Should-fix] Section 1 Storage ("A row exists only for a key set explicitly; absence means the registry default"; "`nudge_threshold` is a registry key whose backing store is the existing `seats.nudge_threshold` column") vs Commands (`get` "with `(default)` when unset"; `unset KEY` "delete the row") — `unset` and the `(default)` marker are undefined for the column-backed `nudge_threshold`. The column is NOT NULL DEFAULT 0, never has a `seat_config` row, and cannot tell an explicit 0 from unset.
++  verdict: confirmed (reproduce ✗ / refute ✗-survived / ground ✓)
++  evidence: ground seat: spec lines 77-85, 111 and 121 define row absence, `(default)` and "delete the row"; a search for "backing", "unset", "explicit" and "(default)" found no definition for column-backed keys; line 221 lists "default vs explicit" and "nudge_threshold backing" as test areas without defining either. Schema: migrations/node/0001_node_baseline.sql:438 `nudge_threshold INTEGER NOT NULL DEFAULT 0` (cited by the finding; no seat opened the file). The reproduce seat's REJECT concedes the spec defines neither verb for this key and asks for a one-line clarification. Seat severities split Nit / Should-fix; Should-fix kept because this is one of only two initial keys and both verbs are specified for it.
++  fix-shape hint: state that `unset` on a column-backed key writes the registry default (and resets the `wake_on` mirror) and that `get` prints `(default)` when the value equals the default; or give column-backed keys a marker row.
++- [Should-fix] Section 1 Storage (`seat_config` columns `writer_provenance`, `writer_binding`) vs Commands (`ht human config seat set [--seat S]` any key, any named local seat, "recorded as an operator decision with provenance `operator:local-user:<uid>`"); Trust policy section — a human-path write to the column-backed `nudge_threshold`, including on another seat, has nowhere to record provenance, and the A5 exception (threshold writes limited to the seat's own top-level binding) is not stated.
++  verdict: confirmed (reproduce ✓ / refute ✗ REJECT, outvoted 2-1 / ground ✓)
++  evidence: reproduce seat: the only provenance columns are in `seat_config`; the same section sends `nudge_threshold` writes to `seats.nudge_threshold` with "no data migrates"; the Trust policy section adds "the seat-config write rules" but never gives A5 an operator exception. Ground seat: spec lines 59, 78, 118-120, 142-143 searched for provenance, audit, writer_binding, A5 and operator; no storage location and no A5 note. The refute seat's dissent says the record goes to "the existing operator-decision mechanism" but names no storage for it and concedes "the spec could say where provenance is stored for column-backed keys". Seat severities split Should-fix / Nit; Should-fix kept because AGENTS.md requires a change that adds an accepted limit or weakens an invariant to update TRUST-POLICY.md in the same commit.
++  fix-shape hint: pick one and write it down: a provenance row in `seat_config` for column-backed keys, provenance columns on `seats`, or an explicit statement that column-backed keys record none; add the A5 operator exception to the Trust policy section. One spec edit can close this and the finding above.
++- [Nit] Section 1 Registry (`nudge_threshold` integer -1..9; "an unknown key or out-of-range value is refused") vs Commands ("`nudge-threshold [N]` and `wake-on` stay as aliases … output and M12 are unchanged") — the registry's strict -1..9 refusal and the alias's existing clamp of any negative value to -1 are not reconciled, so `nudge-threshold -5` and `config seat set nudge_threshold -5` can disagree.
++  verdict: confirmed (reproduce ✓ / refute ✗ REJECT, outvoted 2-1 / ground ✓)
++  evidence: src/protocol/priority.rs:133-134 "Any negative value clamps to -1; above 9 is an error"; src/cli/commands.rs:4188 parses the alias through `NudgeThreshold::parse` → `new`, so `-5` stores -1 today; spec lines 92-97 and 122 state both promises and no reconciliation. The refute seat's dissent (src/cli/nudge_threshold.rs takes an already-parsed value, so the alias normalises before the registry sees it) is the same resolution the reproduce seat names; the spec does not state it.
++  fix-shape hint: one sentence: the alias clamps client-side before the registry check and `config seat set` refuses values below -1, or the registry clamps too.
++
++## Not verified (beyond panel cap)   ← severe candidates the panel cap left unverified — listed, never dropped
++- none
++
++## Not verified (dedupe failed or judge lost)   ← findings a pipeline failure left unjudged — listed, never dropped
++- none
++
++## Beyond remainder cap (count only)   ← low-severity candidates the dedupe remainder cap dropped; the count survives, the claims do not
++- none
++
++## Rejected (with reason)        ← so re-roasts don't re-litigate
++- Section 1 Commands / Trust policy — gating human-tier writes on the `ht human` namespace contradicts TRUST-POLICY A1 ("confers no canonical authority") and A1 is not amended.
++  reason: 2 REJECT / 1 CONFIRM (Nit). TRUST-POLICY.md:269 says operator decisions "attribute no person and are not refused in an agent session", so `operator:local-user:<uid>` does not claim the person acted. The spec states the accepted limit (design lines 139-146) and cites A1 at line 61. Residue: no `--operator` flag and no A1 wording note; nit-level.
++- Section 2 Selection, Arrival — owed items are treated as per binding, but pending items and ACKs belong to the seat.
++  reason: 3 REJECT. TRUST-POLICY.md (~line 1347): "a delivery row is each binding's own stream, so its owedness is decided per binding"; line 1064: read cursors remain per binding. Side hook delivery is marked "(unchanged)". Receipt-bearing rows are the pre-existing ht-327 exception.
++- Section 3 — the retry ladder's bound and exhaustion behaviour are unstated, and no accepted limit is recorded against delivery-contract rule 5.
++  reason: 2 REJECT / 1 CONFIRM (Nit). A displayed side chat takes the existing typed-input refusal path (src/notification/policy.rs:394); a refusal restores the prior ladder (src/scheduler/mod.rs ~92, ~774, ~1369), so nothing drops the wake. The user approved the deferral ("lgtm"). Residue: one sentence saying a refusal keeps retrying.
++- Section 2 Selection — the root-identification method has no defined input; the marker must be persisted, needing a migration and wire field the spec does not plan.
++  reason: 3 REJECT. The "must be persisted" premise is one possible S1 outcome; S1 lists rollout and storage paths, which an adapter could resolve from the stored `native_session`. The spec stops the routing bead if S1 finds no marker.
++- Section 1 Commands / Trust policy — the human tier rests on a client-declared `tier` field the daemon cannot verify.
++  reason: 3 REJECT. The Trust policy section states "no adversarial verification is added" and AGENTS.md forbids adding it. A crafted client is the accepted same-user bypass. The daemon check still validates key, type and range and records provenance. Residue: accepted-limit wording could say "any same-user protocol client".
++- Section 1 "Removing the node setting" / Registry — no rule for an intent already selected or armed when `programmatic_wake` flips off.
++  reason: 2 REJECT / 1 CONFIRM (Nit). The spec promises only "read per wake attempt"; a later flip applies to the next attempt. The existing stale-authority path ("queue wake no longer authorized", ht-c877) is left in place. Worst case is one extra queue wake or one native fallback. Residue: one sentence.
++- Section 2 Selection — a side binding's unread copy could keep the seat owed and re-wake the root repeatedly.
++  reason: 3 REJECT. `wake_owed_to_reached` (src/store/wake.rs:742, 803-810) checks unread per reached binding only immediately before submission; for a queue wake to the root, the reached set is the root. Caveat recorded by two seats: the full scheduler path from a settled attempt to a new reservation was not traced.
++- Section 3 — removing `Ask a follow-up question` assumes the string appears only in the /side composer.
++  reason: 3 REJECT. src/harness/codex/composer.rs:10-14 documents two separate Codex constants, `PLACEHOLDER` and `SIDE_PLACEHOLDER`; the ground seat fetched codex-rs/tui/src/chatwidget/constructor.rs and found `normal_placeholder_text` and `side_placeholder_text` stored separately. A future reuse would fail the existing wake e2e send cases.
++- Section 2 Selection — root and /side bindings are assumed to record an identical liveness pid, start stamp and boot; no spike verifies it.
++  reason: 2 REJECT / 1 CONFIRM (Nit). Same-process grouping by fingerprint already exists (src/store/bindings.rs `is_superseded_now`, `concurrent_session`; src/ports.rs ~2627, ~2725). A mismatch falls back to native, which the spec states. Residue: add a liveness-column dump to S1.
++- Section 2 Selection / Spikes S1 — in-TUI session switches (/new, /resume, /fork) may leave earlier root bindings connected, so "exactly one root" may name a stale session.
++  reason: 3 REJECT. No evidence that superseded bindings stay connected. Two apparent roots fail "exactly one" and select native. Arrival counts only root contact, so a mis-sent wake reads unreceived. Residue: add a /new-then-/side check to S1.
++- Section 2 Spikes S3, S4 / Qualification — only S1 has a stop condition; no fallback if S3 or S4 fails.
++  reason: 2 REJECT / 1 CONFIRM (Nit). The `side-queue/group` case requires the item delivered in the root turn and nothing typed into the side chat, so a failed S3 or S4 fails qualification. Queue wake is opt-in per seat and Section 3 is independent. Residue: one line "if S3 or S4 fail, routing stays native".
++- Section 2 Selection / Spikes S1 — the whole of Section 2 rests on an unchecked root marker.
++  reason: 3 REJECT. The spec names this as open, schedules S1 to answer it, and states the stop: "If spike S1 finds no root marker, the routing bead stops with a blocker for a human scope decision". Section 3 ships regardless.
++- Section 2 Selection — the busy-sibling admission rule does not say what a refusal leads to.
++  reason: 2 REJECT / 1 CONFIRM (Nit). A refusal falls into the existing admission-refusal and ladder path; Section 3 then defers native while a side chat is displayed. The rule is provisional on S2. Residue: a clarifying sentence.
++- Section 2 Selection — a side binding stuck Busy or Unknown after the side chat is abandoned can block queue wake indefinitely.
++  reason: 3 REJECT. A refused queue admission selects native, and native defers only while a side composer is displayed, so the root still wakes. The rule is provisional on S2. Stale turn state is existing machinery the spec does not change.
++- Section 2 Selection — a closed side chat may never get another turn; the side binding's lifecycle is undefined.
++  reason: 3 REJECT. A lingering side binding shares the root's pid, so selection still resolves to the root; side contact never settles the wake; Section 3 works from the composer read, not binding lifecycle. Residue: record the side binding's lifecycle as an S1 observation.
++- Section 1 Trust policy / Context — the human tier depends on harness ask rules firing for the new spellings, which is unverified per harness and under bypass modes.
++  reason: 3 REJECT. src/harness/claude/permission_rules.rs:23 asks on the `[spelling, "human"]` prefix, which covers every `human` subcommand; TRUST-POLICY.md:791 and ~2997 already record the matching limits. The spec accepts a missing or bypassed rule as a limit.
++- Section 1 Commands — the human write is an operator decision "like `ht human seat rebind --operator`" but has no `--operator` flag.
++  reason: 2 REJECT / 1 CONFIRM (Nit). The missing daemon-side check is the accepted cooperative limit. The spec commits to a TRUST-POLICY update in the same commit, which can add a row or the flag. Residue: state the flag spelling against TRUST-POLICY.md:269.
++- Section 1 Commands / Storage — `operator:local-user:<uid>` is recorded even for an agent-issued write, and the spec does not say whether `writer_binding` is filled.
++  reason: 2 REJECT / 1 CONFIRM (Nit). The spec promises no after-the-fact detection of bypassed approvals; the provenance value marks an operator-path write, not a person. Residue: say that `writer_binding` records the invoking binding for human-path writes when one exists.
++- Section 1 Commands / Trust policy — a bypassed agent can write any key on every local seat through `--seat`.
++  reason: 3 REJECT. Cross-seat reach is stated in the command text ("any named local seat") and follows from the accepted limit. Both keys are bounded and reversible. Residue: accepted-limit wording could add "on any local seat".
++- Section 3 — the defer works by making the side placeholder read as composer text, so it holds only while Codex declares no composer stash.
++  reason: 3 REJECT. src/harness/codex.rs:223 declares `composer_stash: Unsupported`; src/notification/policy.rs:391-394 then returns `Skip("typed input without composer_stash")`. The stash-supported profile is Claude's. The `side-native-defer/group` case tests the outcome.
++- Section 1 "Removing the node setting" — with no per-seat default or inheritance, every new seat needs its own human-approved command.
++  reason: 3 REJECT. Per-seat, human-tier opt-in is the stated requirement (B1, B6); B10 records "Remove, no migration". Queue wake was already off by default and native wake still delivers.
++- Section 1 release tooling — the wake e2e driver must set the flag after enrollment and before the first send; no ordering is stated.
++  reason: 3 REJECT. The driver owns sequencing and can only name a seat once it exists. The flag is read per wake attempt, so a write before the first send takes effect. Residue: a note for the driver bead.
++- Section 1 release tooling — release qualification no longer exercises queue wake unless `--queue-proof` is passed.
++  reason: 3 REJECT. Auto-selection only fired where an operator had enabled the node setting; the default run was already native-only. The spec adds `side-queue/group` and keeps existing queue-proof cases.
++- Section 1 Registry / "Removing the node setting" — "read per wake attempt" assumes queue infrastructure is built regardless of the node flag.
++  reason: 3 REJECT. src/app.rs ~2131-2160 builds `QueueRecovery` and `QueueWakeRuntime` whenever the state dir exists; the `(None, None)` arm keys on the state dir. The flag is read only at src/notification/queue.rs:372 and :390, the two per-attempt gates the spec moves.
++- Section 2 vs Section 3 — Section 2 is a large mechanism for a corner case Section 3 already handles.
++  reason: 3 REJECT. The Goal requires that a seat with programmatic wake on and a /side chat open "still gets its idle wake in the root session"; Section 3 only defers. B8 and B10 record the user's approval.
++- Section 1 Storage — a human-tier grant survives reversible retirement and carries over to a later occupant.
++  reason: 3 REJECT. The spec states it: "reversible retirement keeps them". The seat is the durable principal; the key only selects a wake transport and is reversible with `unset`.
++- Section 1 Commands / Error handling — subagent refusal is stated only for the agent path; read-only bindings and a nonexistent or retired `--seat` have no rule.
++  reason: 2 REJECT / 1 CONFIRM (Nit). The human path inherits the `ht human` and unified-seat-selector semantics. No stated requirement is contradicted. Residue: one sentence on the human-path bullet.
++- Section 1 "Removing the node setting" — users who enabled the node flag silently lose queue wake on upgrade.
++  reason: 3 REJECT. B10 is an answered decision; `doctor` points at the per-seat command; affected users fall back to native wake. A CHANGELOG line is release-process work under "the release docs follow".
++- Section 2 Selection — the root marker is assumed to be a positive signal; a side-only connected set could be named as root.
++  reason: 3 REJECT. The spec requires the adapter to name the root from S1 evidence and says "Side sessions are never queue targets"; a set with no nameable root selects native. Nothing in the spec supports inferring root as "not a side".
++- Section 2 Selection / Arrival — no rule for two bindings claiming root or a marker inherited by a /side session.
++  reason: 3 REJECT. "Exactly one" fails for two claimants and selection falls back to native (design.md:152-157). S1, S3 and the fake-peer tests cover the marker.
++- Section 2 Selection — the busy-sibling check is a sampled read; the race and the treatment of Unknown are unstated.
++  reason: 2 REJECT / 1 CONFIRM (Nit). The rule is a provisional best-effort guard and S2 measures the overlap case. Existing convention treats Unknown as never idle. Residue: one sentence accepting the sampled window and stating Unknown counts as Busy.
++- Section 2 Arrival — the root-only receipt rule covers only the queued wake; native receipt is unaddressed.
++  reason: 2 REJECT / 1 CONFIRM (Nit). Native receipt is pre-existing and unchanged; Section 3 stops native typing while a side chat is displayed. Residue: one sentence saying native receipt is unchanged.
++- Section 2 Selection / S1 — bindings enrolled before the upgrade can never be named as root.
++  reason: 3 REJECT. The spec states the behaviour: "a root the adapter cannot name, select native as today". The lifecycle-payload-only premise is what S1 determines.
++- Registry table — the spec does not say whether a `programmatic_wake` write triggers a wake reconsideration or lifts an unreceived suppression.
++  reason: 2 REJECT / 1 CONFIRM (Nit). The stated contract is only "applies without a daemon restart", which holds at the next attempt. Residue: one sentence, probably "a write is not a wake trigger".
++- Section 1 release tooling / Trust policy — the e2e driver runs the human-tier write from a script, an indirect route the accepted limit does not name.
++  reason: 3 REJECT. Running `ht human` through an approved interpreter is an instance of the accepted bypass limit (spec lines 143-146). The driver writes only to seats in its owned instance. Residue: accepted-limit wording could name scripts.
++
++## Unverified nits (spot-checked)
++- [Nit] Section 1 "Removing the node setting" — the doctor line is specified with a literal `KEY` placeholder and gives no `--seat` guidance for a seatless operator. (spot: CONFIRM; spec lines 128-129 and 213)
++- [Nit] Error handling — "fails closed to native on an unreadable flag" is a separate branch for a failure that would abort the selection transaction anyway. (spot: CONFIRM)
++- [FYI] Section 2 Selection — a seat whose connected bindings span two processes falls to native, which Section 3 then defers; lag and interaction unstated. (spot: REJECT)
++- [FYI] Section 2 Spikes S4 — no statement of what a queued root turn does when it needs a tool approval while the side view is displayed. (spot: REJECT; Codex UI behaviour not checked)
++- [FYI] Section 2 Spikes — a token refresh in the copied codex-2 `auth.json` can rotate the source profile's refresh token; no record or recovery plan. (spot: REJECT; AGENTS.md already records refreshes for the wake e2e; Codex rotation behaviour not researched)
++- [FYI] Section 2 Spikes — if live access is refused, the fallback evidence cannot produce the S1 marker, so the routing bead stops anyway. (spot: REJECT)
++- [FYI] Section 1 Commands — no rule for whether `--seat S` on the human path may target a retired, held or being-resolved seat. (spot: REJECT)
++- [FYI] Section 1 Commands — `list` answers from the CLI's compiled registry, so under CLI/daemon skew it can advertise keys the daemon refuses. (spot: REJECT)
++- [FYI] Section 1 Commands — no output, machine form, size or exit-code contract for `get`, `set` and `unset`. (spot: REJECT)
++- [FYI] Section 1 Commands — the spec does not say whether the parser accepts `ht config seat set nudge_threshold -1`. (spot: REJECT; src/cli/commands.rs:1377-1381 already uses `allow_negative_numbers` for the alias)
++- [FYI] Section 1 Registry — no rule for a `seat_config` row whose key the running binary's registry does not contain. (spot: REJECT)
++- [FYI] Section 1 Storage — the new migration makes the store refuse to open under the previous binary; no rollback note. (spot: REJECT; standing behaviour, src/store/schema.rs:438)
++- [FYI] Registry table — no statement of what `programmatic_wake on` does for a harness or platform with no programmatic transport. (spot: REJECT)
++- [FYI] Section 1 Commands — `seat.config_v1` is placed under the peer-wire `// cap:` rule although seat config is node-local. (spot: REJECT; src/protocol/capabilities.rs holds local `seat.*` capabilities)
++- [FYI] Section 1 Registry — the dual `backing` abstraction is built for two keys, one per backing. (spot: REJECT)
++- [FYI] Section 1 Storage — `writer_provenance`, `writer_binding` and `updated_at` have no reader. (spot: REJECT)
++- [FYI] Section 1 Commands — `ht config seat get` without `--seat` is undefined for a seatless caller. (spot: REJECT)
++- [FYI] Error handling — against an older daemon, the missing-capability refusal gives no hint that the node setting is still the active control. (spot: REJECT)
++- [FYI] Section 1 Commands — the agent-path refusal names the exact escalation command. (spot: REJECT)
++- [FYI] Section 1 Commands — agent and human writes to the same agent-tier key are last-writer-wins with no marker shown. (spot: REJECT)
++- [FYI] Section 1 — no diagnostic view of which seats have queue wake enabled. (spot: REJECT)
++- [FYI] Section 1 Commands — `unset` on both paths was not requested, and `set <default>` gives the same effective result. (spot: REJECT)
++- [FYI] Section 1 Commands — one setting has four write spellings and two service paths. (spot: REJECT)
++- [FYI] Section 2 Spikes — S4 and the "side contact is not arrival" rule have no design decision attached. (spot: REJECT)
++- [FYI] Section 2 Qualification / Section 3 — `side-native-defer/group` qualifies a one-line change a unit test already covers. (spot: REJECT)
++- [FYI] Section 1 Registry — keys use underscores while the existing commands use dashes; no alternate spelling accepted. (spot: REJECT)
++- [FYI] Section 1 "Removing the node setting" — the doctor obsolete-setting line is extra surface and has no stated size. (spot: REJECT)
++- [FYI] Section 1 Commands — `--json` for `list` names no consumer. (spot: REJECT)
++- [FYI] Section 1 Commands — the `list` line is not reliably field-parseable; `<values>` contains spaces and the separator is a multi-byte em dash. (spot: REJECT)
++- [FYI] Section 1 Storage — no statement of whether a final retirement arriving by sync also deletes `seat_config` rows. (spot: REJECT)
++- [FYI] Section 1 Registry — the registry has a write tier but no read tier. (spot: REJECT)
++
++## Escalations (need human)      ← UNVERIFIED externals, incomplete panels, unsettled panels, material dissent
++- none
+\ No newline at end of file

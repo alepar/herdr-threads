@@ -1,0 +1,13 @@
+diff --git a/tests/hook_entrypoint/agy.rs b/tests/hook_entrypoint/agy.rs
+index b7cf6a2ff..37ad87c9e 100644
+--- a/tests/hook_entrypoint/agy.rs
++++ b/tests/hook_entrypoint/agy.rs
+@@ -1134,7 +1134,7 @@ mod activation {
+                     (None, None) => None,
+                     _ => panic!("canonical binding fingerprint is complete or absent"),
+                 };
+-                Ok(CallerClaim { host: self.fx.host_locator(), instance: self.fx.instance.to_string(), seat: herdr_threads::protocol::ids::SeatId::new(row.get::<_,String>(0)?), binding_generation: u64::try_from(row.get::<_, i64>(1)?).expect("canonical binding generation is nonnegative"),
++                Ok(CallerClaim { auxiliary_session: false, host: self.fx.host_locator(), instance: self.fx.instance.to_string(), seat: herdr_threads::protocol::ids::SeatId::new(row.get::<_,String>(0)?), binding_generation: u64::try_from(row.get::<_, i64>(1)?).expect("canonical binding generation is nonnegative"),
+                     role: herdr_threads::protocol::authority::CallerRole::TopLevel, harness: herdr_threads::protocol::authority::Harness::Claude,
+                     native_session: herdr_threads::protocol::ids::NativeSessionId::new("origin-session"), execution: herdr_threads::protocol::ids::ExecutionId::new(row.get::<_,String>(2)?), target: herdr_threads::protocol::ids::HostTargetId::new("w9:p2"), agent_id: None, liveness })
+             }).unwrap();

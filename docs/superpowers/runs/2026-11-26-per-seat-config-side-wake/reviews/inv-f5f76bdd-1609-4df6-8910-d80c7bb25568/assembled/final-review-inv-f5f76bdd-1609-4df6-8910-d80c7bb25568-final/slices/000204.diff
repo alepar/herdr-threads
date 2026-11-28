@@ -1,0 +1,12 @@
+diff --git a/tests/store/binding_inbox.rs b/tests/store/binding_inbox.rs
+index c44c3ed1e..7b13ee1a3 100644
+--- a/tests/store/binding_inbox.rs
++++ b/tests/store/binding_inbox.rs
+@@ -111,6 +111,7 @@ fn fx(name: &str) -> Fx {
+ 
+ fn claim(seat: &str, session: &str, execution: &str, agent: Option<&str>) -> CallerClaim {
+     CallerClaim {
++        auxiliary_session: false,
+         host: crate::test_support::test_host_locator(),
+         instance: "34750f98bd59fcfc946da45aaabe933b".into(),
+         seat: SeatId::new(seat),

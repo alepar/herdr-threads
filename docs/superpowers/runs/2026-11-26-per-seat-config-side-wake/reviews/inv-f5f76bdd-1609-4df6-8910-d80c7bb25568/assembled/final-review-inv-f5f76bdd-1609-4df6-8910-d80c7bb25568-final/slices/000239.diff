@@ -1,0 +1,81 @@
+diff --git a/tests/store/wake_activation_recovery.rs b/tests/store/wake_activation_recovery.rs
+index 45d812e55..c3d755d0e 100644
+--- a/tests/store/wake_activation_recovery.rs
++++ b/tests/store/wake_activation_recovery.rs
+@@ -1193,3 +1193,76 @@ fn native_fallback_no_effect_restores_coverage_but_unknown_spends_it() {
+         );
+     }
+ }
++
++/// Arrival (ht-z41e.7, R5): a queued wake to the process's root is fulfilled only by a turn of
++/// that exact root scope; a `/side` session's turn, with its own binding and session id, never
++/// settles it. The intent records the side sessions beside the root target.
++#[test]
++fn queued_root_wake_is_fulfilled_by_the_root_turn_and_not_by_a_side_turn() {
++    const SIDE: &str = "00000000-0000-0000-0000-0000000000a1";
++    // The side is enrolled by its own SessionStart hook payload before the wake is reserved (a
++    // check-in advances the decision sequence, which stales an earlier reservation).
++    let (store, _path, r, mut p) = super::wake_intents::fixture_with(|store| {
++        super::wake_intents::enroll_payload(
++            store,
++            include_bytes!("../fixtures/codex-0.163.0-side/session-start-fork.json"),
++            SIDE,
++            10,
++            "side-session-start",
++        )
++        .unwrap();
++    });
++    p.side_sessions = vec![herdr_threads::protocol::ids::NativeSessionId::new(SIDE)];
++    let ticket = arm(&store, &r, &p);
++    result(
++        &store,
++        &ticket,
++        WakeIntentOutcome::Accepted {
++            id: "queued-1".into(),
++        },
++        false,
++    );
++    let recorded = row(&store, &r);
++    assert_eq!(recorded.preparation.side_sessions, p.side_sessions);
++    assert_eq!(
++        recorded.preparation.target.scope.native_session.as_str(),
++        "00000000-0000-0000-0000-000000000001"
++    );
++    let mut side = p.clone();
++    side.target.scope.native_session = herdr_threads::protocol::ids::NativeSessionId::new(SIDE);
++    // The enrolled side has its own binding and execution.
++    let (side_binding, side_execution): (String, String) = store
++        .context()
++        .open_writer()
++        .unwrap()
++        .query_row(
++            "SELECT binding_id,execution_id FROM occupant_bindings WHERE native_session=?1",
++            [SIDE],
++            |r| Ok((r.get(0)?, r.get(1)?)),
++        )
++        .unwrap();
++    side.target.scope.binding = herdr_threads::protocol::ids::BindingId::new(side_binding);
++    side.target.scope.execution = herdr_threads::protocol::ids::ExecutionId::new(side_execution);
++    for edge in [TurnEdge::Busy, TurnEdge::Idle] {
++        StorePort::record_native_turn(
++            &store,
++            &native_report(&store, &r, &side, "side-turn", edge),
++            &budget(),
++        )
++        .unwrap();
++    }
++    // The side turn was recorded against its own binding, so the unchanged intent is not vacuous.
++    let side_turns: i64 = store
++        .context()
++        .open_writer()
++        .unwrap()
++        .query_row(
++            "SELECT count(*) FROM native_turn_state WHERE binding_id=(SELECT binding_id FROM occupant_bindings WHERE native_session=?1) AND turn_id='side-turn'",
++            [SIDE],
++            |r| r.get(0),
++        )
++        .unwrap();
++    assert_eq!(side_turns, 1);
++    assert_eq!(row(&store, &r).logical, WakeIntentLogical::Active);
++    fulfill(&store, &r, &p);
++}

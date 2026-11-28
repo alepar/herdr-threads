@@ -157,6 +157,10 @@ pub struct LifecycleEvent {
     /// for a subagent event whose payload carries one; it picks the subagent's own attention mark
     /// and binding digest (ht-54r.9).
     pub agent_id: Option<String>,
+    /// The payload marks the session as an auxiliary one (neutral evidence an adapter reads from
+    /// its native payload; Codex reports a null `transcript_path` on a `/side` session). Sticky on
+    /// the binding, read only by queue root selection (ht-z41e.21).
+    pub auxiliary_session: bool,
 }
 impl LifecycleEvent {
     pub fn can_check_in(&self) -> bool {

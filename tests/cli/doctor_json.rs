@@ -1956,3 +1956,106 @@ fn doctor_flags_two_live_stores() {
         1
     );
 }
+
+// Kills: a doctor that stays silent about the obsolete node key or hides which seats have queue
+// wake on after the node flag stopped working, and one that adds noise to a default node.
+#[test]
+fn doctor_reports_seats_with_programmatic_wake_and_the_obsolete_node_setting() {
+    let node = crate::test_support::scratch::temp_path(format!(
+        "ht-doctor-pw-{}",
+        uuid::Uuid::new_v4().simple()
+    ));
+    std::fs::create_dir_all(&node).unwrap();
+    // No store and no settings: nothing to report, no text.
+    assert!(programmatic_wake_seats_report(&node).is_empty());
+    assert_eq!(programmatic_wake_text(&json!({})), "");
+
+    let context = crate::store::connection::StoreContext::new(
+        node.join(crate::daemon::paths::DATABASE_FILE),
+        Arc::new(crate::app::SystemClock::new()),
+    )
+    .with_test_host();
+    let db = context.open_writer().unwrap();
+    // Rows only: the seats they name are not the point of this test.
+    db.execute_batch("PRAGMA foreign_keys=OFF").unwrap();
+    db.execute_batch(
+        "INSERT INTO seat_config(seat_id,key,value,updated_at,writer_provenance) VALUES \
+         ('b','programmatic_wake','on',0,'op'),('a','programmatic_wake','on',0,'op'),\
+         ('c','programmatic_wake','off',0,'op'),('d','nudge_threshold',NULL,0,'op');",
+    )
+    .unwrap();
+    drop(db);
+    assert_eq!(programmatic_wake_seats_report(&node), ["a", "b"]);
+    let text = programmatic_wake_text(&json!({"programmatic_wake_seats": ["a", "b"]}));
+    assert_eq!(text, "programmatic wake: on for a, b\n");
+
+    let both = programmatic_wake_text(&json!({
+        "programmatic_wake_node_setting": "obsolete",
+        "programmatic_wake_seats": ["a"],
+    }));
+    assert_eq!(
+        both,
+        "settings.json: programmatic_wake is obsolete (no effect); use ht human config seat set --seat <seat> programmatic_wake on\nprogrammatic wake: on for a\n"
+    );
+    std::fs::remove_dir_all(&node).unwrap();
+}
+
+// Kills: a `report_captured` that stops calling the two per-seat queue wake helpers (or feeds them
+// the wrong node dir), a report that lists an `off` seat or an unsorted list, and a default node
+// that grows the fields or the text lines. The test above calls the helpers directly; this one
+// goes through `report` and `render_text`.
+#[test]
+fn doctor_report_carries_the_programmatic_wake_fields_end_to_end() {
+    let case = PathCase::new("pw-e2e");
+    let state = case.dir.join("state");
+    std::fs::create_dir_all(&state).unwrap();
+    let endpoint = case.dir.join("herdr.sock");
+    let node = crate::daemon::paths::node_dir(&state);
+    std::fs::create_dir_all(&node).unwrap();
+
+    // A default node: neither field, no text line.
+    let (plain, _) = report(Some(state.clone()), Some(endpoint.clone()));
+    assert!(
+        plain.get("programmatic_wake_node_setting").is_none(),
+        "{plain}"
+    );
+    assert!(plain.get("programmatic_wake_seats").is_none(), "{plain}");
+    let plain_text = render_text(&plain);
+    assert!(!plain_text.contains("programmatic wake"), "{plain_text}");
+    assert!(
+        !plain_text.contains("programmatic_wake is obsolete"),
+        "{plain_text}"
+    );
+
+    // The obsolete node key plus per-seat rows (two on, one off), in a real schema.
+    std::fs::write(
+        node.join("settings.json"),
+        br#"{"programmatic_wake": true}"#,
+    )
+    .unwrap();
+    let context = crate::store::connection::StoreContext::new(
+        node.join(crate::daemon::paths::DATABASE_FILE),
+        Arc::new(crate::app::SystemClock::new()),
+    )
+    .with_test_host();
+    let db = context.open_writer().unwrap();
+    // Rows only: the seats they name are not the point of this test.
+    db.execute_batch("PRAGMA foreign_keys=OFF").unwrap();
+    db.execute_batch(
+        "INSERT INTO seat_config(seat_id,key,value,updated_at,writer_provenance) VALUES \
+         ('b','programmatic_wake','on',0,'op'),('a','programmatic_wake','on',0,'op'),\
+         ('c','programmatic_wake','off',0,'op');",
+    )
+    .unwrap();
+    drop(db);
+    let (full, _) = report(Some(state), Some(endpoint));
+    assert_eq!(full["programmatic_wake_node_setting"], "obsolete", "{full}");
+    assert_eq!(full["programmatic_wake_seats"], json!(["a", "b"]), "{full}");
+    let text = render_text(&full);
+    assert!(
+        text.contains(
+            "settings.json: programmatic_wake is obsolete (no effect); use ht human config seat set --seat <seat> programmatic_wake on\nprogrammatic wake: on for a, b\n"
+        ),
+        "{text}"
+    );
+}

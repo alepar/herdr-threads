@@ -1,0 +1,12 @@
+diff --git a/tests/store/notice_replay.rs b/tests/store/notice_replay.rs
+index 0ae0c2f95..f1c468753 100644
+--- a/tests/store/notice_replay.rs
++++ b/tests/store/notice_replay.rs
+@@ -139,6 +139,7 @@ fn claim(
+     generation: u64,
+ ) -> CallerClaim {
+     CallerClaim {
++        auxiliary_session: false,
+         host: crate::test_support::test_host_locator(),
+         instance: "34750f98bd59fcfc946da45aaabe933b".into(),
+         seat: SeatId::new(seat),

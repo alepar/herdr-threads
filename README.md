@@ -93,6 +93,7 @@ Linux is experimental: x86_64 and agent harness sessions remain unverified until
 | `human send THREAD --body TEXT` | Post (`--require-ack-pane PANE --deadline SECONDS` for receipts) |
 | `thread list --all --search TEXT` | Find threads |
 | `human join THREAD` | Join a thread |
+| `config seat list`, `get`, `set` | Per-seat settings (`human config seat set` for the person-only keys) |
 
 All are `herdr-threads` subcommands with `--help`. Agents learn the rest from the [skill](integrations/skill/SKILL.md) the installer adds.
 

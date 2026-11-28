@@ -174,6 +174,46 @@ impl<'a, H: HostPort + ?Sized, C: ReservationCheck + ?Sized> NativeWakeDispatche
         }
     }
 }
+/// Whether a reservation's targets are one queue candidate: one live target, or several that are
+/// bindings of one harness process (a root and its `/side` sessions; the same fingerprint pid and
+/// harness, as [`ComposerChoice::Process`]). Queue selection (`process_root`) then names the root
+/// against the store's full liveness fingerprint, or the wake stays native. A dormant target never
+/// queues.
+fn one_queue_process(targets: &[crate::ports::WakeTarget]) -> bool {
+    match targets {
+        [] => false,
+        [only] => !only.dormant,
+        [first, rest @ ..] => {
+            first.fingerprint_pid.is_some()
+                && !first.dormant
+                && rest.iter().all(|t| {
+                    !t.dormant
+                        && t.fingerprint_pid == first.fingerprint_pid
+                        && t.harness == first.harness
+                })
+        }
+    }
+}
+/// Whether a reservation may take the queue lane at all: the seat's `programmatic_wake` (as reserved) is on
+/// and its targets' harness declares a wake control. Otherwise the wake is native-only and keeps the
+/// dispatcher's early busy and typed-input refusals (design §Unchanged behavior; ht-z41e.45).
+fn queue_capable(reservation: &WakeReservation) -> bool {
+    if !reservation.attention_witness.programmatic_wake() {
+        return false;
+    }
+    let registry = crate::harness::registry::builtins();
+    reservation
+        .authority
+        .targets()
+        .first()
+        .is_some_and(|target| {
+            registry
+                .agent(&target.harness)
+                .ok()
+                .and_then(|id| registry.by_id(id).ok())
+                .is_some_and(|registration| registration.wake_control().is_some())
+        })
+}
 /// Every exit before `submit_prompt` is a refusal: nothing was sent, so the
 /// scheduler restores the ladder and retries on the refusal backoff (pacer
 /// D5). Errors map by class; any other pre-send error is `Unavailable`
@@ -303,12 +343,29 @@ impl<H: HostPort + ?Sized, C: ReservationCheck + ?Sized> NativeWakeDispatcher<'_
             reservation.authority,
             ReservedWakeAuthority::Cooperative { .. }
         );
+        // A pane the native path may not type into (typed or placeholder composer, a turn that is a
+        // sibling's) can still admit a queue wake: the queue's own admission decides (root hook
+        // idle; pane `working` only beside siblings; typed text refuses). Only a queue candidate is
+        // let through: queue attached, no poke, seat attention, every target in one process, the
+        // seat's `programmatic_wake` on and a harness with a wake control (ht-z41e.45). Any
+        // native path that follows refuses a non-idle status and a non-empty composer in its final
+        // gate, so nothing new is typed.
+        let queue_candidate = self.queue.is_some()
+            && poke.is_none()
+            && reservation.for_seat_attention()
+            && one_queue_process(reservation.authority.targets())
+            && queue_capable(&reservation);
         let identity_ok = if cooperative {
             // Cooperative native policy: structural identity only; the
             // adapter's own recheck decides the occupant immediately before
-            // submission (recognized idle harness, never shell/blocked).
+            // submission (recognized idle harness, never shell/blocked). A queue candidate is
+            // judged by its own admission for a working pane too (only a blocked one is excluded
+            // here), as a poke is.
             if poke_only {
                 reservation.matches_cooperative_structure(&observation)
+            } else if queue_candidate {
+                reservation.matches_cooperative_structure(&observation)
+                    && observation.ui != HostUiState::ApprovalOrQuestion
             } else {
                 reservation.matches_cooperative_identity(&observation)
             }
@@ -341,8 +398,9 @@ impl<H: HostPort + ?Sized, C: ReservationCheck + ?Sized> NativeWakeDispatcher<'_
         }
         if matches!(
             observation.ui,
-            HostUiState::HumanInput | HostUiState::ActiveTurn
-        ) {
+            HostUiState::ActiveTurn | HostUiState::HumanInput
+        ) && !queue_candidate
+        {
             return refuse(
                 RefusalCause::Unsafe,
                 WakeOutcome::Unsafe,
@@ -428,11 +486,14 @@ impl<H: HostPort + ?Sized, C: ReservationCheck + ?Sized> NativeWakeDispatcher<'_
                 }
             }
         }
-        let selected = if poke.is_some() {
-            self.host.safe_poke_target(&reservation.seat, &observation)
-        } else {
-            self.host.safe_wake_target(&reservation.seat, &observation)
-        };
+        let selected =
+            if poke.is_some() || (queue_candidate && observation.ui == HostUiState::ActiveTurn) {
+                // The native wake target excludes an active turn; a queue candidate's admission
+                // decides it (a sibling's turn), as a poke's does.
+                self.host.safe_poke_target(&reservation.seat, &observation)
+            } else {
+                self.host.safe_wake_target(&reservation.seat, &observation)
+            };
         let Some(mut target) = selected else {
             return refuse(
                 RefusalCause::Unsafe,
@@ -569,6 +630,8 @@ impl<H: HostPort + ?Sized, C: ReservationCheck + ?Sized> NativeWakeDispatcher<'_
         // Why a wake whose harness has a content-free text still types the `inbox` marker, for the
         // daemon log (ht-i5w2); `None` when nothing fell back.
         let mut fell_back: Option<String> = None;
+        // Whether some reservation target's own text is `WAKE_UP`, set only in the reduce branch.
+        let mut queue_text_ok = false;
         let text = match (&poke, using_poke) {
             (Some(request), true) => request.plan.text.as_str(),
             // The hook path is what failed for a recovery hint: it must name `inbox`.
@@ -624,6 +687,10 @@ impl<H: HostPort + ?Sized, C: ReservationCheck + ?Sized> NativeWakeDispatcher<'_
                         .map(|t| registry.binding_wake_text(id, Some(&t.provenance)))
                         .reduce(|a, b| if a == b { a } else { MARKER })
                         .unwrap_or_else(|| registry.wake_text(id));
+                    queue_text_ok =
+                        reservation.authority.targets().iter().any(|t| {
+                            registry.binding_wake_text(id, Some(&t.provenance)) == WAKE_UP
+                        });
                     if text == MARKER {
                         let bindings: Vec<String> = woken
                             .iter()
@@ -657,12 +724,6 @@ impl<H: HostPort + ?Sized, C: ReservationCheck + ?Sized> NativeWakeDispatcher<'_
         } else {
             text
         };
-        if text == MARKER
-            && let Some(why) = fell_back
-            && let Ok(mut fallbacks) = self.text_fallbacks.lock()
-        {
-            fallbacks.insert(reservation.seat.clone(), why);
-        }
         // Unsolicited attention never queues into an active turn. The owed check above ran
         // before the host's idle recheck; a turn still running then can serve the attention
         // and end before that recheck, so the host asks again right before typing.
@@ -695,14 +756,25 @@ impl<H: HostPort + ?Sized, C: ReservationCheck + ?Sized> NativeWakeDispatcher<'_
                 transports.insert(reservation.attempt.clone(), WakeTransport::Queue);
             }
             let targets = reservation.authority.targets();
-            let use_queue = text == WAKE_UP
-                && poke.is_none()
-                && !using_poke
-                && targets.len() == 1
-                && !targets[0].dormant;
+            // Queue text eligibility is the selected root's, not the reduce over every target: the
+            // queue submits one prompt to the root session and never to a side, so a side's
+            // `inbox` marker does not disqualify it (orchestrator decision, ht-z41e.37). The root
+            // check is queue selection's own: it names only a `cooperative_top_level` root, and
+            // for Codex that provenance is exactly the one whose text is `WAKE_UP`. A root
+            // without it yields no selection and the wake goes native with the reduced text,
+            // which is unchanged. One target keeps `text == WAKE_UP` exactly.
+            let text_ok = text == WAKE_UP || (targets.len() > 1 && queue_text_ok);
+            let use_queue = text_ok && poke.is_none() && !using_poke && one_queue_process(targets);
             // The queue adapter may initialize a helper before asking again; its guard gets
             // the original lease, rather than a native submission window sampled earlier.
-            let guard = || self.host.check_idle_wake(&target, context);
+            let guard = |next: crate::notification::queue::GuardFor| match next {
+                crate::notification::queue::GuardFor::NativeFallback => {
+                    self.host.check_idle_wake(&target, context)
+                }
+                crate::notification::queue::GuardFor::Queue { siblings } => {
+                    self.host.admit_queue_wake(&target, siblings, context)
+                }
+            };
             match queue.attempt(
                 &reservation,
                 &target,
@@ -741,6 +813,14 @@ impl<H: HostPort + ?Sized, C: ReservationCheck + ?Sized> NativeWakeDispatcher<'_
                 }
                 Err(error) => return refuse_error(error),
             }
+        }
+        // Recorded only once the native path is chosen: a queue wake that was submitted, unknown or
+        // refused types nothing, so it leaves no provenance fallback line behind.
+        if text == MARKER
+            && let Some(why) = fell_back
+            && let Ok(mut fallbacks) = self.text_fallbacks.lock()
+        {
+            fallbacks.insert(reservation.seat.clone(), why);
         }
         let submitted =
             self.host
@@ -829,6 +909,13 @@ impl<H: HostPort + ?Sized, C: ReservationCheck + ?Sized> NotificationPort
             .ok()
             .and_then(|mut transports| transports.remove(attempt))
             .unwrap_or(WakeTransport::Composer)
+    }
+
+    fn take_queue_root(
+        &self,
+        attempt: &WakeAttemptId,
+    ) -> Option<crate::protocol::ids::NativeSessionId> {
+        self.queue?.take_root(attempt)
     }
 
     fn take_verification(&self, seat: &SeatId) -> Option<SubmissionVerification> {

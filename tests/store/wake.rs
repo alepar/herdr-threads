@@ -908,6 +908,50 @@ fn unresolved_recovery_hold_blocks_candidate_continuity_even_with_fresh_target()
     let _ = std::fs::remove_file(path);
 }
 
+/// `load_candidate` fills the attention witness's `programmatic_wake` from the seat's own
+/// `seat_config` row, so the witness changes (and lifts an unreceived hold) with the key.
+#[test]
+fn load_candidate_witness_carries_the_seat_programmatic_wake() {
+    let path =
+        crate::test_support::scratch::temp_path(format!("herdr-wake-{}.db", uuid::Uuid::new_v4()));
+    let context = StoreContext::new(path.clone(), Arc::new(WakeClock)).with_test_host();
+    let db = context.open_writer().unwrap();
+    db.execute_batch("UPDATE herdr_hosts SET host_boot='host',host_epoch=1; UPDATE local_node SET decision_seq=1")
+    .unwrap();
+    db.execute("INSERT INTO seats(id,instance_id,state,role,target_id,generation,target_generation,created_at,home_node,is_local,host_id) VALUES ('s','34750f98bd59fcfc946da45aaabe933b','resolved','native','pane',1,1,0,(SELECT id FROM local_node),1,(SELECT min(host_id) FROM herdr_hosts))",[]).unwrap();
+    let attention = effective::EffectiveSeatAttention {
+        has_pending_invitation: true,
+        has_pending_receipt: false,
+        latest_warning_seq: None,
+        frontier: Default::default(),
+    };
+    let witness_flag = || {
+        wake::load_candidate(
+            &db,
+            "34750f98bd59fcfc946da45aaabe933b",
+            &SeatId::new("s"),
+            &attention,
+            1,
+            crate::protocol::time::UtcMillis(100),
+        )
+        .unwrap()
+        .attention_witness
+        .expect("the candidate carries a witness")
+        .programmatic_wake()
+    };
+    assert!(!witness_flag(), "no row: the default is off");
+    db.execute("INSERT INTO seat_config(seat_id,key,value,updated_at,writer_provenance) VALUES ('s','programmatic_wake','on',0,'operator:local-user:0')", []).unwrap();
+    assert!(witness_flag(), "row on: the witness carries it");
+    db.execute(
+        "UPDATE seat_config SET value='off' WHERE seat_id='s' AND key='programmatic_wake'",
+        [],
+    )
+    .unwrap();
+    assert!(!witness_flag(), "row off: the witness drops it");
+    drop(db);
+    let _ = std::fs::remove_file(path);
+}
+
 /// A seat holds several open bindings (ht-54r.3). The wake candidate's current binding is the
 /// one a seat-level reader follows (`SEAT_NOTICE_BINDING_SQL`): the newest open top-level
 /// binding, a connected one first; never a subagent, never whichever row SQLite returns first.
@@ -1556,7 +1600,7 @@ fn page_seats(store: &SqliteStore) -> Vec<String> {
 /// Settle seat `seat`'s pending invitation and commit a decision.
 fn accept_invitation(store: &SqliteStore, seat: &str) {
     let db = store.context.open_writer().unwrap();
-    db.execute("UPDATE invitations SET state='accepted',accepted_at=1,accepted_actor_seat_id=?1,accepted_generation=1,accepted_observation='proof' WHERE id='inv-'||?1", [seat]).unwrap();
+    db.execute("UPDATE invitations SET state='already_joined',accepted_at=1,accepted_actor_seat_id=?1,accepted_generation=1,accepted_observation='proof' WHERE id='inv-'||?1", [seat]).unwrap();
     db.execute(
         "UPDATE local_node SET decision_seq=decision_seq+1 WHERE id='34750f98bd59fcfc946da45aaabe933b'",
         [],
@@ -3798,6 +3842,107 @@ fn a_sibling_display_never_blocks_a_one_process_lazy_wake() {
     let _ = std::fs::remove_file(path);
 }
 
+/// ht-z41e.43: a lazy wake is seat-level attention (`WakeReservation::for_seat_attention`), so its targets are
+/// every connected binding of the process even when a `/side` sibling already displayed the row (its
+/// own turn hook did). With only the unread binding reserved, the dispatcher's text-evidence check (which reads
+/// the seat-level set) disagreed, fell back to the `inbox` marker and kept a root-plus-side wake off the
+/// queue lane for good. Kills: reserving the unread binding alone for a lazy wake.
+#[test]
+fn a_lazy_wake_reserves_a_sibling_that_already_displayed_the_row() {
+    let (store, path) = multi_store(&[row("main", "codex", 10), row("side1", "codex", 10)]);
+    {
+        let db = store.context.open_writer().unwrap();
+        // No pending invitation: the lazy row is the seat's only attention, as in a plain p0 send.
+        db.execute("UPDATE invitations SET state='already_joined'", [])
+            .unwrap();
+        db.execute(
+            "INSERT INTO binding_cursors(binding_id,thread_id,seq) VALUES ('main','t',0),('side1','t',0)",
+            [],
+        )
+        .unwrap();
+        insert_p0_delivery_row(&db);
+        db.execute(
+            "UPDATE binding_cursors SET seq=1 WHERE binding_id='side1'",
+            [],
+        )
+        .unwrap();
+        db.execute(
+            "INSERT INTO binding_row_displays(binding_id,message_id) VALUES ('side1','msg-1')",
+            [],
+        )
+        .unwrap();
+    }
+    let reservation = StorePort::reserve_wake(
+        &store,
+        crate::test_support::test_host_id(),
+        &owed_candidate(&store).unwrap(),
+        &budget(),
+    )
+    .unwrap()
+    .expect("main has not displayed the row, so a wake is reserved");
+    assert_eq!(reservation.reasons, ["lazy"]);
+    assert_eq!(target_ids(&reservation), ["main", "side1"]);
+    assert!(
+        StorePort::wake_text_evidence_current(&store, &reservation, &budget()).unwrap(),
+        "the reservation's targets are the seat-level set the evidence check reads"
+    );
+    drop(store);
+    let _ = std::fs::remove_file(path);
+}
+
+/// ht-z41e.60: a lazy wake widens only to the bindings of the process that owes it (spec §Selection:
+/// one harness process is one liveness pid, start stamp and boot); a binding of another process that
+/// already displayed the row stays out, since per-binding unread decides across processes (ht-705).
+/// Kills: widening a lazy wake to a displayed binding of another process.
+#[test]
+fn a_lazy_wake_does_not_reserve_a_displayed_binding_in_another_process() {
+    let (store, path) = multi_store(&[row("main", "codex", 10), row("other", "codex", 11)]);
+    {
+        let db = store.context.open_writer().unwrap();
+        db.execute("UPDATE invitations SET state='already_joined'", [])
+            .unwrap();
+        db.execute(
+            "INSERT INTO binding_cursors(binding_id,thread_id,seq) VALUES ('main','t',0),('other','t',0)",
+            [],
+        )
+        .unwrap();
+        insert_p0_delivery_row(&db);
+        db.execute(
+            "UPDATE binding_cursors SET seq=1 WHERE binding_id='other'",
+            [],
+        )
+        .unwrap();
+        db.execute(
+            "INSERT INTO binding_row_displays(binding_id,message_id) VALUES ('other','msg-1')",
+            [],
+        )
+        .unwrap();
+    }
+    let candidate = owed_candidate(&store).unwrap();
+    let candidate_targets: Vec<_> = candidate
+        .targets
+        .iter()
+        .map(|t| t.binding.as_str().to_owned())
+        .collect();
+    assert_eq!(candidate_targets, ["main"], "the candidate's targets");
+    let reservation = StorePort::reserve_wake(
+        &store,
+        crate::test_support::test_host_id(),
+        &candidate,
+        &budget(),
+    )
+    .unwrap()
+    .expect("main has not displayed the row, so a wake is reserved");
+    assert_eq!(reservation.reasons, ["lazy"]);
+    assert_eq!(target_ids(&reservation), ["main"]);
+    assert!(
+        StorePort::wake_text_evidence_current(&store, &reservation, &budget()).unwrap(),
+        "the reservation's targets are the set the evidence check reads"
+    );
+    drop(store);
+    let _ = std::fs::remove_file(path);
+}
+
 /// ht-yha.62, per-reason rule over the reached set: a wake reserved for a pending receipt and a delivery
 /// row stays owed while any reached binding still has the row unread, even when another binding was
 /// served the receipt and displayed the row; once every reached binding was served both, it is not.
@@ -4095,7 +4240,7 @@ fn an_item_resolved_before_the_prompt_is_not_typed() {
         ),
         (
             InTurnKind::Invitation,
-            "UPDATE invitations SET state='accepted',accepted_at=1,accepted_actor_seat_id='s',accepted_generation=1,accepted_observation='proof' WHERE id='inv'",
+            "UPDATE invitations SET state='already_joined',accepted_at=1,accepted_actor_seat_id='s',accepted_generation=1,accepted_observation='proof' WHERE id='inv'",
         ),
     ] {
         let (store, path, _) = two_binding_store(kind);

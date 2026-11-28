@@ -1,0 +1,12 @@
+diff --git a/src/protocol/handoff.rs b/src/protocol/handoff.rs
+index 119ef82f9..1cf79a603 100644
+--- a/src/protocol/handoff.rs
++++ b/src/protocol/handoff.rs
+@@ -1175,6 +1175,7 @@ pub(crate) mod topology_contract_tests {
+     use super::*;
+     pub(crate) fn claim() -> CallerClaim {
+         CallerClaim {
++            auxiliary_session: false,
+             host: crate::protocol::ids::HostLocator::parse("/host.sock").unwrap(),
+             instance: "34750f98bd59fcfc946da45aaabe933b".into(),
+             seat: SeatId::new("sender"),

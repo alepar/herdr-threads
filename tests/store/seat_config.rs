@@ -1,0 +1,875 @@
+//! Per-seat config storage (ht-z41e.2): defaults, both tiers, the column-backed `nudge_threshold`,
+//! the refusals and the retirement cleanup. Mounted from `src/store/seat_config.rs`; the
+//! reversible/final retirement flow is in `tests/store/reversible_retirement.rs`.
+use super::*;
+use crate::protocol::{
+    authority::{
+        CallerClaim, CallerRole, Harness, MutationPermit, ObligationRef, OperatorActor,
+        PeerIdentity,
+    },
+    commands::{SetNudgeThreshold, SetSeatConfig, UnsetSeatConfig},
+    ids::*,
+    results::ErrorCode,
+    seat_config::{ConfigBacking, ConfigKey, ConfigTier, ConfigValues},
+    time::{CallBudget, Clock, MonoInstant, UtcMillis},
+};
+use std::sync::Arc;
+
+struct TestClock;
+impl Clock for TestClock {
+    fn utc_now(&self) -> UtcMillis {
+        UtcMillis(1000)
+    }
+    fn monotonic_now(&self) -> MonoInstant {
+        MonoInstant(100)
+    }
+}
+
+const INSTANCE: &str = "34750f98bd59fcfc946da45aaabe933b";
+
+fn setup() -> (StoreContext, Connection) {
+    let path = crate::test_support::scratch::temp_path(format!(
+        "seat-config-test-{}.db",
+        uuid::Uuid::new_v4()
+    ));
+    let context = StoreContext::new(path, Arc::new(TestClock)).with_test_host();
+    let conn = context.open_writer().unwrap();
+    conn.execute_batch(
+        "UPDATE herdr_hosts SET host_boot='b',host_epoch=1; UPDATE local_node SET decision_seq=1",
+    )
+    .unwrap();
+    conn.execute("INSERT INTO seats(id,instance_id,state,role,target_id,generation,target_generation,created_at,unavailability_episode,home_node,is_local,host_id) VALUES ('s',?1,'resolved','native','ps',1,1,0,1,(SELECT id FROM local_node),1,(SELECT min(host_id) FROM herdr_hosts))", [INSTANCE]).unwrap();
+    conn.execute("INSERT INTO observed_targets(host_id,target_id,host_boot,epoch,generation,observed_at,provenance,terminal_id,incarnation,incarnation_source_kind,connection_epoch) VALUES ((SELECT min(host_id) FROM herdr_hosts),'ps','b',1,1,0,'fresh','term-ps','inc','coherent_enumeration',1)", []).unwrap();
+    conn.execute("INSERT INTO occupant_bindings(seat_id,generation,target_id,host_boot,host_epoch,target_generation,harness,native_session,execution_id,observation_provenance,observed_at,terminal_id,incarnation) VALUES ('s',1,'ps','b',1,1,'claude','ns','00000000-0000-4000-8000-0000000000aa','cooperative_top_level',0,'term-ps','inc')", []).unwrap();
+    (context, conn)
+}
+
+fn seat() -> SeatId {
+    SeatId::new("s")
+}
+fn budget() -> CallBudget {
+    CallBudget {
+        deadline: MonoInstant(u64::MAX),
+        cancellation: Default::default(),
+    }
+}
+fn claim(role: CallerRole, generation: u64) -> CallerClaim {
+    CallerClaim {
+        auxiliary_session: false,
+        host: crate::test_support::test_host_locator(),
+        instance: INSTANCE.into(),
+        seat: seat(),
+        binding_generation: generation,
+        role,
+        harness: Harness::Claude,
+        native_session: NativeSessionId::new("ns"),
+        execution: ExecutionId::new("00000000-0000-4000-8000-0000000000aa"),
+        target: HostTargetId::new("ps"),
+        agent_id: None,
+        liveness: Some(crate::protocol::authority::LivenessFingerprint::TEST),
+    }
+}
+fn actor() -> OperatorActor {
+    OperatorActor::from_peer(PeerIdentity::from_kernel(501), 501).unwrap()
+}
+fn set_cmd(
+    tier: ConfigTier,
+    seat: Option<&str>,
+    key: &str,
+    value: &str,
+    op: &str,
+) -> SetSeatConfig {
+    SetSeatConfig {
+        seat: seat.map(SeatId::new),
+        key: key.into(),
+        value: value.into(),
+        tier,
+        operation: OperationId::new(op),
+        claim: (tier == ConfigTier::Agent).then(|| claim(CallerRole::TopLevel, 1)),
+    }
+}
+fn unset_cmd(tier: ConfigTier, seat: Option<&str>, key: &str, op: &str) -> UnsetSeatConfig {
+    UnsetSeatConfig {
+        seat: seat.map(SeatId::new),
+        key: key.into(),
+        tier,
+        operation: OperationId::new(op),
+        claim: (tier == ConfigTier::Agent).then(|| claim(CallerRole::TopLevel, 1)),
+    }
+}
+fn permit(claim: &CallerClaim, operation: &OperationId, digest: [u8; 32]) -> MutationPermit {
+    MutationPermit::cooperative(
+        claim.clone(),
+        operation.clone(),
+        ObligationRef::CheckIn(claim.seat.clone()),
+        digest,
+        MonoInstant(50),
+        (1, 0),
+        budget(),
+    )
+}
+fn written(result: CommandResult) -> SeatConfigWrite {
+    match result {
+        CommandResult::SeatConfigWritten(write) => write,
+        other => panic!("unexpected result {other:?}"),
+    }
+}
+fn agent_set(
+    context: &StoreContext,
+    conn: &mut Connection,
+    command: &SetSeatConfig,
+) -> Result<SeatConfigWrite, ApiError> {
+    let claim = command.claim.clone().unwrap();
+    let digest = control::cooperative_payload_hash("set_seat_config", command).unwrap();
+    let permit = permit(&claim, &command.operation, digest);
+    set_agent(context, conn, &budget(), command, permit).map(written)
+}
+fn agent_unset(
+    context: &StoreContext,
+    conn: &mut Connection,
+    command: &UnsetSeatConfig,
+) -> Result<SeatConfigWrite, ApiError> {
+    let claim = command.claim.clone().unwrap();
+    let digest = control::cooperative_payload_hash("unset_seat_config", command).unwrap();
+    let permit = permit(&claim, &command.operation, digest);
+    unset_agent(context, conn, &budget(), command, permit).map(written)
+}
+fn human_set(
+    context: &StoreContext,
+    conn: &mut Connection,
+    seat: &str,
+    key: &str,
+    value: &str,
+    op: &str,
+) -> Result<SeatConfigWrite, ApiError> {
+    let command = set_cmd(ConfigTier::Human, Some(seat), key, value, op);
+    set_operator(context, conn, INSTANCE, &command, &actor()).map(written)
+}
+fn human_unset(
+    context: &StoreContext,
+    conn: &mut Connection,
+    seat: &str,
+    key: &str,
+    op: &str,
+) -> Result<SeatConfigWrite, ApiError> {
+    let command = unset_cmd(ConfigTier::Human, Some(seat), key, op);
+    unset_operator(context, conn, INSTANCE, &command, &actor()).map(written)
+}
+fn entry(conn: &Connection, key: &str) -> SeatConfigEntry {
+    get(conn, &seat(), Some(key)).unwrap().entries.remove(0)
+}
+/// `(reason_bits, attention_version)` of the seat's wake_work row, if any.
+fn wake_work(conn: &Connection) -> Option<(i64, i64)> {
+    conn.query_row(
+        "SELECT reason_bits,attention_version FROM wake_work WHERE seat_id='s'",
+        [],
+        |r| Ok((r.get(0)?, r.get(1)?)),
+    )
+    .ok()
+}
+/// `(value, writer_provenance, writer_binding)` of the key's row.
+fn raw_row(conn: &Connection, key: &str) -> Option<(Option<String>, String, Option<String>)> {
+    conn.query_row(
+        "SELECT value,writer_provenance,writer_binding FROM seat_config WHERE seat_id='s' AND key=?1",
+        [key],
+        |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?)),
+    )
+    .optional()
+    .unwrap()
+}
+
+#[test]
+fn fresh_seat_reads_every_key_at_its_default() {
+    let (_, conn) = setup();
+    let view = get(&conn, &seat(), None).unwrap();
+    assert_eq!(view.seat, seat());
+    let rows: Vec<_> = view
+        .entries
+        .iter()
+        .map(|e| (e.key.as_str(), e.value.as_str(), e.is_default, e.tier))
+        .collect();
+    assert_eq!(
+        rows,
+        [
+            ("nudge_threshold", "0", true, ConfigTier::Agent),
+            ("programmatic_wake", "off", true, ConfigTier::Human),
+        ]
+    );
+    assert!(
+        view.entries
+            .iter()
+            .all(|e| e.writer.is_none() && e.updated_at.is_none())
+    );
+    assert_eq!(
+        effective_value(
+            &conn,
+            &seat(),
+            crate::protocol::seat_config::key("programmatic_wake").unwrap()
+        )
+        .unwrap(),
+        "off"
+    );
+}
+
+#[test]
+fn table_key_set_reads_explicit_and_unset_returns_to_default() {
+    let (context, mut conn) = setup();
+    let write = human_set(&context, &mut conn, "s", "programmatic_wake", "on", "op1").unwrap();
+    assert_eq!(
+        write,
+        SeatConfigWrite {
+            seat: seat(),
+            key: "programmatic_wake".into(),
+            value: "on".into(),
+            is_default: false,
+            changed: true
+        }
+    );
+    let e = entry(&conn, "programmatic_wake");
+    assert_eq!((e.value.as_str(), e.is_default), ("on", false));
+    assert_eq!(e.writer.as_deref(), Some("operator:local-user:501"));
+    assert_eq!(e.updated_at, Some(UtcMillis(1000)));
+    assert_eq!(
+        raw_row(&conn, "programmatic_wake"),
+        Some((Some("on".into()), "operator:local-user:501".into(), None))
+    );
+    // The same value again is not a change.
+    let again = human_set(&context, &mut conn, "s", "programmatic_wake", "on", "op2").unwrap();
+    assert!(!again.changed);
+    let unset = human_unset(&context, &mut conn, "s", "programmatic_wake", "op3").unwrap();
+    assert_eq!(
+        unset,
+        SeatConfigWrite {
+            seat: seat(),
+            key: "programmatic_wake".into(),
+            value: "off".into(),
+            is_default: true,
+            changed: true
+        }
+    );
+    assert_eq!(
+        raw_row(&conn, "programmatic_wake"),
+        None,
+        "unset deletes the row"
+    );
+    assert!(entry(&conn, "programmatic_wake").is_default);
+    let again = human_unset(&context, &mut conn, "s", "programmatic_wake", "op4").unwrap();
+    assert!(!again.changed, "unsetting an unset key changes nothing");
+}
+
+#[test]
+fn nudge_threshold_is_backed_by_the_seats_column() {
+    let (context, mut conn) = setup();
+    let write = human_set(&context, &mut conn, "s", "nudge_threshold", "3", "op1").unwrap();
+    assert!(write.changed && !write.is_default);
+    assert_eq!(write.value, "3");
+    let (column, mirror): (i64, String) = conn
+        .query_row(
+            "SELECT nudge_threshold,wake_on FROM seats WHERE id='s'",
+            [],
+            |r| Ok((r.get(0)?, r.get(1)?)),
+        )
+        .unwrap();
+    assert_eq!((column, mirror.as_str()), (3, "nudge"));
+    // The audit row holds no value and names the writer.
+    assert_eq!(
+        raw_row(&conn, "nudge_threshold"),
+        Some((None, "operator:local-user:501".into(), None))
+    );
+    // A raw column update is what `get` reads, whatever the audit row says.
+    conn.execute("UPDATE seats SET nudge_threshold=7 WHERE id='s'", [])
+        .unwrap();
+    assert_eq!(entry(&conn, "nudge_threshold").value, "7");
+    // Default by equality: the column at 0 reads default although an audit row exists.
+    conn.execute("UPDATE seats SET nudge_threshold=0 WHERE id='s'", [])
+        .unwrap();
+    let e = entry(&conn, "nudge_threshold");
+    assert_eq!((e.value.as_str(), e.is_default), ("0", true));
+    assert!(e.writer.is_some(), "the audit writer still shows");
+    // -1 maps to the `all` mirror.
+    human_set(&context, &mut conn, "s", "nudge_threshold", "-1", "op2").unwrap();
+    let mirror: String = conn
+        .query_row("SELECT wake_on FROM seats WHERE id='s'", [], |r| r.get(0))
+        .unwrap();
+    assert_eq!(mirror, "all");
+}
+
+#[test]
+fn column_unset_writes_the_default_and_upserts_the_audit_row() {
+    let (context, mut conn) = setup();
+    human_set(&context, &mut conn, "s", "nudge_threshold", "-1", "op1").unwrap();
+    let unset = human_unset(&context, &mut conn, "s", "nudge_threshold", "op2").unwrap();
+    assert!(unset.changed && unset.is_default);
+    assert_eq!(unset.value, "0");
+    let (column, mirror): (i64, String) = conn
+        .query_row(
+            "SELECT nudge_threshold,wake_on FROM seats WHERE id='s'",
+            [],
+            |r| Ok((r.get(0)?, r.get(1)?)),
+        )
+        .unwrap();
+    assert_eq!(
+        (column, mirror.as_str()),
+        (0, "nudge"),
+        "default and the wake_on mirror"
+    );
+    assert_eq!(
+        raw_row(&conn, "nudge_threshold"),
+        Some((None, "operator:local-user:501".into(), None)),
+        "the audit row survives an unset"
+    );
+    // The agent path audits with the cooperative provenance and the claim's binding.
+    let write = agent_unset(
+        &context,
+        &mut conn,
+        &unset_cmd(ConfigTier::Agent, None, "nudge_threshold", "op3"),
+    )
+    .unwrap();
+    assert!(!write.changed && write.is_default);
+    let (_, provenance, binding) = raw_row(&conn, "nudge_threshold").unwrap();
+    assert_eq!(provenance, "cooperative_top_level");
+    assert!(binding.is_some_and(|b| !b.is_empty()));
+}
+
+#[test]
+fn unknown_key_and_bad_values_are_refused_naming_the_valid_set() {
+    let (context, mut conn) = setup();
+    let before = conn.total_changes();
+    let cases = [
+        (
+            "nope",
+            "1",
+            "unknown seat config key `nope`; keys: nudge_threshold, programmatic_wake",
+        ),
+        (
+            "nudge_threshold",
+            "-5",
+            "invalid value `-5` for nudge_threshold; values: -1..9",
+        ),
+        (
+            "nudge_threshold",
+            "10",
+            "invalid value `10` for nudge_threshold; values: -1..9",
+        ),
+        (
+            "programmatic_wake",
+            "true",
+            "invalid value `true` for programmatic_wake; values: on|off",
+        ),
+        (
+            "programmatic_wake",
+            "enable",
+            "invalid value `enable` for programmatic_wake; values: on|off",
+        ),
+    ];
+    for (key, value, detail) in cases {
+        let error = human_set(
+            &context,
+            &mut conn,
+            "s",
+            key,
+            value,
+            &format!("op-{key}-{value}"),
+        )
+        .unwrap_err();
+        assert_eq!(
+            (error.code, error.detail.as_str()),
+            (ErrorCode::InvalidRequest, detail)
+        );
+    }
+    let error = get(&conn, &seat(), Some("nope")).unwrap_err();
+    assert_eq!(error.code, ErrorCode::InvalidRequest);
+    let error = agent_set(
+        &context,
+        &mut conn,
+        &set_cmd(ConfigTier::Agent, None, "nudge_threshold", "-5", "op-a"),
+    )
+    .unwrap_err();
+    assert!(error.detail.contains("values: -1..9"), "{error:?}");
+    assert_eq!(conn.total_changes(), before, "refusals write nothing");
+}
+
+#[test]
+fn agent_tier_refuses_human_keys_other_seats_subagents_and_readonly() {
+    let (context, mut conn) = setup();
+    let error = agent_set(
+        &context,
+        &mut conn,
+        &set_cmd(ConfigTier::Agent, None, "programmatic_wake", "on", "op1"),
+    )
+    .unwrap_err();
+    assert_eq!(
+        error.detail,
+        "seat config key `programmatic_wake` needs `ht human config seat set programmatic_wake <value>`"
+    );
+    assert!(error.detail.len() < 100, "{}", error.detail.len());
+    let error = agent_set(
+        &context,
+        &mut conn,
+        &set_cmd(
+            ConfigTier::Agent,
+            Some("other"),
+            "nudge_threshold",
+            "2",
+            "op2",
+        ),
+    )
+    .unwrap_err();
+    assert!(
+        error.detail.contains("only the caller's own seat"),
+        "{error:?}"
+    );
+    // Naming the own seat explicitly is fine.
+    assert!(
+        agent_set(
+            &context,
+            &mut conn,
+            &set_cmd(ConfigTier::Agent, Some("s"), "nudge_threshold", "2", "op3")
+        )
+        .unwrap()
+        .changed
+    );
+    let mut subagent = set_cmd(ConfigTier::Agent, None, "nudge_threshold", "4", "op4");
+    subagent.claim = Some(claim(CallerRole::Subagent, 1));
+    assert!(agent_set(&context, &mut conn, &subagent).is_err());
+    // A read-only binding is refused after the claim resolves, and writes nothing.
+    conn.execute(
+        "UPDATE occupant_bindings SET readonly=1 WHERE seat_id='s'",
+        [],
+    )
+    .unwrap();
+    let before = conn.total_changes();
+    let error = agent_set(
+        &context,
+        &mut conn,
+        &set_cmd(ConfigTier::Agent, None, "nudge_threshold", "5", "op5"),
+    )
+    .unwrap_err();
+    assert_eq!(error.detail, "read-only binding cannot write seat config");
+    let error = agent_unset(
+        &context,
+        &mut conn,
+        &unset_cmd(ConfigTier::Agent, None, "nudge_threshold", "op6"),
+    )
+    .unwrap_err();
+    assert_eq!(error.detail, "read-only binding cannot write seat config");
+    assert_eq!(conn.total_changes(), before);
+    assert_eq!(entry(&conn, "nudge_threshold").value, "2");
+    // The tier fields must agree with the entry point.
+    let mut human = set_cmd(ConfigTier::Human, Some("s"), "nudge_threshold", "1", "op7");
+    human.tier = ConfigTier::Agent;
+    assert!(set_operator(&context, &mut conn, INSTANCE, &human, &actor()).is_err());
+    let no_seat = set_cmd(ConfigTier::Human, None, "nudge_threshold", "1", "op8");
+    assert_eq!(
+        set_operator(&context, &mut conn, INSTANCE, &no_seat, &actor())
+            .unwrap_err()
+            .detail,
+        "human seat config needs --seat or a caller seat"
+    );
+    assert_eq!(
+        human_set(&context, &mut conn, "nobody", "nudge_threshold", "1", "op9")
+            .unwrap_err()
+            .code,
+        ErrorCode::NotFound
+    );
+}
+
+/// Kills: a raise of the threshold (any writer, any tier, set or unset, or an alias) that leaves the
+/// wake work unjudged, so a pending item the new threshold admits is never woken for.
+#[test]
+fn every_column_value_change_notes_new_attention() {
+    let (context, mut conn) = setup();
+    assert_eq!(wake_work(&conn), None);
+    human_set(&context, &mut conn, "s", "nudge_threshold", "3", "h1").unwrap();
+    assert_eq!(wake_work(&conn), Some((1, 1)), "human set");
+    human_set(&context, &mut conn, "s", "nudge_threshold", "3", "h2").unwrap();
+    assert_eq!(wake_work(&conn), Some((1, 1)), "no change, no bump");
+    agent_set(
+        &context,
+        &mut conn,
+        &set_cmd(ConfigTier::Agent, None, "nudge_threshold", "5", "a1"),
+    )
+    .unwrap();
+    assert_eq!(wake_work(&conn), Some((1, 2)), "agent set");
+    agent_unset(
+        &context,
+        &mut conn,
+        &unset_cmd(ConfigTier::Agent, None, "nudge_threshold", "a2"),
+    )
+    .unwrap();
+    assert_eq!(wake_work(&conn), Some((1, 3)), "agent unset");
+    human_set(&context, &mut conn, "s", "nudge_threshold", "9", "h3").unwrap();
+    human_unset(&context, &mut conn, "s", "nudge_threshold", "h4").unwrap();
+    assert_eq!(wake_work(&conn), Some((1, 5)), "human set and unset");
+    // The alias takes the same path.
+    let alias = SetNudgeThreshold {
+        value: crate::protocol::priority::NudgeThreshold::new(2).unwrap(),
+        operation: OperationId::new("alias"),
+        claim: claim(CallerRole::TopLevel, 1),
+    };
+    let digest = control::cooperative_payload_hash("set_nudge_threshold", &alias).unwrap();
+    let p = permit(&alias.claim, &alias.operation, digest);
+    seats::set_nudge_threshold(&context, &mut conn, &budget(), &alias, p).unwrap();
+    assert_eq!(wake_work(&conn), Some((1, 6)), "alias");
+    // A table key re-judges the wake when its value changes (ht-z41e.4): programmatic wake
+    // changes how a seat is woken, so an unreceived suppression must lift. Same value: no bump.
+    human_set(&context, &mut conn, "s", "programmatic_wake", "on", "h5").unwrap();
+    assert_eq!(wake_work(&conn), Some((1, 7)), "table key set");
+    human_set(&context, &mut conn, "s", "programmatic_wake", "on", "h6").unwrap();
+    assert_eq!(
+        wake_work(&conn),
+        Some((1, 7)),
+        "table key set to the same value"
+    );
+    human_unset(&context, &mut conn, "s", "programmatic_wake", "h7").unwrap();
+    assert_eq!(wake_work(&conn), Some((1, 8)), "table key unset");
+    human_unset(&context, &mut conn, "s", "programmatic_wake", "h8").unwrap();
+    assert_eq!(wake_work(&conn), Some((1, 8)), "table key unset again");
+}
+
+/// Kills: an alias that keeps its audit-less write, or one that stops clamping a negative to -1.
+#[test]
+fn aliases_upsert_the_audit_row_and_keep_their_clamp() {
+    let (context, mut conn) = setup();
+    let alias = SetNudgeThreshold {
+        value: crate::protocol::priority::NudgeThreshold::new(-5).unwrap(),
+        operation: OperationId::new("alias"),
+        claim: claim(CallerRole::TopLevel, 1),
+    };
+    let digest = control::cooperative_payload_hash("set_nudge_threshold", &alias).unwrap();
+    let p = permit(&alias.claim, &alias.operation, digest);
+    seats::set_nudge_threshold(&context, &mut conn, &budget(), &alias, p).unwrap();
+    assert_eq!(entry(&conn, "nudge_threshold").value, "-1");
+    let (value, provenance, binding) = raw_row(&conn, "nudge_threshold").unwrap();
+    assert_eq!(value, None);
+    assert_eq!(provenance, "cooperative_top_level");
+    assert!(binding.is_some());
+    // A strict range applies to the generic path only.
+    assert!(
+        agent_set(
+            &context,
+            &mut conn,
+            &set_cmd(ConfigTier::Agent, None, "nudge_threshold", "-5", "strict")
+        )
+        .is_err()
+    );
+    assert_eq!(entry(&conn, "nudge_threshold").value, "-1");
+}
+
+#[test]
+fn agent_replay_returns_the_recorded_result_and_a_changed_payload_conflicts() {
+    let (context, mut conn) = setup();
+    let first = agent_set(
+        &context,
+        &mut conn,
+        &set_cmd(ConfigTier::Agent, None, "nudge_threshold", "2", "op1"),
+    )
+    .unwrap();
+    assert!(first.changed);
+    let replay = agent_set(
+        &context,
+        &mut conn,
+        &set_cmd(ConfigTier::Agent, None, "nudge_threshold", "2", "op1"),
+    )
+    .unwrap();
+    assert_eq!(replay, first);
+    assert!(
+        agent_set(
+            &context,
+            &mut conn,
+            &set_cmd(ConfigTier::Agent, None, "nudge_threshold", "4", "op1")
+        )
+        .is_err()
+    );
+    let h1 = human_set(&context, &mut conn, "s", "programmatic_wake", "on", "ho1").unwrap();
+    let h2 = human_set(&context, &mut conn, "s", "programmatic_wake", "on", "ho1").unwrap();
+    assert_eq!(h1, h2, "an operator replay returns the recorded result");
+}
+
+const FOREIGN_NODE: &str = "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa";
+
+fn remote_seat(conn: &Connection) -> SeatId {
+    conn.execute(
+        "INSERT INTO seats(id,instance_id,state,role,generation,created_at,home_node,is_local,remote_kind,host_id,published) \
+         VALUES ('r',?2,'remote','native',0,0,?1,0,'agent',NULL,1)",
+        params![FOREIGN_NODE, INSTANCE],
+    )
+    .unwrap();
+    crate::store::node_directory::upsert(
+        conn,
+        &crate::store::node_directory::NodeDirectoryRow {
+            node_uuid: FOREIGN_NODE.parse().unwrap(),
+            tag: "bx1".parse().unwrap(),
+            tag_k: 0,
+            host_label: None,
+            first_seen_at: 0,
+            tag_hlc: None,
+        },
+    )
+    .unwrap();
+    SeatId::new("r")
+}
+
+#[test]
+fn remote_seat_is_refused_before_any_write() {
+    let (context, mut conn) = setup();
+    let remote = remote_seat(&conn);
+    let before = conn.total_changes();
+    let want = "seat r is homed on node bx1; its seat config is set there";
+    assert_eq!(get(&conn, &remote, None).unwrap_err().detail, want);
+    assert_eq!(
+        human_set(&context, &mut conn, "r", "programmatic_wake", "on", "op1")
+            .unwrap_err()
+            .detail,
+        want
+    );
+    assert_eq!(
+        human_unset(&context, &mut conn, "r", "nudge_threshold", "op2")
+            .unwrap_err()
+            .detail,
+        want
+    );
+    let mut agent = set_cmd(ConfigTier::Agent, None, "nudge_threshold", "2", "op3");
+    agent.claim.as_mut().unwrap().seat = remote;
+    assert_eq!(
+        agent_set(&context, &mut conn, &agent).unwrap_err().detail,
+        want
+    );
+    assert_eq!(
+        conn.total_changes(),
+        before,
+        "a refused write changes nothing"
+    );
+}
+
+/// Kills: a per-key branch in the store: a registry entry alone must work end to end. A key that
+/// exists nowhere but in this test is written, read, replaced and unset through the generic row
+/// functions, and the agent path takes its table branch, with no schema or SQL change.
+#[test]
+fn a_new_table_key_needs_no_schema_change() {
+    static EXTRA: ConfigKey = ConfigKey {
+        name: "extra_gate",
+        description: "a key only this test registers",
+        values: ConfigValues::Enum(&["yes", "no"]),
+        default: "no",
+        tier: ConfigTier::Agent,
+        backing: ConfigBacking::Table,
+    };
+    let (context, mut conn) = setup();
+    let at = UtcMillis(7);
+    let tx = conn.transaction().unwrap();
+    assert!(
+        apply(
+            &tx,
+            &EXTRA,
+            &seat(),
+            Change::Set("yes"),
+            "w",
+            Some("b1"),
+            at
+        )
+        .unwrap()
+        .changed
+    );
+    assert_eq!(effective_value(&tx, &seat(), &EXTRA).unwrap(), "yes");
+    let replaced = apply(&tx, &EXTRA, &seat(), Change::Set("no"), "w", None, at).unwrap();
+    assert!(
+        replaced.changed && !replaced.is_default,
+        "an explicit `no` is set, not unset"
+    );
+    let unset = apply(&tx, &EXTRA, &seat(), Change::Unset, "w", None, at).unwrap();
+    assert!(unset.changed && unset.is_default && unset.value == "no");
+    tx.commit().unwrap();
+    // The agent path, table branch.
+    let command = set_cmd(ConfigTier::Agent, None, "extra_gate", "yes", "agent-extra");
+    let claim = command.claim.clone().unwrap();
+    let digest = control::cooperative_payload_hash("set_seat_config", &command).unwrap();
+    let result = agent_write(
+        &context,
+        &mut conn,
+        &budget(),
+        permit(&claim, &command.operation, digest),
+        command.claim.as_ref(),
+        None,
+        ConfigTier::Agent,
+        &command.operation,
+        digest,
+        &EXTRA,
+        Change::Set("yes"),
+    )
+    .unwrap();
+    assert!(written(result).changed);
+    let (value, provenance, binding) = raw_row(&conn, "extra_gate").unwrap();
+    assert_eq!(value.as_deref(), Some("yes"));
+    assert_eq!(provenance, "cooperative_top_level");
+    assert!(binding.is_some());
+    // A read-only binding is refused on this branch too.
+    conn.execute(
+        "UPDATE occupant_bindings SET readonly=1 WHERE seat_id='s'",
+        [],
+    )
+    .unwrap();
+    let command = set_cmd(ConfigTier::Agent, None, "extra_gate", "no", "agent-extra2");
+    let digest = control::cooperative_payload_hash("set_seat_config", &command).unwrap();
+    let error = agent_write(
+        &context,
+        &mut conn,
+        &budget(),
+        permit(&claim, &command.operation, digest),
+        command.claim.as_ref(),
+        None,
+        ConfigTier::Agent,
+        &command.operation,
+        digest,
+        &EXTRA,
+        Change::Set("no"),
+    )
+    .unwrap_err();
+    assert_eq!(error.detail, "read-only binding cannot write seat config");
+}
+
+/// Kills: an operator write that recreates `seat_config` rows (or moves `nudge_threshold`) for a
+/// seat whose retirement is final: set, unset and the column-backed key are all refused with the
+/// one-line `seat retired: <seat>`, and nothing is stored.
+#[test]
+fn operator_writes_to_a_finally_retired_seat_are_refused_and_leave_no_row() {
+    let (context, mut conn) = setup();
+    let threshold_before: i64 = conn
+        .query_row("SELECT nudge_threshold FROM seats WHERE id='s'", [], |r| {
+            r.get(0)
+        })
+        .unwrap();
+    conn.execute(
+        "INSERT INTO retirements(id,seat_id,cutover_at,origin) VALUES ('rt1','s',1,'replicated')",
+        [],
+    )
+    .unwrap();
+    let want = "seat retired: s";
+    assert_eq!(want.len(), 14 + seat().as_str().len());
+    let errors = [
+        human_set(&context, &mut conn, "s", "programmatic_wake", "on", "op1").unwrap_err(),
+        human_unset(&context, &mut conn, "s", "programmatic_wake", "op2").unwrap_err(),
+        human_set(&context, &mut conn, "s", "nudge_threshold", "3", "op3").unwrap_err(),
+        human_unset(&context, &mut conn, "s", "nudge_threshold", "op4").unwrap_err(),
+    ];
+    for error in errors {
+        assert_eq!(error.detail, want);
+        assert_eq!(error.code, ErrorCode::InvalidRequest);
+    }
+    let rows: i64 = conn
+        .query_row(
+            "SELECT count(*) FROM seat_config WHERE seat_id='s'",
+            [],
+            |r| r.get(0),
+        )
+        .unwrap();
+    assert_eq!(rows, 0, "a refused write leaves no seat_config row");
+    let threshold_after: i64 = conn
+        .query_row("SELECT nudge_threshold FROM seats WHERE id='s'", [], |r| {
+            r.get(0)
+        })
+        .unwrap();
+    assert_eq!(threshold_after, threshold_before);
+    let recorded: i64 = conn
+        .query_row(
+            "SELECT count(*) FROM operations WHERE operation_key IN ('op1','op2','op3','op4')",
+            [],
+            |r| r.get(0),
+        )
+        .unwrap();
+    assert_eq!(recorded, 0, "a refused write is not recorded for replay");
+}
+
+/// A store over [`setup`]'s seat `s` with its structural target observed (what a closure proof is
+/// checked against), so a real `begin_retirement` can close it.
+fn store_with_closable_seat() -> crate::store::SqliteStore {
+    let (context, conn) = setup();
+    conn.execute(
+        "UPDATE seats SET structural_terminal_id='term-ps',structural_incarnation='inc',structural_incarnation_kind='coherent_enumeration',structural_host_boot='b',structural_host_epoch=1,structural_connection_epoch=1,structural_observation_sequence=1 WHERE id='s'",
+        [],
+    )
+    .unwrap();
+    drop(conn);
+    crate::store::SqliteStore::new(context, INSTANCE, Default::default()).unwrap()
+}
+/// The seat's closure proof, as the host's closed-pane observation sends it.
+fn close(store: &crate::store::SqliteStore) {
+    crate::ports::StorePort::begin_retirement(
+        store,
+        seat(),
+        crate::ports::ClosureEvidence {
+            host_boot: HostBootId::new("b"),
+            epoch: 1,
+            target: HostTargetId::new("ps"),
+            generation: 1,
+        },
+        &budget(),
+    )
+    .unwrap();
+}
+fn operator_retire(store: &crate::store::SqliteStore, op: &str) {
+    let mut db = store.context().open_writer().unwrap();
+    seats::mutate_operator(
+        store.context(),
+        &mut db,
+        INSTANCE,
+        crate::ports::OperatorRequest::Retire(crate::protocol::commands::OperatorRetire {
+            seat: seat(),
+            operation: OperationId::new(op),
+        }),
+        actor(),
+        None,
+    )
+    .unwrap();
+}
+fn retirement_rows(conn: &Connection) -> (String, i64) {
+    (
+        conn.query_row("SELECT state FROM seats WHERE id='s'", [], |r| r.get(0))
+            .unwrap(),
+        conn.query_row(
+            "SELECT count(*) FROM retirements WHERE seat_id='s'",
+            [],
+            |r| r.get(0),
+        )
+        .unwrap(),
+    )
+}
+
+/// Kills: using `seats.state='retired'` as the test, which a reversible retirement also sets: the
+/// seat is closed through the real `begin_retirement`, so its state reads `retired` with no
+/// `retirements` row, and the operator write still lands. Its control finally retires the same
+/// seat and the next write is refused (removing the guard turns the control red).
+#[test]
+fn operator_write_to_a_reversibly_retired_seat_still_writes_and_a_final_one_does_not() {
+    let store = store_with_closable_seat();
+    close(&store);
+    let mut conn = store.context().open_writer().unwrap();
+    assert_eq!(retirement_rows(&conn), ("retired".to_owned(), 0));
+    let write = human_set(
+        store.context(),
+        &mut conn,
+        "s",
+        "programmatic_wake",
+        "on",
+        "op1",
+    )
+    .unwrap();
+    assert!(write.changed);
+    assert!(raw_row(&conn, "programmatic_wake").is_some());
+    drop(conn);
+    // Control: the same seat, now finally retired, refuses and keeps what the last write left.
+    operator_retire(&store, "retire-1");
+    let mut conn = store.context().open_writer().unwrap();
+    assert_eq!(retirement_rows(&conn), ("retired".to_owned(), 1));
+    let error = human_set(
+        store.context(),
+        &mut conn,
+        "s",
+        "programmatic_wake",
+        "off",
+        "op2",
+    )
+    .unwrap_err();
+    assert_eq!(error.detail, "seat retired: s");
+    assert!(raw_row(&conn, "programmatic_wake").is_none());
+}

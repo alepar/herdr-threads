@@ -1,0 +1,12 @@
+diff --git a/src/harness/opencode/decode.rs b/src/harness/opencode/decode.rs
+index bc929d653..e1d19f537 100644
+--- a/src/harness/opencode/decode.rs
++++ b/src/harness/opencode/decode.rs
+@@ -128,6 +128,7 @@ pub(super) fn decode(
+         metadata: EventMetadata {
+             native_turn_id: None,
+             turn_end: false,
++            auxiliary_session: false,
+             skill_pointer,
+             callback_deadline: None,
+             context_source,

@@ -203,6 +203,16 @@ pub(crate) fn require_local_threshold_seat(
     conn: &Connection,
     seat: &SeatId,
 ) -> Result<(), ApiError> {
+    require_local_seat_setting(conn, seat, "nudge threshold")
+}
+
+/// [`require_local_threshold_seat`] for any node-local per-seat setting: `what` names it in the
+/// one-line refusal (`its <what> is set there`).
+pub(crate) fn require_local_seat_setting(
+    conn: &Connection,
+    seat: &SeatId,
+    what: &str,
+) -> Result<(), ApiError> {
     let home: Option<String> = conn
         .query_row(
             &format!("SELECT home_node FROM seats WHERE id=?1 AND NOT ({LOCAL_SEAT})"),
@@ -223,7 +233,7 @@ pub(crate) fn require_local_threshold_seat(
     Err(api_error(
         ErrorCode::CallerUnverified,
         format!(
-            "seat {} is homed on node {tag}; its nudge threshold is set there",
+            "seat {} is homed on node {tag}; its {what} is set there",
             seat.as_str()
         ),
     ))

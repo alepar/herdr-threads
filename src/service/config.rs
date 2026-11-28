@@ -29,7 +29,6 @@ pub struct ServiceConfig {
     dial_template: Option<DialTemplate>,
     idle_exit_after: std::time::Duration,
     sync_discover: bool,
-    programmatic_wake: bool,
 }
 
 /// The test-support variable (milliseconds) that replaces the lanes' 5 s
@@ -50,7 +49,6 @@ impl Default for ServiceConfig {
             dial_template: None,
             idle_exit_after: crate::daemon::idle_exit::IDLE_EXIT_AFTER,
             sync_discover: true,
-            programmatic_wake: false,
         }
     }
 }
@@ -99,14 +97,6 @@ impl ServiceConfig {
         self
     }
 
-    pub fn programmatic_wake(&self) -> bool {
-        self.programmatic_wake
-    }
-    #[must_use]
-    pub fn with_programmatic_wake(mut self, enabled: bool) -> Self {
-        self.programmatic_wake = enabled;
-        self
-    }
     /// Whether `sync.discover` lets the daemon add dial targets (default on).
     pub fn sync_discover(&self) -> bool {
         self.sync_discover
@@ -291,11 +281,7 @@ impl ServiceConfig {
         .and_then(|config| config.with_summary(settings.summary.clone()))
         .and_then(|config| config.with_archive_after(settings.archive_after_ms))
         .and_then(|config| config.with_dial_command(settings.sync.dial_command.as_deref()))
-        .map(|config| {
-            config
-                .with_sync_discover(settings.sync.discover)
-                .with_programmatic_wake(settings.programmatic_wake)
-        })
+        .map(|config| config.with_sync_discover(settings.sync.discover))
     }
 
     pub fn new(
@@ -318,7 +304,6 @@ impl ServiceConfig {
             dial_template: None,
             idle_exit_after: crate::daemon::idle_exit::IDLE_EXIT_AFTER,
             sync_discover: true,
-            programmatic_wake: false,
         })
     }
 

@@ -1,0 +1,16 @@
+== cargo clippy --locked --all-targets --all-features -- -D warnings
+heavy: slot 1 acquired 02:07:08
+    Checking herdr-threads v3.6.0 ($HOME/AleCode/herdr-threads/.worktrees/super-auto-per-seat-config-side-wake/.worktrees/super-auto-per-seat-config-side-wake--task-ht-z41e.11)
+    Finished `dev` profile [unoptimized + debuginfo] target(s) in 1m 48s
+rc=0
+== scripts/check-harness-neutral
+heavy: slot 1 acquired 02:08:56
+check-harness-neutral: ok — 0 violations, 90 allowlisted (to-migrate 0, frozen-wire 49, history 0, registration 41), 55 entries
+rc=0
+== scripts/check-wire-compat
+heavy: slot 1 acquired 02:08:58
+check-wire-compat: ok — 0 violations, 0 stale, 459 fields, 24 variants, 277 baseline entries
+rc=0
+== scripts/check-default-features
+heavy: slot 1 acquired 02:08:58
+rc=0

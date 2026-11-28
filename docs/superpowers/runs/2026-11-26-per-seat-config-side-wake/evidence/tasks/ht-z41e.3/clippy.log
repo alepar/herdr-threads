@@ -1,0 +1,4 @@
+heavy: slot 1 acquired 01:30:10
+    Checking herdr-threads v3.6.0 ($HOME/AleCode/herdr-threads/.worktrees/super-auto-per-seat-config-side-wake/.worktrees/super-auto-per-seat-config-side-wake--task-ht-z41e.3)
+    Finished `dev` profile [unoptimized + debuginfo] target(s) in 1m 33s
+exit 0

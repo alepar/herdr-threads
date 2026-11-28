@@ -1,0 +1,134 @@
+diff --git a/tests/notification/queue_runtime.rs b/tests/notification/queue_runtime.rs
+index 9c34d53ab..e762ae6e5 100644
+--- a/tests/notification/queue_runtime.rs
++++ b/tests/notification/queue_runtime.rs
+@@ -64,6 +64,7 @@ fn queue_runtime_checks_fences_before_capture_and_never_helpers_a_known_busy_bin
+                 )
+                 .unwrap();
+         }
++        super::wake_intents::set_programmatic_wake(&store, r.seat.as_str(), enabled == Some(true));
+         if corrupt_eligibility {
+             store
+                 .context()
+@@ -113,10 +114,6 @@ fn queue_runtime_checks_fences_before_capture_and_never_helpers_a_known_busy_bin
+             book,
+             recovery,
+         );
+-        let runtime = match enabled {
+-            Some(enabled) => runtime.with_programmatic_wake(enabled),
+-            None => runtime,
+-        };
+         let target = SafeWakeTarget {
+             seat: r.seat.clone(),
+             target: r.target.clone(),
+@@ -167,5 +164,110 @@ fn queue_runtime_checks_fences_before_capture_and_never_helpers_a_known_busy_bin
+     }
+ }
+ 
++/// S2 (ht-z41e.6, busy-sibling rule: drop): the queue transport does not serialise a root turn
++/// behind a busy `/side` turn, so only the root's own turn state gates the attempt.
++#[test]
++fn a_busy_side_binding_does_not_refuse_the_root_wake_and_a_busy_root_does() {
++    const SIDE: &str = "00000000-0000-0000-0000-0000000000a1";
++    for (root_busy, side_busy) in [(false, true), (true, false)] {
++        // The side is enrolled by its own hook event (null `transcript_path`), never by a flag;
++        // before the wake is reserved, because a check-in advances the decision sequence.
++        let (store, _path, r, p) = super::wake_intents::fixture_with(|store| {
++            super::wake_intents::enroll_payload(
++                store,
++                include_bytes!("../fixtures/codex-0.163.0-side/pre-tool-use-side.json"),
++                SIDE,
++                10,
++                "side-first-event",
++            )
++            .unwrap();
++        });
++        let budget = super::wake_intents::budget();
++        for edge in [TurnEdge::Busy, TurnEdge::Idle] {
++            store
++                .record_native_turn(
++                    &super::wake_intents::native_report(&store, &r, &p, "qualified", edge),
++                    &budget,
++                )
++                .unwrap();
++        }
++        let root = scratch::temp_path(format!("ht-queue-runtime-{}", uuid::Uuid::new_v4()));
++        std::fs::create_dir_all(&root).unwrap();
++        let store = Arc::new(store);
++        let clock = Arc::new(TestClock);
++        let writer = Arc::new(FairWriter::new(32));
++        let processes = Arc::new(MissingProcess {
++            calls: AtomicUsize::new(0),
++            boot: p.target.scope.kernel_boot.clone(),
++        });
++        let book = Arc::new(TurnStateBook::default());
++        let key = |session: &str| TurnKey {
++            seat: r.seat.clone(),
++            generation: p.target.scope.generation,
++            harness: p.adapter.as_str().into(),
++            native_session: herdr_threads::protocol::ids::NativeSessionId::new(session),
++        };
++        let edge = |busy| if busy { TurnEdge::Busy } else { TurnEdge::Idle };
++        book.record(
++            &key(p.target.scope.native_session.as_str()),
++            edge(root_busy),
++            1000,
++        );
++        book.record(&key(SIDE), edge(side_busy), 1000);
++        let recovery = Arc::new(QueueRecovery::new(
++            store.clone(),
++            writer.clone(),
++            clock.clone(),
++            processes.clone(),
++            root.clone(),
++            r.daemon_boot,
++        ));
++        let runtime = QueueWakeRuntime::new(
++            store.clone(),
++            writer,
++            clock,
++            processes.clone(),
++            root.clone(),
++            book,
++            recovery,
++        );
++        let target = SafeWakeTarget {
++            seat: r.seat.clone(),
++            target: r.target.clone(),
++            host_boot: r.host_boot.clone(),
++            generation: r.target_generation,
++            terminal: TerminalId::new("term-pane"),
++            incarnation: "inc".into(),
++            basis: WakeTargetBasis::CooperativeAgent,
++            epoch: r.host_epoch,
++            observation_sequence: 1,
++            bound_harness: Some(p.adapter.as_str().into()),
++        };
++        let context = HostCallContext {
++            budget,
++            expected_boot: Some(r.host_boot.clone()),
++            expected_epoch: Some(r.host_epoch),
++        };
++        let result = runtime
++            .attempt(&r, &target, true, &|| Ok(()), &|| Ok(true), &context)
++            .unwrap();
++        // A busy root is refused before capture; with only the side busy the attempt reaches
++        // physical capture (the missing process then falls back to native).
++        assert_eq!(
++            result,
++            if root_busy {
++                QueueDispatch::Refused
++            } else {
++                QueueDispatch::Native
++            }
++        );
++        assert_eq!(
++            processes.calls.load(Ordering::SeqCst),
++            usize::from(!root_busy)
++        );
++        std::fs::remove_dir_all(root).unwrap();
++    }
++}
++
+ #[path = "native_fallback_runtime.rs"]
+ mod native_fallback_runtime;

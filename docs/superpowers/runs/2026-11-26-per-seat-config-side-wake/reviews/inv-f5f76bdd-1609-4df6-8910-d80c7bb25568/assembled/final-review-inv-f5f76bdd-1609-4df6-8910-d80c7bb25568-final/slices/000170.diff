@@ -1,0 +1,28 @@
+diff --git a/tests/integration/lazy_attention.rs b/tests/integration/lazy_attention.rs
+index 7bc9d1a9a..1469112ce 100644
+--- a/tests/integration/lazy_attention.rs
++++ b/tests/integration/lazy_attention.rs
+@@ -96,6 +96,7 @@ impl Fixture {
+     fn claim(&self, seat: &str) -> CallerClaim {
+         let (generation, harness, saved_execution): (i64,String,String) = self.db.query_row("SELECT generation,harness,execution_id FROM occupant_bindings WHERE seat_id=?1 AND ended_at IS NULL",[seat],|r|Ok((r.get(0)?,r.get(1)?,r.get(2)?))).unwrap();
+         CallerClaim {
++            auxiliary_session: false,
+             host: herdr_threads::test_support::test_host_locator(),
+             instance: "34750f98bd59fcfc946da45aaabe933b".into(),
+             seat: SeatId::new(seat),
+@@ -559,6 +560,7 @@ fn lazy_publication_does_not_create_recovery_recency() {
+                 (context::EventKind::Clear, "clear"),
+             ] {
+                 let event = LifecycleEvent {
++                    auxiliary_session: false,
+                     harness,
+                     kind,
+                     source: source.into(),
+@@ -1222,6 +1224,7 @@ fn a_sibling_lifecycle_check_in_resets_only_its_own_in_turn_service() {
+     let claim_a = f.claim("agent");
+     assert_eq!(claim_a.native_session.as_str(), "session-agent");
+     let claim_b = CallerClaim {
++        auxiliary_session: false,
+         host: herdr_threads::test_support::test_host_locator(),
+         native_session: NativeSessionId::new("session-agent-b"),
+         execution: ExecutionId::new("00000000-0000-4000-8000-0000000000b2"),

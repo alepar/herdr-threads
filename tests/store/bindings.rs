@@ -350,6 +350,7 @@ fn fingerprint_start_beyond_i64_is_refused() {
 fn binding_key_from_claim_reads_seat_harness_session_and_agent() {
     use crate::protocol::authority::{CallerClaim, CallerRole, Harness};
     let claim = CallerClaim {
+        auxiliary_session: false,
         host: crate::test_support::test_host_locator(),
         instance: "34750f98bd59fcfc946da45aaabe933b".into(),
         seat: SeatId::new("s"),
@@ -397,6 +398,7 @@ mod resolution {
 
     fn claim(session: &str, agent: Option<&str>) -> CallerClaim {
         CallerClaim {
+            auxiliary_session: false,
             host: crate::test_support::test_host_locator(),
             instance: "34750f98bd59fcfc946da45aaabe933b".into(),
             seat: SeatId::new("s"),
@@ -563,8 +565,109 @@ mod resolution {
         assert_eq!(count(&db, "SELECT count(*) FROM occupant_bindings"), 1);
     }
 
+    /// The sticky `auxiliary_session` bit of a binding, read from the row.
+    fn auxiliary_bit(db: &Connection, id: &BindingId) -> bool {
+        db.query_row(
+            "SELECT auxiliary_session FROM occupant_bindings WHERE binding_id=?1",
+            [id.as_str()],
+            |r| r.get(0),
+        )
+        .unwrap()
+    }
+    fn auxiliary(mut claim: CallerClaim) -> CallerClaim {
+        claim.auxiliary_session = true;
+        claim
+    }
+
+    #[test]
+    fn a_top_level_agent_claim_with_auxiliary_evidence_marks_its_binding_and_the_mark_is_sticky() {
+        // The positive control of the guards below: the same call with nothing guarded marks.
+        let db = db();
+        let id = resolve(&db, &auxiliary(claim("sess-A", None)), true)
+            .unwrap()
+            .binding()
+            .binding_id
+            .clone();
+        assert!(auxiliary_bit(&db, &id));
+        // A later call without the evidence never clears it.
+        resolve(&db, &claim("sess-A", None), false).unwrap();
+        assert!(auxiliary_bit(&db, &id), "the bit is sticky");
+        // Evidence on a plain call of a session first seen without it marks it too.
+        let late = resolve(&db, &claim("sess-B", None), true)
+            .unwrap()
+            .binding()
+            .binding_id
+            .clone();
+        assert!(!auxiliary_bit(&db, &late));
+        resolve(&db, &auxiliary(claim("sess-B", None)), false).unwrap();
+        assert!(auxiliary_bit(&db, &late));
+    }
+
+    #[test]
+    fn a_person_claim_with_auxiliary_evidence_never_marks_its_binding() {
+        let db = db();
+        let mut human = auxiliary(claim("plugin_context:p", None));
+        human.harness = Harness::Human;
+        human.liveness = None;
+        let row = resolve(&db, &human, true).unwrap().binding().clone();
+        assert_eq!(row.harness, "human");
+        assert_eq!(
+            row.role,
+            BindingRole::TopLevel,
+            "only the person guard stops it"
+        );
+        assert!(!auxiliary_bit(&db, &row.binding_id));
+        assert_eq!(
+            count(
+                &db,
+                "SELECT count(*) FROM occupant_bindings WHERE auxiliary_session=1"
+            ),
+            0
+        );
+    }
+
+    #[test]
+    fn a_subagent_claim_with_auxiliary_evidence_never_marks_its_binding() {
+        let db = db();
+        let parent = resolve(&db, &claim("sess-A", None), true)
+            .unwrap()
+            .binding()
+            .clone();
+        let mut child = auxiliary(claim("sess-A", Some("child")));
+        child.execution = ExecutionId::new(
+            crate::harness::context::session_execution(
+                child.instance.parse().unwrap(),
+                crate::harness::context::Harness::Claude,
+                child.native_session.as_str(),
+                Some("child"),
+            )
+            .to_string(),
+        );
+        let mut place = placement();
+        place.execution = child.execution.as_str().into();
+        let row = resolve_claim(
+            &db,
+            &ResolveRequest {
+                claim: &child,
+                lifecycle: false,
+                fork: false,
+                placement: &place,
+                lineage: None,
+            },
+            UtcMillis(50),
+        )
+        .unwrap()
+        .binding()
+        .clone();
+        assert_eq!(row.role, BindingRole::Subagent);
+        assert_ne!(row.binding_id, parent.binding_id);
+        assert!(!auxiliary_bit(&db, &row.binding_id));
+        assert!(!auxiliary_bit(&db, &parent.binding_id));
+    }
+
     fn hermes_claim(session: &str) -> CallerClaim {
         CallerClaim {
+            auxiliary_session: false,
             host: crate::test_support::test_host_locator(),
             harness: Harness::Agent(
                 crate::harness::registry::builtins()
@@ -1546,6 +1649,7 @@ mod exclusivity {
 
     fn claim(harness: Harness, session: &str, pid: u32) -> CallerClaim {
         CallerClaim {
+            auxiliary_session: false,
             host: crate::test_support::test_host_locator(),
             instance: "34750f98bd59fcfc946da45aaabe933b".into(),
             seat: SeatId::new("s"),
@@ -2305,6 +2409,7 @@ mod lineage {
 
     fn claim(session: &str, pid: u32) -> CallerClaim {
         CallerClaim {
+            auxiliary_session: false,
             host: crate::test_support::test_host_locator(),
             instance: "34750f98bd59fcfc946da45aaabe933b".into(),
             seat: SeatId::new("s"),

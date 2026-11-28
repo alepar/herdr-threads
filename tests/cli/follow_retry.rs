@@ -440,6 +440,7 @@ impl CompletedRetryFixture {
             ),
         };
         let claim = CallerClaim {
+            auxiliary_session: false,
             host: crate::test_support::test_host_locator(),
             instance: "000000000000000000000000000000b1".into(),
             seat: SeatId::new("sender"),

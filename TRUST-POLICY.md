@@ -840,7 +840,8 @@ no `HC_TERMINAL_ID`, or the reverse) is accepted as that family, as A1 always di
 
 **Invocation spelling.** Ordinary root commands act as agents. Person and local-operator
 commands require immediate argv[1] `human`: `ht human me init [--operator]`,
-`ht human send THREAD --body TEXT`, and `ht human seat rebind ... --operator`.
+`ht human send THREAD --body TEXT`, `ht human seat rebind ... --operator` and
+`ht human config seat set|unset` (human-tier seat config, A5).
 Put `--state-dir`, `--host-endpoint` and output flags after `human`. `--human` changes
 output formatting only; relay, user-intent and delivery flags do not declare a person.
 Root accountable actions refuse inferred Human contexts. The namespace records no new
@@ -1485,8 +1486,9 @@ model open work, and summary closure never changes receipt state or installs glo
     reads empty, wholly unstyled text is typed input, and any other mix is unsafe typed input. A failed,
     plain-text, other-source or unparsable styled read, a dim glyph or no composer on the styled screen keeps
     the detection read. Accepted limit: a Claude release that drew typed text dim behind an undimmed glyph
-    would read as empty, and a wake would be typed after that draft. Codex's empty placeholders are
-    exactly its main and `/side` ones; its sub-agent view's placeholder, under which Codex blocks a typed
+    would read as empty, and a wake would be typed after that draft. Codex's empty placeholder is
+    exactly its main one; its `/side` placeholder reads as text (native typing defers) and is admitted
+    classified as an idle placeholder only by the queue admission (`ComposerPolicy::is_idle_placeholder`; see the `/side` queue-wake section); its sub-agent view's placeholder, under which Codex blocks a typed
     submit, is typed input. The Hermes reader (`docs/evidence/hermes-composer/`): Hermes 0.22 runs its
     agent loop and hooks in an auto-spawned gateway (a child of the first pane's TUI), so a Hermes
     binding's process is never the pane's foreground process; Hermes declares `process_spans_seats`, so
@@ -1520,7 +1522,8 @@ model open work, and summary closure never changes receipt state or installs glo
     a failed final admission, a successful send, clock reversal, or a sample gap over one minute.
     Intervening composer reads that fail or observe nonempty/unreadable input reset qualification.
     Soft-deadline-only pokes retain their stricter unconditional focused-pane skip; the one-minute
-    focused rule applies to ordinary wakes. Status/focus checks and screen reads are an approximation,
+    focused rule applies to ordinary wakes. Programmatic (queue) admission has no focus dwell and neither reads nor
+    resets these windows. Status/focus checks and screen reads are an approximation,
     not keystroke telemetry.
   - *Drafts are deferred.* Attention never stashes, clears, retypes or submits a known draft, including
     soft-deadline pokes even if an old recipe declares composer stash. Existing adapter stash helpers
@@ -1557,8 +1560,11 @@ model open work, and summary closure never changes receipt state or installs glo
   attention frontier: a new invitation, receipt, warning or admitted row) gets its own wake (delivery contract
   rule 5), and any later contact, a changed target set, an end of the wake work, a Herdr reconnection (the wake
   lane's outage recovery) or a daemon restart resumes the ordinary ladder. The record is a hint (A2): it is keyed by the claim's
-  cooperative seat, never proves which session ran, grants nothing and changes no receipt, binding or
-  authority; it only withholds a retyped wake. Soft-deadline pokes are unaffected.
+  cooperative seat (and its native session, for a queued wake, below), never proves which session ran, grants
+  nothing and changes no receipt, binding or authority; it only withholds a retyped wake. A native wake is
+  received by any call claiming the seat; a queued wake (root session targeted while `/side` sessions are
+  present) only by a call from a binding carrying the root's native session UUID, so side contact neither
+  settles it nor lifts `unreceived`; a queue-selected attempt that fell back to native is seat-scoped. Soft-deadline pokes are unaffected.
 - *Unsubmitted wake clear*: after a wake is seen still held in the composer, a harness whose composer policy opts
   in (`clears_unsubmitted_wake`, today agy) gets at most two presses of its declared clear key, each only after
   a fresh composer read holds exactly the typed wake text and nothing else (an Enter taken as a newline leaves an
@@ -1596,6 +1602,9 @@ and wake are unchanged.
 | mod delivery ACK (`watch ack`) | the connected top-level binding of a push-channel harness that holds a live channel (grace included), the one the claim's key names; the daemon decides each id again before settlement and refuses unknown, unaddressed and truncated ids |
 | hook-pull delivery (`DeliveryPull`, `DeliveryConfirm`) | the connected top-level binding of a hook-pull harness that the claim's key (seat, harness, native session) names, from any of its top-level hooks (including `Stop`); settlement only for ids the daemon offered to that binding; the daemon decides each id against A2 again; recorded as `cooperative_hook_delivery` |
 | set the nudge threshold (`SetNudgeThreshold`; legacy `wake-on [nudge\|all]` = threshold 0 \| -1) | a connected top-level binding of the seat (cooperative; changes wake eligibility only, never receipts or authority) |
+| read seat config (`GetSeatConfig`) | any caller, subagents included (the read carries no claim), for any local seat; a remote seat is refused (node-local) |
+| set or unset an agent-tier seat config key (`SetSeatConfig`/`UnsetSeatConfig`, tier `agent`; today `nudge_threshold`) | a connected top-level, non-read-only binding of the seat, for its own seat only (`cooperative_top_level`), decided exactly as `SetNudgeThreshold` (same permit, cooperative payload hash and wake re-judgement); never a subagent, a read-only binding (`HERDR_THREADS_SEAT_READONLY`) or another seat; an agent-tier write of a human-tier key is refused naming `ht human config seat set` |
+| set or unset any seat config key on any local seat (tier `human`; today also `programmatic_wake`) | operator decision `operator:local-user:<uid>` of the elected owner's peer (`ht human config seat set\|unset`), recorded under that provenance with no binding; the operator may thereby set another seat's `nudge_threshold` (the A5 exception to "own seat only") |
 | check in | the pane's top-level agent (hook) or a human via `ht human me init` |
 | record a launch binding (`managed_launch`) | `launch`, after a host-correlated startup with one observable started process; it grants no row above |
 | launch an agent on behalf of a linked peer node (`peer_request:<node_uuid>`) | this node's daemon, for a request on an authenticated direct link that negotiated `peer.launch.v1`, decided here (N15); it grants no other row, on this node or the requester's |
@@ -1604,6 +1613,24 @@ and wake are unchanged.
 | summary, summary job, summary submit | the seat's binding or its children (summary workers), all under the seat's claim: read-mostly; submit only stores a validated block for a live lease issued to the seat |
 | automatic quiet-channel archive | daemon lifecycle policy, after fresh complete eligibility and protected-work validation; never service-owned channels |
 | anything else on behalf of another seat | nobody by design; possible by spoofing (Accepted limits) |
+
+**Seat config (ht-z41e, `seat.config_v1`).** A closed registry (`src/protocol/seat_config.rs`) names every key with
+its value type, default, write tier and backing; an unknown key or a value outside the key's type is refused naming
+the valid set, and no synonym is accepted (`true` is not `on`). Today: `nudge_threshold` (tier `agent`, -1..9,
+default 0, backed by the `seats.nudge_threshold` column and its `wake_on` mirror) and `programmatic_wake` (tier
+`human`, `on|off`, default `off`; it enables idle wake through a harness's programmatic transport (today the
+Codex queue, Linux and macOS), including the root session while a side chat is open, and is accepted but inert on
+a seat whose harness has none). Values live in
+`seat_config` (NodeDelta 20): a table-backed key has a row only while set explicitly; a column-backed key keeps only an
+audit row (value NULL, the last writer's provenance, binding and time), and every write to it, aliases included,
+upserts that row and re-judges the seat's wake (`wake::note_new_attention`) in the same transaction when the value
+changes. Seat config is node-local and never replicated; a remote seat is refused with one line. Reversible
+retirement and revival keep a seat's rows (a human-tier key survives them); final retirement deletes them in the
+transaction that writes the `retirements` row. The agent tier is a cooperative claim of the seat's own top-level
+binding (writer provenance `cooperative_top_level`, binding recorded); the human tier is an operator decision
+(writer provenance `operator:local-user:<uid>`), which an agent in its own pane can issue only because the person
+approves the `ht human` command through the harness permission policy (A1). The CLI's `nudge-threshold` and
+`wake-on` aliases keep their clamp of negative values to -1; the generic commands are strict (-1..9).
 
 Automatic archival changes only the channel archive flag and appends a seatless lifecycle event. It
 never retires or moves a seat, leaves a membership, settles a receipt or invitation, or releases a
@@ -3372,7 +3399,28 @@ These are decisions, not bugs. Each is safe to rely on only as stated.
 - **Any same-user process can change the nudge threshold.** The preference (and its legacy `wake_on` alias) is
   cooperative like every other seat claim (A1): a same-user process that supplies the seat's claim can set it to
   any value -1..=9. The effect is bounded to wake eligibility (which pending messages may wake an idle seat); it creates no receipt, ACK evidence,
-  attention or authority, and the daemon records only the seat's own current top-level binding as the actor.
+  attention or authority, and the daemon records only the seat's own current top-level binding as the actor (the
+  operator tier of seat config, below, may also set another seat's threshold).
+- **The human tier of seat config is enforced only by the harness permission policy.** A human-tier key (today
+  `programmatic_wake`, and any other seat's `nudge_threshold`) is written through `ht human config seat set|unset`,
+  an operator decision recorded as `operator:local-user:<uid>`. The daemon checks only that the peer is the elected
+  owner's uid, which any same-user process is, so what keeps an agent from writing a human-tier key unasked is the
+  ask rule `setup` installs on the immediate `human` argv: the harness asks the person before running it. That
+  rule matches only the installed spellings: `human` must be the immediate argv[1] (the grammar refuses it
+  elsewhere), and an absolute path to the binary or an environment prefix in front of it may bypass the rule; a
+  harness without the rule, or a bypassed one, lets an agent write human-tier keys (cooperative, same-user
+  model; no adversarial verification is added). Status per built-in harness as read from each setup code (ht-z41e.3;
+  the Claude and Codex rows are pinned by `permission_` tests that cover `human config seat set|unset` under both
+  spellings `herdr-threads` and `ht`):
+
+  | harness | ask rule on `human` |
+  |---|---|
+  | Claude Code | asks (`ask` Bash rule on `<spelling> human`, both spellings, `src/harness/claude/permission_rules.rs`) |
+  | Codex | asks (`prefix_rule(... "human") decision = "prompt"`, both spellings, `src/harness/codex/permission_rules.rs`) |
+  | agy | no ask rule: with consent setup adds only the allow entry `command(herdr-threads)`, which covers every subcommand (`src/harness/agy/setup.rs`, `permission_rules: no_permission_rules`); the `ht` spelling is not covered by it |
+  | opencode | no ask rule: with consent the plugin allows `herdr-threads *` and `ht *` in the bash permissions, human commands included (`ALLOW_KEYS`, `src/harness/opencode/setup.rs`); without consent opencode asks for every command, which is its own default, not a setup rule |
+  | Hermes | no ask rule: setup writes no permission configuration (`src/harness/hermes.rs`) |
+  | Pi | no ask rule: "Settings and permission configuration are untouched" (`src/harness/pi/setup.rs`) |
 - **A disconnected binding's own reads show no delivery rows.** A binding holds a pending view only while it is
   connected (A8, ht-yha.54, ht-yha.57). A process that still calls on a disconnected binding (a superseded
   session's stale process, say; plain calls never reconnect it) sees no delivery rows in its own reads until a
@@ -4305,7 +4353,10 @@ evidence only.
 
 Shared by every queue platform, not macOS-specific. The queue path re-checks the wake
 reservation (`wake::validate_reservation`) at selection, at intent preparation and at
-arm. That check requires the instance-wide decision sequence to be unchanged, so any
+arm. The seat's own `programmatic_wake` is part of the same authority: a seat flipped off
+between selection and arm is refused at arm by the same path (`queue wake no longer
+authorized`, NoEffect, native fallback within the same attempt). The reservation check
+requires the instance-wide decision sequence to be unchanged, so any
 decision anywhere on the node between selection and arm, typically during the helper's
 start, makes the reservation stale. The queue then adds nothing: a refusal at selection
 or preparation writes no intent, and one at arm records NoEffect with the refusal
@@ -4317,6 +4368,84 @@ therefore be typed rather than queued. Found in the macOS qualification
 the queue re-check is follow-up `ht-c877`, pending a design review of the shared
 accounting. Required queue proof accepts this fallback only for `mixed-order/group`,
 only for a correlated arm-time refusal, and only within the native six-second window.
+
+### Queue wake target with `/side` sessions present (2026-11-27)
+
+Queue selection (`queue_wake_selection`) censuses the seat's open connected top-level bindings (bounded:
+more than 64 refuse the queue and stay native). One binding is its own target unless it is a concurrent
+session (`concurrent_session`: an independent fork enrolled with `CheckInMode::Fork`) or an auxiliary session
+(`auxiliary_session`, below), which is never a target. Several bindings are rooted only when they all share one
+harness, one liveness pid, start stamp and kernel boot, and the adapter (`HarnessAdapter::wake_process_root`,
+default `None`) names exactly one root among them; the root is then selected through every existing check
+(registered, qualified native turn Ended, canonical, reservation target). Across processes, with no named root
+or with two, the wake stays native.
+
+The marker is the spike's S1 evidence (`docs/superpowers/runs/2026-11-26-per-seat-config-side-wake/spike-side-identity.md`):
+a Codex `/side` session emits a null `transcript_path` on every hook event, a root a path. A later Codex that
+persists the side chat's rollout (ht-z41e.43) gives its hook events a path instead, so there are two markers.
+The Codex adapter reports (1) a null `transcript_path` on a top-level SessionStart, UserPromptSubmit, PreToolUse
+or Stop event, or (2) a SessionStart `source: fork` whose `transcript_path` is a non-empty absolute path of a
+regular file (no symlink) whose rollout first line has `/payload/thread_source == "tui_side_chat"`, as
+neutral auxiliary-session evidence on the check-in claim (`CallerClaim.auxiliary_session`, sent only to a daemon
+advertising `seat.auxiliary_session_v1`; an older daemon never sees it and loses queue routing for that session,
+nothing else). Cooperative evidence like the rest of the claim, it is persisted as the binding row's sticky
+`auxiliary_session` bit (node migration 22, default 0, scoped to the row so a new binding starts at 0, never
+cleared by a later non-null event) and nothing else: it never sets `concurrent_session`, which stays set only by
+SessionStart `source: fork` ("Independent lifecycle forks (ht-i9a7)" is unchanged), and liveness, dormant-target
+and successor logic never read it. Only queue root selection reads it. The Codex root is the one candidate that
+is neither concurrent nor auxiliary, and only when every other candidate is auxiliary (a `/side` session,
+whatever its `concurrent_session` bit); a non-auxiliary concurrent session (a real fork a user works in: a
+SessionStart `source: fork` with a path whose rollout does not say `tui_side_chat`; a fork whose rollout does is
+auxiliary, marker 2) makes the process rootless, so the wake stays native instead of waking
+its undisplayed original. A lone concurrent or auxiliary binding is never a target.
+
+Accepted limits. Marker 2 reads a client-local file the hook payload names: a hint under the cooperative model,
+never authority. Only the fork's SessionStart carries it and it is read once, at that event; if the rollout's
+first line is missing or incomplete at that read, or is not JSON of that shape, the bit is not set (the bit is
+sticky, so a later event never sets it) and queue routing beside that side falls back to native (fails closed).
+Model-visible text is unchanged. A root that itself emits a null `transcript_path` (a root run without a transcript, e.g. `codex
+exec --ephemeral`, did in the 0.158 capture) reads auxiliary and loses only queue routing: the process names no
+root and the wake stays native. A side that has emitted no hook event yet has no binding and is invisible to
+selection, so the root is targeted while the side view is displayed; spikes S2/S4 showed that safe (the side view
+and its draft survive). Harness modes that bypass approvals (Codex `--approve-for-me`, sandbox bypass) skip the
+human ask a queued wake would otherwise raise; they do not change selection. "Never a wrong target" therefore
+holds for every enrolled side: a session whose hook has run is either marked or a root. `/side` routing needs
+hook-registered Codex: a binding enrolled only by plain CLI calls carries no evidence, two such bindings name no
+root, and the wake stays native.
+
+Busy-sibling rule `drop` (spike S2): a queued root turn started and completed while a side turn's tool was still
+running, so only the root's own turn state gates the queue attempt; a busy side binding does not refuse it. The
+native composer path keeps its all-bindings-idle admission (it types into whichever composer is displayed; a
+`/side` composer reads non-Empty, so a native wake defers until it closes). The queue transport has its own admission
+(`HostPort::admit_queue_wake`), checked once per queue attempt right before arm and root-scoped: the root binding's
+hook turn state must be `Idle` (a root that turned `Busy` or `Unknown` after selection is refused for the ladder,
+with no native fallback in that attempt and no receipt pending); identity, incarnation, epoch, budget and the
+modal/blocked refusal are kept; Herdr `working` admits only when the root's process has side bindings
+(`side_sessions`), a lone root keeps the refusal; an empty composer or an adapter-declared idle placeholder
+(`ComposerPolicy::is_idle_placeholder`; Codex: the `/side` placeholder) admits and typed text refuses; no focus
+dwell, and native composer windows are neither read nor reset. The dispatcher lets a one-process queue candidate
+through its `ActiveTurn` and `HumanInput` observations (only a blocked pane is excluded before the queue) so this
+admission decides; any native path that follows still refuses a non-idle status and a non-empty composer in its own
+final gate. Any admission refusal falls back to the native path, whose own gate then decides; a host without the
+admission (named/tmux, hc) refuses it, so its seats wake natively. Accepted limits: (1) Herdr `blocked` or
+`unknown` refuses even when it is the side view that is blocked (pane status cannot say whose prompt it is), so a
+side approval defers the root's queue wake until it clears; (2) a main-composer draft that is exactly the side
+placeholder text admits a queue wake (kept from ht-z41e.40; the queue does not touch the composer, so the draft
+survives); (3) with siblings, a pane `working` that is in fact the root's own turn is admitted when the root's hook
+reads `Idle` (the hook is the root's idle evidence; the observation-race limit of 2026-11-14 covers the residual
+extra turn). The native-fallback claim keeps native admission (`GuardFor::NativeFallback`).
+
+The intent's target is the root (`wake_intents.target_json`, unchanged); the other sessions of its process are
+recorded in the nullable `wake_intents.side_sessions` column (JSON array of native session ids, NULL when none;
+`WakeIntentPreparation.side_sessions`), a diagnostic the wake e2e driver reads. Arrival: a queued wake is awaited
+on the root session's contact: the scheduler records the intent's root native session UUID with the attempt and asks
+whether any call claiming the seat from a binding with that UUID (so a root that re-registered under a new binding
+id still counts) arrived since the reservation. A side session's contact neither settles it, nor lifts its
+`unreceived` record, nor re-arms a retype; it is also fulfilled by a qualified turn of the exact target scope. The
+receipt scope follows the transport actually used: a native wake, including a queue-selected attempt that fell back
+to native (stale-authority NoEffect, or `programmatic_wake` flipped off before arm), keeps any-binding seat contact
+as its receipt evidence (S3 shows the woken root turn carries the root session id, but the native receipt asks only
+that the seat was heard from).
 
 ### Qualified native-turn observation for queue wake purpose (2026-11-14)
 
@@ -4402,10 +4531,16 @@ not an exact-version admission gate or permission to add a native poke after enq
 
 ### Bounded native-only queue degradation (2026-11-15)
 
-Programmatic wake is an explicit per-install opt-in (`programmatic_wake: true` in
-the node settings); absent/false preserves native wake. The switch gates only
-new adds. Retained effect fences and cleanup continue, including List/Delete
-helpers, while it is off.
+Programmatic wake is an explicit per-seat opt-in (ht-z41e.4): the human-tier seat config
+key `programmatic_wake on`, set with `ht human config seat set --seat S programmatic_wake on`.
+The daemon reads it for the reserving seat inside the queue selection transaction, so a toggle
+applies to the next attempt without a restart, and re-reads it at arm. A read error fails
+closed: the attempt selects native, never the queue. Off (the default) preserves native wake.
+The `programmatic_wake` key of `node/settings.json` is obsolete: it still parses and has no
+effect. The switch gates only new adds, per seat. Retained effect fences and cleanup continue,
+including List/Delete helpers, while it is off, for every seat. Authority to use the queue
+transport therefore belongs to the person who wrote the seat's key (operator tier,
+`operator:local-user:<uid>`), not to the node.
 
 After 30 seconds from the immutable successful arm timestamp, an Active
 Accepted/Unknown intent with positively confirmed current-helper quiescence may

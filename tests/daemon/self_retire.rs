@@ -121,6 +121,7 @@ fn fixture(named: bool) -> Fixture {
 
 fn claim(named: bool, harness: Harness, session: &str, execution: &str) -> CallerClaim {
     CallerClaim {
+        auxiliary_session: false,
         host: if named {
             HostLocator::parse(NAMED_HOST_LOCATOR).unwrap()
         } else {

@@ -1,0 +1,137 @@
+diff --git a/src/harness/registry.rs b/src/harness/registry.rs
+index 482cb92ca..ec4450fe8 100644
+--- a/src/harness/registry.rs
++++ b/src/harness/registry.rs
+@@ -317,6 +317,7 @@ trait ErasedAdapter: Send + Sync {
+         &self,
+         session: &crate::protocol::ids::NativeSessionId,
+     ) -> Option<super::wake::WakeReplayScope>;
++    fn wake_process_root(&self, candidates: &[super::adapter::RootCandidate<'_>]) -> Option<usize>;
+     fn binding_wake_text(&self, provenance: Option<&str>) -> &'static str;
+     fn binding_turn_delivery(&self, provenance: Option<&str>) -> bool;
+     fn canary_strategy(&self) -> Option<&dyn CanaryStrategy>;
+@@ -567,6 +568,9 @@ impl<A: HarnessAdapter> ErasedAdapter for TypedAdapter<A> {
+     ) -> Option<super::wake::WakeReplayScope> {
+         self.0.wake_replay_scope(session)
+     }
++    fn wake_process_root(&self, candidates: &[super::adapter::RootCandidate<'_>]) -> Option<usize> {
++        self.0.wake_process_root(candidates)
++    }
+     fn binding_wake_text(&self, provenance: Option<&str>) -> &'static str {
+         self.0.binding_wake_text(provenance)
+     }
+@@ -1231,6 +1235,12 @@ impl Registration {
+     ) -> Option<super::wake::WakeReplayScope> {
+         self.adapter.wake_replay_scope(session)
+     }
++    pub fn wake_process_root(
++        &self,
++        candidates: &[super::adapter::RootCandidate<'_>],
++    ) -> Option<usize> {
++        self.adapter.wake_process_root(candidates)
++    }
+     pub fn canary_strategy(&self) -> Option<&dyn CanaryStrategy> {
+         self.adapter.canary_strategy()
+     }
+@@ -1727,6 +1737,85 @@ pub fn builtins() -> &'static Registry {
+ }
+ #[cfg(test)]
+ mod tests {
++    #[test]
++    fn process_root_is_named_only_by_codex_from_the_auxiliary_marker() {
++        use crate::harness::adapter::RootCandidate;
++        use crate::protocol::ids::NativeSessionId;
++        let (a, b, c) = (
++            NativeSessionId::new("a"),
++            NativeSessionId::new("b"),
++            NativeSessionId::new("c"),
++        );
++        // (concurrent_session, auxiliary_session)
++        let cand = |s: &'static NativeSessionId, concurrent, auxiliary| RootCandidate {
++            native_session: s,
++            observation_provenance: "cooperative_top_level",
++            concurrent_session: concurrent,
++            auxiliary_session: auxiliary,
++        };
++        let (a, b, c): (&'static _, &'static _, &'static _) = (
++            Box::leak(Box::new(a)),
++            Box::leak(Box::new(b)),
++            Box::leak(Box::new(c)),
++        );
++        for registration in builtins().registrations() {
++            let side = [cand(a, false, false), cand(b, false, true)];
++            let named = registration.wake_process_root(&side);
++            if registration.metadata().id == "codex" {
++                // A root beside an auxiliary side names the root, whatever the listing order.
++                assert_eq!(named, Some(0));
++                assert_eq!(
++                    registration.wake_process_root(&[cand(b, false, true), cand(a, false, false)]),
++                    Some(1)
++                );
++                // A fork-SessionStart side carries both bits and is still a side.
++                assert_eq!(
++                    registration.wake_process_root(&[cand(a, false, false), cand(b, true, true)]),
++                    Some(0)
++                );
++                assert_eq!(
++                    registration.wake_process_root(&[
++                        cand(a, false, false),
++                        cand(b, false, true),
++                        cand(c, true, true)
++                    ]),
++                    Some(0)
++                );
++                // A non-/side fork (concurrent without auxiliary) beside its original: no root.
++                assert_eq!(
++                    registration.wake_process_root(&[cand(a, false, false), cand(b, true, false)]),
++                    None
++                );
++                assert_eq!(
++                    registration.wake_process_root(&[
++                        cand(a, false, false),
++                        cand(b, false, true),
++                        cand(c, true, false)
++                    ]),
++                    None
++                );
++                // Two plain bindings, a root that is itself auxiliary, and no plain one: no root.
++                assert_eq!(
++                    registration.wake_process_root(&[cand(a, false, false), cand(b, false, false)]),
++                    None
++                );
++                assert_eq!(
++                    registration.wake_process_root(&[cand(a, false, true), cand(b, false, true)]),
++                    None
++                );
++                assert_eq!(
++                    registration.wake_process_root(&[cand(a, true, false), cand(b, false, true)]),
++                    None
++                );
++                assert_eq!(
++                    registration.wake_process_root(&[cand(a, false, false)]),
++                    Some(0)
++                );
++            } else {
++                assert_eq!(named, None, "{} names no root", registration.metadata().id);
++            }
++        }
++    }
+     #[test]
+     fn compiled_registry_keeps_exact_shipped_rows_and_feature_fixture() {
+         let rows: Vec<_> = builtins()
+@@ -3025,6 +3114,7 @@ mod tests {
+             metadata: EventMetadata {
+                 native_turn_id: None,
+                 turn_end: false,
++                auxiliary_session: false,
+                 enrollment_witness: None,
+                 context_source: "PreToolUse".into(),
+                 callback_deadline: None,
+@@ -3218,6 +3308,7 @@ mod tests {
+         );
+         let id = registry.agent("small").unwrap();
+         let lifecycle = crate::harness::LifecycleEvent {
++            auxiliary_session: false,
+             harness: OccupantHarness::Agent(id).into(),
+             source: "startup".into(),
+             kind: super::super::context::EventKind::Startup,

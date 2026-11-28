@@ -1,0 +1,12 @@
+diff --git a/src/cli/peer_launch.rs b/src/cli/peer_launch.rs
+index afef6c7ee..84432a3ba 100644
+--- a/src/cli/peer_launch.rs
++++ b/src/cli/peer_launch.rs
+@@ -1478,6 +1478,7 @@ mod tests {
+             ids::{ExecutionId, HostLocator, HostTargetId, NativeSessionId, SeatId},
+         };
+         CallerClaim {
++            auxiliary_session: false,
+             instance: "i".into(),
+             host: HostLocator::parse("/claim.sock").unwrap(),
+             seat: SeatId::new(seat),

@@ -382,6 +382,24 @@ class FakeRun:
         raise AssertionError(f"unscripted command {argv}")
 
 
+class ResumeRootSession(unittest.TestCase):
+    def b(self, session, auxiliary=0, concurrent=0):
+        return {"session": session, "auxiliary": auxiliary, "concurrent": concurrent}
+
+    def test_resumes_the_root_not_the_newer_side_fork(self):
+        self.assertEqual(W.resume_root_session([self.b("root"), self.b("fork", 1, 1)]), "root")
+
+    def test_newest_root_wins_among_roots(self):
+        self.assertEqual(W.resume_root_session([self.b("old"), self.b("new"), self.b("fork", 1, 1)]), "new")
+
+    def test_unknown_bits_do_not_exclude_a_binding(self):
+        self.assertEqual(W.resume_root_session([self.b("a", None, None)]), "a")
+
+    def test_only_side_forks_is_an_error_not_a_guess(self):
+        with self.assertRaises(RuntimeError):
+            W.resume_root_session([self.b("fork", 1, 1)])
+
+
 class Cleanup(TempDir):
     def test_verified_cleanup_removes_root_and_keeps_evidence(self):
         f = FakeRun(self.tmp)
@@ -2051,32 +2069,54 @@ class HarnessMode(TempDir):
         r.codex_home, r.bindir, r.bin, r.endpoint, r.cwd = r.root / "codex-home", r.root / "bin", "/fake/ht", "/s", "/repo"
         r.daemon_attempted = False
         r.claude_env = r.root / "claude.env"
+        r.ev = self.tmp / "evidence"
         (self.tmp / "src").mkdir()
         (self.tmp / "src" / "auth.json").write_bytes(FAKE_AUTH)
         def fake_ht(*argv, env=None, **kw):
             if argv[:2] == ("daemon", "ensure"):
                 settings = json.loads((r.state / "node/settings.json").read_text())
                 self.assertIs(settings["sync"]["discover"], False)
-                self.assertIs(settings["programmatic_wake"], bool(queue_proof))
+                self.assertNotIn("programmatic_wake", settings)
                 self.assertEqual(stat.S_IMODE((r.state / "node/settings.json").stat().st_mode), 0o600)
+            if argv[:2] == ("setup", "codex"):  # what `setup codex` writes: one herdr-threads hook per event group
+                (r.codex_home / "hooks.json").write_text(json.dumps({"hooks": {"SessionStart": [
+                    {"hooks": [{"type": "command", "command": "'/b/herdr-threads' 'hook' 'codex' 'SessionStart'"}]}]}}))
             calls.append((argv, dict(env or {})))
             return ""
         r.ht = fake_ht
         r.scratch()
         return r, calls
 
-    def test_required_queue_proof_enables_only_owned_settings_before_daemon(self):
+    def test_codex_scratch_installs_the_silent_trace_beside_the_herdr_threads_hooks(self):
+        r, _ = self.scratch_run("macos", harness=("codex",))
+        script = r.bindir / "hook-trace"
+        self.assertTrue(os.access(script, os.X_OK))
+        hooks = json.loads((r.codex_home / "hooks.json").read_text())["hooks"]["SessionStart"][0]["hooks"]
+        self.assertEqual(len(hooks), 2)
+        self.assertIn("herdr-threads", hooks[0]["command"])
+        self.assertEqual(hooks[1], {"type": "command", "command": shlex.quote(str(script)), "timeout": 5})
+        self.assertIn(str(r.ev / "hook-trace.jsonl"), script.read_text())
+
+    def test_claude_only_scratch_writes_no_trace(self):
+        r, _ = self.scratch_run("macos", harness=("claude",))
+        self.assertFalse((r.bindir / "hook-trace").exists())
+
+    def test_queue_proof_never_writes_programmatic_wake_to_node_settings(self):
         operator = self.tmp / "operator/node/settings.json"
         operator.parent.mkdir(parents=True)
         original = b'{"programmatic_wake":false,"sentinel":"operator-private"}'
         operator.write_bytes(original)
-        with mock.patch.dict(os.environ, {"HERDR_PLUGIN_STATE_DIR": str(operator.parent.parent)}):
-            r, calls = self.scratch_run("macos", harness=("codex",), queue_proof=True)
-        self.assertEqual(operator.read_bytes(), original)
-        settings = json.loads((r.state / "node/settings.json").read_text())
-        self.assertIs(settings.get("programmatic_wake"), True)
-        self.assertNotIn("sentinel", settings)
-        self.assertTrue(any(argv[:2] == ("daemon", "ensure") for argv, _ in calls))
+        for queue_proof in (False, True):
+            with self.subTest(queue_proof=queue_proof):
+                shutil.rmtree(self.tmp / "root", ignore_errors=True)
+                shutil.rmtree(self.tmp / "src", ignore_errors=True)
+                with mock.patch.dict(os.environ, {"HERDR_PLUGIN_STATE_DIR": str(operator.parent.parent)}):
+                    r, calls = self.scratch_run("macos", harness=("codex",), queue_proof=queue_proof)
+                self.assertEqual(operator.read_bytes(), original)
+                settings = json.loads((r.state / "node/settings.json").read_text())
+                self.assertEqual(settings, {"sync": {"discover": False}})
+                self.assertTrue(any(argv[:2] == ("daemon", "ensure") for argv, _ in calls))
+                self.assertFalse(any(argv[:3] == ("config", "seat", "set") for argv, _ in calls))
 
     def test_shim_logs_each_call_for_the_extra_inbox_check(self):
         with Env(ANTHROPIC_API_KEY=FAKE_API_KEY):
@@ -2867,6 +2907,96 @@ class SideCases(unittest.TestCase):
         self.assertEqual(W.expected_rows(run, ["send-nudge/group", "side-nudge/group"]),
                          {("cl-nudge", "send-nudge/group"), ("co-nudge", "send-nudge/group"),
                           ("co-nudge", "side-nudge/group"), ("co-plain", "side-nudge/group")})
+
+    def test_side_setup_ok_needs_root_plus_every_side_binding(self):
+        """ht-z41e.54: the live rows held root + one side (`concurrent 1 auxiliary 1`) and must fail; root + SIDE_FORKS pass."""
+        b = lambda session, live="connected": {"session": session, "liveness": live, "pid": 7}
+        self.assertTrue(W.side_setup_ok([b("root"), b("s1"), b("s2")], False, False))
+        self.assertFalse(W.side_setup_ok([b("root"), b("s1")], False, False))
+        # the hookless recipient also needs every binding connected on one pid
+        self.assertTrue(W.side_setup_ok([b("r"), b("s1"), b("s2")], True, True))
+        self.assertFalse(W.side_setup_ok([b("r"), b("s1"), b("s2")], False, True))
+        self.assertFalse(W.side_setup_ok([b("r"), b("s1"), b("s2", "ended")], True, True))
+
+    def side_recipient(self, binding_polls):
+        """A Recipient whose `bindings()` answers `binding_polls` in order (the last one repeats) and whose pane
+        actions are recorded; returns it with the call log."""
+        log, polls = [], list(binding_polls)
+        run = SimpleNamespace(herdr=lambda *a, **k: log.append(a) or {"raw": ""}, bindir=Path("/b"),
+                              stopping=threading.Event())
+        r = W.Recipient(run, "co-t0", "codex", "0", "w1:p1", "sAAAAAAAA")
+        r.bindings = lambda: [{"session": x, "liveness": "connected"} for x in (polls.pop(0) if len(polls) > 1 else polls[0])]
+        r.wait_idle = lambda: log.append(("wait_idle",))
+        r.settled = lambda: None
+        r.prompt = lambda text, expect=None: log.append(("prompt", text))
+        r.close_side_checked = lambda: log.append(("close",)) or {"archive_dialog": True, "archive_dialog_after": False}
+        patcher = mock.patch.object(W.time, "sleep", lambda s: None)
+        patcher.start()
+        self.addCleanup(patcher.stop)
+        return r, log
+
+    def test_side_chat_displayed_is_the_side_composer_placeholder(self):
+        self.assertTrue(W.side_chat_displayed("  SIDE-2-DONE\n\u203a Ask a follow-up question\n"))
+        self.assertFalse(W.side_chat_displayed("\u203a Explain this codebase\n  gpt  100% left\n"))
+
+    def close_recipient(self, screens):
+        """A Recipient whose detection reads answer `screens` in order (the last repeats); returns it and the key log."""
+        keys, queue = [], list(screens)
+        def herdr(*a, **k):
+            if a[:2] == ("agent", "send-keys"):
+                keys.append(a[3])
+            return {"raw": queue.pop(0) if len(queue) > 1 else queue[0]} if a[:1] == ("pane",) else {}
+        run = SimpleNamespace(herdr=herdr, stopping=threading.Event())
+        r = W.Recipient(run, "co-t0", "codex", "0", "w1:p1", "sAAAAAAAA")
+        patcher = mock.patch.object(W.time, "sleep", lambda s: None)
+        patcher.start()
+        self.addCleanup(patcher.stop)
+        return r, keys
+
+    def test_close_side_checked_repeats_ctrl_c_until_the_dialog_or_the_main_view_shows(self):
+        """ht-z41e.54: the first Ctrl+C left the side chat displayed with no dialog (side-draft co-t0); the close must
+        press again, confirm the dialog it then sees, and stop once the main view is back."""
+        side, dialog, main = "\u203a Ask a follow-up question\n", "Archive side chat?\n  Cancel\n", "\u203a hello\n"
+        r, keys = self.close_recipient([side, side, dialog, main])
+        seen = r.close_side_checked()
+        self.assertEqual(keys, ["ctrl+c", "ctrl+c", "right", "enter"])
+        self.assertEqual((seen["archive_dialog"], seen["archive_dialog_after"], seen["attempts"]), (True, False, 2))
+        # the first Ctrl+C already gave the dialog: one press, then confirmed
+        r, keys = self.close_recipient([dialog, main])
+        self.assertEqual(r.close_side_checked()["attempts"], 1)
+        self.assertEqual(keys, ["ctrl+c", "right", "enter"])
+        # a main view straight away needs no repeat and no confirmation
+        r, keys = self.close_recipient([main])
+        self.assertEqual((keys, r.close_side_checked()["archive_dialog"]), (["ctrl+c"], False))
+        # a side chat that never closes stops at SIDE_CLOSE_ATTEMPTS
+        r, keys = self.close_recipient([side])
+        self.assertEqual(r.close_side_checked()["attempts"], W.SIDE_CLOSE_ATTEMPTS)
+
+    def test_wait_new_side_binding_polls_until_a_new_session_appears(self):
+        r, _ = self.side_recipient([["root"], ["root"], ["root", "s1"]])
+        self.assertEqual([b["session"] for b in r.wait_new_side_binding({"root"}, timeout=60)], ["root", "s1"])
+        r, _ = self.side_recipient([["root"]])
+        with mock.patch.object(W.time, "time", side_effect=[0, 0, 1, 2, 99, 99, 99]):
+            self.assertIsNone(r.wait_new_side_binding({"root"}, timeout=5))
+
+    def test_open_sides_closes_each_side_only_after_its_own_new_binding_appeared(self):
+        """The second side's binding gains its session only on the second poll; the close follows the binding, and every
+        close goes through the Archive-dialog handler, never a bare Ctrl+C."""
+        r, log = self.side_recipient([["root"], ["root"], ["root", "s1"], ["root", "s1"], ["root", "s1", "s2"]])
+        sides = r.open_sides("tag")
+        self.assertEqual([b["session"] for b in sides], ["root", "s1", "s2"])
+        self.assertEqual([e["new_binding"] for e in r.side_setup], [True, True])
+        self.assertEqual([a[0] for a in log if a[0] in ("prompt", "close")], ["prompt", "close", "prompt", "close"])
+        self.assertFalse([a for a in log if len(a) > 3 and a[:1] == ("agent",) and "ctrl+c" in a])
+        self.assertTrue(W.side_setup_ok(sides, False, False))
+
+    def test_open_sides_records_a_side_whose_binding_never_appeared(self):
+        r, _ = self.side_recipient([["root"]])
+        with mock.patch.object(W, "SIDE_BINDING_WAIT_S", 0), mock.patch.object(W.Recipient, "wait_new_side_binding",
+                                                                               lambda self, known, timeout=0: None):
+            sides = r.open_sides("tag")
+        self.assertEqual([e["new_binding"] for e in r.side_setup], [False, False])
+        self.assertFalse(W.side_setup_ok(sides, False, False))
 
     def test_hooks_cases_run_on_the_hooks_only_claude_only_and_it_runs_nothing_else(self):
         r = lambda name, harness, hooks_only=False: SimpleNamespace(name=name, harness=harness, plain=False,
@@ -3734,6 +3864,167 @@ class QueueQualificationParsing(unittest.TestCase):
             parsed_args(["--queue-proof", "--harness", "claude"])
         self.assertEqual(refused.exception.code, 2)
 
+ROOT_OK = {"side_bits": {"side-1": {"auxiliary": 1, "concurrent": 1}},
+           "root_bits": {"auxiliary": 0, "concurrent": 0}, "settled_by_root": True}
+
+
+class SideQueueCases(TempDir):
+    """ht-z41e.8: side-queue (queue proof required) and side-native-defer (queue off), and the side cases'
+    expectations under both queue modes."""
+    snapshot = QueueSamplerLifetime.snapshot
+    recipient = QueueSamplerLifetime.recipient
+
+    def test_new_cases_are_opt_in_and_run_on_hooked_codex_at_t0_only(self):
+        for case in W.SIDE_QUEUE_CASES + W.SIDE_DEFER_CASES:
+            self.assertNotIn(case, W.CASES)
+            self.assertNotIn(case, W.SIDE_CASES)
+            for harness, threshold, plain, expected in (("codex", 0, False, True), ("codex", 0, True, False),
+                                                        ("codex", -1, False, False), ("codex", 3, False, False),
+                                                        ("claude", 0, False, False)):
+                r = SimpleNamespace(harness=harness, threshold=threshold, plain=plain)
+                self.assertEqual(W.applies(r, case), expected, (case, harness, threshold, plain))
+        self.assertEqual(W.SIDE_QUEUE_CASES, ("side-queue/group", "side-queue-focused/group"))
+        self.assertEqual(W.SIDE_DEFER_CASES, ("side-native-defer/group",))
+
+    def test_side_queue_is_refused_without_queue_proof_and_defer_with_it(self):
+        with self.assertRaises(SystemExit) as refused:
+            parsed_args(["--harness", "codex", "--cases", "side-queue/group"])
+        self.assertEqual(refused.exception.code, 2)
+        with self.assertRaises(SystemExit) as refused:
+            parsed_args(["--harness", "codex", "--queue-proof", "--cases", "side-native-defer/group"])
+        self.assertEqual(refused.exception.code, 2)
+        self.assertTrue(parsed_args(["--harness", "codex", "--queue-proof", "--cases", "side-queue/group"]).queue_proof)
+        self.assertFalse(parsed_args(["--harness", "codex", "--cases", "side-native-defer/group"]).queue_proof)
+
+    def test_side_queue_verdict_needs_every_part(self):
+        proof = {"passed": True}
+        self.assertTrue(W.side_queue_passed(True, proof, True, False, False, **ROOT_OK))
+        for args in ((False, proof, True, False, False), (True, {"passed": False}, True, False, False),
+                     (True, None, True, False, False), (True, proof, False, False, False),
+                     (True, proof, True, True, False), (True, proof, True, False, True)):
+            self.assertFalse(W.side_queue_passed(*args, **ROOT_OK), args)
+
+    def test_archive_dialog_open_needs_the_archive_prompt_and_its_cancel_choice(self):
+        dialog = "  Archive this side conversation?\n  > Archive   Cancel\n"
+        self.assertTrue(W.archive_dialog_open(dialog))
+        for screen in ("", "› Ask a follow-up question\n", "Archive the logs", "Cancel"):
+            self.assertFalse(W.archive_dialog_open(screen), screen)
+
+    def test_side_defer_verdict_needs_a_refusal_nothing_typed_a_wake_after_close_and_delivery(self):
+        self.assertTrue(W.side_defer_passed(True, True, False, True, True))
+        for args in ((False, True, False, True, True), (True, False, False, True, True), (True, True, True, True, True),
+                     (True, True, False, False, True), (True, True, False, True, False)):
+            self.assertFalse(W.side_defer_passed(*args), args)
+
+    def test_side_defer_refusal_needs_a_refused_attempt_after_the_send_at_the_same_retry_step(self):
+        before = {"last_outcome": "submitted", "completed_at_utc": 500, "retry_step": 2}
+        refused = {"last_outcome": "unsafe", "completed_at_utc": 1500, "retry_step": 2}
+        self.assertTrue(W.side_defer_refusal(before, refused, 1000))
+        self.assertTrue(W.side_defer_refusal(None, {"last_outcome": "unavailable", "completed_at_utc": 1000,
+                                                    "retry_step": 0}, 1000))
+        for state in (dict(refused, completed_at_utc=999),          # refused before the send
+                      dict(refused, last_outcome="submitted"),      # a wake typed, not a deferral
+                      dict(refused, retry_step=3),                  # advanced step: not a deferral
+                      None):                                        # no row
+            self.assertFalse(W.side_defer_refusal(before, state, 1000), state)
+        self.assertFalse(W.side_defer_refusal(None, dict(refused, retry_step=1), 1000))
+
+    SIDE_SCREEN = ("\u203a Side of wake-e2e side-queue: run `inbox` once, then print SIDE-QUEUE-DONE.\n"
+                   "  SIDE-QUEUE-DONE\n\u203a Ask a follow-up question\n  gpt  100% left\n")
+
+    def test_side_pane_verdict_flags_a_typed_wake_or_any_other_change_but_not_the_footer(self):
+        base = self.SIDE_SCREEN
+        self.assertEqual(W.side_pane_verdict(base, base.replace("100% left", "99% left")), (False, False))
+        typed = base.replace("\u203a Ask a follow-up question", "\u203a herdr-threads: wake up")
+        self.assertEqual(W.side_pane_verdict(base, typed), (True, True))
+        self.assertEqual(W.side_pane_verdict(base, base + "herdr-threads: wake up\n"), (True, True))
+        draft = base.replace("Ask a follow-up question", "half-typed")
+        self.assertEqual(W.side_pane_verdict(base, draft), (False, True))
+        answered = base + "  SIDE-QUEUE-DONE\n"
+        self.assertEqual(W.side_pane_verdict(base, answered), (False, True))
+        # a wake marker already on screen before the send is not new typing
+        old = base + "herdr-threads: wake up\n"
+        self.assertEqual(W.side_pane_verdict(old, old), (False, False))
+
+    def test_side_pane_verdict_reads_a_side_by_side_screen_per_pane(self):
+        def screen(side_rows, side_composer="\u203a Ask a follow-up question"):
+            rows = [("\u203a herdr-threads: wake up", side_rows[0]), ("", side_rows[1]),
+                    ("\u203a", side_composer)]
+            return "".join(f"{left:<40}\u2502{right}\n" for left, right in rows)
+        stale = screen(["", ""])
+        # the side pane's own history painted late (its answer, a status row) is not a change
+        painted = screen(["  Worked for 5s", "\u2022 SIDE-QUEUE-DONE"])
+        self.assertEqual(W.side_pane_verdict(stale, painted), (False, False))
+        self.assertEqual(W.side_pane_verdict(painted, painted), (False, False))
+        # a wake typed into the side composer, or a draft there, is
+        typed = screen(["", ""], "\u203a herdr-threads: wake up")
+        self.assertEqual(W.side_pane_verdict(stale, typed), (True, True))
+        draft = screen(["", ""], "\u203a half-typed")
+        self.assertEqual(W.side_pane_verdict(stale, draft), (False, True))
+        # a change in the root pane's prompt rows is
+        root_changed = stale.replace("\u203a herdr-threads: wake up   ", "\u203a something else        ")
+        self.assertEqual(W.side_pane_verdict(stale, root_changed), (False, True))
+
+    def test_side_draft_verdict_is_the_same_in_both_queue_modes(self):
+        """ht-z41e.54: the typed root draft refuses the queue lane as well, so a wake is never owed and the refusal
+        warning is (queue-mode rows read `queue_evidence` 'none', no armed/accepted intent)."""
+        checks = {"draft_intact": True, "delivered": True, "warning_wake": "refused"}
+        self.assertTrue(W.side_draft_passed(True, False, checks))
+        self.assertFalse(W.side_draft_passed(True, True, checks))  # a wake means it typed past the draft
+        self.assertFalse(W.side_draft_passed(True, False, dict(checks, warning_wake="submitted")))
+        self.assertFalse(W.side_draft_passed(True, False, dict(checks, warning_wake=None)))
+        self.assertFalse(W.side_draft_passed(True, False, dict(checks, draft_intact=False)))
+        self.assertFalse(W.side_draft_passed(True, False, dict(checks, delivered=False)))
+        self.assertFalse(W.side_draft_passed(False, False, checks))
+
+    def expectations(self, case, root, expect_wake):
+        recipient = self.recipient()
+        recipient.run.args = SimpleNamespace(queue_proof=bool(root))
+        proof = W.QueueCaseEvidence(recipient, case)
+        proof.root_session = root
+        proof.publication()
+        calls = []
+        def judged(before, samples, expectation, baseline=...):
+            calls.append((expectation, baseline is not ...))
+            return {"passed": True, "expectation": expectation, "reasons": [], "attempts": [], "observed": {"unknown": 0}}
+        with mock.patch("wake_e2e_queue.queue_proof", side_effect=judged), \
+                mock.patch("wake_e2e_queue.process_root_scope", return_value={"scope": {}}):
+            proof.finish({"expect_wake": expect_wake, "t_wake_s": 5.0})
+        return calls[0]
+
+    def test_side_cases_expect_per_queue_mode(self):
+        # --queue-proof, hooked recipient with a named root: side-nudge is queue-woken on the root; side-draft's typed
+        # root draft refuses the queue lane, so it expects no effect (ht-z41e.54)
+        self.assertEqual(self.expectations("side-nudge/group", "root", True), ("accepted", True))
+        self.assertEqual(self.expectations("side-draft/group", "root", False)[0], "none")
+        # queue off, or co-plain (no bootstrap root): native, never a queue effect
+        self.assertEqual(self.expectations("side-nudge/group", None, True), ("native", False))
+        self.assertEqual(self.expectations("side-draft/group", None, False), ("none", False))
+        # the defer case is native by construction, and its post-close wake is not held to the six-second bound
+        self.assertEqual(self.expectations("side-native-defer/group", None, True), ("native", False))
+
+    def test_config_prose_is_native_and_flag_flip_is_judged_by_its_trial_log(self):
+        self.assertEqual(self.expectations("config-prose/group", None, False), ("native", False))
+        recipient = self.recipient()
+        recipient.run.args = SimpleNamespace(queue_proof=True)
+        proof = W.QueueCaseEvidence(recipient, "flag-flip/group")
+        proof.publication()
+        with mock.patch("wake_e2e_queue.queue_proof", side_effect=AssertionError("whole-case proof must not run")):
+            result = proof.finish({"expect_wake": True, "t_wake_s": None})
+        self.assertEqual((result["passed"], result["expectation"]), (True, "trial_log"))
+
+    def test_native_defer_wake_after_close_is_not_held_to_the_six_second_window(self):
+        recipient = self.recipient()
+        recipient.run.args = SimpleNamespace(queue_proof=False)
+        proof = W.QueueCaseEvidence(recipient, "side-native-defer/group")
+        proof.publication()
+        result = proof.finish({"expect_wake": True, "t_wake_s": 41.0})
+        self.assertTrue(result["passed"], result["reasons"])
+        late = W.QueueCaseEvidence(recipient, "send-p0/group")
+        late.publication()
+        self.assertFalse(late.finish({"expect_wake": True, "t_wake_s": 41.0})["passed"])
+
+
 class AutomaticQueueQualification(TempDir):
     snapshot = QueueSamplerLifetime.snapshot
     recipient = QueueSamplerLifetime.recipient
@@ -3757,6 +4048,44 @@ class AutomaticQueueQualification(TempDir):
         W.Recipient.run_cases(r, ["send-p1/group"])
         self.assertEqual(run.results[0]["result"], "PASS")
         self.assertIsNotNone(run.results[0].get("queue_evidence"))
+
+    def seat_recipient(self, queue_proof, harness="codex", plain=False):
+        calls = []
+        def ht(*argv, **kw):
+            calls.append((argv, kw))
+            return ""
+        run = SimpleNamespace(state=self.tmp, args=SimpleNamespace(queue_proof=queue_proof), facts={}, ht=ht)
+        recipient = W.Recipient(run, "co-t0", harness, 0, "pane", "sSEATSEAT", plain=plain)
+        return recipient, calls
+
+    def test_queue_proof_enables_programmatic_wake_on_each_codex_seat_through_human_cli(self):
+        for plain in (False, True):
+            with self.subTest(plain=plain):
+                recipient, calls = self.seat_recipient(True, plain=plain)
+                recipient.enable_queue_wake()
+                self.assertEqual(len(calls), 1)
+                argv, kw = calls[0]
+                self.assertEqual(argv, ("config", "seat", "set", "--seat", "sSEATSEAT", "programmatic_wake", "on"))
+                self.assertIs(kw.get("human"), True)
+                self.assertIn("co-t0", recipient.run.facts["queue_seats"])
+
+    def test_no_per_seat_enablement_without_queue_proof_or_for_other_harnesses(self):
+        recipient, calls = self.seat_recipient(False)
+        recipient.enable_queue_wake()
+        self.assertEqual(calls, [])
+        self.assertNotIn("queue_seats", recipient.run.facts)
+        recipient, calls = self.seat_recipient(True, harness="claude")
+        recipient.enable_queue_wake()
+        self.assertEqual(calls, [])
+
+    def test_enablement_runs_after_threshold_report_and_before_queue_bootstrap(self):
+        import inspect
+        source = inspect.getsource(W.Recipient.start)
+        reported = source.index("reported = setup_done(self.threshold)")
+        enable = source.index("self.enable_queue_wake()")
+        bootstrap = source.index("queue_snapshot(self.run.state, self.seat)")
+        self.assertLess(reported, enable)
+        self.assertLess(enable, bootstrap)
 
     def test_unflagged_native_acceptance_keeps_six_second_bound(self):
         for delay, passed in [(5.0, True), (8.0, False)]:
@@ -3799,3 +4128,462 @@ class AutomaticQueueQualification(TempDir):
             result = proof.finish({"expect_wake": True, "t_wake_s": 12.0})
         self.assertTrue(result["passed"])
         self.assertEqual(result["accepted_wake_window_s"], 15.0)
+
+
+class HookTraceHelpers(TempDir):
+    """ht-z41e.30: the silent Codex hook trace (record, written script, hooks.json edit) and its run-level verdict."""
+    EXACT = {"utc_ms", "pane", "event", "session", "source", "transcript_path"}
+
+    def test_record_carries_only_the_six_keys_and_never_the_path(self):
+        base = {"hook_event_name": "SessionStart", "session_id": "s1", "source": "startup",
+                "cwd": "/secret/cwd", "prompt": "do the thing", "tool_input": {"command": "rm"}}
+        for path, mark in ((None, "null"), ("/x/rollout.jsonl", "present")):
+            record = W.hook_trace_record(dict(base, transcript_path=path), "p1", 1234)
+            self.assertEqual(set(record), self.EXACT)
+            self.assertEqual(record["transcript_path"], mark)
+            self.assertEqual((record["utc_ms"], record["pane"], record["event"], record["session"], record["source"]),
+                             (1234, "p1", "SessionStart", "s1", "startup"))
+            self.assertNotIn("rollout", json.dumps(record))
+            self.assertNotIn("secret", json.dumps(record))
+        self.assertEqual(W.hook_trace_record(base, "p1", 1)["transcript_path"], "absent")
+
+    def test_source_only_for_session_start_and_unknown_event_is_clipped(self):
+        stop = W.hook_trace_record({"hook_event_name": "Stop", "session_id": "s", "source": "startup"}, "p", 1)
+        self.assertIsNone(stop["source"])
+        odd = W.hook_trace_record({"hook_event_name": "E" * 200}, "p", 1)
+        self.assertEqual(odd["event"], "E" * 64)
+        self.assertIsNone(odd["session"])
+        self.assertEqual(set(W.hook_trace_record({}, "p", 1)), self.EXACT)
+
+    def test_written_script_matches_the_record_helper_and_stays_silent(self):
+        out = self.tmp / "hook-trace.jsonl"
+        script = self.tmp / "hook-trace"
+        W.write_hook_trace_script(script, out)
+        self.assertTrue(os.access(script, os.X_OK))
+        self.assertEqual(stat.S_IMODE(script.stat().st_mode), 0o755)
+        payloads = [{"hook_event_name": "SessionStart", "session_id": "a", "source": "resume", "transcript_path": None,
+                     "cwd": "/c"},
+                    {"hook_event_name": "PreToolUse", "session_id": "b", "transcript_path": "/p", "tool_input": {"x": 1}},
+                    {"hook_event_name": "Stop", "session_id": "c"}]
+        for payload in payloads:
+            done = subprocess.run([str(script)], input=json.dumps(payload).encode(), capture_output=True,
+                                  env=dict(os.environ, HERDR_PANE_ID="pane-9"))
+            self.assertEqual((done.returncode, done.stdout, done.stderr), (0, b"", b""))
+        done = subprocess.run([str(script)], input=b"{not json", capture_output=True,
+                              env=dict(os.environ, HERDR_PANE_ID="pane-9"))
+        self.assertEqual((done.returncode, done.stdout), (0, b""))
+        rows = [json.loads(line) for line in out.read_text().splitlines()]
+        self.assertEqual(len(rows), 4)
+        for row, payload in zip(rows, payloads):
+            expected = W.hook_trace_record(payload, "pane-9", row["utc_ms"])
+            self.assertEqual(row, expected)
+        self.assertEqual(rows[3]["event"], "unparsable")
+        self.assertEqual({k: v for k, v in rows[3].items() if k not in ("utc_ms", "pane", "event")},
+                         {"session": None, "source": None, "transcript_path": None})
+        self.assertAlmostEqual(rows[0]["utc_ms"], time.time() * 1000, delta=60_000)
+
+    HT = "'/b/herdr-threads' 'hook' 'codex' 'x'"
+    TRACE = "/b/hook-trace"
+
+    def hooks_doc(self):
+        return {"hooks": {
+            "SessionStart": [{"hooks": [{"type": "command", "command": self.HT}]}],
+            "PreToolUse": [{"matcher": "Bash", "hooks": [{"type": "command", "command": self.HT}]},
+                           {"hooks": [{"type": "command", "command": "/usr/bin/other"}]}],
+            "Stop": [{"hooks": [{"type": "command", "command": "/usr/bin/first"},
+                                {"type": "command", "command": self.HT}, {"type": "command", "command": "/usr/bin/last"}]}]}}
+
+    def test_hooks_edit_adds_one_trace_after_each_herdr_threads_entry_and_is_pure_and_idempotent(self):
+        doc = self.hooks_doc()
+        frozen = json.dumps(doc)
+        once = W.add_hook_trace(doc, self.TRACE)
+        self.assertEqual(json.dumps(doc), frozen)  # pure
+        trace = {"type": "command", "command": self.TRACE, "timeout": 5}
+        hooks = once["hooks"]
+        self.assertEqual(hooks["SessionStart"][0]["hooks"], [{"type": "command", "command": self.HT}, trace])
+        self.assertEqual(hooks["PreToolUse"][0]["hooks"], [{"type": "command", "command": self.HT}, trace])
+        self.assertEqual(hooks["PreToolUse"][0]["matcher"], "Bash")
+        self.assertEqual(hooks["PreToolUse"][1], doc["hooks"]["PreToolUse"][1])  # a foreign group is untouched
+        self.assertEqual([h["command"] for h in hooks["Stop"][0]["hooks"]],
+                         ["/usr/bin/first", self.HT, self.TRACE, "/usr/bin/last"])
+        self.assertEqual(W.add_hook_trace(once, self.TRACE), once)  # idempotent
+        self.assertEqual(sum(h["command"] == self.TRACE for g in hooks["Stop"] for h in g["hooks"]), 1)
+
+    def test_root_transcript_verdict_flags_only_root_nulls(self):
+        def rec(event, session, path, source=None):
+            return {"utc_ms": 1, "pane": "p", "event": event, "session": session, "source": source,
+                    "transcript_path": path}
+        ok = [rec("SessionStart", "root", "present", "startup"), rec("Stop", "root", "present"),
+              rec("Stop", "root", "present"), rec("Stop", "side", "null")]
+        verdict = W.root_transcript_verdict(ok, {"root"})
+        self.assertEqual(verdict["events"], [("SessionStart", "startup"), ("Stop", None)])
+        self.assertEqual((verdict["null_events"], verdict["defect"]), ([], False))
+        bad = W.root_transcript_verdict(ok + [rec("Stop", "root", "null")], {"root"})
+        self.assertTrue(bad["defect"])
+        self.assertEqual(bad["null_events"], [("Stop", None)])
+        self.assertFalse(W.root_transcript_verdict([rec("Stop", "side", "null")], {"root"})["defect"])
+
+    def test_report_line_for_both_forms_and_root_sessions(self):
+        clean = {"events": [("SessionStart", "startup"), ("Stop", None)], "null_events": [], "defect": False}
+        line = W.root_transcript_line("co-t0", clean)
+        self.assertIn("co-t0", line)
+        self.assertIn("SessionStart/startup", line)
+        self.assertIn("root null transcript_path: none", line)
+        bad = dict(clean, null_events=[("Stop", None)], defect=True)
+        line = W.root_transcript_line("co-t0", bad)
+        self.assertNotIn("transcript_path: none", line)
+        self.assertIn("root null transcript_path: Stop", line)
+        records = [{"event": "SessionStart", "session": "r", "source": "startup", "pane": "p"},
+                   {"event": "SessionStart", "session": "x", "source": "clear", "pane": "p"},
+                   {"event": "SessionStart", "session": "o", "source": "startup", "pane": "other"}]
+        self.assertEqual(W.root_sessions(records, "p", None), {"r"})
+        self.assertEqual(W.root_sessions(records, "p", "boot"), {"boot"})
+
+    def test_settled_by_root_needs_a_root_event_and_no_side_contact_before_it(self):
+        def ev(session, ms):
+            return {"utc_ms": ms, "session": session, "event": "UserPromptSubmit"}
+        sides = {"s1", "s2"}
+        quiet = {"last_outcome": "submitted"}
+        self.assertTrue(W.settled_by_root(quiet, [ev("root", 1500)], "root", sides, 1000))
+        self.assertTrue(W.settled_by_root(None, [ev("root", 1500)], "root", sides, 1000))
+        self.assertFalse(W.settled_by_root({"last_outcome": "unreceived"}, [ev("root", 1500)], "root", sides, 1000))
+        self.assertFalse(W.settled_by_root(quiet, [ev("s1", 1200)], "root", sides, 1000))  # side-only contact
+        self.assertFalse(W.settled_by_root(quiet, [ev("s1", 1200), ev("root", 1500)], "root", sides, 1000))
+        self.assertTrue(W.settled_by_root(quiet, [ev("s1", 900), ev("root", 1500)], "root", sides, 1000))
+        self.assertFalse(W.settled_by_root(quiet, [ev("root", 900)], "root", sides, 1000))  # before the send
+        self.assertFalse(W.settled_by_root(quiet, [], "root", sides, 1000))
+        # A busy side's own events between the send and the root's turn are not contact (side-queue-focused).
+        busy = [ev("s1", 1200), ev("root", 1500)]
+        self.assertTrue(W.settled_by_root(quiet, busy, "root", sides, 1000, busy_side=True))
+        self.assertFalse(W.settled_by_root(quiet, [ev("s1", 1200)], "root", sides, 1000, busy_side=True))
+        self.assertFalse(W.settled_by_root({"last_outcome": "unreceived"}, busy, "root", sides, 1000, busy_side=True))
+
+    def test_side_queue_passed_needs_side_auxiliary_root_zero_and_root_settlement(self):
+        proof = {"passed": True}
+        run = lambda **kw: W.side_queue_passed(True, proof, True, False, False, **dict(ROOT_OK, **kw))
+        self.assertTrue(run())
+        self.assertFalse(run(side_bits={"s": {"auxiliary": 0, "concurrent": 1}}))
+        self.assertFalse(run(side_bits={"s": {"auxiliary": None, "concurrent": 1}}))
+        self.assertFalse(run(side_bits={"a": {"auxiliary": 1, "concurrent": 1}, "b": {"auxiliary": 0, "concurrent": 1}}))
+        self.assertFalse(run(side_bits={}))
+        self.assertFalse(run(root_bits={"auxiliary": 0, "concurrent": 1}))
+        self.assertFalse(run(root_bits={"auxiliary": 1, "concurrent": 0}))
+        self.assertFalse(run(root_bits={"auxiliary": None, "concurrent": 0}))
+        self.assertFalse(run(settled_by_root=False))
+
+    def test_bindings_read_both_bits_and_project_none_for_an_absent_column(self):
+        for columns, expected in (("concurrent_session, auxiliary_session", {"concurrent": 1, "auxiliary": 0}),
+                                  ("concurrent_session", {"concurrent": 1, "auxiliary": None}),
+                                  ("", {"concurrent": None, "auxiliary": None})):
+            with self.subTest(columns=columns):
+                state = self.tmp / ("state-" + str(len(columns)))
+                (state / "node").mkdir(parents=True)
+                db = sqlite3.connect(state / "node" / "herdr-threads.db")
+                db.execute("CREATE TABLE occupant_bindings (seat_id, role, ended_at, ordinal, native_session, "
+                           "observation_provenance, liveness, liveness_pid, disconnect_reason"
+                           + (", " + ", ".join(c + " INTEGER" for c in columns.split(", ")) if columns else "") + ")")
+                names = ["seat_id", "role", "ended_at", "ordinal", "native_session", "observation_provenance",
+                         "liveness", "liveness_pid", "disconnect_reason"]
+                values = ["seatX", "top_level", None, 1, "sess", "cooperative_top_level", "connected", 7, None]
+                for column, value in (("concurrent_session", 1), ("auxiliary_session", 0)):
+                    if column in columns:
+                        names.append(column)
+                        values.append(value)
+                db.execute(f"INSERT INTO occupant_bindings ({','.join(names)}) VALUES ({','.join('?' * len(values))})",
+                           values)
+                db.commit()
+                db.close()
+                recipient = W.Recipient(SimpleNamespace(state=state), "co", "codex", 0, "pane", "seatX")
+                (row,) = recipient.bindings()
+                self.assertEqual({k: row[k] for k in ("concurrent", "auxiliary")}, expected)
+                self.assertEqual((row["session"], row["pid"]), ("sess", 7))
+
+
+class ConfigProseAndFlagFlip(unittest.TestCase):
+    LIST = ["config", "seat", "list"]
+    HUMAN_SET = ["human", "config", "seat", "set", "--seat", "sSEAT", "programmatic_wake", "on"]
+
+    def test_config_prose_needs_list_then_a_human_set_of_programmatic_wake_on_and_the_value(self):
+        verdict = W.config_prose_verdict
+        self.assertEqual(verdict([self.LIST, self.HUMAN_SET], "on"), {"passed": True, "reason": None})
+        self.assertEqual(verdict([["human", "config", "seat", "list"], self.HUMAN_SET], "on")["passed"], True)
+        self.assertEqual(verdict([self.HUMAN_SET], "on")["reason"], "no_list")
+        self.assertEqual(verdict([self.HUMAN_SET, self.LIST], "on")["reason"], "no_list")
+        self.assertEqual(verdict([self.LIST, ["config", "seat", "set", "programmatic_wake", "on"]], "on")["reason"],
+                         "no_human_set")
+        self.assertEqual(verdict([self.LIST, ["human", "config", "seat", "set", "--seat", "s", "nudge_threshold", "0"]],
+                                 "on")["reason"], "no_human_set")
+        self.assertEqual(verdict([self.LIST, self.HUMAN_SET[:-1] + ["off"]], "off")["passed"], False)
+        self.assertEqual(verdict([self.LIST, self.HUMAN_SET], "off")["reason"], "not_on")
+        self.assertEqual(verdict([self.LIST, self.HUMAN_SET], None)["reason"], "not_on")
+
+    def test_flag_flip_verdict(self):
+        stale_ok = {"passed": True, "reasons": []}
+        stale_bad = {"passed": False, "reasons": ["possible_effect_during_measured_interval"]}
+        miss = {"window_missed": "armed"}
+        win = {"flipped": True, "stale": stale_ok, "delivered": True}
+        self.assertTrue(W.flag_flip_verdict([miss, {"window_missed": "no_intent"}, win])["passed"])
+        three = W.flag_flip_verdict([miss, miss, {"window_missed": "accepted"}])
+        self.assertEqual((three["passed"], three["reason"]), (False, "flip_window_missed"))
+        failed = W.flag_flip_verdict([miss, {"flipped": True, "stale": stale_bad, "delivered": True}])
+        self.assertEqual((failed["passed"], failed["reason"]), (False, "stale_authority_native_failed"))
+        self.assertEqual(failed["detail"], ["possible_effect_during_measured_interval"])
+        undelivered = W.flag_flip_verdict([{"flipped": True, "stale": stale_ok, "delivered": False}])
+        self.assertEqual(undelivered["reason"], "not_delivered")
+        self.assertEqual(W.flag_flip_verdict([])["reason"], "no_trials")
+
+    def test_flag_flip_verdict_accepts_a_never_armed_native_delivery_and_fails_an_arm_after_the_flip(self):
+        """ht-z41e.54: a flipped trial whose intent never armed and whose item was delivered passes without a correlated
+        stale refusal; an intent that armed/accepted after the flip (queue_proof 'none' failed: never_armed False, stale
+        failed) fails; a never-armed trial that delivered nothing fails."""
+        stale_bad = {"passed": False, "reasons": ["no_correlated_stale_authority_refusal_with_native_wake"]}
+        armed = {"passed": False, "reasons": ["possible_effect_during_measured_interval"]}
+        ok = W.flag_flip_verdict([{"flipped": True, "stale": stale_bad, "never_armed": True, "delivered": True}])
+        self.assertEqual((ok["passed"], ok["reason"]), (True, None))
+        late = W.flag_flip_verdict([{"flipped": True, "stale": armed, "never_armed": False, "delivered": True}])
+        self.assertEqual((late["passed"], late["reason"]), (False, "stale_authority_native_failed"))
+        self.assertEqual(late["detail"], ["possible_effect_during_measured_interval"])
+        dark = W.flag_flip_verdict([{"flipped": True, "stale": stale_bad, "never_armed": True, "delivered": False}])
+        self.assertEqual((dark["passed"], dark["reason"]), (False, "not_delivered"))
+
+    def test_flip_acts_only_on_the_prepared_phase(self):
+        self.assertEqual([W.flag_flip_action(p) for p in ("prepared", "armed", "accepted", "no_effect", None)],
+                         ["flip", "miss", "miss", "miss", "miss"])
+
+    def test_approval_bypass_names_the_codex_flag_in_use(self):
+        self.assertEqual(W.approval_bypass("--approve-for-me"), "--approve-for-me")
+        self.assertEqual(W.approval_bypass("--foo --dangerously-bypass-approvals-and-sandbox"),
+                         "--dangerously-bypass-approvals-and-sandbox")
+        self.assertEqual(W.approval_bypass("--other"), "--other")
+
+    def test_new_cases_are_opt_in_hooked_codex_t0_and_mode_gated(self):
+        self.assertEqual(W.CONFIG_PROSE_CASES, ("config-prose/group",))
+        self.assertEqual(W.FLAG_FLIP_CASES, ("flag-flip/group",))
+        for case in W.CONFIG_PROSE_CASES + W.FLAG_FLIP_CASES:
+            self.assertNotIn(case, W.CASES)
+            for harness, threshold, plain, expected in (("codex", 0, False, True), ("codex", 0, True, False),
+                                                        ("codex", -1, False, False), ("claude", 0, False, False)):
+                r = SimpleNamespace(harness=harness, threshold=threshold, plain=plain)
+                self.assertEqual(W.applies(r, case), expected, (case, harness, threshold, plain))
+        for argv in (["--harness", "codex", "--queue-proof", "--cases", "config-prose/group"],
+                     ["--harness", "codex", "--cases", "flag-flip/group"]):
+            with self.assertRaises(SystemExit) as refused:
+                parsed_args(argv)
+            self.assertEqual(refused.exception.code, 2)
+        self.assertFalse(parsed_args(["--harness", "codex", "--cases", "config-prose/group"]).queue_proof)
+        self.assertTrue(parsed_args(["--harness", "codex", "--queue-proof", "--cases", "flag-flip/group"]).queue_proof)
+
+
+FOCUS_SETUP = {"focused": True, "side_busy": True, "agent_status": "working", "side_setup_ok": True}
+FOCUS_PROOF = {"passed": True}
+
+
+def intent(ordinal, attempt, phase, logical="active", fulfillment=None):
+    return {"ordinal": ordinal, "attempt": attempt, "phase": phase, "logical_status": logical,
+            "fulfillment": fulfillment}
+
+
+def sample(end_ms, intents=(), root_phase="ended", root="root", work=None):
+    return {"observation_end_ms": end_ms, "intents": list(intents), "wake_work": work,
+            "native": [{"scope": {"native_session": root}, "phase": root_phase, "turn_id": "t", "ordinal": 1}]}
+
+
+class FocusedSideQueueAndRootDraft(unittest.TestCase):
+    """ht-z41e.43: side-queue-focused (private Herdr only) and root-draft-queue, their verdicts and guards."""
+
+    def test_wake_e2e_herdr_command_carries_the_private_marker(self):
+        from importlib.machinery import SourceFileLoader
+        loader = SourceFileLoader("wake_e2e_herdr_cmd", str(Path(W.REPO) / "scripts" / "wake-e2e-herdr"))
+        spec = importlib.util.spec_from_loader(loader.name, loader)
+        H = importlib.util.module_from_spec(spec)
+        loader.exec_module(H)
+        command = H.driver_command(Path("/tmp/hwe.x"), Path("/tmp/hwe.x/handoff.env"), Path("/tmp/hwe.x/log"),
+                                   Path("/tmp/hwe.x/rc"), ["--cases", "a b/group", "--queue-proof"])
+        self.assertIn("HT_WAKE_E2E_PRIVATE_HERDR=1 python3 scripts/wake-e2e.py", command)
+        self.assertIn("--cases 'a b/group' --queue-proof", command)
+        self.assertIn("PATH=/tmp/hwe.x/bin:", command)
+        self.assertEqual(W.PRIVATE_HERDR_ENV, "HT_WAKE_E2E_PRIVATE_HERDR")
+
+    def test_focused_side_queue_needs_queue_proof_private_herdr_and_runs_alone(self):
+        private = {"HT_WAKE_E2E_PRIVATE_HERDR": "1", "HERDR_SOCKET_PATH": "/tmp/h.sock"}
+        base = ["--harness", "codex", "--queue-proof"]
+        focused = "side-queue-focused/group"
+        with mock.patch.dict(os.environ, private):
+            with self.assertRaises(SystemExit) as refused:
+                parsed_args(["--harness", "codex", "--cases", focused])  # no --queue-proof
+            self.assertEqual(refused.exception.code, 2)
+            with self.assertRaises(SystemExit) as refused:
+                parsed_args(base + ["--cases", focused + ",side-queue/group"])  # not alone
+            self.assertEqual(refused.exception.code, 2)
+            args = parsed_args(base + ["--cases", focused + ",root-draft-queue/group"])
+            self.assertTrue(args.queue_proof)
+            self.assertTrue(parsed_args(base + ["--cases", focused]).queue_proof)
+        for env in ({"HERDR_SOCKET_PATH": "/tmp/h.sock"}, {"HT_WAKE_E2E_PRIVATE_HERDR": "1"},
+                    dict(private, HT_WAKE_E2E_PRIVATE_HERDR="0")):
+            with mock.patch.dict(os.environ, env):
+                for name in set(private) - set(env) | ({"HT_WAKE_E2E_PRIVATE_HERDR"} if env.get(
+                        "HT_WAKE_E2E_PRIVATE_HERDR") == "0" else set()):
+                    if name not in env:
+                        os.environ.pop(name, None)
+                with self.assertRaises(SystemExit) as refused:
+                    parsed_args(base + ["--cases", focused])
+                self.assertEqual(refused.exception.code, 2, env)
+        # side-queue itself is unchanged: no private Herdr needed
+        with mock.patch.dict(os.environ, {}, clear=False):
+            os.environ.pop("HT_WAKE_E2E_PRIVATE_HERDR", None)
+            self.assertTrue(parsed_args(base + ["--cases", "side-queue/group"]).queue_proof)
+
+    def test_root_draft_queue_needs_queue_proof(self):
+        with self.assertRaises(SystemExit) as refused:
+            parsed_args(["--harness", "codex", "--cases", "root-draft-queue/group"])
+        self.assertEqual(refused.exception.code, 2)
+        self.assertTrue(parsed_args(["--harness", "codex", "--queue-proof",
+                                     "--cases", "root-draft-queue/group"]).queue_proof)
+
+    def test_both_cases_are_opt_in_and_pick_only_the_hooked_codex_t0_recipient(self):
+        self.assertEqual(W.ROOT_DRAFT_CASES, ("root-draft-queue/group",))
+        self.assertIn("side-queue-focused/group", W.SIDE_QUEUE_CASES)
+        for case in ("side-queue-focused/group", "root-draft-queue/group"):
+            self.assertNotIn(case, W.CASES)
+            for harness, threshold, plain, expected in (("codex", 0, False, True), ("codex", 0, True, False),
+                                                        ("codex", -1, False, False), ("codex", 3, False, False),
+                                                        ("claude", 0, False, False)):
+                r = SimpleNamespace(harness=harness, threshold=threshold, plain=plain)
+                self.assertEqual(W.applies(r, case), expected, (case, harness, threshold, plain))
+
+    def test_side_queue_focused_verdict_needs_every_part(self):
+        def run(setup=None, proof=FOCUS_PROOF, armed_s=3.0, first=True, delivered=True, typed=False, busy=False,
+                **kw):
+            return W.side_queue_focused_passed(dict(FOCUS_SETUP, **(setup or {})), proof, armed_s, first, delivered,
+                                               typed, busy, **dict(ROOT_OK, **kw))
+        self.assertTrue(run())
+        for name, kwargs in (("unfocused", dict(setup={"focused": False})),
+                             ("side not busy", dict(setup={"side_busy": False})),
+                             ("status idle", dict(setup={"agent_status": "idle"})),
+                             ("status blocked", dict(setup={"agent_status": "blocked"})),
+                             ("side setup", dict(setup={"side_setup_ok": False})),
+                             ("proof failed", dict(proof={"passed": False})), ("no proof", dict(proof=None)),
+                             ("dwell", dict(armed_s=61)), ("exactly the dwell", dict(armed_s=60)),
+                             ("never armed", dict(armed_s=None)), ("not first attempt", dict(first=False)),
+                             ("not delivered", dict(delivered=False)), ("typed into side", dict(typed=True)),
+                             ("root busy", dict(busy=True)), ("not settled by root", dict(settled_by_root=False)),
+                             ("side bits", dict(side_bits={"s": {"auxiliary": 0, "concurrent": 1}})),
+                             ("root bits", dict(root_bits={"auxiliary": 0, "concurrent": 1}))):
+            self.assertFalse(run(**kwargs), name)
+        self.assertTrue(run(armed_s=59.9))
+        self.assertFalse(W.side_queue_focused_passed(None, FOCUS_PROOF, 3, True, True, False, False, **ROOT_OK))
+
+    def test_root_draft_queue_verdict_needs_every_part(self):
+        ok = {"draft_typed": True, "no_wake_while_draft": True, "draft_intact": True, "draft_submitted": False,
+              "queue_after_clear": True, "delivered": True}
+        self.assertTrue(W.root_draft_queue_passed(ok))
+        for key, bad in (("draft_typed", False), ("no_wake_while_draft", False), ("draft_intact", False),
+                         ("draft_submitted", True), ("queue_after_clear", False), ("delivered", False)):
+            self.assertFalse(W.root_draft_queue_passed(dict(ok, **{key: bad})), key)
+        self.assertFalse(W.root_draft_queue_passed({}))
+
+    def test_release_blocking_names_each_defect(self):
+        self.assertEqual(W.release_blocking({}), [])
+        self.assertEqual(W.release_blocking({"draft_intact": True, "draft_submitted": False,
+                                             "root_busy_at_arm": False}), [])
+        self.assertEqual(W.release_blocking({"draft_intact": False}), ["root_draft_lost"])
+        self.assertEqual(W.release_blocking({"draft_submitted": True}), ["root_draft_submitted"])
+        self.assertEqual(W.release_blocking({"root_busy_at_arm": True}), ["queue_into_busy_root"])
+        self.assertEqual(W.release_blocking({"draft_intact": False, "draft_submitted": True, "root_busy_at_arm": True}),
+                         ["root_draft_lost", "root_draft_submitted", "queue_into_busy_root"])
+        self.assertEqual(W.release_blocking(None), [])  # a row without checks (a driver error) has none
+
+    def test_composer_holds_only_the_exact_draft(self):
+        screen = "› root-draft-kept-by-wake-e2e\n  gpt 100% left\n"
+        self.assertTrue(W.composer_holds(screen, W.ROOT_DRAFT))
+        self.assertFalse(W.composer_holds(screen.replace("kept", "lost"), W.ROOT_DRAFT))
+        self.assertFalse(W.composer_holds("› " + W.ROOT_DRAFT + " herdr-threads: wake up\n", W.ROOT_DRAFT))
+        self.assertFalse(W.composer_holds("› Ask a follow-up question\n", W.ROOT_DRAFT))
+
+    def test_root_draft_intact_counts_new_wake_markers_not_the_transcript_history(self):
+        history = "\u2022 earlier\n\u203a herdr-threads: wake up\n"
+        before = history + "\u203a " + W.ROOT_DRAFT + "\n"
+        self.assertTrue(W.root_draft_intact(before, before))  # an old wake line in the transcript is not a defect
+        self.assertFalse(W.root_draft_intact(before, before + "\u203a herdr-threads: wake up\n"))  # a new one is
+        self.assertFalse(W.root_draft_intact(before, history + "\u203a \n"))  # the draft is gone
+        self.assertFalse(W.root_draft_intact(before, history + "\u203a " + W.ROOT_DRAFT + " herdr-threads: wake up\n"))
+
+    def test_arm_time_reads_the_first_armed_or_later_sample(self):
+        self.assertIsNone(W.queue_arm_s([]))
+        self.assertIsNone(W.queue_arm_s([sample(500, [intent(1, "a", "prepared")]),
+                                         sample(900, [intent(1, "a", "no_effect")])]))
+        self.assertEqual(W.queue_arm_s([sample(500, [intent(1, "a", "prepared")]),
+                                        sample(1500, [intent(1, "a", "armed")]),
+                                        sample(2500, [intent(1, "a", "accepted")])]), 1.5)
+        self.assertEqual(W.queue_arm_s([sample(700, [intent(1, "a", "accepted")])]), 0.7)
+
+    def test_first_attempt_must_be_the_accepted_one_with_no_earlier_refusal(self):
+        proof = {"attempts": [{"attempt": "b"}]}
+        accepted_first = [sample(500, [intent(1, "b", "prepared")]), sample(900, [intent(1, "b", "accepted")])]
+        self.assertTrue(W.first_attempt_accepted(accepted_first, proof))
+        self.assertFalse(W.first_attempt_accepted(accepted_first, {"attempts": []}))
+        self.assertFalse(W.first_attempt_accepted([], proof))
+        # an earlier NoEffect intent (a dwell or refusal) before the Accepted one
+        retried = [sample(500, [intent(1, "a", "no_effect")]),
+                   sample(31000, [intent(1, "a", "no_effect"), intent(2, "b", "accepted")])]
+        self.assertFalse(W.first_attempt_accepted(retried, proof))
+        # a refused wake_work outcome after the send, before the arm
+        refused = {"last_outcome": "unsafe", "completed_at_utc": 1500}
+        early = [sample(400, [], work=refused), sample(900, [intent(1, "b", "accepted")])]
+        self.assertFalse(W.first_attempt_accepted(early, proof, 1000))
+        self.assertTrue(W.first_attempt_accepted(early, proof, 2000))  # refused before the send
+
+    def test_root_busy_counts_a_not_ended_root_before_the_queue_wakes_it(self):
+        idle = [sample(100, [intent(1, "b", "prepared")]), sample(300, [intent(1, "b", "armed")])]
+        self.assertFalse(W.root_busy_before_arm(idle, "root"))
+        busy = [sample(100, [intent(1, "b", "prepared")], root_phase="started"),
+                sample(300, [intent(1, "b", "armed")], root_phase="started")]
+        self.assertTrue(W.root_busy_before_arm(busy, "root"))
+        # the queue wake's own turn (fulfilled) is not a busy root at arm
+        woken = idle + [sample(900, [intent(1, "b", "accepted", "fulfilled", {"turn_id": "t2", "ordinal": 2})],
+                               root_phase="started")]
+        self.assertFalse(W.root_busy_before_arm(woken, "root"))
+        # a side session's started turn is not the root's
+        side = [dict(sample(100, [intent(1, "b", "armed")]),
+                     native=[{"scope": {"native_session": "side"}, "phase": "started"},
+                             {"scope": {"native_session": "root"}, "phase": "ended"}])]
+        self.assertFalse(W.root_busy_before_arm(side, "root"))
+
+    def test_intents_took_effect_only_for_armed_accepted_unknown_or_fulfilled(self):
+        self.assertFalse(W.intents_took_effect([sample(1, [intent(1, "a", "prepared"), intent(2, "a", "no_effect")])]))
+        for phase in ("armed", "accepted", "unknown"):
+            self.assertTrue(W.intents_took_effect([sample(1, [intent(1, "a", phase)])]), phase)
+        self.assertTrue(W.intents_took_effect([sample(1, [intent(1, "a", "no_effect", "fulfilled")])]))
+
+    def test_report_lists_release_blocking_defects(self):
+        rows = [{"recipient": "co-t0", "case": "root-draft-queue/group", "result": "FAIL",
+                 "checks": {"release_blocking": ["root_draft_lost", "root_draft_submitted"]}},
+                {"recipient": "co-t0", "case": "side-queue-focused/group", "result": "PASS", "checks": {}},
+                {"recipient": "cl-t0", "case": "send-p0/group", "result": "PASS"},
+                {"recipient": "co-t3", "case": "side-queue-focused/group", "result": "FAIL",
+                 "checks": {"release_blocking": ["queue_into_busy_root"]}}]
+        self.assertEqual(W.release_blocking_line(rows),
+                         "release-blocking defects: co-t0 root-draft-queue/group: root_draft_lost, root_draft_submitted; "
+                         "co-t3 side-queue-focused/group: queue_into_busy_root")
+        self.assertEqual(W.release_blocking_line(rows[1:3]), "")
+        with tempfile.TemporaryDirectory() as tmp:
+            ev = Path(tmp)
+            run = SimpleNamespace(results=rows, recipients=[], auth_digest=None, ev=ev, lock=threading.Lock(),
+                                  run_id="r", cleanup_report={"ok": True}, table="t")
+            W.write_evidence(run, 1)
+            report = (ev / "report.md").read_text()
+            self.assertIn("release-blocking defects: co-t0 root-draft-queue/group", report)
+            self.assertLess(report.index("release-blocking defects"), report.index("cleanup:"))
+            self.assertIn("release_blocking_defects", json.loads((ev / "results.json").read_text())["facts"])
+            run.results = rows[1:3]
+            W.write_evidence(run, 0)
+            self.assertNotIn("release-blocking defects", (ev / "report.md").read_text())
+
+    def test_a_row_with_a_release_blocking_entry_is_recorded_as_fail(self):
+        run = SimpleNamespace(results=[], recipients=[], lock=threading.Lock(), secrets=())
+        W.Run.record(run, {"case": "root-draft-queue/group", "harness": "codex", "threshold": 0, "recipient": "co-t0",
+                           "result": "PASS", "checks": {"release_blocking": ["root_draft_lost"]}})
+        self.assertEqual(run.results[0]["result"], "FAIL")
+        W.Run.record(run, {"case": "root-draft-queue/group", "harness": "codex", "threshold": 0, "recipient": "co-t0",
+                           "result": "PASS", "checks": {"release_blocking": []}})
+        self.assertEqual(run.results[1]["result"], "PASS")

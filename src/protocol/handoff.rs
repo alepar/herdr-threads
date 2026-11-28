@@ -1175,6 +1175,7 @@ pub(crate) mod topology_contract_tests {
     use super::*;
     pub(crate) fn claim() -> CallerClaim {
         CallerClaim {
+            auxiliary_session: false,
             host: crate::protocol::ids::HostLocator::parse("/host.sock").unwrap(),
             instance: "34750f98bd59fcfc946da45aaabe933b".into(),
             seat: SeatId::new("sender"),

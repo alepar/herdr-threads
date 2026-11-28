@@ -1,0 +1,12 @@
+diff --git a/tests/integration/summary_flow.rs b/tests/integration/summary_flow.rs
+index c4b37ea06..046679d12 100644
+--- a/tests/integration/summary_flow.rs
++++ b/tests/integration/summary_flow.rs
+@@ -432,6 +432,7 @@ impl World {
+             )
+             .expect("the seat's lifecycle check-in opened its binding");
+         herdr_threads::protocol::authority::CallerClaim {
++            auxiliary_session: false,
+             host,
+             instance: instance.to_string(),
+             seat: SeatId::new(seat),

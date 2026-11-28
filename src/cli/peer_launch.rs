@@ -1478,6 +1478,7 @@ mod tests {
             ids::{ExecutionId, HostLocator, HostTargetId, NativeSessionId, SeatId},
         };
         CallerClaim {
+            auxiliary_session: false,
             instance: "i".into(),
             host: HostLocator::parse("/claim.sock").unwrap(),
             seat: SeatId::new(seat),

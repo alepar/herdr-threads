@@ -16,6 +16,9 @@ pub const BOOTSTRAP_GUARDED_RESOLUTION_V1: &str = "handoff.bootstrap_guarded_res
 pub const HANDOFF_ATOMIC_REMOTE_V1: &str = "handoff.atomic_remote_v1";
 /// `Command::PeerHandoffStage`: the target's one-transaction staging of a handoff request.
 pub const PEER_HANDOFF_STAGE_V1: &str = "handoff.peer_stage_v1";
+/// `Command::GetSeatConfig`, `Command::SetSeatConfig` and `Command::UnsetSeatConfig`: the closed
+/// per-seat config registry (ht-z41e). A client probes it before sending any of the three.
+pub const SEAT_CONFIG_V1: &str = "seat.config_v1";
 
 pub const PICKER_DIRECTORY_V1: &str = "picker.directory_v1";
 
@@ -101,6 +104,10 @@ pub const SEAT_READONLY_V1: &str = "seat.readonly_v1";
 /// `continuity_key` on `ContinuityCheckIn`, `ResolveSeat` and `CheckIn` (spec 4.2). A CLI sends it
 /// only to a daemon that advertises this.
 pub const SEAT_CONTINUITY_KEY_V1: &str = "seat.continuity_key_v1";
+/// `CallerClaim.auxiliary_session` (ht-z41e.21): hook evidence that the session is auxiliary,
+/// stored as a sticky bit on its binding. A hook sends the field only to a daemon that advertises
+/// this; `CallerClaim` is `deny_unknown_fields`, so an older daemon never sees it.
+pub const SEAT_AUXILIARY_SESSION_V1: &str = "seat.auxiliary_session_v1";
 pub const MESSAGE_DELIVERY_MODES: &str = "messages.delivery_modes_v1";
 /// Lazy rows in the attention digest (`AttentionDigestQuery.lazy`) and
 /// `CompleteInboxDelivery.via = hook_context` (standard hook inbox pages).
@@ -233,6 +240,7 @@ pub const ADVERTISED: &[&str] = &[
     SEAT_WAKE_ON_V1,
     SEAT_READONLY_V1,
     SEAT_CONTINUITY_KEY_V1,
+    SEAT_AUXILIARY_SESSION_V1,
     DELIVERY_PULL,
     LAZY_HOOK_DELIVERY,
     HOOK_CONTEXT_RECEIPTS_V1,
@@ -262,6 +270,7 @@ pub const ADVERTISED: &[&str] = &[
     LAUNCH_GATE_V1,
     LOCAL_LAUNCH_GATE_V1,
     PEER_HANDOFF_STAGE_V1,
+    SEAT_CONFIG_V1,
 ];
 
 /// The capability set a daemon advertised to this client session. The empty set

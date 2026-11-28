@@ -1,0 +1,40 @@
+› You are a test recipient in an automated herdr-threads wake e2e run (the us… │
+  └ Administrative recovery uses immediate argv1 `human`, with exact reported …│ This will remove it from Side chats.
+                                                                               │ Archive “Run side-queue inbox ch…”?
+    Quiet channels can archive automatically after an uninterrupted hour of ve…│
+    + 216 lines (^t to expand)                                                 │  Cancel    Archive
+                                                                               │
+• Exited (status 2) herdr-threads nudge-threshold 0                            │ ←/→ choose · Enter confirm …
+  └ herdr-threads: no resolved seat is mapped to pane w2:p3; run `herdr-thread…│
+    + 1 line (^t to expand)                                                    │
+                                                                               │
+• Ran herdr-threads --state-dir /tmp/ht-wake-e2e.99g000u8/state --host-endpoin…│
+  └ nudge_threshold: 0 (unchanged)                                             │
+    + Show details                                                             │
+                                                                               │
+• SETUP-DONE nudge_threshold=0                                                 │
+                                                                               │
+  Worked for 11s • 11:19                                                       │
+                                                                               │
+                                                                               │
+› herdr-threads: wake up                                                       │
+                                                                               │
+                                                                               │
+• I’ll accept the test invitation.                                             │
+                                                                               │
+• Ran herdr-threads --state-dir /tmp/ht-wake-e2e.99g000u8/state accept tWhHLjk…│
+  └ accepted                                                                   │
+    value: "iWhHXFlWPN0t"                                                      │
+    + Show details                                                             │
+                                                                               │
+• Accepted.                                                                    │
+                                                                               │
+  Worked for 4s • 11:19                                                        │
+                                                                               │
+                                                                               │
+›                                                                              │
+                                                                               │
+  GPT-6.2-Sol default · ~/AleCode/herdr-threads/.worktrees/super-auto-per-seat-│
+  config-side-wake/.worktrees/super-auto-per-seat-config-side-wake--task-ht-   │
+  z41e.43 · Accept test invitations                                            │
+                                                                               │

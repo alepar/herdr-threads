@@ -1,0 +1,12 @@
+diff --git a/tests/store/mod_ack.rs b/tests/store/mod_ack.rs
+index ed9d03e57..52873d488 100644
+--- a/tests/store/mod_ack.rs
++++ b/tests/store/mod_ack.rs
+@@ -121,6 +121,7 @@ fn setup() -> (StoreContext, Connection, Arc<TestClock>) {
+ 
+ fn claim() -> CallerClaim {
+     CallerClaim {
++        auxiliary_session: false,
+         host: crate::test_support::test_host_locator(),
+         instance: "34750f98bd59fcfc946da45aaabe933b".into(),
+         seat: SeatId::new("b"),

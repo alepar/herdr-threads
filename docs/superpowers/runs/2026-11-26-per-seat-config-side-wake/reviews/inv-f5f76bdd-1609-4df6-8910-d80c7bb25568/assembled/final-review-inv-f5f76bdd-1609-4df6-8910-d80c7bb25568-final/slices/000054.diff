@@ -1,0 +1,17 @@
+diff --git a/evidence/ht-z41e.3/checks.log b/evidence/ht-z41e.3/checks.log
+new file mode 100644
+index 000000000..3b8d92da2
+--- /dev/null
++++ b/evidence/ht-z41e.3/checks.log
+@@ -0,0 +1,11 @@
++== scripts/check-harness-neutral
++heavy: slot 1 acquired 01:31:48
++check-harness-neutral: ok — 0 violations, 90 allowlisted (to-migrate 0, frozen-wire 49, history 0, registration 41), 55 entries
++rc=0
++== scripts/check-wire-compat
++heavy: slot 1 acquired 01:31:52
++check-wire-compat: ok — 0 violations, 0 stale, 459 fields, 24 variants, 277 baseline entries
++rc=0
++== scripts/check-default-features
++heavy: slot 1 acquired 01:31:54
++rc=0

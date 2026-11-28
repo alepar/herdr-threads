@@ -1,0 +1,93 @@
+diff --git a/tests/store/schema.rs b/tests/store/schema.rs
+index 44e0da53b..35a82a427 100644
+--- a/tests/store/schema.rs
++++ b/tests/store/schema.rs
+@@ -7659,6 +7659,88 @@ fn delta_0013_columns_indexes_tables() {
+     );
+ }
+ 
++#[test]
++fn migration_0020_seat_config_shape() {
++    // Fresh and upgraded stores both land on the same DDL.
++    let upgraded = Connection::open_in_memory().unwrap();
++    open_with(&upgraded, &[]).unwrap();
++    open_with(&upgraded, schema::NODE_DELTAS).unwrap();
++    for db in [fresh_db(), upgraded] {
++        assert!(table_exists(&db, "seat_config"));
++        let cols: Vec<(String, String, i64, i64)> = db
++            .prepare("SELECT name,type,\"notnull\",pk FROM pragma_table_info('seat_config') ORDER BY cid")
++            .unwrap()
++            .query_map([], |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?, r.get(3)?)))
++            .unwrap()
++            .map(Result::unwrap)
++            .collect();
++        let col = |n: &str, t: &str, nn: i64, pk: i64| (n.to_owned(), t.to_owned(), nn, pk);
++        assert_eq!(
++            cols,
++            vec![
++                col("seat_id", "TEXT", 1, 1),
++                col("key", "TEXT", 1, 2),
++                col("value", "TEXT", 0, 0),
++                col("updated_at", "INTEGER", 1, 0),
++                col("writer_provenance", "TEXT", 1, 0),
++                col("writer_binding", "TEXT", 0, 0),
++            ]
++        );
++    }
++}
++
++#[test]
++fn migration_0021_wake_intents_side_sessions_is_a_nullable_text_column() {
++    let upgraded = Connection::open_in_memory().unwrap();
++    open_with(&upgraded, &[]).unwrap();
++    open_with(&upgraded, schema::NODE_DELTAS).unwrap();
++    for db in [fresh_db(), upgraded] {
++        let column: (String, i64) = db
++            .query_row(
++                "SELECT type,\"notnull\" FROM pragma_table_info('wake_intents') WHERE name='side_sessions'",
++                [],
++                |r| Ok((r.get(0)?, r.get(1)?)),
++            )
++            .unwrap();
++        assert_eq!(column, ("TEXT".to_owned(), 0));
++    }
++}
++
++#[test]
++fn migration_0022_binding_auxiliary_session_defaults_to_zero_and_upgrades_existing_rows() {
++    let db = Connection::open_in_memory().unwrap();
++    let old = &schema::NODE_DELTAS[..21];
++    open_with(&db, old).unwrap();
++    crate::test_support::attach_test_host_to_connection(&db);
++    db.execute_batch("INSERT INTO seats(id,instance_id,state,role,generation,created_at,home_node,is_local,host_id)
++        VALUES ('s','34750f98bd59fcfc946da45aaabe933b','resolved','native',4,0,(SELECT id FROM local_node),1,(SELECT min(host_id) FROM herdr_hosts));
++        INSERT INTO occupant_bindings(seat_id,generation,target_generation,target_id,host_boot,host_epoch,harness,native_session,execution_id,observation_provenance,observed_at,registered_at,concurrent_session)
++        VALUES ('s',4,1,'p','b',1,'codex','existing-fork','existing-execution','cooperative_top_level',5,5,1);").unwrap();
++    open_with(&db, schema::NODE_DELTAS).unwrap();
++    let existing: (bool, bool) = db
++        .query_row(
++            "SELECT concurrent_session,auxiliary_session FROM occupant_bindings",
++            [],
++            |r| Ok((r.get(0)?, r.get(1)?)),
++        )
++        .unwrap();
++    // The upgrade never marks an existing row, whatever its concurrent bit.
++    assert_eq!(existing, (true, false));
++    // Only 0 and 1 are stored; the upgraded database has a row to refuse.
++    db.execute("UPDATE occupant_bindings SET auxiliary_session=2", [])
++        .unwrap_err();
++    for db in [fresh_db(), db] {
++        let column: (String, i64, Option<String>) = db
++            .query_row(
++                "SELECT type,\"notnull\",dflt_value FROM pragma_table_info('occupant_bindings') WHERE name='auxiliary_session'",
++                [],
++                |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?)),
++            )
++            .unwrap();
++        assert_eq!(column, ("INTEGER".to_owned(), 1, Some("0".to_owned())));
++    }
++}
++
+ #[test]
+ fn migration_0015_handoff_obligations() {
+     // Fresh and upgraded stores both land on the same DDL.

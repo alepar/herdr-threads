@@ -1,0 +1,44 @@
+diff --git a/tests/cli/hook.rs b/tests/cli/hook.rs
+index 98e3b1f3f..6074a30ec 100644
+--- a/tests/cli/hook.rs
++++ b/tests/cli/hook.rs
+@@ -3532,6 +3532,7 @@ mod continuity_gate {
+         session: Option<&str>,
+     ) -> LifecycleEvent {
+         LifecycleEvent {
++            auxiliary_session: false,
+             harness,
+             source: match kind {
+                 EventKind::Resume => "resume",
+@@ -5105,6 +5106,7 @@ mod continuity_gate {
+ 
+ fn recovery_event_of(harness: Harness, kind: EventKind) -> LifecycleEvent {
+     LifecycleEvent {
++        auxiliary_session: false,
+         harness,
+         source: match kind {
+             EventKind::Compact => "compact",
+@@ -8231,6 +8233,7 @@ mod registered_resume {
+                 event_id: p.event_id,
+                 intent,
+                 metadata: EventMetadata {
++                    auxiliary_session: false,
+                     native_turn_id: None,
+                     turn_end: false,
+                     enrollment_witness: None,
+@@ -10171,6 +10174,7 @@ mod registered_resume {
+             key_capability: Default::default(),
+         };
+         let ev = LifecycleEvent {
++            auxiliary_session: false,
+             harness: Harness::Human,
+             role: Role::TopLevel,
+             kind: EventKind::Resume,
+@@ -12739,6 +12743,7 @@ mod terminal_turn_edge {
+             event_id: "e1".into(),
+             intent: EventIntent::Current,
+             metadata: EventMetadata {
++                auxiliary_session: false,
+                 native_turn_id: None,
+                 turn_end: true,
+                 enrollment_witness: None,

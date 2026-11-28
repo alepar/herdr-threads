@@ -1,0 +1,8 @@
+nudge-threshold 0
+inbox
+--state-dir /tmp/ht-wake-e2e.pqwh238i/state --host-endpoint /tmp/hwe.ovzij9kz/h.sock accept t62nvADua2AR
+inbox
+inbox
+inbox
+inbox
+inbox

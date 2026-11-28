@@ -426,6 +426,7 @@ fn open_direct(node: &Node, caller: &SeatId, recipient: &SeatId) -> (ThreadId, b
     use herdr_threads::protocol::authority::{CallerClaim, CallerRole, Harness};
     use herdr_threads::protocol::ids::{ExecutionId, HostTargetId, NativeSessionId};
     let claim = CallerClaim {
+        auxiliary_session: false,
         instance: node.id.to_string(),
         host: herdr_threads::test_support::test_host_locator(),
         seat: caller.clone(),

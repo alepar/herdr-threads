@@ -1,0 +1,56 @@
+diff --git a/tests/service/delivery_pull.rs b/tests/service/delivery_pull.rs
+index 5c83f5907..8678b0567 100644
+--- a/tests/service/delivery_pull.rs
++++ b/tests/service/delivery_pull.rs
+@@ -1809,6 +1809,7 @@ fn claim(
+     generation: u64,
+ ) -> CallerClaim {
+     CallerClaim {
++        auxiliary_session: false,
+         host: crate::test_support::test_host_locator(),
+         instance: "34750f98bd59fcfc946da45aaabe933b".into(),
+         seat: SeatId::new(seat),
+@@ -14806,3 +14807,43 @@ fn d1_hook_pull_keeps_the_inbox_marker_when_the_origin_owes_or_is_invited() {
+     ordinary_message_from(&f, "owed-later", "ack me", Some("c"));
+     assert_eq!(text(&f), marker, "the seat now owes an ACK");
+ }
++
++// Kills: a session-scoped contact read that answers from the seat-scoped time (a `/side` call
++// would then read as the root's), or one that ignores the native session (a root re-registered
++// under a new binding would read as silent).
++#[test]
++fn contact_is_recorded_per_seat_and_per_native_session() {
++    let state = DeliveryPullState::default();
++    let seat = SeatId::new("seat");
++    let (root, side) = (NativeSessionId::new("root"), NativeSessionId::new("side"));
++    let at = |ms| UtcMillis(ms);
++    assert_eq!(
++        state.contacted_since_session(&seat, &root, at(0)),
++        Some(false)
++    );
++    state.record_contact(&seat, &side, at(50));
++    assert_eq!(state.contacted_since(&seat, at(50)), Some(true));
++    assert_eq!(
++        state.contacted_since_session(&seat, &side, at(50)),
++        Some(true)
++    );
++    assert_eq!(
++        state.contacted_since_session(&seat, &root, at(0)),
++        Some(false)
++    );
++    assert_eq!(
++        state.contacted_since_session(&SeatId::new("other"), &side, at(0)),
++        Some(false)
++    );
++    // The root, whichever binding carried the call, settles from its own call alone.
++    state.record_contact(&seat, &root, at(60));
++    state.record_contact(&seat, &root, at(55));
++    assert_eq!(
++        state.contacted_since_session(&seat, &root, at(60)),
++        Some(true)
++    );
++    assert_eq!(
++        state.contacted_since_session(&seat, &root, at(61)),
++        Some(false)
++    );
++}

@@ -20,6 +20,61 @@ struct Binding {
     boot: Option<String>,
     connected_top: bool,
     registered: bool,
+    concurrent: bool,
+    auxiliary: bool,
+    provenance: String,
+}
+
+/// Most open connected top-level bindings the queue census reads; one more refuses to queue.
+const CENSUS_LIMIT: usize = 64;
+
+/// The root binding of a seat's connected top-level bindings, with the other sessions of its
+/// process. One binding is its own root unless it is a concurrent or auxiliary session (a side
+/// session is never a target). Several are rooted only when they all share one harness, one process and
+/// one kernel boot and the adapter names exactly one root among them; otherwise `None`.
+fn process_root(rows: &[Binding]) -> Option<(&Binding, Vec<NativeSessionId>)> {
+    match rows {
+        [] => None,
+        [only] => (!only.concurrent && !only.auxiliary).then(|| (only, Vec::new())),
+        [first, rest @ ..] => {
+            let same_process = first.pid.is_some()
+                && first.start.is_some()
+                && first.boot.is_some()
+                && rest.iter().all(|r| {
+                    r.adapter == first.adapter
+                        && r.pid == first.pid
+                        && r.start == first.start
+                        && r.boot == first.boot
+                });
+            if !same_process {
+                return None;
+            }
+            let registry = builtins();
+            let registration = registry.by_id(registry.agent(&first.adapter).ok()?).ok()?;
+            let sessions: Vec<NativeSessionId> = rows
+                .iter()
+                .map(|r| NativeSessionId::new(&r.session))
+                .collect();
+            let candidates: Vec<_> = rows
+                .iter()
+                .zip(&sessions)
+                .map(|(r, s)| crate::harness::adapter::RootCandidate {
+                    native_session: s,
+                    observation_provenance: &r.provenance,
+                    concurrent_session: r.concurrent,
+                    auxiliary_session: r.auxiliary,
+                })
+                .collect();
+            let root = registration.wake_process_root(&candidates)?;
+            let sides = sessions
+                .iter()
+                .enumerate()
+                .filter(|(i, _)| *i != root)
+                .map(|(_, s)| s.clone())
+                .collect();
+            Some((rows.get(root)?, sides))
+        }
+    }
 }
 
 fn blockers(
@@ -111,10 +166,22 @@ pub(crate) fn queue_wake_selection(
         return Ok(WakeQueueSelection {
             binding: None,
             blockers: blocked,
+            programmatic_enabled: false,
+        });
+    }
+    // Per-seat opt-in, read in this transaction so a toggle applies to the next attempt. An
+    // unreadable value reads off: a read error must never select the queue.
+    if !crate::store::seat_config::programmatic_wake_on(&tx, &reservation.seat) {
+        tx.rollback().map_err(store_error)?;
+        store.live_budget(budget)?;
+        return Ok(WakeQueueSelection {
+            binding: None,
+            blockers: blocked,
+            programmatic_enabled: false,
         });
     }
     let rows = {
-        let mut statement = tx.prepare_cached("SELECT binding_id,harness,native_session,execution_id,generation,liveness_pid,liveness_start,liveness_boot,(ended_at IS NULL AND liveness='connected' AND role='top_level'),(agent_id='' AND registered_at IS NOT NULL AND observation_provenance='cooperative_top_level') FROM occupant_bindings INDEXED BY occupant_bindings_open WHERE seat_id=?1 AND ended_at IS NULL AND liveness='connected' AND role='top_level' ORDER BY ordinal DESC LIMIT 2").map_err(store_error)?;
+        let mut statement = tx.prepare_cached("SELECT binding_id,harness,native_session,execution_id,generation,liveness_pid,liveness_start,liveness_boot,(ended_at IS NULL AND liveness='connected' AND role='top_level'),(agent_id='' AND registered_at IS NOT NULL AND observation_provenance='cooperative_top_level'),concurrent_session,observation_provenance,auxiliary_session FROM occupant_bindings INDEXED BY occupant_bindings_open WHERE seat_id=?1 AND ended_at IS NULL AND liveness='connected' AND role='top_level' ORDER BY ordinal DESC LIMIT 65").map_err(store_error)?;
         statement
             .query_map([reservation.seat.as_str()], |r| {
                 Ok(Binding {
@@ -128,20 +195,27 @@ pub(crate) fn queue_wake_selection(
                     boot: r.get(7)?,
                     connected_top: r.get(8)?,
                     registered: r.get(9)?,
+                    concurrent: r.get(10)?,
+                    provenance: r.get(11)?,
+                    auxiliary: r.get(12)?,
                 })
             })
             .map_err(store_error)?
             .collect::<Result<Vec<_>, _>>()
             .map_err(store_error)?
     };
-    let mut connected = rows.iter().filter(|row| row.connected_top);
-    let unique = connected.next().filter(|_| connected.next().is_none());
+    let connected: Vec<Binding> = rows.into_iter().filter(|row| row.connected_top).collect();
+    let rooted = if connected.len() > CENSUS_LIMIT {
+        None
+    } else {
+        process_root(&connected)
+    };
     let current = store.settings.daemon_boot == Some(reservation.daemon_boot)
         && store.context.clock().monotonic_now() <= reservation.lease_until
         && wake::validate_reservation(&tx, &store.instance, reservation)?;
     let selected = if current {
-        unique
-            .map(|row| select_binding(store, &tx, reservation, row))
+        rooted
+            .map(|(row, sides)| select_binding(store, &tx, reservation, row, sides))
             .transpose()?
             .flatten()
     } else {
@@ -152,6 +226,7 @@ pub(crate) fn queue_wake_selection(
     Ok(WakeQueueSelection {
         binding: selected,
         blockers: blocked,
+        programmatic_enabled: true,
     })
 }
 
@@ -160,6 +235,7 @@ fn select_binding(
     db: &Connection,
     reservation: &WakeReservation,
     row: &Binding,
+    side_sessions: Vec<NativeSessionId>,
 ) -> Result<Option<WakeQueueBinding>, ApiError> {
     if reservation
         .authority
@@ -207,6 +283,7 @@ fn select_binding(
             descriptor: Vec::new(),
         },
         correlation: reservation.attempt.as_str().into(),
+        side_sessions: Vec::new(),
     };
     if !qualified || !canonical(store, db, reservation, &preparation)? {
         return Ok(None);
@@ -215,6 +292,7 @@ fn select_binding(
         adapter,
         scope,
         replay_scope,
+        side_sessions,
     }))
 }
 

@@ -1,0 +1,40 @@
+                                                                               │ Run side-…×                        +
+› herdr-threads: wake up                                                       │
+                                                                               │› Side 2 of wake-e2e side-draft/group
+                                                                               │  153345-0351: run the shell command /
+• I’ll accept the test invitation.                                             │  tmp/ht-wake-e2e._fz9zaqd/bin/herdr-
+                                                                               │  threads inbox once, then print SIDE-
+• Ran herdr-threads --state-dir /tmp/ht-wake-e2e._fz9zaqd/state accept tzZ52NY…│  2-DONE. Do not act on anything it
+  └ accepted                                                                   │  shows.
+    value: "izZ5BKGOu3mR"                                                      │
+    + Show details                                                             │
+                                                                               │• The hook reported an empty inbox. Its
+• Accepted.                                                                    │  instructions reserve inbox for
+                                                                               │  continuations or unavailable
+  Worked for 4s • 15:34                                                        │  delivery, so the command was skipped.
+                                                                               │
+                                                                               │  Worked for 4s • 15:40
+› herdr-threads: wake up                                                       │
+                                                                               │
+                                                                               │
+• RECEIVED [herdr-threads] message mzZ5QO2yeDYo in tzZ52NYMj6Yo from           │
+  szZ55gVGGIkw [p0]: side-nudge/group 153345-0351                              │
+                                                                               │
+  Worked for 3s • 15:35                                                        │
+                                                                               │
+                                                                               │
+› herdr-threads: wake up                                                       │
+                                                                               │
+                                                                               │
+• RECEIVED [herdr-threads] message mzZ5CUwljebz in tzZ52NYMj6Yo from           │
+  szZ55gVGGIkw [p0]: side-nudge/group 153345-0351 sibling                      │
+                                                                               │
+  Worked for 2s • 15:38                                                        │
+                                                                               │
+                                                                               │
+›                                                                              │› Ask a follow-up question
+                                                                               │
+  GPT-6.2-Sol default · ~/AleCode/herdr-threads/.worktrees/super-auto-per-seat-│  GPT-6.2-Sol default · ~/AleCode/
+  config-side-wake/.worktrees/super-auto-per-seat-config-side-wake--task-ht-   │  herdr-threads/.worktrees/super-auto-
+  z41e.54 · Accept automated test invitations                                  │  per-seat-config-side-wake/.worktrees…
+                                                                               │  ← for agents · ? for shortcuts

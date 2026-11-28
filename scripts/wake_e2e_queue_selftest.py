@@ -7,11 +7,13 @@ import tempfile
 import unittest
 from unittest import mock
 
-from wake_e2e_queue import (STALE_AUTHORITY, codex_turn_delivery, eligible_scope, queue_activity_intervals, queue_proof,
-                             queue_snapshot, stale_authority_native)
+from wake_e2e_queue import (STALE_AUTHORITY, codex_turn_delivery, eligible_scope, process_root_scope,
+                             queue_activity_intervals, queue_proof, queue_snapshot, side_queue_proof,
+                             stale_authority_native)
 
 SESSION = "00000000-0000-0000-0000-000000000001"
 OWNER = "00000000-0000-0000-0000-000000000002"
+SIDE = "00000000-0000-0000-0000-000000000009"
 SCOPE = {"binding": "binding", "native_session": SESSION, "execution": "execution", "generation": 1,
          "process": {"pid": 20, "start": 99}, "kernel_boot": "kernel"}
 HELPER = {"id": "00000000-0000-0000-0000-000000000003", "purpose": "add", "subject": None,
@@ -357,6 +359,78 @@ class QueueEvidence(unittest.TestCase):
         self.assertTrue(missing_process["ok"])
         self.assertIsNone(missing_process["bindings"][0]["scope"])
         self.assertIsNone(eligible_scope(missing_process))
+
+    def with_side(self, sides='["%s"]' % SIDE, column=True, side_pid=20):
+        """A /side binding in the root's process and an accepted, witnessed intent that records `sides`."""
+        self.db.execute("INSERT INTO occupant_bindings VALUES(2,'side','seat','codex',?,'side-execution',1,?,99,'kernel','connected','top_level','',1,'cooperative_top_level','pane',1,NULL)", (SIDE, side_pid))
+        self.db.commit()
+        before = self.snapshot()
+        self.add_intent()
+        if column:
+            self.db.execute("ALTER TABLE wake_intents ADD COLUMN side_sessions TEXT")
+            self.db.execute("UPDATE wake_intents SET side_sessions=?", (sides,))
+        self.db.commit()
+        return before, self.snapshot()
+
+    def test_side_queue_accepted_intent_on_the_root_naming_side_sessions_passes(self):
+        before, accepted = self.with_side()
+        self.assertIsNone(eligible_scope(before))  # two connected bindings: the single-binding rule does not apply
+        root = process_root_scope(before, SESSION)
+        self.assertEqual((root["scope"], root["side_sessions"]), (SCOPE, [SIDE]))
+        proof = side_queue_proof(before, [accepted], SESSION)
+        self.assertTrue(proof["passed"], proof["reasons"])
+        self.assertEqual(proof["attempts"][0]["side_sessions"], [SIDE])
+        self.assertEqual(proof["root_session"], SESSION)
+
+    def test_side_queue_accepted_intent_on_a_side_session_fails(self):
+        before, accepted = self.with_side()
+        self.db.execute("UPDATE wake_intents SET target_json=?", (json.dumps(dict(SCOPE, native_session=SIDE, binding="side")).encode(),))
+        self.db.commit()
+        self.assertFalse(side_queue_proof(before, [self.snapshot()], SESSION)["passed"])
+        # naming a side as the root is no root at all: it never reaches the matched Ended turn state
+        self.assertIsNone(process_root_scope(before, SIDE))
+        self.assertFalse(side_queue_proof(before, [self.snapshot()], SIDE)["passed"])
+
+    def test_side_queue_native_only_fails_under_required_proof(self):
+        self.db.execute("INSERT INTO occupant_bindings VALUES(2,'side','seat','codex',?,'side-execution',1,20,99,'kernel','connected','top_level','',1,'cooperative_top_level','pane',1,NULL)", (SIDE,))
+        self.db.commit()
+        before = self.snapshot()
+        proof = side_queue_proof(before, [self.snapshot()], SESSION)
+        self.assertFalse(proof["passed"])
+        self.assertIn("no_correlated_accepted_with_baseline_and_add_witness", proof["reasons"])
+        # a possible effect on a native-only attempt is not a pass either
+        self.add_intent("unknown")
+        self.assertFalse(side_queue_proof(before, [self.snapshot()], SESSION)["passed"])
+
+    def test_side_queue_needs_side_sessions_that_exclude_the_root(self):
+        for sides, column, reason in (('["%s"]' % SESSION, True, "side_sessions_empty_or_include_root"),
+                                      (None, True, "side_sessions_empty_or_include_root"),
+                                      (None, False, "side_sessions_unavailable")):
+            with self.subTest(sides=sides, column=column):
+                self.setUp()
+                before, accepted = self.with_side(sides=sides, column=column)
+                proof = side_queue_proof(before, [accepted], SESSION)
+                self.assertFalse(proof["passed"])
+                self.assertIn(reason, proof["reasons"])
+
+    def test_side_sessions_column_projects_none_when_missing_and_empty_when_null(self):
+        _, absent = self.with_side(column=False)
+        self.assertIsNone(absent["intents"][0]["side_sessions"])
+        self.db.execute("ALTER TABLE wake_intents ADD COLUMN side_sessions TEXT")
+        self.db.commit()
+        self.assertEqual(self.snapshot()["intents"][0]["side_sessions"], [])
+        self.db.execute("UPDATE wake_intents SET side_sessions='not json'")
+        self.db.commit()
+        self.assertFalse(self.snapshot()["ok"])
+
+    def test_process_root_scope_needs_one_process_and_one_named_root(self):
+        before, _ = self.with_side()
+        self.assertIsNotNone(process_root_scope(before, SESSION))
+        self.assertIsNone(process_root_scope(before, "no-such-session"))
+        self.db.execute("DELETE FROM wake_intents")
+        self.db.execute("UPDATE occupant_bindings SET liveness_pid=21 WHERE binding_id='side'")
+        self.db.commit()
+        self.assertIsNone(process_root_scope(self.snapshot(), SESSION))  # two processes: native
 
 
 if __name__ == "__main__":

@@ -1,0 +1,35 @@
+diff --git a/RELEASE.md b/RELEASE.md
+index c50d62a3d..90ccc7795 100644
+--- a/RELEASE.md
++++ b/RELEASE.md
+@@ -33,23 +33,18 @@ Start ordinary push/PR CI on the candidate SHA alongside local qualification; on
+ scripts/release-qualify --evidence-dir /tmp/release-X.Y.Z
+ ```
+ 
+-Queue wake is off by default. Ordinary qualification tests native wake when the
+-selected install has not opted in. On Linux, the release driver resolves the
+-selected install through the candidate's read-only `doctor --json` and reads its
+-bounded node settings. `"programmatic_wake": true` selects queue proof in the
+-owned qualification instance. Unrelated doctor health warnings do not change
+-routing; unresolved or invalid settings block automatic mode selection.
+-
+-To require queue proof explicitly, including when the operator setting is off:
++Queue wake is off by default. Ordinary qualification tests native wake; the
++driver reads no operator settings and never probes the installed daemon. To
++require queue proof, pass the flag (Linux and macOS only):
+ 
+ ```sh
+ scripts/release-qualify --queue-proof --evidence-dir /tmp/release-X.Y.Z
+ ```
+ 
+-This flag bypasses operator-setting discovery and enables queue wake only in the
+-owned isolated instance before its daemon starts. It never edits operator config
+-or restarts the operator daemon. Missing/false setting keeps isolated native wake;
+-non-Linux ordinary qualification stays native and rejects an explicit proof flag
++Under the flag the wake driver sets `programmatic_wake on` on each owned Codex
++recipient seat with `ht human config seat set --seat` in its owned isolated
++instance, before the first send. It never writes node settings, edits operator
++config or restarts the operator daemon. Other platforms stay native and reject the flag
+ before work. Linux Codex always records bounded transport observations: actual
+ Accepted queue wakes use 15 seconds, native wakes retain 6 seconds, and Unknown fails.
+ The flag additionally requires Accepted for positive queue cases; an all-native

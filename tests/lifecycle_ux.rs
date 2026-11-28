@@ -959,6 +959,7 @@ fn stopped_daemon_is_unavailable_for_every_descriptor_read() {
         )
         .unwrap();
     let claim = CallerClaim {
+        auxiliary_session: false,
         host: herdr_threads::test_support::test_host_locator(),
         instance: instance.clone(),
         seat: SeatId::new("s"),

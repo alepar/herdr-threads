@@ -1,0 +1,10 @@
+{
+  "session_id": "root-session",
+  "turn_id": "root-turn-1",
+  "transcript_path": "/private/tmp/side-fixture/rollout-root-session.jsonl",
+  "cwd": "/private/tmp/side-fixture",
+  "hook_event_name": "UserPromptSubmit",
+  "model": "gpt-6.1-sol",
+  "permission_mode": "default",
+  "prompt": "root question"
+}

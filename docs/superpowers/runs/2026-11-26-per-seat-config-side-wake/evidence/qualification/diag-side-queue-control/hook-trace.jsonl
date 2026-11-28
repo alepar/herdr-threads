@@ -1,0 +1,13 @@
+{"utc_ms": 1795807144568, "pane": "w2:p3", "event": "SessionStart", "session": "01a21e72-5b36-7521-9093-f1f75ad52f05", "source": "startup", "transcript_path": "present"}
+{"utc_ms": 1795807144832, "pane": "w2:p3", "event": "UserPromptSubmit", "session": "01a21e72-5b36-7521-9093-f1f75ad52f05", "source": null, "transcript_path": "present"}
+{"utc_ms": 1795807147708, "pane": "w2:p3", "event": "PreToolUse", "session": "01a21e72-5b36-7521-9093-f1f75ad52f05", "source": null, "transcript_path": "present"}
+{"utc_ms": 1795807150250, "pane": "w2:p3", "event": "PreToolUse", "session": "01a21e72-5b36-7521-9093-f1f75ad52f05", "source": null, "transcript_path": "present"}
+{"utc_ms": 1795807153500, "pane": "w2:p3", "event": "PreToolUse", "session": "01a21e72-5b36-7521-9093-f1f75ad52f05", "source": null, "transcript_path": "present"}
+{"utc_ms": 1795807155379, "pane": "w2:p3", "event": "Stop", "session": "01a21e72-5b36-7521-9093-f1f75ad52f05", "source": null, "transcript_path": "present"}
+{"utc_ms": 1795807160350, "pane": "w2:p3", "event": "UserPromptSubmit", "session": "01a21e72-5b36-7521-9093-f1f75ad52f05", "source": null, "transcript_path": "present"}
+{"utc_ms": 1795807163571, "pane": "w2:p3", "event": "PreToolUse", "session": "01a21e72-5b36-7521-9093-f1f75ad52f05", "source": null, "transcript_path": "present"}
+{"utc_ms": 1795807165047, "pane": "w2:p3", "event": "Stop", "session": "01a21e72-5b36-7521-9093-f1f75ad52f05", "source": null, "transcript_path": "present"}
+{"utc_ms": 1795807170394, "pane": "w2:p3", "event": "SessionStart", "session": "01a21e72-c542-7ca3-a572-ef52c9d275d1", "source": "fork", "transcript_path": "present"}
+{"utc_ms": 1795807170528, "pane": "w2:p3", "event": "UserPromptSubmit", "session": "01a21e72-c542-7ca3-a572-ef52c9d275d1", "source": null, "transcript_path": "present"}
+{"utc_ms": 1795807173870, "pane": "w2:p3", "event": "PreToolUse", "session": "01a21e72-c542-7ca3-a572-ef52c9d275d1", "source": null, "transcript_path": "present"}
+{"utc_ms": 1795807175695, "pane": "w2:p3", "event": "Stop", "session": "01a21e72-c542-7ca3-a572-ef52c9d275d1", "source": null, "transcript_path": "present"}

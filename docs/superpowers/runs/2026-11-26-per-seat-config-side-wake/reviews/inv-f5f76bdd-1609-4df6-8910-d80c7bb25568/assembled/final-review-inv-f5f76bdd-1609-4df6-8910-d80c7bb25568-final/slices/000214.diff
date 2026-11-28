@@ -1,0 +1,12 @@
+diff --git a/tests/store/handoff_fences.rs b/tests/store/handoff_fences.rs
+index 3ff5c2783..d7f286f0a 100644
+--- a/tests/store/handoff_fences.rs
++++ b/tests/store/handoff_fences.rs
+@@ -13,6 +13,7 @@ pub(super) fn identity() -> HandoffIdentity {
+         compound: OperationId::new("compound"),
+         digest: "a".repeat(64),
+         claim: CallerClaim {
++            auxiliary_session: false,
+             host: herdr_threads::test_support::test_host_locator(),
+             instance: "34750f98bd59fcfc946da45aaabe933b".into(),
+             seat: SeatId::new("s"),

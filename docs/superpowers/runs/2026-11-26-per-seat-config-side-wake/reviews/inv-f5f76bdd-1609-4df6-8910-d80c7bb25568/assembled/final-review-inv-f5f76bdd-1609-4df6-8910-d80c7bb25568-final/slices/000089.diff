@@ -1,0 +1,12 @@
+diff --git a/src/harness/hermes.rs b/src/harness/hermes.rs
+index e22875948..dcd85c7d6 100644
+--- a/src/harness/hermes.rs
++++ b/src/harness/hermes.rs
+@@ -1035,6 +1035,7 @@ impl HarnessAdapter for HermesAdapter {
+             metadata: EventMetadata {
+                 native_turn_id: None,
+                 turn_end: false,
++                auxiliary_session: false,
+                 enrollment_witness,
+                 context_source: e.callback.clone(),
+                 native_event: e.callback,

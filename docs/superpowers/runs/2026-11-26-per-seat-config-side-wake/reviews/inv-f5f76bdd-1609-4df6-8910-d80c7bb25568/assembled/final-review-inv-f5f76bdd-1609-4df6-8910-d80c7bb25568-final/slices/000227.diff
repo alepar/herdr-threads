@@ -1,0 +1,12 @@
+diff --git a/tests/store/query_work_q4.rs b/tests/store/query_work_q4.rs
+index 60b36e35a..b13ca8a38 100644
+--- a/tests/store/query_work_q4.rs
++++ b/tests/store/query_work_q4.rs
+@@ -364,6 +364,7 @@ fn indexed(
+ 
+ fn claim() -> CallerClaim {
+     CallerClaim {
++        auxiliary_session: false,
+         host: crate::test_support::test_host_locator(),
+         instance: "34750f98bd59fcfc946da45aaabe933b".into(),
+         seat: SeatId::new("s"),

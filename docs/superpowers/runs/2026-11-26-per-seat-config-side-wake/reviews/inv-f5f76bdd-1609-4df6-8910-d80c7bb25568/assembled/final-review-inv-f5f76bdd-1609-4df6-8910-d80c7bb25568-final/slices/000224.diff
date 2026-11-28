@@ -1,0 +1,12 @@
+diff --git a/tests/store/nudge_threshold.rs b/tests/store/nudge_threshold.rs
+index cb0621ca6..a71ea7c18 100644
+--- a/tests/store/nudge_threshold.rs
++++ b/tests/store/nudge_threshold.rs
+@@ -94,6 +94,7 @@ fn request(priority: Option<u8>, operation: &str) -> SendMessage {
+         deadline_millis: None,
+         operation: OperationId::new(operation),
+         claim: CallerClaim {
++            auxiliary_session: false,
+             host: crate::test_support::test_host_locator(),
+             instance: "34750f98bd59fcfc946da45aaabe933b".into(),
+             seat: SeatId::new("a"),

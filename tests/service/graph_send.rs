@@ -457,6 +457,7 @@ fn user_intent_service_send_stays_unclassified() {
 
         // 2. The native seat checks in and accepts explicitly.
         let claim = CallerClaim {
+            auxiliary_session: false,
             host: herdr_threads::test_support::test_host_locator(),
             instance: instance.to_string(),
             seat: SeatId::new("worker"),

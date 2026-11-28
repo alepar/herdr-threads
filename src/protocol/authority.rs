@@ -26,6 +26,12 @@ pub struct CallerClaim {
     /// or connects a binding; human claims carry none.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub liveness: Option<LivenessFingerprint>,
+    /// Hook evidence that this top-level session is auxiliary (Codex: a null `transcript_path`, as
+    /// every `/side` session emits). Sent only to a daemon advertising `seat.auxiliary_session_v1`,
+    /// which stores it as a sticky bit on the binding; cooperative evidence like the rest of the
+    /// claim, read only by queue root selection (ht-z41e.21).
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub auxiliary_session: bool,
 }
 
 /// The stable detail of `ErrorCode::SubagentReadOnly`.
@@ -568,6 +574,7 @@ mod tests {
     #[test]
     fn cooperative_permit_is_payload_bound_expires_and_single_use() {
         let claim = CallerClaim {
+            auxiliary_session: false,
             instance: "i".into(),
             host: crate::test_support::test_host_locator(),
             seat: SeatId::new("s"),
@@ -645,6 +652,7 @@ mod tests {
 
     fn base_claim() -> CallerClaim {
         CallerClaim {
+            auxiliary_session: false,
             instance: "i".into(),
             host: crate::test_support::test_host_locator(),
             seat: SeatId::new("s"),
@@ -715,6 +723,7 @@ mod tests {
         let back: CallerClaim = serde_json::from_value(value).unwrap();
         assert_eq!(back, claim);
         let full = CallerClaim {
+            auxiliary_session: false,
             agent_id: Some(AgentId::new("agent-7")),
             liveness: Some(LivenessFingerprint {
                 pid: 42,

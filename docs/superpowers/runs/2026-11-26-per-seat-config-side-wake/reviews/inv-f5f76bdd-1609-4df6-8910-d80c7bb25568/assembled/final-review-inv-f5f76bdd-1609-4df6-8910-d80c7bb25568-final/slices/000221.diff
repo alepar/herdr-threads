@@ -1,0 +1,12 @@
+diff --git a/tests/store/multi_host.rs b/tests/store/multi_host.rs
+index ea2622f30..c036108af 100644
+--- a/tests/store/multi_host.rs
++++ b/tests/store/multi_host.rs
+@@ -436,6 +436,7 @@ const FOREIGN_NODE: &str = "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa";
+ 
+ fn claim(seat: &str, socket: &str, target: &str) -> CallerClaim {
+     CallerClaim {
++        auxiliary_session: false,
+         host: HostLocator::parse(socket).unwrap(),
+         instance: NODE.into(),
+         seat: SeatId::new(seat),

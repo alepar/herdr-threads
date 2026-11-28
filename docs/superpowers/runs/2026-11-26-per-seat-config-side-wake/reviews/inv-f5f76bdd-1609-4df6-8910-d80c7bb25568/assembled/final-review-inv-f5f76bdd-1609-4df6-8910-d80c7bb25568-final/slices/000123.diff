@@ -1,0 +1,14 @@
+diff --git a/src/store/wake.rs b/src/store/wake.rs
+index 5790d4dcd..eff9f5f89 100644
+--- a/src/store/wake.rs
++++ b/src/store/wake.rs
+@@ -268,7 +268,8 @@ pub fn load_candidate(
+         nonnegative(episode)?,
+         open != 0,
+         attention.frontier,
+-    );
++    )
++    .with_programmatic_wake(super::seat_config::programmatic_wake_on(db, seat));
+     let targets = wake_targets(
+         db,
+         seat,

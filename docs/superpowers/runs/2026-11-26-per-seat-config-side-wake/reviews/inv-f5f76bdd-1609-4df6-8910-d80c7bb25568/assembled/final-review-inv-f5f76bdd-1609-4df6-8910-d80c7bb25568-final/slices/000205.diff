@@ -1,0 +1,44 @@
+diff --git a/tests/store/bindings.rs b/tests/store/bindings.rs
+index b6770bf82..4081e7c58 100644
+--- a/tests/store/bindings.rs
++++ b/tests/store/bindings.rs
+@@ -350,6 +350,7 @@ fn fingerprint_start_beyond_i64_is_refused() {
+ fn binding_key_from_claim_reads_seat_harness_session_and_agent() {
+     use crate::protocol::authority::{CallerClaim, CallerRole, Harness};
+     let claim = CallerClaim {
++        auxiliary_session: false,
+         host: crate::test_support::test_host_locator(),
+         instance: "34750f98bd59fcfc946da45aaabe933b".into(),
+         seat: SeatId::new("s"),
+@@ -397,6 +398,7 @@ mod resolution {
+ 
+     fn claim(session: &str, agent: Option<&str>) -> CallerClaim {
+         CallerClaim {
++            auxiliary_session: false,
+             host: crate::test_support::test_host_locator(),
+             instance: "34750f98bd59fcfc946da45aaabe933b".into(),
+             seat: SeatId::new("s"),
+@@ -565,6 +567,7 @@ mod resolution {
+ 
+     fn hermes_claim(session: &str) -> CallerClaim {
+         CallerClaim {
++            auxiliary_session: false,
+             host: crate::test_support::test_host_locator(),
+             harness: Harness::Agent(
+                 crate::harness::registry::builtins()
+@@ -1546,6 +1549,7 @@ mod exclusivity {
+ 
+     fn claim(harness: Harness, session: &str, pid: u32) -> CallerClaim {
+         CallerClaim {
++            auxiliary_session: false,
+             host: crate::test_support::test_host_locator(),
+             instance: "34750f98bd59fcfc946da45aaabe933b".into(),
+             seat: SeatId::new("s"),
+@@ -2305,6 +2309,7 @@ mod lineage {
+ 
+     fn claim(session: &str, pid: u32) -> CallerClaim {
+         CallerClaim {
++            auxiliary_session: false,
+             host: crate::test_support::test_host_locator(),
+             instance: "34750f98bd59fcfc946da45aaabe933b".into(),
+             seat: SeatId::new("s"),

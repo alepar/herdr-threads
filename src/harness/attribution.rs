@@ -138,6 +138,27 @@ pub(crate) fn attribute_payload_in(
     }
 }
 
+/// The first line of the transcript at `path` as JSON, read like [`attribute_transcript`] (a regular
+/// file only, opened non-blocking without following a symlink, at most [`MAX_WINDOW`] bytes). `None`
+/// when the file is absent, unreadable, not a regular file, or its first line is incomplete,
+/// too long or not JSON.
+pub(crate) fn transcript_head_json(path: &Path) -> Option<Value> {
+    use std::os::unix::fs::OpenOptionsExt;
+    match std::fs::symlink_metadata(path) {
+        Ok(meta) if meta.is_file() => {}
+        _ => return None,
+    }
+    let mut file = std::fs::OpenOptions::new()
+        .read(true)
+        .custom_flags(libc::O_NONBLOCK | libc::O_NOFOLLOW)
+        .open(path)
+        .ok()?;
+    match read_head_line(&mut file) {
+        Ok(Head::Line(line)) => serde_json::from_slice(&line).ok(),
+        _ => None,
+    }
+}
+
 /// Attribute the transcript file at `path`.
 pub fn attribute_transcript(harness: &str, path: &Path) -> Attribution {
     attribute_transcript_in(builtins(), harness, path)

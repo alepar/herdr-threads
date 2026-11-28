@@ -1,0 +1,486 @@
+{
+ "inspected": [
+  {
+   "path": "migrations/node/0021_seat_config.sql",
+   "hunks": [
+    "@@ -0,0 +1,13 @@"
+   ]
+  },
+  {
+   "path": "migrations/node/0022_side_queue_routing.sql",
+   "hunks": [
+    "@@ -0,0 +1,5 @@"
+   ]
+  },
+  {
+   "path": "migrations/node/0023_binding_auxiliary_session.sql",
+   "hunks": [
+    "@@ -0,0 +1,7 @@"
+   ]
+  },
+  {
+   "path": "src/cli/config_seat.rs",
+   "hunks": [
+    "@@ -0,0 +1,229 @@"
+   ]
+  },
+  {
+   "path": "src/protocol/seat_config.rs",
+   "hunks": [
+    "@@ -0,0 +1,200 @@"
+   ]
+  },
+  {
+   "path": "src/store/seat_config.rs",
+   "hunks": [
+    "@@ -0,0 +1,523 @@"
+   ]
+  },
+  {
+   "path": "src/service/dispatch.rs",
+   "hunks": [
+    "@@ -1622,6 +1622,46 @@ impl DomainService {",
+    "@@ -1827,6 +1867,7 @@ impl DomainService {",
+    "@@ -2113,8 +2154,11 @@ impl LocalService for DomainService {",
+    "@@ -2199,6 +2243,7 @@ impl LocalService for DomainService {",
+    "@@ -2257,6 +2302,9 @@ impl LocalService for DomainService {",
+    "@@ -2561,6 +2609,7 @@ mod operator_tests {",
+    "@@ -2772,6 +2821,7 @@ mod operator_tests {",
+    "@@ -2859,6 +2909,7 @@ mod operator_tests {",
+    "@@ -2897,6 +2948,10 @@ mod cooperative_tests;"
+   ]
+  },
+  {
+   "path": "src/service/config.rs",
+   "hunks": [
+    "@@ -29,7 +29,6 @@ pub struct ServiceConfig {",
+    "@@ -50,7 +49,6 @@ impl Default for ServiceConfig {",
+    "@@ -99,14 +97,6 @@ impl ServiceConfig {",
+    "@@ -291,11 +281,7 @@ impl ServiceConfig {",
+    "@@ -318,7 +304,6 @@ impl ServiceConfig {"
+   ]
+  },
+  {
+   "path": "src/daemon/settings.rs",
+   "hunks": [
+    "@@ -19,8 +19,8 @@",
+    "@@ -75,7 +75,10 @@ pub struct InstanceSettings {",
+    "@@ -112,7 +115,7 @@ impl Default for InstanceSettings {",
+    "@@ -214,22 +217,19 @@ mod tests {"
+   ]
+  },
+  {
+   "path": "src/store/wake_intents/selection.rs",
+   "hunks": [
+    "@@ -20,6 +20,61 @@ struct Binding {",
+    "@@ -111,10 +166,22 @@ pub(crate) fn queue_wake_selection(",
+    "@@ -128,20 +195,27 @@ pub(crate) fn queue_wake_selection(",
+    "@@ -152,6 +226,7 @@ pub(crate) fn queue_wake_selection(",
+    "@@ -160,6 +235,7 @@ fn select_binding(",
+    "@@ -207,6 +283,7 @@ fn select_binding(",
+    "@@ -215,6 +292,7 @@ fn select_binding("
+   ]
+  },
+  {
+   "path": "src/store/wake_intents.rs",
+   "hunks": [
+    "@@ -23,7 +23,7 @@ const MAX_INTENTS: i64 = 4096;",
+    "@@ -84,6 +84,18 @@ fn decode(r: &Row<'_>) -> Result<WakeIntentSnapshot, ApiError> {",
+    "@@ -246,11 +258,12 @@ pub(super) fn prepare(",
+    "@@ -268,6 +281,8 @@ pub(super) fn arm("
+   ]
+  },
+  {
+   "path": "src/store/wake.rs",
+   "hunks": [
+    "@@ -268,13 +268,18 @@ pub fn load_candidate(",
+    "@@ -906,7 +911,7 @@ pub fn reserve("
+   ]
+  },
+  {
+   "path": "src/store/bindings.rs",
+   "hunks": [
+    "@@ -1217,6 +1217,7 @@ pub fn registered_child_claim(",
+    "@@ -1471,9 +1472,34 @@ pub(crate) fn resolve_claim_with_hooks("
+   ]
+  },
+  {
+   "path": "src/store/seats/cooperative.rs",
+   "hunks": [
+    "@@ -202,6 +202,16 @@ pub(crate) fn require_local_seat(conn: &Connection, seat: &SeatId) -> Result<(),",
+    "@@ -223,7 +233,7 @@ pub(crate) fn require_local_threshold_seat("
+   ]
+  },
+  {
+   "path": "src/store/seats/threshold.rs",
+   "hunks": [
+    "@@ -74,6 +74,7 @@ pub fn set_wake_on(",
+    "@@ -106,6 +107,7 @@ pub fn set_nudge_threshold(",
+    "@@ -114,8 +116,12 @@ pub fn set_nudge_threshold(",
+    "@@ -125,6 +131,7 @@ fn write_threshold(",
+    "@@ -145,7 +152,7 @@ fn write_threshold(",
+    "@@ -156,20 +163,20 @@ fn write_threshold(",
+    "@@ -181,6 +188,44 @@ fn write_threshold("
+   ]
+  },
+  {
+   "path": "src/harness/adapter.rs",
+   "hunks": [
+    "@@ -265,6 +265,13 @@ pub trait HarnessAdapter: Send + Sync + 'static {",
+    "@@ -610,6 +617,19 @@ pub enum InstallObservation {",
+    "@@ -751,6 +771,8 @@ pub struct EventMetadata {",
+    "@@ -1457,6 +1479,14 @@ pub trait ComposerPolicy: Send + Sync {",
+    "@@ -1823,6 +1853,7 @@ mod tests {",
+    "@@ -1864,6 +1895,7 @@ mod tests {",
+    "@@ -2157,6 +2189,7 @@ impl DecodedEvent {",
+    "@@ -2209,6 +2242,7 @@ impl DecodedEvent {"
+   ]
+  },
+  {
+   "path": "src/harness/bridge.rs",
+   "hunks": [
+    "@@ -270,6 +270,7 @@ pub fn caller_claim(",
+    "@@ -425,7 +426,8 @@ pub fn prepare_event_as(",
+    "@@ -433,6 +435,18 @@ pub fn prepare_event_as(",
+    "@@ -506,7 +520,8 @@ pub fn prepare_qualified_turn(",
+    "@@ -564,7 +579,11 @@ pub fn decode_request(request: &PendingCheckIn) -> Result<Command, ContextError>",
+    "@@ -633,8 +652,9 @@ fn cached_event<C: LocalClient + ?Sized>(",
+    "@@ -1281,7 +1301,22 @@ pub fn tool_boundary_check_in<C: LocalClient + ?Sized>(",
+    "@@ -1370,14 +1405,6 @@ pub fn tool_boundary_check_in<C: LocalClient + ?Sized>("
+   ]
+  },
+  {
+   "path": "src/harness/attribution.rs",
+   "hunks": [
+    "@@ -138,6 +138,27 @@ pub(crate) fn attribute_payload_in("
+   ]
+  },
+  {
+   "path": "src/harness/codex.rs",
+   "hunks": [
+    "@@ -1225,6 +1225,7 @@ fn stop_hook_active(value: &Value) -> bool {",
+    "@@ -1260,9 +1261,46 @@ fn parse_shape(value: &Value, event_id: &str) -> Result<LifecycleEvent, ContextE",
+    "@@ -1521,6 +1559,28 @@ impl HarnessAdapter for CodexAdapter {"
+   ]
+  },
+  {
+   "path": "src/harness/codex/composer.rs",
+   "hunks": [
+    "@@ -6,12 +6,18 @@ use crate::harness::{",
+    "@@ -37,9 +43,51 @@ fn codex_rows(lines: &[&str]) -> Option<(Vec<String>, Range<usize>)> {",
+    "@@ -57,6 +105,26 @@ impl ComposerPolicy for NativeComposer {",
+    "@@ -121,12 +189,15 @@ mod tests {",
+    "@@ -141,6 +212,164 @@ mod tests {"
+   ]
+  },
+  {
+   "path": "src/harness/composer.rs",
+   "hunks": [
+    "@@ -16,8 +16,9 @@"
+   ]
+  },
+  {
+   "path": "src/notification/queue.rs",
+   "hunks": [
+    "@@ -7,6 +7,7 @@ use crate::{",
+    "@@ -33,19 +34,33 @@ pub trait QueueWakePort: Send + Sync {",
+    "@@ -54,7 +69,13 @@ pub struct QueueWakeRuntime {",
+    "@@ -70,7 +91,6 @@ impl QueueWakeRuntime {",
+    "@@ -79,10 +99,14 @@ impl QueueWakeRuntime {",
+    "@@ -153,7 +177,8 @@ impl QueueWakeRuntime {",
+    "@@ -161,7 +186,29 @@ impl QueueWakeRuntime {",
+    "@@ -199,11 +246,17 @@ impl QueueWakeRuntime {",
+    "@@ -333,6 +386,10 @@ impl QueueWakeRuntime {",
+    "@@ -355,7 +412,7 @@ impl QueueWakePort for QueueWakeRuntime {",
+    "@@ -367,13 +424,12 @@ impl QueueWakePort for QueueWakeRuntime {",
+    "@@ -387,7 +443,7 @@ impl QueueWakePort for QueueWakeRuntime {",
+    "@@ -404,17 +460,17 @@ impl QueueWakePort for QueueWakeRuntime {",
+    "@@ -432,9 +488,13 @@ impl QueueWakePort for QueueWakeRuntime {",
+    "@@ -650,12 +710,22 @@ mod tests {",
+    "@@ -678,7 +748,7 @@ mod tests {",
+    "@@ -710,7 +780,7 @@ mod tests {",
+    "@@ -791,10 +861,72 @@ mod tests {",
+    "@@ -830,6 +962,75 @@ mod tests {",
+    "@@ -851,7 +1052,7 @@ mod tests {",
+    "@@ -1057,7 +1258,7 @@ mod tests {",
+    "@@ -1094,7 +1295,7 @@ mod tests {",
+    "@@ -1169,7 +1370,7 @@ mod tests {",
+    "@@ -1219,7 +1420,7 @@ mod tests {"
+   ]
+  },
+  {
+   "path": "src/notification/dispatch.rs",
+   "hunks": [
+    "@@ -174,6 +174,46 @@ impl<'a, H: HostPort + ?Sized, C: ReservationCheck + ?Sized> NativeWakeDispatche",
+    "@@ -303,12 +343,29 @@ impl<H: HostPort + ?Sized, C: ReservationCheck + ?Sized> NativeWakeDispatcher<'_",
+    "@@ -341,8 +398,9 @@ impl<H: HostPort + ?Sized, C: ReservationCheck + ?Sized> NativeWakeDispatcher<'_",
+    "@@ -428,11 +486,14 @@ impl<H: HostPort + ?Sized, C: ReservationCheck + ?Sized> NativeWakeDispatcher<'_",
+    "@@ -569,6 +630,8 @@ impl<H: HostPort + ?Sized, C: ReservationCheck + ?Sized> NativeWakeDispatcher<'_",
+    "@@ -624,6 +687,10 @@ impl<H: HostPort + ?Sized, C: ReservationCheck + ?Sized> NativeWakeDispatcher<'_",
+    "@@ -657,12 +724,6 @@ impl<H: HostPort + ?Sized, C: ReservationCheck + ?Sized> NativeWakeDispatcher<'_",
+    "@@ -695,14 +756,25 @@ impl<H: HostPort + ?Sized, C: ReservationCheck + ?Sized> NativeWakeDispatcher<'_",
+    "@@ -742,6 +814,14 @@ impl<H: HostPort + ?Sized, C: ReservationCheck + ?Sized> NativeWakeDispatcher<'_",
+    "@@ -831,6 +911,13 @@ impl<H: HostPort + ?Sized, C: ReservationCheck + ?Sized> NotificationPort"
+   ]
+  },
+  {
+   "path": "src/ports.rs",
+   "hunks": [
+    "@@ -2929,6 +2929,10 @@ pub struct WakeAttentionWitness {",
+    "@@ -3034,8 +3038,17 @@ impl WakeAttentionWitness {",
+    "@@ -3711,6 +3724,19 @@ pub trait StorePort: ModStoreReads + Send + Sync {",
+    "@@ -5190,7 +5216,7 @@ pub trait HostPort: Send + Sync {",
+    "@@ -5201,6 +5227,25 @@ pub trait HostPort: Send + Sync {",
+    "@@ -5629,6 +5674,17 @@ pub trait HookPullOutlook: Send + Sync {",
+    "@@ -5645,6 +5701,11 @@ pub trait NotificationPort: Send + Sync {"
+   ]
+  },
+  {
+   "path": "src/ports/wake_intents.rs",
+   "hunks": [
+    "@@ -21,6 +21,9 @@ pub struct WakeIntentPreparation {",
+    "@@ -143,9 +146,15 @@ pub struct WakeQueueBinding {"
+   ]
+  },
+  {
+   "path": "src/scheduler/mod.rs",
+   "hunks": [
+    "@@ -813,17 +813,24 @@ struct WakeRunnerState {",
+    "@@ -998,10 +1005,21 @@ impl<'a, S: WakePort + ?Sized, N: NotificationPort + ?Sized> WakeRunner<'a, S, N",
+    "@@ -1066,6 +1084,9 @@ impl<'a, S: WakePort + ?Sized, N: NotificationPort + ?Sized> WakeRunner<'a, S, N",
+    "@@ -1093,7 +1114,7 @@ impl<'a, S: WakePort + ?Sized, N: NotificationPort + ?Sized> WakeRunner<'a, S, N",
+    "@@ -1106,8 +1127,10 @@ impl<'a, S: WakePort + ?Sized, N: NotificationPort + ?Sized> WakeRunner<'a, S, N",
+    "@@ -1268,6 +1291,7 @@ impl<'a, S: WakePort + ?Sized, N: NotificationPort + ?Sized> WakeRunner<'a, S, N"
+   ]
+  },
+  {
+   "path": "src/service/delivery_pull.rs",
+   "hunks": [
+    "@@ -104,10 +104,21 @@ pub struct DeliveryPullState {",
+    "@@ -140,12 +151,24 @@ impl DeliveryPullState {",
+    "@@ -188,6 +211,23 @@ impl crate::ports::HookPullOutlook for DeliveryPullState {",
+    "@@ -917,6 +957,7 @@ impl DomainService {"
+   ]
+  },
+  {
+   "path": "src/service/kicks.rs",
+   "hunks": [
+    "@@ -209,6 +209,9 @@ pub const KNOWN_UNMAPPED: &[&str] = &["
+   ]
+  },
+  {
+   "path": "src/cli/site_capability.rs",
+   "hunks": [
+    "@@ -9,7 +9,7 @@ use super::caller_location::{CallerEnv, CallerSite, caller_continuity_key};",
+    "@@ -39,6 +39,23 @@ pub fn require_readonly<C: LocalClient + ?Sized>(",
+    "@@ -186,8 +203,8 @@ pub(crate) fn resolve_arm_key<C: LocalClient + ?Sized>(",
+    "@@ -311,6 +328,7 @@ mod tests {",
+    "@@ -377,6 +395,33 @@ mod tests {"
+   ]
+  },
+  {
+   "path": "src/protocol/capabilities.rs",
+   "hunks": [
+    "@@ -16,6 +16,9 @@ pub const BOOTSTRAP_GUARDED_RESOLUTION_V1: &str = \"handoff.bootstrap_guarded_res",
+    "@@ -101,6 +104,10 @@ pub const SEAT_READONLY_V1: &str = \"seat.readonly_v1\";",
+    "@@ -233,6 +240,7 @@ pub const ADVERTISED: &[&str] = &[",
+    "@@ -262,6 +270,7 @@ pub const ADVERTISED: &[&str] = &["
+   ]
+  },
+  {
+   "path": "src/protocol/authority.rs",
+   "hunks": [
+    "@@ -26,6 +26,12 @@ pub struct CallerClaim {",
+    "@@ -568,6 +574,7 @@ mod tests {",
+    "@@ -645,6 +652,7 @@ mod tests {",
+    "@@ -715,6 +723,7 @@ mod tests {"
+   ]
+  },
+  {
+   "path": "src/cli/doctor.rs",
+   "hunks": [
+    "@@ -264,6 +264,38 @@ fn held_names_report(node_dir: &std::path::Path) -> Vec<Value> {",
+    "@@ -1135,6 +1167,15 @@ fn report_captured(",
+    "@@ -1559,6 +1600,7 @@ pub(crate) fn render_debug_text_in(",
+    "@@ -1672,6 +1714,7 @@ pub(crate) fn render_text_in("
+   ]
+  },
+  {
+   "path": "src/cli/hook.rs",
+   "hunks": [
+    "@@ -1716,6 +1716,7 @@ fn locate_seat_for(",
+    "@@ -2331,6 +2332,7 @@ pub(super) fn watch_continuity("
+   ]
+  },
+  {
+   "path": "integrations/skill/SKILL.md",
+   "hunks": [
+    "@@ -21,7 +21,7 @@ Use `thread list --all --search TEXT` to discover existing threads, then explici",
+    "@@ -40,7 +40,7 @@ An ACK records **receipt only**: the top-level agent claims receipt of this exac"
+   ]
+  },
+  {
+   "path": "integrations/codex/README.md",
+   "hunks": [
+    "@@ -273,6 +273,12 @@ message settles it, attributed to that binding, without advancing its sibling's"
+   ]
+  },
+  {
+   "path": "src/harness/claude/permission_rules.rs",
+   "hunks": [
+    "@@ -66,6 +66,14 @@ mod tests {"
+   ]
+  },
+  {
+   "path": "src/harness/codex/permission_rules.rs",
+   "hunks": [
+    "@@ -84,4 +84,56 @@ mod tests {"
+   ]
+  },
+  {
+   "path": "src/cli/nudge_threshold.rs",
+   "hunks": [
+    "@@ -47,7 +47,7 @@ pub fn render_inert(seat: &SeatId) -> String {"
+   ]
+  },
+  {
+   "path": "src/app.rs",
+   "hunks": [
+    "@@ -2150,8 +2150,7 @@ where"
+   ]
+  },
+  {
+   "path": "docs/agent-usage.md",
+   "hunks": [
+    "@@ -184,6 +184,10 @@ Accepting the active invitation to a direct one-to-one thread preserves each bin"
+   ]
+  },
+  {
+   "path": "README.md",
+   "hunks": [
+    "@@ -93,6 +93,7 @@ Linux is experimental: x86_64 and agent harness sessions remain unverified until"
+   ]
+  },
+  {
+   "path": "CHANGELOG.md",
+   "hunks": [
+    "@@ -1,5 +1,11 @@"
+   ]
+  },
+  {
+   "path": "src/cli/commands.rs",
+   "hunks": [
+    "@@ -79,6 +79,8 @@ pub enum SeatSlot {",
+    "@@ -115,7 +117,7 @@ impl SeatSlot {",
+    "@@ -180,6 +182,10 @@ impl SeatSlot {",
+    "@@ -241,6 +247,7 @@ impl SeatSlot {",
+    "@@ -352,6 +359,15 @@ fn collect_seat_selectors(command: &Top) -> Vec<SeatSelectorArg> {",
+    "@@ -528,6 +544,8 @@ pub enum CliAction {",
+    "@@ -535,6 +553,46 @@ pub enum CliAction {",
+    "@@ -706,6 +764,7 @@ pub fn dispatch<B: CliBackend>(",
+    "@@ -1281,6 +1340,13 @@ enum Top {",
+    "@@ -1367,6 +1433,49 @@ enum DoctorSub {",
+    "@@ -2880,6 +2989,9 @@ where",
+    "@@ -2890,6 +3002,37 @@ where",
+    "@@ -4183,6 +4326,24 @@ fn parse_cli_in_registry("
+   ]
+  },
+  {
+   "path": "src/cli/mod.rs",
+   "hunks": [
+    "@@ -5,6 +5,7 @@ pub mod caller;",
+    "@@ -685,6 +686,12 @@ fn run_parsed_in_pane<W: Write>(",
+    "@@ -1523,6 +1530,9 @@ fn run_parsed_in_pane<W: Write>(",
+    "@@ -1829,6 +1839,21 @@ where",
+    "@@ -3268,6 +3293,18 @@ pub(crate) fn run_selected<C: LocalClient + ?Sized, W: Write>(",
+    "@@ -3602,6 +3639,7 @@ fn exact_check_in_replay(",
+    "@@ -4195,6 +4233,7 @@ fn caller_need(parsed: &commands::ParsedCli, paths: &NodePaths) -> Result<Caller",
+    "@@ -4263,8 +4302,43 @@ fn caller_need(parsed: &commands::ParsedCli, paths: &NodePaths) -> Result<Caller",
+    "@@ -5355,6 +5429,7 @@ pub fn run_cooperative<C: LocalClient + ?Sized, W: Write>(",
+    "@@ -5402,6 +5477,7 @@ pub fn run_cooperative<C: LocalClient + ?Sized, W: Write>(",
+    "@@ -5596,6 +5672,7 @@ pub fn run_cooperative<C: LocalClient + ?Sized, W: Write>("
+   ]
+  },
+  {
+   "path": "src/protocol/commands.rs",
+   "hunks": [
+    "@@ -48,6 +48,8 @@ pub enum Command {",
+    "@@ -140,6 +142,12 @@ pub enum Command {",
+    "@@ -1079,6 +1087,41 @@ pub struct NudgeThresholdQuery {",
+    "@@ -1401,6 +1444,8 @@ impl Command {",
+    "@@ -1871,6 +1916,10 @@ pub enum PermitMutation {",
+    "@@ -1879,6 +1928,8 @@ pub enum PermitMutation {",
+    "@@ -1911,6 +1962,13 @@ impl TryFrom<Command> for PermitMutation {",
+    "@@ -1936,6 +1994,7 @@ mod host_locator_tests {"
+   ]
+  },
+  {
+   "path": "AGENTS.md",
+   "hunks": [
+    "@@ -104,11 +104,14 @@ What we do today:",
+    "@@ -116,6 +119,7 @@ What we do today:",
+    "@@ -131,18 +135,21 @@ python3 scripts/wake-e2e.py --queue-proof     # opt in only in the owned test in"
+   ]
+  },
+  {
+   "path": "RELEASE.md",
+   "hunks": [
+    "@@ -33,23 +33,18 @@ Start ordinary push/PR CI on the candidate SHA alongside local qualification; on"
+   ]
+  },
+  {
+   "path": "src/store/archival.rs",
+   "hunks": [
+    "@@ -841,6 +841,7 @@ pub(crate) fn observation_ticket_with_registry("
+   ]
+  },
+  {
+   "path": "src/store/control/retirement.rs",
+   "hunks": [
+    "@@ -308,6 +308,7 @@ pub(crate) fn insert_retirement_job(",
+    "@@ -334,6 +335,7 @@ pub(crate) fn insert_replicated_retirement_job("
+   ]
+  },
+  {
+   "path": "src/store/mod.rs",
+   "hunks": [
+    "@@ -44,6 +44,7 @@ pub mod receipts;",
+    "@@ -1733,6 +1734,26 @@ impl StorePort for SqliteStore {",
+    "@@ -2077,6 +2098,12 @@ impl StorePort for SqliteStore {",
+    "@@ -4083,6 +4110,19 @@ mod cooperative_checkin_tests;",
+    "@@ -4280,6 +4320,20 @@ pub fn cooperative_permit_request("
+   ]
+  },
+  {
+   "path": "src/harness/registry.rs",
+   "hunks": [
+    "@@ -318,6 +318,7 @@ trait ErasedAdapter: Send + Sync {",
+    "@@ -571,6 +572,9 @@ impl<A: HarnessAdapter> ErasedAdapter for TypedAdapter<A> {",
+    "@@ -1235,6 +1239,12 @@ impl Registration {"
+   ]
+  },
+  {
+   "path": "src/host/native.rs",
+   "hunks": [
+    "@@ -1591,6 +1591,15 @@ impl HostPort for NativeCli {",
+    "@@ -1952,6 +1961,36 @@ fn cooperative_wake_ready(",
+    "@@ -1991,18 +2030,6 @@ fn cooperative_wake_ready(",
+    "@@ -2237,6 +2264,116 @@ impl NativeCli {",
+    "@@ -2393,8 +2530,8 @@ impl NativeCli {"
+   ]
+  },
+  {
+   "path": "scripts/release-qualify",
+   "hunks": [
+    "@@ -10,7 +10,6 @@ import argparse",
+    "@@ -30,87 +29,6 @@ def newest_release(table: Path) -> str:"
+   ]
+  },
+  {
+   "path": "src/store/schema.rs",
+   "hunks": [
+    "@@ -193,6 +193,21 @@ pub(crate) const NODE_DELTAS: &[NodeDelta] = &["
+   ]
+  }
+ ]
+}

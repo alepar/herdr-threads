@@ -1,0 +1,96 @@
+diff --git a/docs/superpowers/runs/2026-11-26-per-seat-config-side-wake/spike-side-identity.md b/docs/superpowers/runs/2026-11-26-per-seat-config-side-wake/spike-side-identity.md
+new file mode 100644
+index 000000000..ca6769392
+--- /dev/null
++++ b/docs/superpowers/runs/2026-11-26-per-seat-config-side-wake/spike-side-identity.md
+@@ -0,0 +1,90 @@
++# Spike ht-z41e.6: Codex root vs /side identity, concurrency, arrival and UI (S1-S4)
++
++Date: 2026-11-27. Installed binary exercised: `codex-cli 0.172.0` (historical observation, never a gate).
++
++## Method and deviations
++
++Live, real authenticated Codex TUI in an owned PTY, `--no-daemon`, workspace-write sandbox, scratch HOME and
++CODEX_HOME, private mode-0600 copy of the codex-2 `auth.json` (deleted afterwards; the copy did not refresh
++and the source file digest was unchanged: `private_auth_refreshed: false`, `source_auth_unchanged: true` in
++[run-3](evidence/run-3/side-results.json)). Probe: [side_spike.py](evidence/side_spike.py), reusing the
++2026-11-14 `Spike` harness. Its hook logs the full hook payload of SessionStart, UserPromptSubmit, PreToolUse,
++PostToolUse and Stop to `hooks.jsonl` (reproduced in `S1_all_events`). The `/side` root wake used the real
++`codex queue --thread <root id> --message "herdr-threads: wake up"` CLI.
++
++Deviations from the bead's setup, all deliberate: the owned PTY replaces an isolated Herdr session and
++workspace, and no herdr-threads daemon ran. S1-S4 are questions about what Codex emits and does, and the raw
++hook payload is exactly what the Codex adapter parses, so a daemon adds nothing. Nothing touched a Herdr server.
++A real binding row (`seat inspect`) was not captured; where S1 names an adapter field it is a hook payload
++field, and ht-z41e.7 must confirm the adapter persists it.
++
++Runs kept in `evidence/`: `run-2` (a failed attempt: the side turn produced no `Stop` within 90 s, see
++Concerns in the report) and `run-3` (complete, the source of every observation below). `run-1` died of a
++harness bug (the probe's own cleanup killed itself) and left no evidence. Credential identifiers were scrubbed
++from the captured `session_meta`. Leak check: [leak-check.txt](evidence/leak-check.txt), clean.
++
++## S1 identity: observed ([run-3](evidence/run-3/side-results.json), `S1_all_events`, `lone_root`, `after_side_open`)
++
++| Field | Root session | `/side` session |
++|---|---|---|
++| SessionStart `source` | `startup` (`resume` after `codex resume <root id>`) | `fork` |
++| `transcript_path` | non-null on **every** event (SessionStart, UserPromptSubmit, Stop) | `null` on **every** event (SessionStart, UserPromptSubmit, PreToolUse, PostToolUse, Stop) |
++| Rollout file in `CODEX_HOME/sessions/**` | yes, `session_meta` `source: cli`, `thread_source: user` | none: after the side opened and ran three turns the sessions tree held only the root rollout |
++| Session id | its own | its own, distinct; no parent id field in any payload |
++| Agent id/type fields | absent | absent |
++
++- The root is the session whose hook events carry a non-null `transcript_path`; the side is the one whose events
++  carry `transcript_path: null`. Unlike `source`, which only SessionStart carries, `transcript_path` is on every
++  event, so a binding created by a later event (the side's first hook seen after a daemon restart, say) is
++  classified the same way. SessionStart `source: fork` agrees and matches the 0.163.0 fixture
++  `tests/fixtures/codex-0.163.0-side/session-start-fork.json`.
++- Persistence: the side leaves no rollout, so it cannot be resumed. `codex resume <root id>` brought the root
++  back with the same id, a new SessionStart `source: resume` and the same non-null `transcript_path`. The
++  marker is stable across resume.
++- A lone root (no `/side` ever opened) carries the marker: its startup SessionStart and its first UserPromptSubmit
++  and Stop have non-null `transcript_path` (`lone_root`, `S1_all_events`).
++
++**Marker: `transcript_path` non-null (root) / null (side), on any hook payload; SessionStart `source: fork` as
++corroboration.** The adapter already validates that the key is present (`src/harness/codex.rs`, `contains_key`).
++
++## S2 concurrency: observed (`S2a_busy_side`, `S2a_after_release`, `S2b_S3_S4`)
++
++- (a) Side turn busy. The side ran a held tool (`python3 barrier.py`, PreToolUse at t=8.8 s, PostToolUse at
++  t=34.3 s, t=0 being the first hook). A `codex queue` to the root id returned at once. The root turn then started
++  (UserPromptSubmit `herdr-threads: wake up`, root session id, t=17.6 s) and completed (Stop at 19.1 s) **while
++  the side's tool was still running**. `side_stops_while_busy` is empty: the side turn was unaffected until its own
++  end. The queue was drained.
++- (b) Side displayed and idle. The same queue call started the root turn within seconds and it completed; see S3/S4.
++
++The queue transport therefore does not serialise a root turn behind a busy side turn. **The all-bindings-idle
++admission rule is not needed for the queue path and can be dropped for it**, provided the target is the root id
++(ht-z41e.7 owns the selection change). The rule still protects the native composer path, which types into
++whichever composer is displayed, and is untouched by this finding. One trial per case; no soak.
++
++## S3 arrival: observed (`S2b_S3_S4.events_since_queue`)
++
++The woken root turn's UserPromptSubmit carries the **root session id** (`01a21c31-e80d-...`), `prompt: herdr-threads:
++wake up` and the root's non-null `transcript_path`. `side_events_since_queue` is empty: no side hook fired for it.
++The same held both times (S2a and S2b). Arrival evidence from the root binding is therefore unambiguous.
++
++## S4 UI: observed (`S2b_S3_S4`, `S4_draft_submit`)
++
++With the side view displayed and a typed unsent draft `SIDE_DRAFT_7731` in the side composer:
++
++- The side view stayed displayed: the footer read `Side from main thread · main finished · ^/ to switch · ^c to close`
++  before and after the root turn.
++- The draft survived: it was in the screen text before and after, and a later Enter submitted it as a
++  UserPromptSubmit carrying the **side** session id with prompt exactly `SIDE_DRAFT_7731`.
++- The root turn completed in the background: its rollout grew from 29 to 38 lines and Stop fired, with the side
++  view unchanged.
++
++Screen capture is raw stripped terminal text (no emulator available), so the visual claims rest on those footer
++and draft strings plus the side-session submit, which is the stronger proof. No wake text reached the side composer.
++
++## Follow-ups for ht-z41e.7
++
++- Confirm the Codex adapter persists `transcript_path` nullness (or `fork`) in binding evidence; this spike
++  read hook payloads only.
++- The 2026-11-14 limits still apply to the queue path (not idempotent, retained marker after interruption).
++
++verdict: marker: transcript_path | busy-sibling rule: drop | ui: safe | lone root carries marker: yes

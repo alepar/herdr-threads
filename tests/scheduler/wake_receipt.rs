@@ -4,10 +4,12 @@
 use super::*;
 use crate::{
     ports::{HookPullOutlook, WakeTarget},
-    protocol::ids::BindingId,
+    protocol::ids::{BindingId, NativeSessionId},
     scheduler::SubmissionVerification,
 };
 
+/// The reservation instant the ladder store reports (`reserved_at_utc`), whatever the fake clock says.
+const RESERVED_AT_UTC: i64 = 100;
 const STEPS: [u64; 4] = [30_000, 60_000, 120_000, 300_000];
 
 /// Keeps the durable ladder columns a real store would return after each reservation.
@@ -18,6 +20,8 @@ struct LadderStore {
     targets: Mutex<Vec<&'static str>>,
     /// The invitation frontier's decision sequence: a larger one is a newer item.
     newest: AtomicU64,
+    /// The seat's `programmatic_wake` as the candidate's attention witness reports it.
+    programmatic: AtomicBool,
     /// A warning-only liveness fixture; ordinary tests keep their invitation source.
     warning_only: bool,
 }
@@ -29,6 +33,7 @@ impl LadderStore {
             reserved: AtomicU64::new(0),
             targets: Mutex::new(vec!["binding_a"]),
             newest: AtomicU64::new(1),
+            programmatic: AtomicBool::new(false),
             warning_only: false,
         }
     }
@@ -38,23 +43,26 @@ impl LadderStore {
     fn candidate(&self) -> WakeCandidate {
         let reserved = self.reserved.load(Ordering::SeqCst);
         let mut candidate = due_candidate();
-        candidate.attention_witness = Some(WakeAttentionWitness::from_complete(
-            "34750f98bd59fcfc946da45aaabe933b".into(),
-            SeatId::new("seat"),
-            1,
-            true,
-            false,
-            None,
-            0,
-            false,
-            LogicalAttentionFrontier {
-                invitation: Some(LogicalPublicationKey {
-                    decision_seq: self.newest.load(Ordering::SeqCst),
-                    event_offset: 0,
-                }),
-                ..Default::default()
-            },
-        ));
+        candidate.attention_witness = Some(
+            WakeAttentionWitness::from_complete(
+                "34750f98bd59fcfc946da45aaabe933b".into(),
+                SeatId::new("seat"),
+                1,
+                true,
+                false,
+                None,
+                0,
+                false,
+                LogicalAttentionFrontier {
+                    invitation: Some(LogicalPublicationKey {
+                        decision_seq: self.newest.load(Ordering::SeqCst),
+                        event_offset: 0,
+                    }),
+                    ..Default::default()
+                },
+            )
+            .with_programmatic_wake(self.programmatic.load(Ordering::SeqCst)),
+        );
         if self.warning_only {
             candidate.has_pending_invitation = false;
             candidate.actionable_warning_generation = Some(9);
@@ -392,6 +400,32 @@ fn a_newer_item_gets_its_own_wake_after_an_unreceived_one() {
     });
 }
 
+// Kills: a `programmatic_wake` flip that leaves the seat parked on its unreceived native wake
+// (ht-z41e.4): the flip changes how the seat may be woken, so the next due attempt is admitted
+// and reaches the transport choice, where the store reads the new flag (selection tests).
+#[test]
+fn programmatic_wake_flip_lifts_unreceived_and_the_next_attempt_queues() {
+    for flip_to in [true, false] {
+        run(Some(false), |drive, store, _| {
+            store.programmatic.store(!flip_to, Ordering::SeqCst);
+            assert_eq!(drive(), 1);
+            store.advance(STEPS[0] + 1);
+            assert_eq!(drive(), 0);
+            assert_eq!(
+                drain(&store.events),
+                ["reserve attempt-1", "typed", "unreceived seat attempt-1"]
+            );
+            // Same flag: still parked.
+            store.advance(STEPS[1]);
+            assert_eq!(drive(), 0);
+            assert!(drain(&store.events).is_empty());
+            store.programmatic.store(flip_to, Ordering::SeqCst);
+            assert_eq!(drive(), 1, "flip to {flip_to}");
+            assert_eq!(drain(&store.events), ["reserve attempt-2", "typed"]);
+        });
+    }
+}
+
 // Kills: a wake typed but seen held in the composer (then cleared on agy) being retyped at every
 // ladder step, and an OutcomeUnknown nobody saw typed ever being withheld.
 #[test]
@@ -420,61 +454,244 @@ fn a_held_wake_awaits_its_receipt_and_an_unverified_unknown_does_not() {
     });
 }
 
-struct QueueNotifier(WakeOutcome);
+/// A notifier reporting `transport`; a `Queue` one hands over `root` as the queued target.
+struct QueueNotifier {
+    outcome: WakeOutcome,
+    transport: crate::ports::WakeTransport,
+    root: Option<&'static str>,
+    typed: Arc<Mutex<Vec<String>>>,
+}
+impl QueueNotifier {
+    fn queued(outcome: WakeOutcome, root: &'static str, typed: Arc<Mutex<Vec<String>>>) -> Self {
+        Self {
+            outcome,
+            transport: crate::ports::WakeTransport::Queue,
+            root: Some(root),
+            typed,
+        }
+    }
+}
 impl NotificationPort for QueueNotifier {
     fn attempt_wake(
         &self,
         _: WakeReservation,
         _: &HostCallContext,
     ) -> Result<WakeOutcome, ApiError> {
-        Ok(self.0)
+        self.typed.lock().unwrap().push("typed".into());
+        Ok(self.outcome)
     }
     fn take_transport(&self, _: &WakeAttemptId) -> crate::ports::WakeTransport {
-        crate::ports::WakeTransport::Queue
+        self.transport
+    }
+    fn take_queue_root(&self, _: &WakeAttemptId) -> Option<NativeSessionId> {
+        self.root.map(NativeSessionId::new)
     }
 }
 
-#[test]
-fn queue_transport_never_awaits_generic_contact_or_marks_unreceived() {
-    for outcome in [WakeOutcome::Submitted, WakeOutcome::OutcomeUnknown] {
-        let events = Arc::new(Mutex::new(Vec::new()));
-        let store = LadderStore::new(events);
-        let notifier = QueueNotifier(outcome);
-        let contacts = Contacts {
-            contact: Mutex::new(Some(false)),
-            asked: Mutex::new(Vec::new()),
-        };
-        let mut runner = WakeRunner::new(&store, &notifier, RetryConfig::default(), daemon_boot());
-        runner.hook_pull = &contacts;
-        assert_eq!(
-            runner
-                .try_candidate(&store.candidate(), &budget(&store))
-                .unwrap(),
-            Some(outcome)
-        );
-        assert!(
-            runner.state.lock().unwrap().awaiting.is_empty(),
-            "queue submission has no native composer contact receipt"
-        );
-        store.advance(STEPS[0] + 1);
-        assert_eq!(
-            runner
-                .try_candidate(&store.candidate(), &budget(&store))
-                .unwrap(),
-            Some(outcome)
-        );
-        *contacts.contact.lock().unwrap() = Some(true);
-        assert!(contacts.asked.lock().unwrap().is_empty());
-        assert!(
-            store
-                .events
-                .lock()
-                .unwrap()
-                .iter()
-                .all(|event| !event.starts_with("unreceived"))
-        );
+/// The real per-seat and per-(seat, session) contact book as the scheduler's outlook.
+struct Book(crate::service::delivery_pull::DeliveryPullState);
+impl HookPullOutlook for Book {
+    fn contacted_since(&self, seat: &SeatId, since: UtcMillis) -> Option<bool> {
+        self.0.contacted_since(seat, since)
+    }
+    fn contacted_since_session(
+        &self,
+        seat: &SeatId,
+        session: &NativeSessionId,
+        since: UtcMillis,
+    ) -> Option<bool> {
+        self.0.contacted_since_session(seat, session, since)
     }
 }
+
+/// Reserves one wake through `notifier`, advances to the first retry and lets `contact` record a
+/// call (seat, session) after the reservation; returns what the retry then did.
+fn queued_retry(
+    notifier: QueueNotifier,
+    contact: &[&'static str],
+    test: impl FnOnce(&dyn Fn() -> u16, &LadderStore, &Mutex<Vec<String>>),
+) {
+    let events = Arc::new(Mutex::new(Vec::new()));
+    let store = LadderStore::new(events.clone());
+    let due = FakeDeadlinePort {
+        clock: store.clock.clone(),
+        due_calls: AtomicU64::new(0),
+    };
+    let book = Book(Default::default());
+    let scheduler = Scheduler::new(
+        "i".into(),
+        &due,
+        &store,
+        &notifier,
+        RetryConfig::default(),
+        daemon_boot(),
+    )
+    .with_hook_pull(&book);
+    let drive = || scheduler.drive_wakes(&budget(&store)).unwrap().attempted;
+    assert_eq!(drive(), 1);
+    assert_eq!(drain(&events), ["reserve attempt-1"]);
+    store.advance(10);
+    for session in contact {
+        book.0.record_contact(
+            &SeatId::new("seat"),
+            &NativeSessionId::new(*session),
+            UtcMillis(RESERVED_AT_UTC + 50),
+        );
+    }
+    store.advance(STEPS[0]);
+    test(&drive, &store, &events);
+}
+
+// Kills: a queued wake settled, or its `unreceived` record lifted, by a `/side` session of the
+// same seat (race R5: side contact is not root arrival), and a retype loop it would re-arm.
+#[test]
+fn a_queued_root_wake_with_only_side_contact_is_unreceived_and_not_retyped() {
+    let typed = Arc::new(Mutex::new(Vec::new()));
+    let notifier = QueueNotifier::queued(WakeOutcome::Submitted, "root", typed.clone());
+    queued_retry(notifier, &["side"], |drive, store, events| {
+        assert_eq!(drive(), 0, "side contact does not settle the queued wake");
+        assert_eq!(drain(events), ["unreceived seat attempt-1"]);
+        for _ in 0..3 {
+            store.advance(STEPS[3]);
+            assert_eq!(drive(), 0);
+        }
+        assert!(drain(events).is_empty(), "marked once, never retyped");
+        assert_eq!(typed.lock().unwrap().len(), 1, "one wake typed in all");
+    });
+}
+
+// Kills: a queued root wake never awaited (the old behaviour) and one that no contact from its
+// own session can settle. Any binding carrying the root's native session UUID counts, so a root
+// that re-registered under a new binding id between reservation and contact still settles it.
+#[test]
+fn root_session_contact_settles_a_queued_wake_whatever_binding_made_it() {
+    let typed = Arc::new(Mutex::new(Vec::new()));
+    let notifier = QueueNotifier::queued(WakeOutcome::Submitted, "root", typed);
+    queued_retry(notifier, &["side", "root"], |drive, _, events| {
+        assert_eq!(drive(), 1, "root contact settles; the ladder continues");
+        assert_eq!(drain(events), ["reserve attempt-2"]);
+    });
+}
+
+// Kills: judging a native wake on one session only: any binding of the seat receives it.
+#[test]
+fn a_native_wake_settles_on_any_binding_contact() {
+    let typed = Arc::new(Mutex::new(Vec::new()));
+    let notifier = QueueNotifier {
+        outcome: WakeOutcome::Submitted,
+        transport: crate::ports::WakeTransport::Composer,
+        root: None,
+        typed,
+    };
+    queued_retry(notifier, &["side"], |drive, _, events| {
+        assert_eq!(drive(), 1);
+        assert_eq!(drain(events), ["reserve attempt-2"]);
+    });
+}
+
+// Kills: a queue-selected attempt that fell back to native (stale authority, or `programmatic_wake`
+// flipped off before arm; `programmatic_wake_flipped_off_before_arm_refuses_no_effect_and_falls_back_native`
+// pins the dispatch, with no root left) keeping root scope: its receipt is seat-scoped, and a
+// silent seat is marked `unreceived`.
+#[test]
+fn a_queue_selected_attempt_that_fell_back_to_native_is_seat_scoped() {
+    let typed = Arc::new(Mutex::new(Vec::new()));
+    let notifier = QueueNotifier {
+        outcome: WakeOutcome::Submitted,
+        transport: crate::ports::WakeTransport::Composer,
+        root: None,
+        typed: typed.clone(),
+    };
+    queued_retry(notifier, &[], |drive, _, events| {
+        assert_eq!(drive(), 0);
+        assert_eq!(drain(events), ["unreceived seat attempt-1"]);
+    });
+}
+
+/// A queue attempt of `outcome` handing `root` (none: the dispatcher left no root), no contact at all.
+fn silent_queue(
+    outcome: WakeOutcome,
+    root: Option<&'static str>,
+    transport: crate::ports::WakeTransport,
+) -> (u16, Vec<String>, usize) {
+    let typed = Arc::new(Mutex::new(Vec::new()));
+    let notifier = QueueNotifier {
+        outcome,
+        transport,
+        root,
+        typed: typed.clone(),
+    };
+    let mut seen = None;
+    queued_retry(notifier, &[], |drive, _, events| {
+        let attempted = drive();
+        seen = Some((attempted, drain(events)));
+    });
+    let (attempted, events) = seen.unwrap();
+    let typed = typed.lock().unwrap().len();
+    (attempted, events, typed)
+}
+
+// Kills: awaiting a queue attempt whose root is unknown (`|| root_session.is_some()` dropped, or
+// every Queue attempt awaited): nothing can judge it, so it would sit `unreceived` forever. The
+// control hands a root and is judged.
+#[test]
+fn a_queue_attempt_with_an_unknown_root_is_not_awaited_and_the_ladder_retries() {
+    use crate::ports::WakeTransport::Queue;
+    let (attempted, events, typed) = silent_queue(WakeOutcome::Submitted, None, Queue);
+    assert_eq!(attempted, 1, "an unjudgeable attempt retries");
+    assert_eq!(events, ["reserve attempt-2"]);
+    assert_eq!(typed, 2);
+    let (attempted, events, typed) = silent_queue(WakeOutcome::Submitted, Some("root"), Queue);
+    assert_eq!(
+        attempted, 0,
+        "control: the same attempt with its root is awaited"
+    );
+    assert_eq!(events, ["unreceived seat attempt-1"]);
+    assert_eq!(typed, 1);
+}
+
+// Kills: arming a queued OutcomeUnknown attempt (`armed: true` for it): its landing is unproven,
+// so the silence is not judged and the ladder retries. The control is the same root submitted.
+#[test]
+fn a_queued_outcome_unknown_attempt_with_a_root_is_not_judged_silent() {
+    use crate::ports::WakeTransport::Queue;
+    let (attempted, events, typed) = silent_queue(WakeOutcome::OutcomeUnknown, Some("root"), Queue);
+    assert_eq!(attempted, 1, "not armed: the retry proceeds");
+    assert_eq!(events, ["reserve attempt-2"]);
+    assert_eq!(typed, 2);
+    let (attempted, events, _) = silent_queue(WakeOutcome::Submitted, Some("root"), Queue);
+    assert_eq!(
+        attempted, 0,
+        "control: Submitted with the same root is judged"
+    );
+    assert_eq!(events, ["unreceived seat attempt-1"]);
+}
+
+// Kills: reading the queue root whatever the transport (`take_queue_root` called for a Composer
+// attempt): a queue-selected attempt that fell back to native reports Composer, and a notifier
+// that still holds a root must not make its receipt root-scoped. Side-only contact settles it; the
+// control is the same contact and root on a Queue attempt, which is not settled.
+#[test]
+fn a_native_fallback_ignores_a_lingering_queue_root_and_stays_seat_scoped() {
+    let typed = Arc::new(Mutex::new(Vec::new()));
+    let fallback = QueueNotifier {
+        outcome: WakeOutcome::Submitted,
+        transport: crate::ports::WakeTransport::Composer,
+        root: Some("root"),
+        typed,
+    };
+    queued_retry(fallback, &["side"], |drive, _, events| {
+        assert_eq!(drive(), 1, "any binding of the seat settles a native wake");
+        assert_eq!(drain(events), ["reserve attempt-2"]);
+    });
+    let typed = Arc::new(Mutex::new(Vec::new()));
+    let queued = QueueNotifier::queued(WakeOutcome::Submitted, "root", typed);
+    queued_retry(queued, &["side"], |drive, _, events| {
+        assert_eq!(drive(), 0, "control: the root's own contact is needed");
+        assert_eq!(drain(events), ["unreceived seat attempt-1"]);
+    });
+}
+
 /// Actual contact tracking with a deliberately empty ordinary pull outlook. This exercises the
 /// actionable-warning exception rather than making a fake pending ordinary message force retry.
 struct WarningContacts(crate::service::delivery_pull::DeliveryPullState);
@@ -542,9 +759,11 @@ fn late_notice_successor_retries_same_warning_frontier_after_contact() {
             Some(false)
         );
         if heard {
-            contacts
-                .0
-                .record_contact(&SeatId::new("seat"), store.clock.utc_now());
+            contacts.0.record_contact(
+                &SeatId::new("seat"),
+                &NativeSessionId::new("session"),
+                store.clock.utc_now(),
+            );
             assert_eq!(
                 contacts.contacted_since(&SeatId::new("seat"), store.clock.utc_now()),
                 Some(true)

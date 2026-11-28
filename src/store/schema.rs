@@ -193,6 +193,21 @@ pub(crate) const NODE_DELTAS: &[NodeDelta] = &[
             sql_after: include_str!("../../migrations/node/0020_host_session_continuity_after.sql"),
         }),
     },
+    NodeDelta {
+        version: 21,
+        sql: include_str!("../../migrations/node/0021_seat_config.sql"),
+        rebuild: None,
+    },
+    NodeDelta {
+        version: 22,
+        sql: include_str!("../../migrations/node/0022_side_queue_routing.sql"),
+        rebuild: None,
+    },
+    NodeDelta {
+        version: 23,
+        sql: include_str!("../../migrations/node/0023_binding_auxiliary_session.sql"),
+        rebuild: None,
+    },
 ];
 
 /// Latest `PRAGMA user_version` supported by this binary's production schema.

@@ -265,6 +265,13 @@ pub trait HarnessAdapter: Send + Sync + 'static {
     ) -> Option<super::wake::WakeReplayScope> {
         self.wake_control()?.replay_scope_for_session(session).ok()
     }
+    /// The index of the process's root session among `candidates`: every connected top-level
+    /// binding of one seat, all of one harness process (same pid, start stamp and kernel boot),
+    /// as canonical binding evidence. `None` (the default): this harness names no root, and queue
+    /// wake selection stays native when more than one binding shares the process.
+    fn wake_process_root(&self, _candidates: &[RootCandidate<'_>]) -> Option<usize> {
+        None
+    }
     /// Native wake text selected from canonical evidence for the reached binding.
     /// Missing evidence keeps the policy's conservative default. This selects text only,
     /// never delivery eligibility or receipt authority.
@@ -610,6 +617,19 @@ pub enum InstallObservation {
     Unsupported(UnsupportedOperation),
 }
 pub use super::runtime::RuntimeIdentity;
+
+/// One connected top-level binding of a seat, as canonical binding evidence (never a hint).
+#[derive(Debug, Clone, Copy)]
+pub struct RootCandidate<'a> {
+    pub native_session: &'a crate::protocol::ids::NativeSessionId,
+    pub observation_provenance: &'a str,
+    /// The binding was enrolled as a concurrent session of a process that already held one (a
+    /// genuine independent lifecycle session, `CheckInMode::Fork`).
+    pub concurrent_session: bool,
+    /// The binding's session was marked auxiliary by hook evidence (a `/side` session reads this
+    /// way); sticky, never cleared by later evidence.
+    pub auxiliary_session: bool,
+}
 pub struct AdmissionRequest {
     pub installed: InstallObservation,
     pub input: Option<HookInput>,
@@ -751,6 +771,8 @@ pub struct EventMetadata {
     /// A turn-end check-in (end-of-turn delivery): it checks in like a tool boundary only when
     /// the daemon says the seat holds an item that would wake it idle, else renders nothing.
     pub turn_end: bool,
+    /// The native payload marked the session auxiliary (see `LifecycleEvent::auxiliary_session`).
+    pub auxiliary_session: bool,
 }
 /// A change of a binding's hook turn state (N2-turn), reported by a harness's hook events.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
@@ -1457,6 +1479,14 @@ pub trait ComposerPolicy: Send + Sync {
     fn wants_styled(&self, _detection: &super::composer::ComposerRead) -> bool {
         false
     }
+    /// Whether `text`, read from a composer that is not known empty, is a placeholder an idle view
+    /// draws with nothing typed (not the wake target's own empty composer, which reads `Empty`).
+    /// Native typing never consults this: such a composer still reads as text and defers a typed
+    /// wake. Only the programmatic (queue) admission does, because the queue never types into or
+    /// clears the composer. Default: no such placeholder.
+    fn is_idle_placeholder(&self, _text: &str) -> bool {
+        false
+    }
     /// The composer of a styled `recent` screen; `None` keeps the detection read.
     fn read_styled(
         &self,
@@ -1823,6 +1853,7 @@ mod tests {
             metadata: EventMetadata {
                 native_turn_id: None,
                 turn_end: false,
+                auxiliary_session: false,
                 enrollment_witness: None,
                 context_source: "PreToolUse".into(),
                 callback_deadline: None,
@@ -1864,6 +1895,7 @@ mod tests {
             metadata: EventMetadata {
                 native_turn_id: None,
                 turn_end: false,
+                auxiliary_session: false,
                 enrollment_witness: None,
                 context_source: "SessionStart".into(),
                 callback_deadline: None,
@@ -2157,6 +2189,7 @@ impl DecodedEvent {
                 native_event: native_event.into(),
                 shape_fields: vec![],
                 agent_id: event.agent_id,
+                auxiliary_session: event.auxiliary_session,
             },
             delivery: if stop {
                 DeliveryEligibility::Ineligible
@@ -2209,6 +2242,7 @@ impl DecodedEvent {
             event_id: self.event_id.clone(),
             capability: self.metadata.capability,
             agent_id: self.metadata.agent_id.clone(),
+            auxiliary_session: self.metadata.auxiliary_session,
         })
     }
 }

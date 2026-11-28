@@ -1,0 +1,22 @@
+diff --git a/docs/superpowers/runs/2026-11-26-per-seat-config-side-wake/coverage-round-2-requirements.md b/docs/superpowers/runs/2026-11-26-per-seat-config-side-wake/coverage-round-2-requirements.md
+new file mode 100644
+index 000000000..660a5dc0f
+--- /dev/null
++++ b/docs/superpowers/runs/2026-11-26-per-seat-config-side-wake/coverage-round-2-requirements.md
+@@ -0,0 +1,16 @@
++R1 (B1, B10) Queue (programmatic) wake is enabled per seat; the node-level programmatic_wake setting has no effect after upgrade (no migration onto seats) and an existing node file with it still loads.
++R2 (B2) A generic per-seat key=value config exists, stored and decided by the daemon, with a typed registry of supported keys (description, values, default, write tier).
++R3 (B3, B6) Every caller, including non-human and subagents, can read any seat's config values.
++R4 (B4, B5) A command lists every supported per-seat key with what it does, its possible values, default and write tier, so an agent told in prose can find and set the right key with the right command.
++R5 (B6, B7) Agent-tier keys, including nudge threshold, are writable through the non-human path on the caller's own seat.
++R6 (B6, B10) Human-tier keys (programmatic_wake) are writable only through `ht human config seat set`, which may target any local seat; the agent path refuses them and names the human command.
++R7 (B7, B10) nudge_threshold is a key over the existing seat column; nudge-threshold and wake-on keep working unchanged.
++R8 (B8) With a used /side chat in the same Codex process, an owed idle wake reaches the root session through the queue by exact session UUID, never the side session.
++R9 (B8) Live spikes establish root vs side identity, concurrency, arrival identity and UI effects, and their answers drive the routing rules.
++R10 (B9) Native wake never types into a displayed /side chat; it defers.
++R11 (B8, B10) The new routing and per-seat enablement are qualified live (side-queue/group and existing queue-proof cases) and release tooling enables queue wake per seat.
++R12 TRUST-POLICY records the seat-config write rules and the accepted limit of the human tier in the same commit as the code.
++R13 (R-new, both reviewers; B6) The harness permission ask-rules setup installs cover `ht human config seat set` and `herdr-threads human config seat set`.
++R14 (R-new, both reviewers) A CLI against a daemon without seat.config_v1 is refused with a stated one-line message.
++R15 (R-new, both reviewers; B1) User docs and CHANGELOG describe the per-seat key and that node programmatic_wake no longer takes effect.
++R16 (R-new, reviewer B; B9) Native defer on a displayed /side chat with queue off is qualified live.

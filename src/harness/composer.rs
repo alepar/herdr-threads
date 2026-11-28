@@ -16,8 +16,9 @@
 //!   asks for a styled one (`ComposerPolicy::wants_styled`), where dim-only
 //!   text is empty and unstyled text typed (`docs/evidence/ansi-composer/`).
 //! - Codex: a `› ` row, then two-space rows until a blank row (the footer
-//!   follows it). Empty is `› Ask Codex to do anything` or the `/side`
-//!   placeholder `› Ask a follow-up question`.
+//!   follows it). Empty is `› Ask Codex to do anything`; the `/side`
+//!   placeholder `› Ask a follow-up question` reads as text (a side chat is not
+//!   the wake target).
 //!
 //! A soft wrap cannot be told from a hard newline (rows are measured in display
 //! columns, not characters), an image placeholder does

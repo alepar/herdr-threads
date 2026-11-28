@@ -1,0 +1,26 @@
+diff --git a/src/store/schema.rs b/src/store/schema.rs
+index 82d519a40..81820ecdf 100644
+--- a/src/store/schema.rs
++++ b/src/store/schema.rs
+@@ -185,6 +185,21 @@ pub(crate) const NODE_DELTAS: &[NodeDelta] = &[
+             sql_after: include_str!("../../migrations/node/0019_seat_resurrect_after.sql"),
+         }),
+     },
++    NodeDelta {
++        version: 20,
++        sql: include_str!("../../migrations/node/0020_seat_config.sql"),
++        rebuild: None,
++    },
++    NodeDelta {
++        version: 21,
++        sql: include_str!("../../migrations/node/0021_side_queue_routing.sql"),
++        rebuild: None,
++    },
++    NodeDelta {
++        version: 22,
++        sql: include_str!("../../migrations/node/0022_binding_auxiliary_session.sql"),
++        rebuild: None,
++    },
+ ];
+ 
+ /// Latest `PRAGMA user_version` supported by this binary's production schema.

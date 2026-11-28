@@ -1,0 +1,12 @@
+diff --git a/tests/protocol/watch.rs b/tests/protocol/watch.rs
+index 3d347aad1..6887cc245 100644
+--- a/tests/protocol/watch.rs
++++ b/tests/protocol/watch.rs
+@@ -33,6 +33,7 @@ fn message() -> WatchMessage {
+ 
+ fn claim(role: CallerRole) -> CallerClaim {
+     CallerClaim {
++        auxiliary_session: false,
+         host: crate::test_support::test_host_locator(),
+         instance: "11111111111141118111111111111111".into(),
+         seat: SeatId::new("s1"),

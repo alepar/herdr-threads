@@ -1,0 +1,47 @@
+diff --git a/src/store/bindings.rs b/src/store/bindings.rs
+index 25736337e..6e5836978 100644
+--- a/src/store/bindings.rs
++++ b/src/store/bindings.rs
+@@ -1212,6 +1212,7 @@ pub fn registered_child_claim(
+ ) -> Result<CallerClaim, ApiError> {
+     let agent = AgentId::parse(child.as_str().to_owned()).map_err(|_| subagent_shape_error())?;
+     Ok(CallerClaim {
++        auxiliary_session: false,
+         role: crate::protocol::authority::CallerRole::Subagent,
+         native_session: child.clone(),
+         agent_id: Some(agent),
+@@ -1466,9 +1467,34 @@ pub(crate) fn resolve_claim_with_hooks(
+     if request.claim.harness != crate::protocol::authority::Harness::Human {
+         end_human_binding(tx, &request.claim.seat, now)?;
+     }
++    mark_auxiliary(tx, request.claim, &resolution)?;
+     Ok(resolution)
+ }
+ 
++/// Hook evidence that the claim's session is auxiliary (`CallerClaim::auxiliary_session`) sets the
++/// binding's sticky `auxiliary_session` bit (ht-z41e.21). It never writes 0, never touches
++/// `concurrent_session`, and ignores a subagent or person claim: only queue root selection reads it.
++fn mark_auxiliary(
++    tx: &Connection,
++    claim: &CallerClaim,
++    resolution: &Resolution,
++) -> Result<(), ApiError> {
++    let binding = resolution.binding();
++    if !claim.auxiliary_session
++        || claim.is_subagent()
++        || claim.harness == crate::protocol::authority::Harness::Human
++        || binding.role != BindingRole::TopLevel
++    {
++        return Ok(());
++    }
++    tx.execute(
++        "UPDATE occupant_bindings SET auxiliary_session=1 WHERE binding_id=?1 AND auxiliary_session=0",
++        [binding.binding_id.as_str()],
++    )
++    .map_err(store_error)?;
++    Ok(())
++}
++
+ /// Whether a plain (non-lifecycle) call may reconnect `row` (TRUST-POLICY A4, spec §3). Only a
+ /// binding disconnected because its process exited or by the V32 migration comes back on a plain
+ /// call; a binding disconnected as superseded, by an end event, by seat retirement or unresolve,

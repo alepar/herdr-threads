@@ -60,6 +60,7 @@ fn inspect_on(store: &SqliteStore, instance: &str, seat: &SeatId) -> SeatInspect
 /// The fixture seat's own registered binding (`seed_seat`).
 fn claim(seat: &str) -> CallerClaim {
     CallerClaim {
+        auxiliary_session: false,
         host: crate::test_support::test_host_locator(),
         instance: INSTANCE.into(),
         seat: SeatId::new(seat),
@@ -254,6 +255,7 @@ impl Fx {
             .unwrap();
         read_cursors::seed(&db, &BindingId::new(binding), SeedMode::Fresh).unwrap();
         CallerClaim {
+            auxiliary_session: false,
             binding_generation: generation as u64,
             native_session: NativeSessionId::new("fresh"),
             execution: ExecutionId::new(execution),

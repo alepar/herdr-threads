@@ -1,0 +1,54 @@
+diff --git a/src/harness/bridge.rs b/src/harness/bridge.rs
+index b8934f503..d096784c0 100644
+--- a/src/harness/bridge.rs
++++ b/src/harness/bridge.rs
+@@ -270,6 +270,7 @@ pub fn caller_claim(
+         _ => return Err(ContextError::Invalid),
+     };
+     Ok(CallerClaim {
++        auxiliary_session: false,
+         instance: context.instance.to_string(),
+         host,
+         seat: SeatId::parse(context.seat.clone()).map_err(|_| ContextError::Invalid)?,
+@@ -425,7 +426,9 @@ pub fn prepare_event_as(
+                         expected_binding_generation: seed.binding_generation,
+                     },
+                 };
+-                Ok((contexts.claim(&next).map_err(context_io)?, mode))
++                let mut claim = contexts.claim(&next).map_err(context_io)?;
++                claim.auxiliary_session = event.auxiliary_session;
++                Ok((claim, mode))
+             },
+         )?;
+         pending_request(journal, &reference)
+@@ -506,7 +509,9 @@ pub fn prepare_qualified_turn(
+                             expected_binding_generation: seed.binding_generation,
+                         },
+                     };
+-                    Ok((contexts.claim(&next).map_err(context_io)?, mode))
++                    let mut claim = contexts.claim(&next).map_err(context_io)?;
++                    claim.auxiliary_session = event.auxiliary_session;
++                    Ok((claim, mode))
+                 },
+             )?;
+             pending_request(journal, &reference)
+@@ -564,6 +569,8 @@ pub fn decode_request(request: &PendingCheckIn) -> Result<Command, ContextError>
+     // the frozen claim keeps the one it was prepared with.
+     let mut frozen = check.claim.clone();
+     frozen.liveness = None;
++    // The auxiliary-session evidence belongs to the event, not to the context the claim rebuilds from.
++    frozen.auxiliary_session = false;
+     if frozen != caller_claim(&request.context, check.claim.host.clone())?
+         || check.operation.as_str() != request.operation_id.to_string()
+         || check.mode != mode
+@@ -633,8 +640,9 @@ fn cached_event<C: LocalClient + ?Sized>(
+     }
+     let mut api_error = None;
+     let response = contexts.dispatch(&event.event_id, &mut |pending: &PendingCheckIn| {
+-        let command = decode_request(pending)?;
++        let mut command = decode_request(pending)?;
+         let budget = observed_budget(turn, pending.mode, clock)?;
++        crate::cli::site_capability::drop_unadvertised_auxiliary(&mut command, client, &budget);
+         if let Err(error) = crate::cli::site_capability::require_readonly(&command, client, &budget)
+         {
+             let detail = error.detail.clone();

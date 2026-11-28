@@ -1,0 +1,12 @@
+diff --git a/tests/cli/golden_contract.rs b/tests/cli/golden_contract.rs
+index 507c3816b..c5be817b8 100644
+--- a/tests/cli/golden_contract.rs
++++ b/tests/cli/golden_contract.rs
+@@ -290,6 +290,7 @@ mod fixtures {
+         CheckInResult {
+             context_disposition: CheckInContextDisposition::Current,
+             context: CallerClaim {
++                auxiliary_session: false,
+                 host: crate::test_support::test_host_locator(),
+                 instance: "instance-1".into(),
+                 seat: SeatId::new("seat-a"),

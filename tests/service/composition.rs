@@ -634,6 +634,7 @@ fn explicit_cooperative_cli_check_in_reaches_elected_service_over_socket() {
             // The execution is no longer part of a call's identity (ht-54r.3); a claim from a
             // different mapping generation is what the daemon fences.
             claim: herdr_threads::protocol::authority::CallerClaim {
+                auxiliary_session: false,
                 host: claim_host.clone(),
                 binding_generation: prior.binding_generation + 1,
                 ..prior.clone()
@@ -700,6 +701,7 @@ fn explicit_cooperative_cli_check_in_reaches_elected_service_over_socket() {
     assert!(contexts.current().unwrap().is_none());
     // Another caller advances the service: a direct lifecycle CheckIn of a different session.
     let next_claim = herdr_threads::protocol::authority::CallerClaim {
+        auxiliary_session: false,
         host: claim_host.clone(),
         native_session: herdr_threads::protocol::ids::NativeSessionId::new("direct-successor"),
         execution: herdr_threads::protocol::ids::ExecutionId::new(Uuid::new_v4().to_string()),

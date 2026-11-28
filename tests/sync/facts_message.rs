@@ -976,6 +976,7 @@ impl Sender {
             deadline_millis: deadline,
             operation: OperationId::new(operation),
             claim: CallerClaim {
+                auxiliary_session: false,
                 host: herdr_threads::test_support::test_host_locator(),
                 instance: Self::INSTANCE.into(),
                 seat: self.author.clone(),

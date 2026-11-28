@@ -1,0 +1,217 @@
+diff --git a/scripts/wake_e2e_selftest.py b/scripts/wake_e2e_selftest.py
+index 171690188..2a0421706 100644
+--- a/scripts/wake_e2e_selftest.py
++++ b/scripts/wake_e2e_selftest.py
+@@ -2057,7 +2057,7 @@ class HarnessMode(TempDir):
+             if argv[:2] == ("daemon", "ensure"):
+                 settings = json.loads((r.state / "node/settings.json").read_text())
+                 self.assertIs(settings["sync"]["discover"], False)
+-                self.assertIs(settings["programmatic_wake"], bool(queue_proof))
++                self.assertNotIn("programmatic_wake", settings)
+                 self.assertEqual(stat.S_IMODE((r.state / "node/settings.json").stat().st_mode), 0o600)
+             calls.append((argv, dict(env or {})))
+             return ""
+@@ -2065,18 +2065,22 @@ class HarnessMode(TempDir):
+         r.scratch()
+         return r, calls
+ 
+-    def test_required_queue_proof_enables_only_owned_settings_before_daemon(self):
++    def test_queue_proof_never_writes_programmatic_wake_to_node_settings(self):
+         operator = self.tmp / "operator/node/settings.json"
+         operator.parent.mkdir(parents=True)
+         original = b'{"programmatic_wake":false,"sentinel":"operator-private"}'
+         operator.write_bytes(original)
+-        with mock.patch.dict(os.environ, {"HERDR_PLUGIN_STATE_DIR": str(operator.parent.parent)}):
+-            r, calls = self.scratch_run("macos", harness=("codex",), queue_proof=True)
+-        self.assertEqual(operator.read_bytes(), original)
+-        settings = json.loads((r.state / "node/settings.json").read_text())
+-        self.assertIs(settings.get("programmatic_wake"), True)
+-        self.assertNotIn("sentinel", settings)
+-        self.assertTrue(any(argv[:2] == ("daemon", "ensure") for argv, _ in calls))
++        for queue_proof in (False, True):
++            with self.subTest(queue_proof=queue_proof):
++                shutil.rmtree(self.tmp / "root", ignore_errors=True)
++                shutil.rmtree(self.tmp / "src", ignore_errors=True)
++                with mock.patch.dict(os.environ, {"HERDR_PLUGIN_STATE_DIR": str(operator.parent.parent)}):
++                    r, calls = self.scratch_run("macos", harness=("codex",), queue_proof=queue_proof)
++                self.assertEqual(operator.read_bytes(), original)
++                settings = json.loads((r.state / "node/settings.json").read_text())
++                self.assertEqual(settings, {"sync": {"discover": False}})
++                self.assertTrue(any(argv[:2] == ("daemon", "ensure") for argv, _ in calls))
++                self.assertFalse(any(argv[:3] == ("config", "seat", "set") for argv, _ in calls))
+ 
+     def test_shim_logs_each_call_for_the_extra_inbox_check(self):
+         with Env(ANTHROPIC_API_KEY=FAKE_API_KEY):
+@@ -3734,6 +3738,127 @@ class QueueQualificationParsing(unittest.TestCase):
+             parsed_args(["--queue-proof", "--harness", "claude"])
+         self.assertEqual(refused.exception.code, 2)
+ 
++class SideQueueCases(TempDir):
++    """ht-z41e.8: side-queue (queue proof required) and side-native-defer (queue off), and the side cases'
++    expectations under both queue modes."""
++    snapshot = QueueSamplerLifetime.snapshot
++    recipient = QueueSamplerLifetime.recipient
++
++    def test_new_cases_are_opt_in_and_run_on_hooked_codex_at_t0_only(self):
++        for case in W.SIDE_QUEUE_CASES + W.SIDE_DEFER_CASES:
++            self.assertNotIn(case, W.CASES)
++            self.assertNotIn(case, W.SIDE_CASES)
++            for harness, threshold, plain, expected in (("codex", 0, False, True), ("codex", 0, True, False),
++                                                        ("codex", -1, False, False), ("codex", 3, False, False),
++                                                        ("claude", 0, False, False)):
++                r = SimpleNamespace(harness=harness, threshold=threshold, plain=plain)
++                self.assertEqual(W.applies(r, case), expected, (case, harness, threshold, plain))
++        self.assertEqual(W.SIDE_QUEUE_CASES, ("side-queue/group",))
++        self.assertEqual(W.SIDE_DEFER_CASES, ("side-native-defer/group",))
++
++    def test_side_queue_is_refused_without_queue_proof_and_defer_with_it(self):
++        with self.assertRaises(SystemExit) as refused:
++            parsed_args(["--harness", "codex", "--cases", "side-queue/group"])
++        self.assertEqual(refused.exception.code, 2)
++        with self.assertRaises(SystemExit) as refused:
++            parsed_args(["--harness", "codex", "--queue-proof", "--cases", "side-native-defer/group"])
++        self.assertEqual(refused.exception.code, 2)
++        self.assertTrue(parsed_args(["--harness", "codex", "--queue-proof", "--cases", "side-queue/group"]).queue_proof)
++        self.assertFalse(parsed_args(["--harness", "codex", "--cases", "side-native-defer/group"]).queue_proof)
++
++    def test_side_queue_verdict_needs_every_part(self):
++        proof = {"passed": True}
++        self.assertTrue(W.side_queue_passed(True, proof, True, False, False))
++        for args in ((False, proof, True, False, False), (True, {"passed": False}, True, False, False),
++                     (True, None, True, False, False), (True, proof, False, False, False),
++                     (True, proof, True, True, False), (True, proof, True, False, True)):
++            self.assertFalse(W.side_queue_passed(*args), args)
++
++    def test_side_defer_verdict_needs_a_refusal_nothing_typed_a_wake_after_close_and_delivery(self):
++        self.assertTrue(W.side_defer_passed(True, True, False, True, True))
++        for args in ((False, True, False, True, True), (True, False, False, True, True), (True, True, True, True, True),
++                     (True, True, False, False, True), (True, True, False, True, False)):
++            self.assertFalse(W.side_defer_passed(*args), args)
++
++    def test_side_defer_refusal_needs_a_refused_attempt_after_the_send_at_the_same_retry_step(self):
++        before = {"last_outcome": "submitted", "completed_at_utc": 500, "retry_step": 2}
++        refused = {"last_outcome": "unsafe", "completed_at_utc": 1500, "retry_step": 2}
++        self.assertTrue(W.side_defer_refusal(before, refused, 1000))
++        self.assertTrue(W.side_defer_refusal(None, {"last_outcome": "unavailable", "completed_at_utc": 1000,
++                                                    "retry_step": 0}, 1000))
++        for state in (dict(refused, completed_at_utc=999),          # refused before the send
++                      dict(refused, last_outcome="submitted"),      # a wake typed, not a deferral
++                      dict(refused, retry_step=3),                  # advanced step: not a deferral
++                      None):                                        # no row
++            self.assertFalse(W.side_defer_refusal(before, state, 1000), state)
++        self.assertFalse(W.side_defer_refusal(None, dict(refused, retry_step=1), 1000))
++
++    SIDE_SCREEN = ("\u203a Side of wake-e2e side-queue: run `inbox` once, then print SIDE-QUEUE-DONE.\n"
++                   "  SIDE-QUEUE-DONE\n\u203a Ask a follow-up question\n  gpt  100% left\n")
++
++    def test_side_pane_verdict_flags_a_typed_wake_or_any_other_change_but_not_the_footer(self):
++        base = self.SIDE_SCREEN
++        self.assertEqual(W.side_pane_verdict(base, base.replace("100% left", "99% left")), (False, False))
++        typed = base.replace("\u203a Ask a follow-up question", "\u203a herdr-threads: wake up")
++        self.assertEqual(W.side_pane_verdict(base, typed), (True, True))
++        self.assertEqual(W.side_pane_verdict(base, base + "herdr-threads: wake up\n"), (True, True))
++        draft = base.replace("Ask a follow-up question", "half-typed")
++        self.assertEqual(W.side_pane_verdict(base, draft), (False, True))
++        answered = base + "  SIDE-QUEUE-DONE\n"
++        self.assertEqual(W.side_pane_verdict(base, answered), (False, True))
++        # a wake marker already on screen before the send is not new typing
++        old = base + "herdr-threads: wake up\n"
++        self.assertEqual(W.side_pane_verdict(old, old), (False, False))
++
++    def test_side_draft_verdict_per_mode(self):
++        checks = {"draft_intact": True, "delivered": True, "warning_wake": "refused"}
++        self.assertTrue(W.side_draft_passed(True, False, checks, False))
++        self.assertFalse(W.side_draft_passed(True, True, checks, False))  # native: a wake means it typed past the draft
++        self.assertFalse(W.side_draft_passed(True, False, dict(checks, warning_wake="submitted"), False))
++        self.assertFalse(W.side_draft_passed(True, False, dict(checks, warning_wake=None), False))
++        # queue mode: waking is expected and no refusal warning is owed, but the draft must survive
++        self.assertTrue(W.side_draft_passed(True, True, dict(checks, warning_wake=None), True))
++        self.assertFalse(W.side_draft_passed(True, True, dict(checks, draft_intact=False), True))
++        self.assertFalse(W.side_draft_passed(True, True, dict(checks, delivered=False), True))
++        self.assertFalse(W.side_draft_passed(False, True, checks, True))
++
++    def expectations(self, case, root, expect_wake):
++        recipient = self.recipient()
++        recipient.run.args = SimpleNamespace(queue_proof=bool(root))
++        proof = W.QueueCaseEvidence(recipient, case)
++        proof.root_session = root
++        proof.publication()
++        calls = []
++        def judged(before, samples, expectation, baseline=...):
++            calls.append((expectation, baseline is not ...))
++            return {"passed": True, "expectation": expectation, "reasons": [], "attempts": [], "observed": {"unknown": 0}}
++        with mock.patch("wake_e2e_queue.queue_proof", side_effect=judged), \
++                mock.patch("wake_e2e_queue.process_root_scope", return_value={"scope": {}}):
++            proof.finish({"expect_wake": expect_wake, "t_wake_s": 5.0})
++        return calls[0]
++
++    def test_side_cases_expect_per_queue_mode(self):
++        # --queue-proof, hooked recipient with a named root: both p0 cases are queue-woken on the root
++        self.assertEqual(self.expectations("side-nudge/group", "root", True), ("accepted", True))
++        self.assertEqual(self.expectations("side-draft/group", "root", False), ("accepted", True))
++        # queue off, or co-plain (no bootstrap root): native, never a queue effect
++        self.assertEqual(self.expectations("side-nudge/group", None, True), ("native", False))
++        self.assertEqual(self.expectations("side-draft/group", None, False), ("none", False))
++        # the defer case is native by construction, and its post-close wake is not held to the six-second bound
++        self.assertEqual(self.expectations("side-native-defer/group", None, True), ("native", False))
++
++    def test_native_defer_wake_after_close_is_not_held_to_the_six_second_window(self):
++        recipient = self.recipient()
++        recipient.run.args = SimpleNamespace(queue_proof=False)
++        proof = W.QueueCaseEvidence(recipient, "side-native-defer/group")
++        proof.publication()
++        result = proof.finish({"expect_wake": True, "t_wake_s": 41.0})
++        self.assertTrue(result["passed"], result["reasons"])
++        late = W.QueueCaseEvidence(recipient, "send-p0/group")
++        late.publication()
++        self.assertFalse(late.finish({"expect_wake": True, "t_wake_s": 41.0})["passed"])
++
++
+ class AutomaticQueueQualification(TempDir):
+     snapshot = QueueSamplerLifetime.snapshot
+     recipient = QueueSamplerLifetime.recipient
+@@ -3758,6 +3883,44 @@ class AutomaticQueueQualification(TempDir):
+         self.assertEqual(run.results[0]["result"], "PASS")
+         self.assertIsNotNone(run.results[0].get("queue_evidence"))
+ 
++    def seat_recipient(self, queue_proof, harness="codex", plain=False):
++        calls = []
++        def ht(*argv, **kw):
++            calls.append((argv, kw))
++            return ""
++        run = SimpleNamespace(state=self.tmp, args=SimpleNamespace(queue_proof=queue_proof), facts={}, ht=ht)
++        recipient = W.Recipient(run, "co-t0", harness, 0, "pane", "sSEATSEAT", plain=plain)
++        return recipient, calls
++
++    def test_queue_proof_enables_programmatic_wake_on_each_codex_seat_through_human_cli(self):
++        for plain in (False, True):
++            with self.subTest(plain=plain):
++                recipient, calls = self.seat_recipient(True, plain=plain)
++                recipient.enable_queue_wake()
++                self.assertEqual(len(calls), 1)
++                argv, kw = calls[0]
++                self.assertEqual(argv, ("config", "seat", "set", "--seat", "sSEATSEAT", "programmatic_wake", "on"))
++                self.assertIs(kw.get("human"), True)
++                self.assertIn("co-t0", recipient.run.facts["queue_seats"])
++
++    def test_no_per_seat_enablement_without_queue_proof_or_for_other_harnesses(self):
++        recipient, calls = self.seat_recipient(False)
++        recipient.enable_queue_wake()
++        self.assertEqual(calls, [])
++        self.assertNotIn("queue_seats", recipient.run.facts)
++        recipient, calls = self.seat_recipient(True, harness="claude")
++        recipient.enable_queue_wake()
++        self.assertEqual(calls, [])
++
++    def test_enablement_runs_after_threshold_report_and_before_queue_bootstrap(self):
++        import inspect
++        source = inspect.getsource(W.Recipient.start)
++        reported = source.index("reported = setup_done(self.threshold)")
++        enable = source.index("self.enable_queue_wake()")
++        bootstrap = source.index("queue_snapshot(self.run.state, self.seat)")
++        self.assertLess(reported, enable)
++        self.assertLess(enable, bootstrap)
++
+     def test_unflagged_native_acceptance_keeps_six_second_bound(self):
+         for delay, passed in [(5.0, True), (8.0, False)]:
+             recipient = self.recipient()

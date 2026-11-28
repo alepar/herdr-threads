@@ -1,0 +1,65 @@
+diff --git a/tests/store/reversible_retirement.rs b/tests/store/reversible_retirement.rs
+index 744fe28ab..d97b9fea4 100644
+--- a/tests/store/reversible_retirement.rs
++++ b/tests/store/reversible_retirement.rs
+@@ -528,6 +528,60 @@ fn row_goes_at_unretire() {
+     assert_eq!(f.rows("seat_shell_fingerprints", "s1"), 0);
+ }
+ 
++/// Kills: a reversible retirement or a revival that drops the seat's config (a human-tier key such
++/// as `programmatic_wake` must survive both), or a final retirement that keeps it (ht-z41e.2).
++#[test]
++fn seat_config_survives_reversible_retirement_and_revival_and_final_retirement_drops_it() {
++    let f = fx(&["s1", "s2"]);
++    for seat in ["s1", "s2"] {
++        f.key(seat);
++        f.db()
++            .execute(
++                "INSERT INTO seat_config(seat_id,key,value,updated_at,writer_provenance) VALUES (?1,'programmatic_wake','on',1,'operator:local-user:501')",
++                [seat],
++            )
++            .unwrap();
++        f.db()
++            .execute(
++                "INSERT INTO seat_config(seat_id,key,value,updated_at,writer_provenance) VALUES (?1,'nudge_threshold',NULL,1,'cooperative_top_level')",
++                [seat],
++            )
++            .unwrap();
++        assert_eq!(f.rows("seat_config", seat), 2);
++    }
++    // s1: reversible close, revival, then finalization of the revived seat.
++    f.close("s1").unwrap();
++    assert_eq!(f.row_state("s1"), Some(RowState::Reversible));
++    assert_eq!(
++        f.rows("seat_config", "s1"),
++        2,
++        "reversible retirement keeps them"
++    );
++    f.unretire("s1", "unretire").unwrap();
++    assert_eq!(f.rows("seat_config", "s1"), 2, "revival keeps them");
++    f.finalize("s1", "finalize").unwrap();
++    assert_eq!(
++        f.rows("seat_config", "s1"),
++        0,
++        "final retirement drops them"
++    );
++    // s2: reversible close, then its finalization.
++    f.close("s2").unwrap();
++    assert_eq!(f.rows("seat_config", "s2"), 2);
++    f.finalize("s2", "finalize-2").unwrap();
++    assert_eq!(f.rows("seat_config", "s2"), 0);
++    // An operator retire of a live seat is final at once.
++    let g = fx(&["s3"]);
++    g.db()
++        .execute(
++            "INSERT INTO seat_config(seat_id,key,value,updated_at,writer_provenance) VALUES ('s3','programmatic_wake','on',1,'x')",
++            [],
++        )
++        .unwrap();
++    g.operator_retire("s3", "op-1").unwrap();
++    assert_eq!(g.rows("seat_config", "s3"), 0);
++}
++
+ /// Kills: a fingerprint that survives the deferred job of a reversible seat's finalization.
+ #[test]
+ fn row_goes_at_finalization_of_a_reversible_seat() {

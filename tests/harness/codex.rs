@@ -13,7 +13,7 @@ use crate::harness::{
 };
 use crate::protocol::results::CapabilityState;
 use serde_json::{Value, json};
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use uuid::Uuid;
 
 fn pinned() -> InstalledVersion {
@@ -1627,4 +1627,139 @@ fn codex_session_end_timeout_fits_the_codex_clamp() {
         let expected = if event == "SessionEnd" { 3 } else { 10 };
         assert_eq!(timeout, expected, "{event}: {group}");
     }
+}
+
+/// ht-z41e.21: a null `transcript_path` on a top-level SessionStart, UserPromptSubmit, PreToolUse
+/// or Stop event is auxiliary-session evidence (spike S1: every `/side` event); a path, an absent
+/// key, or a child event is none. It survives the decoded event's round trip to the context event
+/// the check-in is built from.
+#[test]
+fn null_transcript_path_is_auxiliary_session_evidence_on_every_hook_event() {
+    macro_rules! fixture {
+        ($name:literal) => {
+            include_bytes!(concat!("../fixtures/codex-0.163.0-side/", $name)) as &[u8]
+        };
+    }
+    let evidence = |bytes: &[u8]| {
+        let event =
+            codex::parse_event_for_contract(bytes, "event", &codex::CodexContract::registered())
+                .unwrap();
+        let round_trip = crate::harness::adapter::DecodedEvent::from_native(event.clone())
+            .context_event()
+            .unwrap();
+        assert_eq!(round_trip.auxiliary_session, event.auxiliary_session);
+        event.auxiliary_session
+    };
+    for (name, bytes) in [
+        (
+            "session-start-fork.json",
+            fixture!("session-start-fork.json"),
+        ),
+        (
+            "user-prompt-submit-side.json",
+            fixture!("user-prompt-submit-side.json"),
+        ),
+        ("pre-tool-use-side.json", fixture!("pre-tool-use-side.json")),
+        ("stop-side.json", fixture!("stop-side.json")),
+        (
+            "pre-tool-use-root-null.json",
+            fixture!("pre-tool-use-root-null.json"),
+        ),
+    ] {
+        assert!(evidence(bytes), "{name}: null transcript_path is evidence");
+    }
+    for (name, bytes) in [
+        (
+            "session-start-fork-nonnull.json",
+            fixture!("session-start-fork-nonnull.json"),
+        ),
+        (
+            "session-start-root.json",
+            fixture!("session-start-root.json"),
+        ),
+        (
+            "user-prompt-submit-root.json",
+            fixture!("user-prompt-submit-root.json"),
+        ),
+        ("pre-tool-use-root.json", fixture!("pre-tool-use-root.json")),
+        (
+            "pre-tool-use-side-nonnull.json",
+            fixture!("pre-tool-use-side-nonnull.json"),
+        ),
+    ] {
+        assert!(!evidence(bytes), "{name}: a path is no evidence");
+    }
+    // An absent key is no evidence.
+    let mut absent: Value = serde_json::from_slice(fixture!("pre-tool-use-side.json")).unwrap();
+    absent.as_object_mut().unwrap().remove("transcript_path");
+    assert!(!evidence(&serde_json::to_vec(&absent).unwrap()));
+    // A child event (it names an agent) carries none, null path or not.
+    let mut child = subagent_start("side-session", "turn-1", "agent-1", "worker");
+    child["transcript_path"] = Value::Null;
+    child["hook_event_name"] = json!("PreToolUse");
+    child["tool_name"] = json!("Bash");
+    child["tool_use_id"] = json!("call-child-1");
+    assert!(!evidence(&serde_json::to_vec(&child).unwrap()));
+}
+
+/// ht-z41e.43: a Codex that persists the side chat's rollout gives its hook payloads a path (live
+/// 0.172.0 e2e), so a fork's SessionStart is auxiliary evidence when the rollout's first line says
+/// `thread_source: tui_side_chat`. A fork of any other kind, an absent or unreadable file, a line that is
+/// not JSON and a non-fork event are none. Kills: leaving a side chat that carries a path a plain fork,
+/// which names no queue root and keeps a root-plus-side wake native.
+#[test]
+fn a_fork_whose_rollout_names_a_side_chat_is_auxiliary_session_evidence() {
+    let dir = crate::test_support::scratch::temp_path(format!(
+        "ht-z41e-43-side-rollout-{}",
+        std::process::id()
+    ));
+    std::fs::create_dir_all(&dir).unwrap();
+    let rollout = |name: &str, first_line: &str| {
+        let path = dir.join(name);
+        std::fs::write(&path, format!("{first_line}\n{{\"type\":\"event_msg\"}}\n")).unwrap();
+        path
+    };
+    let meta = |source: &str| {
+        // Ordering as Codex writes it: the long instructions text follows the source fields.
+        json!({"type": "session_meta", "payload": {
+            "id": "side-session", "thread_source": source,
+            "base_instructions": {"text": "x".repeat(20_000)}}})
+        .to_string()
+    };
+    let evidence = |name: &str, hook: &str, source: &str, path: &Path| {
+        let payload = json!({
+            "session_id": "side-session", "transcript_path": path, "cwd": "/w",
+            "hook_event_name": hook, "model": "m", "permission_mode": "default",
+            "source": source, "turn_id": "t", "prompt": "p"});
+        codex::parse_event_for_contract(
+            &serde_json::to_vec(&payload).unwrap(),
+            name,
+            &codex::CodexContract::registered(),
+        )
+        .map(|event| event.auxiliary_session)
+    };
+    let side = rollout("side.jsonl", &meta("tui_side_chat"));
+    assert_eq!(evidence("side", "SessionStart", "fork", &side), Ok(true));
+    let user_fork = rollout("user.jsonl", &meta("user"));
+    assert_eq!(
+        evidence("user", "SessionStart", "fork", &user_fork),
+        Ok(false)
+    );
+    assert_eq!(
+        evidence("later", "SessionStart", "startup", &side),
+        Ok(false),
+        "only a fork's SessionStart reads the rollout"
+    );
+    assert_eq!(
+        evidence("missing", "SessionStart", "fork", &dir.join("none.jsonl")),
+        Ok(false)
+    );
+    let junk = rollout("junk.jsonl", "not json");
+    assert_eq!(evidence("junk", "SessionStart", "fork", &junk), Ok(false));
+    let relative = Path::new("side.jsonl");
+    assert_eq!(
+        evidence("relative", "SessionStart", "fork", relative),
+        Ok(false)
+    );
+    let _ = std::fs::remove_dir_all(&dir);
 }

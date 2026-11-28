@@ -233,6 +233,7 @@ fn request(n: u128, requester_seat: &str) -> LaunchRequest {
 
 fn claim(seat: &str) -> CallerClaim {
     CallerClaim {
+        auxiliary_session: false,
         host: crate::test_support::test_host_locator(),
         instance: INSTANCE.into(),
         seat: SeatId::new(seat),

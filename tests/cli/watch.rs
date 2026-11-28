@@ -1190,6 +1190,7 @@ fn parent_death_ends_watch() {
 
 fn claim() -> CallerClaim {
     CallerClaim {
+        auxiliary_session: false,
         host: crate::test_support::test_host_locator(),
         instance: crate::node::NodeUuid::from_u128(1).to_string(),
         seat: SeatId::new("me"),

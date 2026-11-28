@@ -841,6 +841,7 @@ pub(crate) fn observation_ticket_with_registry(
         return Ok(None);
     };
     let claim = CallerClaim {
+        auxiliary_session: false,
         instance: instance.into(),
         host: super::hosts::seat_claim_host(db, seat),
         seat: SeatId::new(seat),

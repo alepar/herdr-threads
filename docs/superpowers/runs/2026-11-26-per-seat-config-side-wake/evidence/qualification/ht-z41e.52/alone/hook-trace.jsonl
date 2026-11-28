@@ -1,0 +1,15 @@
+{"utc_ms": 1795820819427, "pane": "w2:p3", "event": "SessionStart", "session": "01a21f43-0544-74a0-9a9c-179f1b7b6503", "source": "startup", "transcript_path": "present"}
+{"utc_ms": 1795820819558, "pane": "w2:p3", "event": "UserPromptSubmit", "session": "01a21f43-0544-74a0-9a9c-179f1b7b6503", "source": null, "transcript_path": "present"}
+{"utc_ms": 1795820822490, "pane": "w2:p3", "event": "PreToolUse", "session": "01a21f43-0544-74a0-9a9c-179f1b7b6503", "source": null, "transcript_path": "present"}
+{"utc_ms": 1795820824985, "pane": "w2:p3", "event": "PreToolUse", "session": "01a21f43-0544-74a0-9a9c-179f1b7b6503", "source": null, "transcript_path": "present"}
+{"utc_ms": 1795820827943, "pane": "w2:p3", "event": "PreToolUse", "session": "01a21f43-0544-74a0-9a9c-179f1b7b6503", "source": null, "transcript_path": "present"}
+{"utc_ms": 1795820829487, "pane": "w2:p3", "event": "Stop", "session": "01a21f43-0544-74a0-9a9c-179f1b7b6503", "source": null, "transcript_path": "present"}
+{"utc_ms": 1795820831336, "pane": "w2:p3", "event": "UserPromptSubmit", "session": "01a21f43-0544-74a0-9a9c-179f1b7b6503", "source": null, "transcript_path": "present"}
+{"utc_ms": 1795820834545, "pane": "w2:p3", "event": "PreToolUse", "session": "01a21f43-0544-74a0-9a9c-179f1b7b6503", "source": null, "transcript_path": "present"}
+{"utc_ms": 1795820836107, "pane": "w2:p3", "event": "Stop", "session": "01a21f43-0544-74a0-9a9c-179f1b7b6503", "source": null, "transcript_path": "present"}
+{"utc_ms": 1795820900550, "pane": "w2:p3", "event": "SessionStart", "session": "01a21f43-0544-74a0-9a9c-179f1b7b6503", "source": "resume", "transcript_path": "present"}
+{"utc_ms": 1795820900702, "pane": "w2:p3", "event": "UserPromptSubmit", "session": "01a21f43-0544-74a0-9a9c-179f1b7b6503", "source": null, "transcript_path": "present"}
+{"utc_ms": 1795820903989, "pane": "w2:p3", "event": "PreToolUse", "session": "01a21f43-0544-74a0-9a9c-179f1b7b6503", "source": null, "transcript_path": "present"}
+{"utc_ms": 1795820907848, "pane": "w2:p3", "event": "PreToolUse", "session": "01a21f43-0544-74a0-9a9c-179f1b7b6503", "source": null, "transcript_path": "present"}
+{"utc_ms": 1795820907934, "pane": "w2:p3", "event": "PreToolUse", "session": "01a21f43-0544-74a0-9a9c-179f1b7b6503", "source": null, "transcript_path": "present"}
+{"utc_ms": 1795820911174, "pane": "w2:p3", "event": "Stop", "session": "01a21f43-0544-74a0-9a9c-179f1b7b6503", "source": null, "transcript_path": "present"}

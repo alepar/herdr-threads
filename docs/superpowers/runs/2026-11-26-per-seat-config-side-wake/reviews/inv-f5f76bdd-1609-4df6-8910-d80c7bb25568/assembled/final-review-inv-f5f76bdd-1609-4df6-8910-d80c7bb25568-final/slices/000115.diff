@@ -1,0 +1,12 @@
+diff --git a/src/store/invitation_content.rs b/src/store/invitation_content.rs
+index f5d3ee8c8..8752ab566 100644
+--- a/src/store/invitation_content.rs
++++ b/src/store/invitation_content.rs
+@@ -3180,6 +3180,7 @@ pub(super) fn refresh(
+         return Ok(None);
+     };
+     let claim = CallerClaim {
++        auxiliary_session: false,
+         instance: instance.into(),
+         host: super::hosts::seat_claim_host(db, seat.as_str()),
+         seat: seat.clone(),

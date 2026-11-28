@@ -1,0 +1,12 @@
+diff --git a/src/store/archival.rs b/src/store/archival.rs
+index f0df75752..02602d1d6 100644
+--- a/src/store/archival.rs
++++ b/src/store/archival.rs
+@@ -841,6 +841,7 @@ pub(crate) fn observation_ticket_with_registry(
+         return Ok(None);
+     };
+     let claim = CallerClaim {
++        auxiliary_session: false,
+         instance: instance.into(),
+         host: super::hosts::seat_claim_host(db, seat),
+         seat: SeatId::new(seat),

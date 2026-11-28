@@ -152,6 +152,7 @@ impl Rig {
                     expected_binding_generation: 1,
                 },
                 claim: CallerClaim {
+                    auxiliary_session: false,
                     host: HostLocator::parse(NAMED_HOST_LOCATOR).unwrap(),
                     instance: self.node.clone(),
                     seat,

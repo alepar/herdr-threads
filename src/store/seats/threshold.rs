@@ -74,6 +74,7 @@ pub fn set_wake_on(
         control::cooperative_payload_hash("set_wake_on", command)?,
         "declared subagents cannot set wake_on",
         value,
+        false,
     )?;
     // A replay of a pre-threshold operation returns its stored `WakeOn` result as is.
     Ok(match result {
@@ -106,6 +107,7 @@ pub fn set_nudge_threshold(
         control::cooperative_payload_hash("set_nudge_threshold", command)?,
         "declared subagents cannot set the nudge threshold",
         command.value,
+        false,
     )
 }
 
@@ -114,8 +116,12 @@ pub fn set_nudge_threshold(
 /// and the audit column `wake_on`, then re-judges the seat's wake reasons through
 /// `wake::note_new_attention`; setting the stored value again records nothing. The preference is
 /// wake eligibility only: it creates no receipt, ACK evidence or authority.
+///
+/// `refuse_readonly` is the seat-config path's extra rule: a binding marked read-only
+/// (`HERDR_THREADS_SEAT_READONLY`) may not write seat config. The aliases keep their historical
+/// check (`false`).
 #[allow(clippy::too_many_arguments)]
-fn write_threshold(
+pub(crate) fn write_threshold(
     context: &StoreContext,
     conn: &mut Connection,
     budget: &CallBudget,
@@ -125,6 +131,7 @@ fn write_threshold(
     digest: [u8; 32],
     subagent_refusal: &str,
     value: crate::protocol::priority::NudgeThreshold,
+    refuse_readonly: bool,
 ) -> Result<CommandResult, ApiError> {
     use crate::protocol::authority::CallerRole;
     if claim.role == CallerRole::Subagent {
@@ -145,7 +152,7 @@ fn write_threshold(
         digest,
         |_| Ok(()),
         |tx, at| {
-            control::decide_accountable(
+            let actor = control::decide_accountable(
                 context,
                 tx,
                 at,
@@ -156,20 +163,20 @@ fn write_threshold(
                 &obligation,
                 &digest,
             )?;
-            let previous = nudge_threshold(tx, &seat)?;
-            let changed = previous != value;
-            if changed {
-                tx.execute(
-                    "UPDATE seats SET nudge_threshold=?1,wake_on=?2 WHERE id=?3",
-                    params![
-                        i64::from(value),
-                        value.legacy_wake_on().as_str(),
-                        seat.as_str()
-                    ],
-                )
-                .map_err(store_error)?;
-                super::super::wake::note_new_attention(tx, &seat)?;
+            if refuse_readonly && super::super::bindings::is_readonly(tx, &actor.binding_id)? {
+                return Err(api_error(
+                    ErrorCode::InvalidRequest,
+                    "read-only binding cannot write seat config",
+                ));
             }
+            let changed = write_column(
+                tx,
+                &seat,
+                value,
+                actor.provenance,
+                Some(actor.binding_id.as_str()),
+                at.utc,
+            )?;
             Ok(CommandResult::NudgeThreshold(
                 crate::protocol::results::NudgeThresholdState {
                     seat: seat.clone(),
@@ -179,6 +186,44 @@ fn write_threshold(
             ))
         },
     )
+}
+
+/// The one write of the column-backed `nudge_threshold` (`seats.nudge_threshold` and its
+/// `wake_on` mirror), shared by the aliases, `SetSeatConfig` and the operator tier. A change
+/// re-judges the seat's wake reasons through `wake::note_new_attention` in the same transaction;
+/// every call, changed or not, upserts the key's audit-only `seat_config` row with the writer.
+/// Returns whether the threshold changed.
+pub(crate) fn write_column(
+    tx: &Connection,
+    seat: &SeatId,
+    value: crate::protocol::priority::NudgeThreshold,
+    writer_provenance: &str,
+    writer_binding: Option<&str>,
+    at: crate::protocol::time::UtcMillis,
+) -> Result<bool, ApiError> {
+    let previous = nudge_threshold(tx, seat)?;
+    let changed = previous != value;
+    if changed {
+        tx.execute(
+            "UPDATE seats SET nudge_threshold=?1,wake_on=?2 WHERE id=?3",
+            params![
+                i64::from(value),
+                value.legacy_wake_on().as_str(),
+                seat.as_str()
+            ],
+        )
+        .map_err(store_error)?;
+        super::super::wake::note_new_attention(tx, seat)?;
+    }
+    crate::store::seat_config::record_audit(
+        tx,
+        seat,
+        "nudge_threshold",
+        writer_provenance,
+        writer_binding,
+        at,
+    )?;
+    Ok(changed)
 }
 
 #[cfg(test)]

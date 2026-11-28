@@ -2008,6 +2008,14 @@ mod publication_order {
         fn clock(&self) -> &dyn Clock {
             self.inner.clock()
         }
+        fn seat_config_operator(
+            &self,
+            command: &crate::protocol::commands::Command,
+            actor: &crate::protocol::authority::OperatorActor,
+            budget: &CallBudget,
+        ) -> Result<CommandResult, ApiError> {
+            self.inner.seat_config_operator(command, actor, budget)
+        }
         fn archival_pass(
             &self,
             runtime: &crate::store::archival::Runtime,

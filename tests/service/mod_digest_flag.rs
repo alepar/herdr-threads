@@ -193,6 +193,7 @@ fn domain_leaves_mod_channel_live_false_without_a_channel() {
 /// A non-human claim for `session` of seat `s` (the SessionStart / hook caller).
 fn claim(session: &str) -> CallerClaim {
     CallerClaim {
+        auxiliary_session: false,
         host: crate::test_support::test_host_locator(),
         instance: "34750f98bd59fcfc946da45aaabe933b".into(),
         seat: SeatId::new("s"),
@@ -283,6 +284,7 @@ fn hint_flags(service: &DomainService, claim: CallerClaim) -> (bool, bool) {
 #[test]
 fn no_turn_delivery_follows_the_claimed_binding_and_its_channel() {
     let codex = CallerClaim {
+        auxiliary_session: false,
         harness: Harness::Codex,
         ..claim("sess-c")
     };

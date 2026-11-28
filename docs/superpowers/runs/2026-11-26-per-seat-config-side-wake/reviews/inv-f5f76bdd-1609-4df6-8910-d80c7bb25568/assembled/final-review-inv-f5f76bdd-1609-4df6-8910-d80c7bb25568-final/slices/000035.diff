@@ -1,0 +1,9 @@
+diff --git a/docs/superpowers/runs/2026-11-26-per-seat-config-side-wake/findings-overrides.md b/docs/superpowers/runs/2026-11-26-per-seat-config-side-wake/findings-overrides.md
+new file mode 100644
+index 000000000..80ca83c88
+--- /dev/null
++++ b/docs/superpowers/runs/2026-11-26-per-seat-config-side-wake/findings-overrides.md
+@@ -0,0 +1,3 @@
++[Nit] src/harness/codex.rs:1525 · dissolved@r1
++[Nit] TRUST-POLICY.md:4277 · dissolved@r1
++[Nit] docs/superpowers/runs/2026-11-26-per-seat-config-side-wake/2026-11-26-per-seat-config-side-wake-design.md:221 · dissolved@r1

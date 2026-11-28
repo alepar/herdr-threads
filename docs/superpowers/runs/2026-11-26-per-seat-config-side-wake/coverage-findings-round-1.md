@@ -1,0 +1,17 @@
+GAP · R13 · human ask-rule must cover config seat set spellings
+GAP · B8 · default-off seat with /side open gets no root wake
+GAP · R9 · no contingency if spike finds no root marker
+GAP · R7 · generic nudge_threshold set lacks wake reconsideration/M12
+GAP · R3 · no read tests for subagent/other seat
+UNOWNED-SEAM · seat.config_v1 · client capability gate unowned
+GAP · R12 · per-seat queue authority not restated in TRUST-POLICY
+GAP · R15 · docs/CHANGELOG for removed node key
+GAP · R3 · remote/named seat scope undefined
+GAP · R1 · possible node-key write path
+UNOWNED-SEAM · native defer/queue fallback · crossing untested
+UNOWNED-SEAM · native receipt identity · side contact settles native wake
+GAP · R6 · refusal must name human command
+GAP · R16 · native defer not qualified live
+UNOWNED-SEAM · queue intent target UUID · record format unowned
+GAP · AGENTS.md · delivery-contract entries for wake changes
+GAP · R2 · programmatic_wake on ineligible seat undefined

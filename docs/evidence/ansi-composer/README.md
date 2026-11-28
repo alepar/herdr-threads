@@ -19,8 +19,8 @@ Captured 2026-10-23 on Linux from panes created in an isolated Herdr 0.9.5 serve
   - The placeholder text varies per launch. `Try "fix lint errors"` (`placeholder-uncaptured`) is not the one captured placeholder, so the plain detection read finds it `Unreadable`.
 - **Codex**:
   - The glyph `›` is bold. The placeholder `Ask Codex to do anything` and the `/side` placeholder `Ask a follow-up question` are dim. Typed text is unstyled.
-  - The plain detection read classified the `/side` placeholder as typed `Text`, so every wake under `/side` was refused.
-  - Codex's source (0.163 `bottom_pane/chat_composer.rs`) also draws `Viewing sub-agent — direct input is disabled` dim, with a bold glyph, while it blocks a typed submit. So "dim means empty" is not safe for Codex, and the `/side` placeholder is added to the known placeholders instead.
+  - The plain detection read classified the `/side` placeholder as typed `Text`, so every wake under `/side` was refused (since ht-z41e.1 the side placeholder reads as text, not empty: a side chat is not the wake target).
+  - Codex's source (0.163 `bottom_pane/chat_composer.rs`) also draws `Viewing sub-agent — direct input is disabled` dim, with a bold glyph, while it blocks a typed submit. So "dim means empty" is not safe for Codex: only the main placeholder is known, so the dim `/side` placeholder reads as `Text` and a native wake defers while a side chat is displayed (ht-z41e.1).
 
 | File | Shows | Plain read | Styled read |
 |---|---|---|---|
@@ -30,5 +30,6 @@ Captured 2026-10-23 on Linux from panes created in an isolated Herdr 0.9.5 serve
 | `claude-2.1.309-draft` | typed `hello draft` | Unsafe | Text |
 | `claude-2.1.309-typed-prefix` | typed `run` over the suggestion | Unsafe | Text |
 | `claude-2.1.309-multiline-draft` | typed two rows | Unsafe | Text |
-| `codex-0.163.0-empty` / `-side` | dim placeholders | Empty | n/a |
+| `codex-0.163.0-empty` | dim placeholder `Ask Codex to do anything` | Empty | n/a |
+| `codex-0.163.0-side` | dim `/side` placeholder | Text | n/a |
 | `codex-0.163.0-draft` / `-side-draft` | typed text | Text | n/a |

@@ -1,0 +1,12 @@
+diff --git a/src/store/seats/continuity.rs b/src/store/seats/continuity.rs
+index 4deaccb17..9fa9e518d 100644
+--- a/src/store/seats/continuity.rs
++++ b/src/store/seats/continuity.rs
+@@ -1025,6 +1025,7 @@ pub fn decide_continuity(
+             // it reopens the session's own row ended `seat_unresolved` (cursors kept) or enrolls
+             // one at the seat's read position; both run the enroll hooks.
+             let claim = crate::protocol::authority::CallerClaim {
++                auxiliary_session: false,
+                 instance: instance.clone(),
+                 host: command.host.clone(),
+                 seat: seat.clone(),

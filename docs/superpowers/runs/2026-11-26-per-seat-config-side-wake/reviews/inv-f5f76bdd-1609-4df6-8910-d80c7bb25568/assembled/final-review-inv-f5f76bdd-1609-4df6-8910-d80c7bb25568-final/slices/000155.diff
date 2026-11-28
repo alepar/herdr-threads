@@ -1,0 +1,18 @@
+diff --git a/tests/fixtures/codex-0.163.0-side/pre-tool-use-side.json b/tests/fixtures/codex-0.163.0-side/pre-tool-use-side.json
+new file mode 100644
+index 000000000..70796c365
+--- /dev/null
++++ b/tests/fixtures/codex-0.163.0-side/pre-tool-use-side.json
+@@ -0,0 +1,12 @@
++{
++  "session_id": "side-session",
++  "turn_id": "side-turn-1",
++  "transcript_path": null,
++  "cwd": "/private/tmp/side-fixture",
++  "hook_event_name": "PreToolUse",
++  "model": "gpt-6.1-sol",
++  "permission_mode": "default",
++  "tool_name": "Bash",
++  "tool_input": {"command": "echo side"},
++  "tool_use_id": "call-side-1"
++}

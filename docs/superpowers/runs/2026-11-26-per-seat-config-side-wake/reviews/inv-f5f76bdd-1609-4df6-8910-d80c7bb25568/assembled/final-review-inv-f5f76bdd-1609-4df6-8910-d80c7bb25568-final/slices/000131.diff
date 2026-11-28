@@ -1,0 +1,20 @@
+diff --git a/tests/cli/cooperative.rs b/tests/cli/cooperative.rs
+index 3afb6657d..d22b05144 100644
+--- a/tests/cli/cooperative.rs
++++ b/tests/cli/cooperative.rs
+@@ -704,6 +704,7 @@ fn completed_predecessor_replays_after_successor_without_a_new_check_in() {
+ }
+ fn claim() -> CallerClaim {
+     CallerClaim {
++        auxiliary_session: false,
+         host: crate::test_support::test_host_locator(),
+         instance: "instance".into(),
+         seat: SeatId::new("seat"),
+@@ -5624,6 +5625,7 @@ fn actor_current_ack_fixture(human_route: bool, human_current: bool) {
+     };
+     // Literal full claim for current, independent of bridge::caller_claim.
+     let expected = CallerClaim {
++        auxiliary_session: false,
+         host: crate::test_support::test_host_locator(),
+         instance: "00000000000000000000000000000001".into(),
+         seat: SeatId::new("seat-1"),

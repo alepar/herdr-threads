@@ -1,0 +1,83 @@
+diff --git a/src/ports.rs b/src/ports.rs
+index b51b45331..3aba2f2e9 100644
+--- a/src/ports.rs
++++ b/src/ports.rs
+@@ -2893,6 +2893,10 @@ pub struct WakeAttentionWitness {
+     /// Complete logical publication maxima at the same decision snapshot.
+     /// Projection cannot advance these immutable keys.
+     pub(crate) frontier: LogicalAttentionFrontier,
++    /// The seat's `programmatic_wake` at this snapshot. A change lifts the unreceived
++    /// suppression of the seat's last submitted wake: how it may be woken changed.
++    #[serde(default)]
++    pub(crate) programmatic_wake: bool,
+ }
+ 
+ #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Serialize)]
+@@ -2998,8 +3002,17 @@ impl WakeAttentionWitness {
+             unavailability_episode,
+             unavailability_open,
+             frontier,
++            programmatic_wake: false,
+         }
+     }
++    #[must_use]
++    pub(crate) fn with_programmatic_wake(mut self, enabled: bool) -> Self {
++        self.programmatic_wake = enabled;
++        self
++    }
++    pub fn programmatic_wake(&self) -> bool {
++        self.programmatic_wake
++    }
+     pub fn frontier(&self) -> LogicalAttentionFrontier {
+         self.frontier
+     }
+@@ -3675,6 +3688,19 @@ pub trait StorePort: ModStoreReads + Send + Sync {
+     ) -> Result<Option<Vec<SeatId>>, ApiError> {
+         Ok(None)
+     }
++    /// A human-tier `SetSeatConfig` / `UnsetSeatConfig`, decided as `actor` (the elected owner's
++    /// operator decision, TRUST-POLICY A5).
++    fn seat_config_operator(
++        &self,
++        _command: &crate::protocol::commands::Command,
++        _actor: &crate::protocol::authority::OperatorActor,
++        _budget: &CallBudget,
++    ) -> Result<CommandResult, ApiError> {
++        Err(ApiError::new(
++            crate::protocol::results::ErrorCode::Unsupported,
++            "seat config is not served by this store",
++        ))
++    }
+     fn archival_pass(
+         &self,
+         runtime: &crate::store::archival::Runtime,
+@@ -5567,6 +5593,17 @@ pub trait HookPullOutlook: Send + Sync {
+     fn contacted_since(&self, _seat: &SeatId, _since: UtcMillis) -> Option<bool> {
+         None
+     }
++    /// As `contacted_since`, but only a call claiming `seat` from native session `session` (any
++    /// binding carrying that session UUID) counts: a queued wake is received by its root session
++    /// alone, never by a sibling `/side` session of the same seat.
++    fn contacted_since_session(
++        &self,
++        _seat: &SeatId,
++        _session: &NativeSessionId,
++        _since: UtcMillis,
++    ) -> Option<bool> {
++        None
++    }
+ }
+ 
+ /// The default outlook: nothing is known.
+@@ -5583,6 +5620,11 @@ pub trait NotificationPort: Send + Sync {
+     fn take_transport(&self, _attempt: &WakeAttemptId) -> WakeTransport {
+         WakeTransport::Composer
+     }
++    /// The root native session a `Queue` attempt was delivered to, taken once after
++    /// `take_transport` reported `Queue`. `None`: unknown, so the attempt is not awaited.
++    fn take_queue_root(&self, _attempt: &WakeAttemptId) -> Option<NativeSessionId> {
++        None
++    }
+     /// A soft-deadline poke (spec §10) through the same reservation checks as
+     /// a wake. The default cannot poke: `PokeOnly` is unavailable and
+     /// `WithWake` is an ordinary wake.

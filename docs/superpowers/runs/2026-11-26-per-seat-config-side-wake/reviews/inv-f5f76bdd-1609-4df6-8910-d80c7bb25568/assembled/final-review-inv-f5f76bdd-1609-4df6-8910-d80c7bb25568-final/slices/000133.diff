@@ -1,0 +1,51 @@
+diff --git a/tests/cli/doctor_json.rs b/tests/cli/doctor_json.rs
+index 731db51b1..c139d1019 100644
+--- a/tests/cli/doctor_json.rs
++++ b/tests/cli/doctor_json.rs
+@@ -1956,3 +1956,46 @@ fn doctor_flags_two_live_stores() {
+         1
+     );
+ }
++
++// Kills: a doctor that stays silent about the obsolete node key or hides which seats have queue
++// wake on after the node flag stopped working, and one that adds noise to a default node.
++#[test]
++fn doctor_reports_seats_with_programmatic_wake_and_the_obsolete_node_setting() {
++    let node = crate::test_support::scratch::temp_path(format!(
++        "ht-doctor-pw-{}",
++        uuid::Uuid::new_v4().simple()
++    ));
++    std::fs::create_dir_all(&node).unwrap();
++    // No store and no settings: nothing to report, no text.
++    assert!(programmatic_wake_seats_report(&node).is_empty());
++    assert_eq!(programmatic_wake_text(&json!({})), "");
++
++    let context = crate::store::connection::StoreContext::new(
++        node.join(crate::daemon::paths::DATABASE_FILE),
++        Arc::new(crate::app::SystemClock::new()),
++    )
++    .with_test_host();
++    let db = context.open_writer().unwrap();
++    // Rows only: the seats they name are not the point of this test.
++    db.execute_batch("PRAGMA foreign_keys=OFF").unwrap();
++    db.execute_batch(
++        "INSERT INTO seat_config(seat_id,key,value,updated_at,writer_provenance) VALUES \
++         ('b','programmatic_wake','on',0,'op'),('a','programmatic_wake','on',0,'op'),\
++         ('c','programmatic_wake','off',0,'op'),('d','nudge_threshold',NULL,0,'op');",
++    )
++    .unwrap();
++    drop(db);
++    assert_eq!(programmatic_wake_seats_report(&node), ["a", "b"]);
++    let text = programmatic_wake_text(&json!({"programmatic_wake_seats": ["a", "b"]}));
++    assert_eq!(text, "programmatic wake: on for a, b\n");
++
++    let both = programmatic_wake_text(&json!({
++        "programmatic_wake_node_setting": "obsolete",
++        "programmatic_wake_seats": ["a"],
++    }));
++    assert_eq!(
++        both,
++        "settings.json: programmatic_wake is obsolete (no effect); use ht human config seat set --seat <seat> programmatic_wake on\nprogrammatic wake: on for a\n"
++    );
++    std::fs::remove_dir_all(&node).unwrap();
++}

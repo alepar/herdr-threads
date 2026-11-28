@@ -1,0 +1,55 @@
+diff --git a/src/store/wake_intents.rs b/src/store/wake_intents.rs
+index 3c677e9bd..2fc530795 100644
+--- a/src/store/wake_intents.rs
++++ b/src/store/wake_intents.rs
+@@ -23,7 +23,7 @@ const MAX_INTENTS: i64 = 4096;
+ const MAX_IDS: usize = 128;
+ const UNRESOLVED: &str =
+     "((logical_status='active' AND phase!='no_effect') OR cleanup_quarantined=1)";
+-const COLUMNS: &str = "ordinal,attempt,adapter,replay_scope,origin_seat,origin_host,origin_host_boot,origin_host_epoch,origin_target,origin_target_generation,target_json,descriptor,correlation,invitation_seq,invitation_offset,receipt_seq,receipt_offset,warning_seq,warning_offset,lazy_ordinal,phase,revision,owner_boot,arm_nonce,cleanup_quarantined,diagnostic,ids_complete,logical_status,fulfillment_turn,fulfillment_ordinal,arm_native_id,arm_native_ordinal,helper_json,cleanup_list_attempted,native_no_add_exception,add_helper_json";
++const COLUMNS: &str = "ordinal,attempt,adapter,replay_scope,origin_seat,origin_host,origin_host_boot,origin_host_epoch,origin_target,origin_target_generation,target_json,descriptor,correlation,invitation_seq,invitation_offset,receipt_seq,receipt_offset,warning_seq,warning_offset,lazy_ordinal,phase,revision,owner_boot,arm_nonce,cleanup_quarantined,diagnostic,ids_complete,logical_status,fulfillment_turn,fulfillment_ordinal,arm_native_id,arm_native_ordinal,helper_json,cleanup_list_attempted,native_no_add_exception,add_helper_json,side_sessions";
+ fn invalid(detail: &str) -> ApiError {
+     api_error(ErrorCode::InvalidRequest, detail)
+ }
+@@ -84,6 +84,18 @@ fn decode(r: &Row<'_>) -> Result<WakeIntentSnapshot, ApiError> {
+                 descriptor: get(r, 11)?,
+             },
+             correlation: get(r, 12)?,
++            side_sessions: get::<Option<String>>(r, 36)?
++                .map(|text| {
++                    serde_json::from_str::<Vec<String>>(&text)
++                        .map(|ids| {
++                            ids.into_iter()
++                                .map(crate::protocol::ids::NativeSessionId::new)
++                                .collect()
++                        })
++                        .map_err(|_| corrupt())
++                })
++                .transpose()?
++                .unwrap_or_default(),
+         },
+         frontier: LogicalAttentionFrontier {
+             invitation: publication(r, 13)?,
+@@ -246,11 +258,12 @@ pub(super) fn prepare(
+         let count:i64=tx.query_row("SELECT count(*) FROM wake_intents WHERE instance_id=?1",[&store.instance],|r|r.get(0)).map_err(store_error)?;
+         let blocked:bool=tx.query_row(&format!("SELECT EXISTS(SELECT 1 FROM wake_intents WHERE instance_id=?1 AND adapter=?2 AND replay_scope=?3 AND {UNRESOLVED})"),params![store.instance,p.adapter.as_str(),p.replay_scope.as_str()],|r|r.get(0)).map_err(store_error)?;
+         if count>=MAX_INTENTS || blocked {return Ok(PrepareWakeIntent::Refused)}
++        let side_json:Option<String>=if p.side_sessions.is_empty(){None}else{Some(serde_json::to_string(&p.side_sessions.iter().map(|s|s.as_str()).collect::<Vec<_>>()).map_err(|_|invalid("invalid side sessions"))?)};
+         let scope=serde_json::to_vec(&p.target.scope).map_err(|_|invalid("invalid wake scope"))?;
+         let f=r.attention_witness.frontier();
+         let (a,b)=frontier_key(f.invitation)?;let(c,d)=frontier_key(f.addressed_receipt)?;let(e,f)=frontier_key(f.actionable_warning)?;
+         let host:i64=tx.query_row("SELECT host_id FROM seats WHERE id=?1",[r.seat.as_str()],|r|r.get(0)).map_err(store_error)?;
+-        tx.execute("INSERT INTO wake_intents(instance_id,attempt,adapter,replay_scope,origin_seat,origin_host,origin_host_boot,origin_host_epoch,origin_target,origin_target_generation,target_json,descriptor,correlation,invitation_seq,invitation_offset,receipt_seq,receipt_offset,warning_seq,warning_offset,lazy_ordinal,phase,revision,owner_boot,created_at,updated_at,cleanup_quarantined,diagnostic) VALUES(?1,?2,?3,?4,?5,?6,?7,?8,?9,?10,?11,?12,?13,?14,?15,?16,?17,?18,?19,?20,'prepared',1,?21,?22,?22,0,'')",params![store.instance,r.attempt.as_str(),p.adapter.as_str(),p.replay_scope.as_str(),r.seat.as_str(),host,r.host_boot.as_str(),signed(r.host_epoch)?,r.target.as_str(),signed(r.target_generation)?,scope,p.target.descriptor,p.correlation,a,b,c,d,e,f,r.attention_witness.frontier().lazy,r.daemon_boot.to_string(),at.utc.0]).map_err(store_error)?;
++        tx.execute("INSERT INTO wake_intents(instance_id,attempt,adapter,replay_scope,origin_seat,origin_host,origin_host_boot,origin_host_epoch,origin_target,origin_target_generation,target_json,descriptor,correlation,invitation_seq,invitation_offset,receipt_seq,receipt_offset,warning_seq,warning_offset,lazy_ordinal,phase,revision,owner_boot,created_at,updated_at,cleanup_quarantined,diagnostic,side_sessions) VALUES(?1,?2,?3,?4,?5,?6,?7,?8,?9,?10,?11,?12,?13,?14,?15,?16,?17,?18,?19,?20,'prepared',1,?21,?22,?22,0,'',?23)",params![store.instance,r.attempt.as_str(),p.adapter.as_str(),p.replay_scope.as_str(),r.seat.as_str(),host,r.host_boot.as_str(),signed(r.host_epoch)?,r.target.as_str(),signed(r.target_generation)?,scope,p.target.descriptor,p.correlation,a,b,c,d,e,f,r.attention_witness.frontier().lazy,r.daemon_boot.to_string(),at.utc.0,side_json]).map_err(store_error)?;
+         Ok(PrepareWakeIntent::Prepared(load(tx,&store.instance,&r.attempt)?.ok_or_else(corrupt)?))
+     })
+ }
+@@ -268,6 +281,8 @@ pub(super) fn arm(
+     store.context.execute_budgeted_decision(&mut writer,budget,|tx| {
+         let Some(row)=load(tx,&store.instance,&r.attempt)? else {return Ok(None)};
+         if row.phase!=WakeIntentPhase::Prepared || !row.cleanup_quarantined || row.logical!=crate::ports::WakeIntentLogical::Active || row.revision!=revision || !matching(&row,r,&row.preparation) || !canonical(store,tx,r,&row.preparation)? {return Ok(None)}
++        // The seat's opt-in is re-read at arm: flipped off since selection is the stale-authority path.
++        if !super::seat_config::programmatic_wake_on(tx,&r.seat) {return Ok(None)}
+         let Some(helper)=row.helper.as_ref().filter(|h|h.owner_boot==r.daemon_boot && h.purpose==crate::harness::wake::WakeHelperPurpose::Add && h.witness.is_some()) else {return Ok(None)};
+         if helper.kernel_boot!=row.preparation.target.scope.kernel_boot {return Ok(None)}
+         let Some(native)=super::native_turn::load(tx,&store.instance,&row.preparation.target.scope.binding)? else {return Ok(None)};

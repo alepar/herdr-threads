@@ -153,6 +153,7 @@ impl Node {
     /// The canonical claim for a binding installed by `bind_commands_as`.
     pub fn completion_claim(&self, seat: &SeatId, harness: Harness) -> CallerClaim {
         CallerClaim {
+            auxiliary_session: false,
             host: herdr_threads::test_support::test_host_locator(),
             instance: self.id.to_string(),
             seat: seat.clone(),

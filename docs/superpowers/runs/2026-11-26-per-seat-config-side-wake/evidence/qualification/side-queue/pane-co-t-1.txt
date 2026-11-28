@@ -1,0 +1,52 @@
+› You are a test recipient in an automated herdr-threads wake e2e run (the user approves). Standing i… │ Run side-…×                                    +
+    Quiet channels can archive automatically after an uninterrupted hour of verified eligibility. Pend…│› Side sibling of wake-e2e side-nudge/group 13304…
+    + 216 lines (^t to expand)                                                                         │• The sleep completed. The hook delivered the
+                                                                                                       │  sibling message in full, so an inbox call was
+• Exited (status 2) herdr-threads nudge-threshold -1                                                   │  unnecessary.
+  └ herdr-threads: no resolved seat is mapped to pane w2E:p4; run `herdr-threads seat resolve --pane w…│
+    + 1 line (^t to expand)                                                                            │  Worked for 14s • 13:36
+                                                                                                       │
+• Ran herdr-threads --state-dir /tmp/ht-wake-e2e.ttki_t5t/state --host-endpoint $HOME/.conf…│■ '/side' is unavailable in side conversations.
+  └ nudge_threshold: -1 (changed)                                                                      │Press Ctrl+C to return to the main thread first.
+    + Show details                                                                                     │
+                                                                                                       │
+• SETUP-DONE nudge_threshold=-1                                                                        │› Side 1 of wake-e2e side-draft/group 133046-bc08:
+                                                                                                       │  run the shell command /tmp/ht-wake-e2e.ttki_t5t/
+  Worked for 11s • 13:31                                                                               │  bin/herdr-threads inbox once, then print SIDE-1-
+                                                                                                       │  DONE. Do not act on anything it shows.
+                                                                                                       │
+› herdr-threads: wake up                                                                               │
+                                                                                                       │• I’ll run the test inbox command once.
+                                                                                                       │
+• I’ll accept the test invitation.                                                                     │• Ran /tmp/ht-wake-e2e.ttki_t5t/bin/herdr-threads …
+                                                                                                       │  └ empty
+• Ran herdr-threads --state-dir /tmp/ht-wake-e2e.ttki_t5t/state accept tLOpMx0rhttn                    │    + Show details
+  └ accepted                                                                                           │
+    value: "iLOpVIMbT8Xh"                                                                              │• SIDE-1-DONE
+                                                                                                       │
+• Accepted.                                                                                            │  Worked for 5s • 13:39
+                                                                                                       │
+  Worked for 4s • 13:31                                                                                │
+                                                                                                       │› Side 2 of wake-e2e side-draft/group 133046-bc08:
+• RECEIVED [herdr-threads] message mLOp7GOA5cV9 in tLOpMx0rhttn from sLOpeUcecEJ2 [p0] [human]: side-  │  run the shell command /tmp/ht-wake-e2e.ttki_t5t/
+  nudge/group 133046-bc08                                                                              │  bin/herdr-threads inbox once, then print SIDE-2-
+                                                                                                       │  DONE. Do not act on anything it shows.
+  Worked for 2s • 13:35                                                                                │
+                                                                                                       │
+• RECEIVED [herdr-threads] message mLOpoIUeLeTx in tLOpMx0rhttn from sLOpeUcecEJ2 [p0] [human]: side-  │• I’ll run the test inbox command once.
+  nudge/group 133046-bc08 sibling                                                                      │
+                                                                                                       │• Ran /tmp/ht-wake-e2e.ttki_t5t/bin/herdr-threads …
+  Worked for 2s • 13:36                                                                                │  └ empty
+                                                                                                       │    + Show details
+• RECEIVED [herdr-threads] message mLOp1GGARtx1 in tLOpMx0rhttn from sLOpeUcecEJ2 [p0] [human]: side-  │
+  draft/group 133046-bc08                                                                              │• SIDE-2-DONE
+                                                                                                       │
+  Worked for 2s • 13:45                                                                                │  Worked for 5s • 13:41
+                                                                                                       │
+                                                                                                       │
+›                                                                                                      │› Ask a follow-up question
+                                                                                                       │
+  GPT-6.2-Sol default · ~/AleCode/herdr-threads/.worktrees/super-auto-per-seat-config-side-            │  GPT-6.2-Sol default · ~/AleCode/herdr-
+  wake/.worktrees/super-auto-per-seat-config-side-wake--task-ht-z41e.31 · Accept automated wake        │  threads/.worktrees/super-auto-per-seat-config-
+  invitations                                                                                          │  side-wake/.worktrees/super-auto-per-seat-config-…
+                                                                                                       │  ← for agents · ? for shortcuts

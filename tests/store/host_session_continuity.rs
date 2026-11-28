@@ -734,6 +734,7 @@ fn the_sessions_own_check_in_connects_the_restored_binding() {
         target: HostTargetId::new("p1"),
         agent_id: None,
         liveness: Some(crate::protocol::authority::LivenessFingerprint::TEST),
+        auxiliary_session: false,
     };
     let command = CheckIn {
         readonly: false,
@@ -905,6 +906,7 @@ fn a_channel_registration_for_the_restored_binding_connects_it() {
         target: HostTargetId::new("p1"),
         agent_id: None,
         liveness: Some(LivenessFingerprint::TEST),
+        auxiliary_session: false,
     };
     assert!(
         !seats::connect_restored_for_channel(&fx.context, &mut fx.conn, INSTANCE, &claim("sess-x"))

@@ -147,6 +147,7 @@ fn confirm_restored_binding(
         target: command.target.clone(),
         agent_id: None,
         liveness: Some(fingerprint),
+        auxiliary_session: false,
     };
     connect_restored(tx, at, instance, &claim, generation, placement)
 }
@@ -1392,6 +1393,7 @@ pub fn decide_continuity(
             // it reopens the session's own row ended `seat_unresolved` (cursors kept) or enrolls
             // one at the seat's read position; both run the enroll hooks.
             let claim = crate::protocol::authority::CallerClaim {
+                auxiliary_session: false,
                 instance: instance.clone(),
                 host: command.host.clone(),
                 seat: seat.clone(),

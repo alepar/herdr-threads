@@ -1,0 +1,4 @@
+review: not ready
+[Must-fix] final review r4: run live qualification (ht-z41e.10/.31/.43) at the final SHA
+[Must-fix] final review r4: run herdr_release_wake side-close path
+[Must-fix] final review r4: side-draft narrowing without a human scope-change row

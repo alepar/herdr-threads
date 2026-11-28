@@ -1,0 +1,40 @@
+diff --git a/evidence/ht-z41e.3/golden.log b/evidence/ht-z41e.3/golden.log
+new file mode 100644
+index 000000000..d99bed06e
+--- /dev/null
++++ b/evidence/ht-z41e.3/golden.log
+@@ -0,0 +1,34 @@
++heavy: slot 1 acquired 01:23:36
++   Compiling herdr-threads v3.6.0 ($HOME/AleCode/herdr-threads/.worktrees/super-auto-per-seat-config-side-wake/.worktrees/super-auto-per-seat-config-side-wake--task-ht-z41e.3)
++warning: function `default_seat_for_test` is never used
++    --> src/cli/mod.rs:4327:15
++     |
++4327 | pub(crate) fn default_seat_for_test(action: &mut CliAction, seat: crate::protocol::ids::SeatId) {
++     |               ^^^^^^^^^^^^^^^^^^^^^
++     |
++     = note: `#[warn(dead_code)]` (part of `#[warn(unused)]`) on by default
++
++warning: `herdr-threads` (lib) generated 1 warning
++    Finished `test` profile [unoptimized + debuginfo] target(s) in 3m 34s
++     Running tests/combined.rs (target/debug/deps/combined-5fac1db49307d9d3)
++
++running 15 tests
++test golden_surfaces::contract_id_output ... ok
++test golden_surfaces::env_marker_detection ... ok
++test golden_surfaces::help_texts ... ok
++test golden_surfaces::doctor_reports ... ok
++test golden_surfaces::hermes_launch_and_handoff_refusals ... ok
++test golden_surfaces::health_json_observed_unobserved ... ok
++test golden_surfaces::hook_stdout_healthy_checkin ... ok
++test golden_surfaces::no_caller_error_text ... ok
++test golden_surfaces::hook_stdout_per_event ... ok
++test golden_surfaces::seeding_stages_the_rest_after_a_spent_writer_quantum ... ok
++test golden_surfaces::handoff_bootstrap_plans ... ok
++test golden_surfaces::setup_reports ... ok
++test golden_surfaces::unsetup_reports ... ok
++test golden_surfaces::setup_status_reports ... ok
++test golden_surfaces::launch_and_handoff_reports ... ok
++
++test result: ok. 15 passed; 0 failed; 0 ignored; 0 measured; 1446 filtered out; finished in 5.20s
++
++exit 0

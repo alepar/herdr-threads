@@ -1,0 +1,55 @@
+diff --git a/tests/store/wake.rs b/tests/store/wake.rs
+index b20d10416..f46176e8e 100644
+--- a/tests/store/wake.rs
++++ b/tests/store/wake.rs
+@@ -908,6 +908,50 @@ fn unresolved_recovery_hold_blocks_candidate_continuity_even_with_fresh_target()
+     let _ = std::fs::remove_file(path);
+ }
+ 
++/// `load_candidate` fills the attention witness's `programmatic_wake` from the seat's own
++/// `seat_config` row, so the witness changes (and lifts an unreceived hold) with the key.
++#[test]
++fn load_candidate_witness_carries_the_seat_programmatic_wake() {
++    let path =
++        crate::test_support::scratch::temp_path(format!("herdr-wake-{}.db", uuid::Uuid::new_v4()));
++    let context = StoreContext::new(path.clone(), Arc::new(WakeClock)).with_test_host();
++    let db = context.open_writer().unwrap();
++    db.execute_batch("UPDATE herdr_hosts SET host_boot='host',host_epoch=1; UPDATE local_node SET decision_seq=1")
++    .unwrap();
++    db.execute("INSERT INTO seats(id,instance_id,state,role,target_id,generation,target_generation,created_at,home_node,is_local,host_id) VALUES ('s','34750f98bd59fcfc946da45aaabe933b','resolved','native','pane',1,1,0,(SELECT id FROM local_node),1,(SELECT min(host_id) FROM herdr_hosts))",[]).unwrap();
++    let attention = effective::EffectiveSeatAttention {
++        has_pending_invitation: true,
++        has_pending_receipt: false,
++        latest_warning_seq: None,
++        frontier: Default::default(),
++    };
++    let witness_flag = || {
++        wake::load_candidate(
++            &db,
++            "34750f98bd59fcfc946da45aaabe933b",
++            &SeatId::new("s"),
++            &attention,
++            1,
++            crate::protocol::time::UtcMillis(100),
++        )
++        .unwrap()
++        .attention_witness
++        .expect("the candidate carries a witness")
++        .programmatic_wake()
++    };
++    assert!(!witness_flag(), "no row: the default is off");
++    db.execute("INSERT INTO seat_config(seat_id,key,value,updated_at,writer_provenance) VALUES ('s','programmatic_wake','on',0,'operator:local-user:0')", []).unwrap();
++    assert!(witness_flag(), "row on: the witness carries it");
++    db.execute(
++        "UPDATE seat_config SET value='off' WHERE seat_id='s' AND key='programmatic_wake'",
++        [],
++    )
++    .unwrap();
++    assert!(!witness_flag(), "row off: the witness drops it");
++    drop(db);
++    let _ = std::fs::remove_file(path);
++}
++
+ /// A seat holds several open bindings (ht-54r.3). The wake candidate's current binding is the
+ /// one a seat-level reader follows (`SEAT_NOTICE_BINDING_SQL`): the newest open top-level
+ /// binding, a connected one first; never a subagent, never whichever row SQLite returns first.

@@ -1,0 +1,67 @@
+diff --git a/src/host/native.rs b/src/host/native.rs
+index 31d768e70..9907ee3c1 100644
+--- a/src/host/native.rs
++++ b/src/host/native.rs
+@@ -5977,6 +5977,62 @@ pub(crate) mod tests {
+         assert_eq!(*methods.lock().unwrap(), ["pane.get", "agent.get"]);
+     }
+ 
++    /// A /side chat's composer is not the wake target: the wake is refused before the owed check and
++    /// nothing is typed; once the composer reads the main placeholder again the wake is prompted.
++    #[cfg(any(target_os = "macos", target_os = "linux"))]
++    #[test]
++    fn cooperative_wake_defers_on_a_side_composer_and_prompts_once_it_reads_empty() {
++        let side = CODEX_EMPTY.replace("› Ask Codex to do anything", "› Ask a follow-up question");
++        let (result, methods) = cooperative_wake_submit(
++            registry::builtins(),
++            vec![
++                recheck_exchange(wake_agent("idle", Some("codex"), "term_1")),
++                detection_exchange(side),
++            ],
++            None,
++            |target, _| target.bound_harness = Some("codex".into()),
++            |cli, target, context, _| {
++                cli.submit_prompt_if_owed(target, "wake marker", context, &|| {
++                    panic!("a side composer must refuse before still_owed")
++                })
++            },
++        );
++        assert_eq!(result.unwrap_err().code, ErrorCode::TargetUnsafe);
++        assert_eq!(
++            *methods.lock().unwrap(),
++            ["pane.get", "agent.get", "agent.read"]
++        );
++
++        // The same pane with the main placeholder back: prompted.
++        let prompt: Exchange = Box::new(move |stream, request| {
++            assert_eq!(request["method"], "agent.prompt");
++            assert_eq!(
++                request["params"],
++                json!({"target":"w4:p1","text":"wake marker"})
++            );
++            answer(
++                stream,
++                &request,
++                json!({"type":"agent_prompted","agent":wake_agent("idle", Some("codex"), "term_1")}),
++            );
++        });
++        let (result, methods) = cooperative_wake_submit(
++            registry::builtins(),
++            vec![
++                recheck_exchange(wake_agent("idle", Some("codex"), "term_1")),
++                detection_exchange(CODEX_EMPTY.to_owned()),
++                prompt,
++            ],
++            None,
++            |target, _| target.bound_harness = Some("codex".into()),
++            |cli, target, context, _| {
++                cli.submit_prompt_if_owed(target, "wake marker", context, &|| Ok(true))
++            },
++        );
++        assert_eq!(result.unwrap(), Some(ports::PromptOutcome::Submitted));
++        assert_eq!(methods.lock().unwrap().last().unwrap(), "agent.prompt");
++    }
++
+     /// Characterizes the shared Native check/type gap, not a repaired safety property or the
+     /// cause of a native qualification incident. The endpoint records an RPC, not UI typing.
+     #[cfg(any(target_os = "macos", target_os = "linux"))]

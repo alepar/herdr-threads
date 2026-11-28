@@ -3180,6 +3180,7 @@ pub(super) fn refresh(
         return Ok(None);
     };
     let claim = CallerClaim {
+        auxiliary_session: false,
         instance: instance.into(),
         host: super::hosts::seat_claim_host(db, seat.as_str()),
         seat: seat.clone(),

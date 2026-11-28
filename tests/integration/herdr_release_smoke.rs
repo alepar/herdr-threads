@@ -1395,8 +1395,9 @@ fn herdr_release_wake() {
         }
     });
 
-    // Codex's `/side` placeholder reads empty: a p0 wakes the idle agent
-    // under it (after the per-seat wake spacing), it is not typed text.
+    // Codex's `/side` placeholder is not an empty composer: a p0 sent while it
+    // is displayed is refused before typing (no wake), and wakes the idle agent
+    // once the side chat is closed (Ctrl-C).
     m.submit(&agent_pane, "/side");
     wait_for("/side placeholder", Duration::from_secs(10), || {
         if m.log_of(&agent_pane).iter().any(|e| e["kind"] == "side") {
@@ -1407,17 +1408,54 @@ fn herdr_release_wake() {
     });
     thread::sleep(Duration::from_secs(32));
     let before = wakes();
+    let refusals = || {
+        let needle = format!("refused {agent}");
+        m.wake_lane_log()
+            .iter()
+            .filter(|line| line.contains(&needle))
+            .count()
+    };
+    let refused_before = refusals();
     m.person(
         &sender_pane,
         &["send", "--seat", &agent, "--nudge", "--body", "wake-side"],
     );
-    wait_for("p0 wake under /side", Duration::from_secs(30), || {
-        if wakes() > before {
+    // The daemon made a native wake attempt and refused it while the side chat
+    // was displayed; a seat that was never tried would also type nothing.
+    wait_for(
+        "native wake refused on the /side chat",
+        Duration::from_secs(30),
+        || {
+            if refusals() > refused_before {
+                Ok(())
+            } else {
+                Err(format!("{:?}", m.wake_lane_log()))
+            }
+        },
+    );
+    assert_eq!(wakes(), before, "a wake was typed into the /side chat");
+    m.herdr_input(&["pane", "send-text", &agent_pane, "\x03"]);
+    wait_for("/side closed", Duration::from_secs(10), || {
+        if m.log_of(&agent_pane)
+            .iter()
+            .any(|e| e["kind"] == "side-close")
+        {
             Ok(())
         } else {
-            Err(diagnose())
+            Err(format!("{:?}", m.log_of(&agent_pane)))
         }
     });
+    wait_for(
+        "p0 wake after /side closed",
+        Duration::from_secs(60),
+        || {
+            if wakes() > before {
+                Ok(())
+            } else {
+                Err(diagnose())
+            }
+        },
+    );
     println!("herdr {}: wake matrix passed", m.version);
 }
 

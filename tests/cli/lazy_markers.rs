@@ -452,6 +452,7 @@ fn lazy_markers_real_store_preserves_pending_delivery_and_ready_cached_summary()
         INSERT INTO lazy_recipients(preparation_id,message_id,thread_id,seat_id,priority) VALUES('prep-2','msg-2','t','s',0);
         INSERT INTO send_manifests(preparation_id,message_id,instance_id,thread_id,decision_seq,decision_at,base_sequence,interval_high_water,recipient_count,warning_count) VALUES('prep-2','msg-2','34750f98bd59fcfc946da45aaabe933b','t',2,0,2,0,1,0);").unwrap();
     let claim = CallerClaim {
+        auxiliary_session: false,
         host: herdr_threads::test_support::test_host_locator(),
         instance: "34750f98bd59fcfc946da45aaabe933b".into(),
         seat: SeatId::new("s"),

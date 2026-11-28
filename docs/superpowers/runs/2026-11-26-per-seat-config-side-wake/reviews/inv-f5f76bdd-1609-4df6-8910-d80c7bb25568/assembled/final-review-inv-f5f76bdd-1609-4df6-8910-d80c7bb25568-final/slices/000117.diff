@@ -1,0 +1,26 @@
+diff --git a/src/store/queries.rs b/src/store/queries.rs
+index 8c1694aca..d2e16f2fc 100644
+--- a/src/store/queries.rs
++++ b/src/store/queries.rs
+@@ -397,6 +397,21 @@ fn query_inner(
+                     changed: false,
+                 })
+             }),
++        Command::GetSeatConfig(q) => db
++            .query_row(
++                "SELECT EXISTS(SELECT 1 FROM seats WHERE id=?1 AND instance_id=?2)",
++                params![q.seat.as_str(), instance],
++                |r| r.get::<_, bool>(0),
++            )
++            .map_err(|e| db.map_error(e))
++            .and_then(|known| {
++                if known {
++                    super::seat_config::get(&db, &q.seat, q.key.as_deref())
++                        .map(CommandResult::SeatConfig)
++                } else {
++                    Err(api_error(ErrorCode::NotFound, "seat not found"))
++                }
++            }),
+         Command::Search(q) => search(&db, store, instance, q, output, &active_budget),
+         Command::Directory(q) => directory(&db, instance, q, output),
+         Command::PickerDirectory(q) => {

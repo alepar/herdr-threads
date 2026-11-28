@@ -52,6 +52,7 @@ fn fixture() -> (
         role: Role::TopLevel,
     };
     let e = LifecycleEvent {
+        auxiliary_session: false,
         harness: Harness::Codex,
         source: "explicit".into(),
         kind: EventKind::Startup,
@@ -1780,6 +1781,7 @@ impl crate::ports::LocalClient for Mailbox {
 }
 fn tool_event() -> LifecycleEvent {
     LifecycleEvent {
+        auxiliary_session: false,
         harness: Harness::Codex,
         source: "PreToolUse".into(),
         kind: EventKind::Tool,

@@ -1,0 +1,12 @@
+diff --git a/tests/service/host_routing.rs b/tests/service/host_routing.rs
+index 7fc1e4029..7d1acb364 100644
+--- a/tests/service/host_routing.rs
++++ b/tests/service/host_routing.rs
+@@ -88,6 +88,7 @@ impl Rig {
+     /// A claim of a seat that does not exist, from a pane of `self.server`.
+     fn claim(&self, harness: Harness) -> CallerClaim {
+         CallerClaim {
++            auxiliary_session: false,
+             instance: self.node.clone(),
+             host: self.server.clone(),
+             seat: SeatId::new("no-such-seat"),

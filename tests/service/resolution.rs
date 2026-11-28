@@ -764,6 +764,7 @@ fn direct_socket_hook_keeps_selected_check_in_and_directory_continuations() {
         )
         .unwrap();
     let event = LifecycleEvent {
+        auxiliary_session: false,
         harness: Harness::Codex,
         source: "explicit".into(),
         kind: EventKind::Startup,
@@ -1923,6 +1924,7 @@ fn held_real_sqlite_search_allows_health_and_writer_then_cancels_and_reuses_work
         CommandResult::Health(_)
     ));
     let claim = CallerClaim {
+        auxiliary_session: false,
         host: herdr_threads::test_support::test_host_locator(),
         instance: fixture.descriptor.node_uuid.to_string(),
         seat: SeatId::new("checkin-seat"),
@@ -1962,6 +1964,7 @@ fn held_real_sqlite_search_allows_health_and_writer_then_cancels_and_reuses_work
         messages: vec![MessageId::new("search-message")],
         operation: OperationId::new("ack-during-held-search"),
         claim: CallerClaim {
+            auxiliary_session: false,
             host: herdr_threads::test_support::test_host_locator(),
             binding_generation: 0,
             ..claim

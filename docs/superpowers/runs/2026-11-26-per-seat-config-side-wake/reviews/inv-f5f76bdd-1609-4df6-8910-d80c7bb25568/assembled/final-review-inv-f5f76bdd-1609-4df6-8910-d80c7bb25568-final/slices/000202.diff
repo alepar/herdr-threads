@@ -1,0 +1,12 @@
+diff --git a/tests/service/turn_state.rs b/tests/service/turn_state.rs
+index 6b5f6038e..9c8413a24 100644
+--- a/tests/service/turn_state.rs
++++ b/tests/service/turn_state.rs
+@@ -215,6 +215,7 @@ fn codex_stop_without_continuation_idle() {
+ 
+ fn claim(role: CallerRole, liveness: Option<LivenessFingerprint>) -> CallerClaim {
+     CallerClaim {
++        auxiliary_session: false,
+         instance: "i".into(),
+         host: HostLocator::parse("/h.sock").unwrap(),
+         seat: SeatId::new("s"),

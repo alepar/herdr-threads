@@ -3532,6 +3532,7 @@ mod continuity_gate {
         session: Option<&str>,
     ) -> LifecycleEvent {
         LifecycleEvent {
+            auxiliary_session: false,
             harness,
             source: match kind {
                 EventKind::Resume => "resume",
@@ -5105,6 +5106,7 @@ mod continuity_gate {
 
 fn recovery_event_of(harness: Harness, kind: EventKind) -> LifecycleEvent {
     LifecycleEvent {
+        auxiliary_session: false,
         harness,
         source: match kind {
             EventKind::Compact => "compact",
@@ -8231,6 +8233,7 @@ mod registered_resume {
                 event_id: p.event_id,
                 intent,
                 metadata: EventMetadata {
+                    auxiliary_session: false,
                     native_turn_id: None,
                     turn_end: false,
                     enrollment_witness: None,
@@ -10171,6 +10174,7 @@ mod registered_resume {
             key_capability: Default::default(),
         };
         let ev = LifecycleEvent {
+            auxiliary_session: false,
             harness: Harness::Human,
             role: Role::TopLevel,
             kind: EventKind::Resume,
@@ -12739,6 +12743,7 @@ mod terminal_turn_edge {
             event_id: "e1".into(),
             intent: EventIntent::Current,
             metadata: EventMetadata {
+                auxiliary_session: false,
                 native_turn_id: None,
                 turn_end: true,
                 enrollment_witness: None,
@@ -12993,5 +12998,177 @@ mod terminal_turn_edge {
             assert_eq!(wire.get("native_turn_id").is_some(), capable);
         }
         std::fs::remove_dir_all(dir).unwrap();
+    }
+}
+
+/// ht-z41e.33: the auxiliary-session evidence of a hook event rides every claim built from it,
+/// only to a daemon that advertises `seat.auxiliary_session_v1`, and survives a journal replay.
+mod auxiliary_claim_gate {
+    use crate::harness::bridge::{decode_request, prepare_event, tool_boundary_check_in};
+    use crate::harness::context::{
+        CheckInMode as EventMode, ContextJournal, EventKind, OccupantContext, Role,
+        SessionReference,
+    };
+    use crate::harness::{Capability, LifecycleEvent};
+    use crate::protocol::capabilities::{
+        ATTENTION_NOTICE_DELIVERY, BINDING_DIGEST, SEAT_AUXILIARY_SESSION_V1,
+    };
+    use crate::protocol::commands::Command;
+    use crate::protocol::results::{ApiError, CommandResult, ErrorCode};
+    use crate::protocol::time::{CallBudget, MonoInstant};
+    use std::sync::Mutex;
+
+    const SESSION: &str = "00000000-0000-4000-8000-0000000000b2";
+    const CONTEXT_LOCK_WAIT: std::time::Duration = std::time::Duration::from_secs(10);
+
+    /// Records every command and refuses each one, so a tool boundary fails open and still sends
+    /// its CheckIn (the digest read failing keeps the offer).
+    struct Probe {
+        capabilities: Vec<&'static str>,
+        seen: Mutex<Vec<Command>>,
+    }
+    impl crate::ports::LocalClient for Probe {
+        crate::default_output_local_client!();
+        fn supports_capability(&self, name: &str, _: &CallBudget) -> bool {
+            self.capabilities.contains(&name)
+        }
+        fn call(&self, command: Command, _: &CallBudget) -> Result<CommandResult, ApiError> {
+            self.seen.lock().unwrap().push(command);
+            Err(ApiError::new(ErrorCode::Unauthorized, "probe"))
+        }
+    }
+
+    fn budget() -> CallBudget {
+        CallBudget {
+            deadline: MonoInstant(5000),
+            cancellation: Default::default(),
+        }
+    }
+
+    fn journal(root: &std::path::Path) -> ContextJournal {
+        ContextJournal::open(
+            root,
+            crate::node::NodeUuid::from_u128(1),
+            "seat",
+            CONTEXT_LOCK_WAIT,
+        )
+        .map(|journal| journal.with_host(crate::test_support::test_host_locator()))
+        .unwrap()
+    }
+
+    fn context() -> OccupantContext {
+        OccupantContext {
+            format_version: 1,
+            instance: crate::node::NodeUuid::from_u128(1),
+            seat: "seat".into(),
+            target: "pane".into(),
+            harness: crate::harness::context::Harness::Codex,
+            binding_generation: 1,
+            execution: uuid::Uuid::from_u128(2),
+            session: SessionReference::Native(SESSION.into()),
+            role: Role::TopLevel,
+        }
+    }
+
+    fn event(kind: EventKind, id: &str) -> LifecycleEvent {
+        LifecycleEvent {
+            auxiliary_session: true,
+            harness: crate::harness::context::Harness::Codex,
+            source: "side".into(),
+            kind,
+            native_session: Some(SESSION.into()),
+            role: Role::TopLevel,
+            event_id: id.into(),
+            capability: Capability::SourceSupported,
+            agent_id: None,
+        }
+    }
+
+    /// Every claim the boundary sent: the digest query's and the CheckIn's.
+    fn boundary_claims(capabilities: Vec<&'static str>) -> Vec<(&'static str, bool)> {
+        let root = crate::test_support::scratch::temp_path_canonical(format!(
+            "aux-gate-{}",
+            uuid::Uuid::new_v4()
+        ));
+        std::fs::create_dir(&root).unwrap();
+        {
+            use std::os::unix::fs::PermissionsExt;
+            std::fs::set_permissions(&root, std::fs::Permissions::from_mode(0o700)).unwrap();
+        }
+        let contexts = journal(&root);
+        contexts.install_reattached(context()).unwrap();
+        let client = Probe {
+            capabilities,
+            seen: Mutex::default(),
+        };
+        let _ = tool_boundary_check_in(
+            &contexts,
+            &event(EventKind::Tool, "tool"),
+            &client,
+            &crate::app::SystemClock::new(),
+            &Default::default(),
+            &budget(),
+            true,
+        );
+        std::fs::remove_dir_all(&root).unwrap();
+        let seen = client.seen.lock().unwrap();
+        seen.iter()
+            .filter_map(|command| match command {
+                Command::CheckIn(check) => Some(("check_in", check.claim.auxiliary_session)),
+                Command::AttentionDigestDelivery(query) | Command::AttentionDigest(query) => query
+                    .claim
+                    .as_ref()
+                    .map(|claim| ("digest", claim.auxiliary_session)),
+                _ => None,
+            })
+            .collect()
+    }
+
+    // Kills: copying the event's bit onto the tool-boundary claim without the capability gate (an
+    // older daemon refuses the unknown claim field), or dropping it from the digest claim only.
+    #[test]
+    fn tool_boundary_claims_carry_the_bit_only_to_an_advertising_daemon() {
+        let base = vec![ATTENTION_NOTICE_DELIVERY, BINDING_DIGEST];
+        assert_eq!(
+            boundary_claims(base.clone()),
+            [("digest", false), ("check_in", false)],
+            "a daemon without the capability sees today's bytes"
+        );
+        let mut capable = base;
+        capable.push(SEAT_AUXILIARY_SESSION_V1);
+        assert_eq!(
+            boundary_claims(capable),
+            [("digest", true), ("check_in", true)]
+        );
+    }
+
+    // Kills: the replay comparison resetting the bit, so a journaled request from an auxiliary
+    // event decodes to a claim that lost it.
+    #[test]
+    fn replayed_lifecycle_request_keeps_the_auxiliary_bit() {
+        let root = crate::test_support::scratch::temp_path_canonical(format!(
+            "aux-replay-{}",
+            uuid::Uuid::new_v4()
+        ));
+        std::fs::create_dir(&root).unwrap();
+        {
+            use std::os::unix::fs::PermissionsExt;
+            std::fs::set_permissions(&root, std::fs::Permissions::from_mode(0o700)).unwrap();
+        }
+        let journal_dir = crate::cli::journal::Journal::open(root.join("intents")).unwrap();
+        let contexts = journal(&root);
+        let mut seed = context();
+        seed.binding_generation = 0;
+        seed.session = SessionReference::PluginContext(uuid::Uuid::from_u128(2));
+        let event = event(EventKind::Fork, "fork");
+        assert_eq!(event.kind.mode(), EventMode::Lifecycle);
+        let pending = prepare_event(&journal_dir, &contexts, &event, Some(&seed), 1)
+            .unwrap()
+            .unwrap();
+        let Command::CheckIn(check) = decode_request(&pending).unwrap() else {
+            panic!("a lifecycle event freezes a CheckIn");
+        };
+        assert!(check.claim.auxiliary_session);
+        std::fs::remove_dir_all(&root).unwrap();
     }
 }

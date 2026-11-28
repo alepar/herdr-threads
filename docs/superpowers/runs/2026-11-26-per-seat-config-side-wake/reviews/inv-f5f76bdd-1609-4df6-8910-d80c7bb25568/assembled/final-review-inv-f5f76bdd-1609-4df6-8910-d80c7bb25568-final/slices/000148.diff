@@ -1,0 +1,12 @@
+diff --git a/tests/daemon/launch_gate_guards.rs b/tests/daemon/launch_gate_guards.rs
+index 3cf3ffb86..65f2c37fd 100644
+--- a/tests/daemon/launch_gate_guards.rs
++++ b/tests/daemon/launch_gate_guards.rs
+@@ -204,6 +204,7 @@ fn locate_caller_refuses_a_non_core_socket() {
+ 
+ fn claim(role: CallerRole, liveness: Option<LivenessFingerprint>) -> CallerClaim {
+     CallerClaim {
++        auxiliary_session: false,
+         instance: INSTANCE.into(),
+         host: HostLocator::parse(NAMED_HOST_LOCATOR).unwrap(),
+         seat: SeatId::new("s"),

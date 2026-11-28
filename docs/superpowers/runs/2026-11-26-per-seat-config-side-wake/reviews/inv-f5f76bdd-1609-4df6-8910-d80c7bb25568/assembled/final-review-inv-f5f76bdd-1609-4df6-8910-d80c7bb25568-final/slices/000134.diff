@@ -1,0 +1,12 @@
+diff --git a/tests/cli/follow_retry.rs b/tests/cli/follow_retry.rs
+index d94333b47..35e87d2f7 100644
+--- a/tests/cli/follow_retry.rs
++++ b/tests/cli/follow_retry.rs
+@@ -440,6 +440,7 @@ impl CompletedRetryFixture {
+             ),
+         };
+         let claim = CallerClaim {
++            auxiliary_session: false,
+             host: crate::test_support::test_host_locator(),
+             instance: "000000000000000000000000000000b1".into(),
+             seat: SeatId::new("sender"),

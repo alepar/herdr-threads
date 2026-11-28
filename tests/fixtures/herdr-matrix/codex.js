@@ -15,7 +15,8 @@ though the content is Python). It behaves like the parts of Codex that Herdr and
   would get, and so is a blocking hook's `reason` (`decision: block`, Codex's Stop continuation).
 
 `resume <id>` keeps that session id and its SessionStart carries `source: resume`. A submitted line is a turn, except `/side`, which only switches the empty composer's placeholder to Codex's `/side`
-one (`Ask a follow-up question`; the stand-in models no forked session). `run: CMD` runs CMD as a Bash tool call (PreToolUse first, then CMD as
+one (`Ask a follow-up question`; the stand-in models no forked session). Ctrl-C closes a displayed `/side` view (the
+placeholder is the main one again, logged `side-close`, no Interrupt hook: the observed side close emits none). `run: CMD` runs CMD as a Bash tool call (PreToolUse first, then CMD as
 a child with CODEX_SESSION_ID set), and `run: A ;; B` runs two calls in the same turn; `exit` ends the session; anything else is just a prompt.
 Every event is appended to `$FAKE_CODEX_LOG_DIR/<session>.jsonl` (default `.fake-codex` in the
 working directory), so a test reads exactly what the agent saw.
@@ -204,8 +205,12 @@ def main():
                 elif ch == "\x15":  # ctrl+u
                     buffer = ""
                 elif ch == "\x03":  # ctrl+c
-                    run_hooks("Interrupt")
-                    log("interrupt")
+                    if placeholder == "Ask a follow-up question":
+                        placeholder = "Ask Codex to do anything"
+                        log("side-close")
+                    else:
+                        run_hooks("Interrupt")
+                        log("interrupt")
                 elif ch in "\x7f\b":
                     buffer = buffer[:-1]
                 elif ch >= " ":

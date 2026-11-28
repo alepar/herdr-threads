@@ -48,6 +48,8 @@ pub enum Command {
     WakeOn(WakeOnQuery),
     /// Read a seat's nudge threshold; advertised as `seat.nudge_threshold_v1`.
     NudgeThreshold(NudgeThresholdQuery),
+    /// Read a seat's config (any caller, any local seat); gated by `seat.config_v1`.
+    GetSeatConfig(GetSeatConfig),
     Warnings(WarningsQuery),
     /// Bounded read-only active warning conditions for one thread.
     ActiveWarnings(ActiveWarningsQuery),
@@ -140,6 +142,12 @@ pub enum Command {
     /// Set the caller seat's nudge threshold (TRUST-POLICY A5 cooperative mutation); advertised as
     /// `seat.nudge_threshold_v1`.
     SetNudgeThreshold(SetNudgeThreshold),
+    /// Set a seat config key: the agent tier as the caller's own seat (a cooperative mutation
+    /// decided as `SetNudgeThreshold`), the human tier as an operator decision; gated by
+    /// `seat.config_v1`.
+    SetSeatConfig(SetSeatConfig),
+    /// Return a seat config key to its default (same tier rules as the set).
+    UnsetSeatConfig(UnsetSeatConfig),
     /// A named seat retires itself (`seat retire --self`, TRUST-POLICY A3 `cooperative_self_retire`).
     SelfRetire(SelfRetire),
     Leave(Leave),
@@ -1079,6 +1087,41 @@ pub struct NudgeThresholdQuery {
     pub seat: SeatId,
 }
 
+/// Read a local seat's effective config: one key, or every registered key.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct GetSeatConfig {
+    pub seat: SeatId,
+    #[serde(default)]
+    pub key: Option<String>,
+}
+
+/// Set one seat config key. `tier` is the caller's declared path and the daemon checks it against
+/// the key's registry tier: `agent` needs `claim` and writes only the claim's own seat; `human`
+/// is an operator decision on `seat` (required) and needs no claim.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct SetSeatConfig {
+    #[serde(default)]
+    pub seat: Option<SeatId>,
+    pub key: String,
+    pub value: String,
+    pub tier: crate::protocol::seat_config::ConfigTier,
+    pub operation: OperationId,
+    #[serde(default)]
+    pub claim: Option<CallerClaim>,
+}
+
+/// Return one seat config key to its registry default (same tier rules as [`SetSeatConfig`]).
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct UnsetSeatConfig {
+    #[serde(default)]
+    pub seat: Option<SeatId>,
+    pub key: String,
+    pub tier: crate::protocol::seat_config::ConfigTier,
+    pub operation: OperationId,
+    #[serde(default)]
+    pub claim: Option<CallerClaim>,
+}
+
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct MessageDeliveryModesQuery {
@@ -1401,6 +1444,8 @@ impl Command {
             Self::CompleteInboxDelivery(v) => Some(&v.claim),
             Self::SetWakeOn(v) => Some(&v.claim),
             Self::SetNudgeThreshold(v) => Some(&v.claim),
+            Self::SetSeatConfig(v) => v.claim.as_ref(),
+            Self::UnsetSeatConfig(v) => v.claim.as_ref(),
             Self::SelfRetire(v) => Some(&v.claim),
             Self::Leave(v) => Some(&v.claim),
             Self::SetTopic(v) => Some(&v.claim),
@@ -1871,6 +1916,10 @@ pub enum PermitMutation {
     SetWakeOn(SetWakeOn),
     /// Nudge threshold of the caller's own seat; wake eligibility only.
     SetNudgeThreshold(SetNudgeThreshold),
+    /// An agent-tier seat config key of the caller's own seat; always carries a claim.
+    SetSeatConfig(SetSeatConfig),
+    /// Return an agent-tier seat config key of the caller's own seat to its default.
+    UnsetSeatConfig(UnsetSeatConfig),
     /// A named seat retires itself.
     SelfRetire(SelfRetire),
     Leave(Leave),
@@ -1879,6 +1928,8 @@ pub enum PermitMutation {
     Archive(ThreadMutation),
     Reopen(ThreadMutation),
 }
+use crate::protocol::seat_config::ConfigTier;
+
 impl TryFrom<Command> for PermitMutation {
     type Error = Command;
     fn try_from(command: Command) -> Result<Self, Self::Error> {
@@ -1911,6 +1962,13 @@ impl TryFrom<Command> for PermitMutation {
             Command::CompleteInboxDelivery(v) => Ok(Self::CompleteInboxDelivery(v)),
             Command::SetWakeOn(v) => Ok(Self::SetWakeOn(v)),
             Command::SetNudgeThreshold(v) => Ok(Self::SetNudgeThreshold(v)),
+            // A human-tier write is an operator decision, never a permit mutation.
+            Command::SetSeatConfig(v) if v.tier == ConfigTier::Agent && v.claim.is_some() => {
+                Ok(Self::SetSeatConfig(v))
+            }
+            Command::UnsetSeatConfig(v) if v.tier == ConfigTier::Agent && v.claim.is_some() => {
+                Ok(Self::UnsetSeatConfig(v))
+            }
             Command::SelfRetire(v) => Ok(Self::SelfRetire(v)),
             Command::Leave(v) => Ok(Self::Leave(v)),
             Command::SetTopic(v) => Ok(Self::SetTopic(v)),
@@ -1936,6 +1994,7 @@ mod host_locator_tests {
     }
     fn claim() -> CallerClaim {
         CallerClaim {
+            auxiliary_session: false,
             instance: "i".into(),
             host: host("/claim.sock"),
             seat: SeatId::new("s"),

@@ -21,18 +21,15 @@ class Qualification(unittest.TestCase):
         loader.exec_module(module)
         return module
 
-    def run_driver(self, fail=(), self_test=True):
+    def run_driver(self, fail=(), self_test=True, queue_proof=False):
         module = self.load()
         calls = []
         def run(argv, **kwargs):
             calls.append((argv, kwargs['env']))
             return type('Result', (), {'returncode': int(any(x in argv for x in fail))})()
-        # The live branch on Linux probes the operator's queue-wake setting through the candidate's
-        # `doctor --json`; there is no candidate here, so the probe answers "off" at that boundary.
         with tempfile.TemporaryDirectory() as evidence, patch.object(module.subprocess, 'run', run), \
-                patch.object(module, 'operator_programmatic_wake', lambda: False), \
                 contextlib.redirect_stdout(io.StringIO()):
-            rc = module.qualify(Path(evidence), self_test)
+            rc = module.qualify(Path(evidence), self_test, queue_proof=queue_proof)
             summary = (Path(evidence) / 'summary.json').read_text()
         self.assertTrue(all(not Path(e['TMPDIR']).exists() for _, e in calls))
         return calls, rc, summary
@@ -68,6 +65,40 @@ class Qualification(unittest.TestCase):
         wake = next(a for a in commands if 'scripts/wake-e2e-herdr' in a)
         self.assertEqual(wake[1], self.load().newest_release(DRIVER.parent.parent / 'tests/herdr-releases.tsv'))
         self.assertLess(commands.index(['python3', 'scripts/wake-e2e.py', '--self-test']), commands.index(wake))
+
+    def test_queue_proof_reaches_the_wake_e2e_argv_only_when_requested(self):
+        for queue_proof in (True, False):
+            calls, rc, _ = self.run_driver(self_test=False, queue_proof=queue_proof)
+            self.assertEqual(rc, 0)
+            wake = next(a for a, _ in calls if 'scripts/wake-e2e-herdr' in a)
+            self.assertEqual('--queue-proof' in wake, queue_proof, wake)
+            # The flag is an argument of the wake run itself, after the Herdr release.
+            if queue_proof:
+                self.assertGreater(wake.index('--queue-proof'), wake.index('--evidence-dir'))
+
+    def test_main_passes_the_flag_and_refuses_it_off_linux_and_macos_before_running_anything(self):
+        module = self.load()
+        for platform, flag, want in (('linux', '--queue-proof', True), ('darwin', '--queue-proof', True),
+                                     ('linux', None, False)):
+            seen = []
+            argv = ['release-qualify', '--evidence-dir', '/nonexistent-evidence'] + ([flag] if flag else [])
+            with patch.object(module.sys, 'platform', platform), patch.object(module.sys, 'argv', argv), \
+                    patch.object(module, 'qualify', lambda evidence, self_test, queue_proof=False: seen.append(queue_proof) or 0):
+                self.assertEqual(module.main(), 0)
+            self.assertEqual(seen, [want], (platform, flag))
+        ran = []
+        def run(argv, **kwargs):
+            ran.append(argv)
+            return type('Result', (), {'returncode': 0})()
+        with tempfile.TemporaryDirectory() as evidence, patch.object(module.sys, 'platform', 'win32'), \
+                patch.object(module.sys, 'argv', ['release-qualify', '--queue-proof', '--evidence-dir', evidence]), \
+                patch.object(module.subprocess, 'run', run), contextlib.redirect_stderr(io.StringIO()) as err:
+            with self.assertRaises(SystemExit) as raised:
+                module.main()
+            self.assertNotEqual(raised.exception.code, 0)
+            self.assertIn('--queue-proof requires Linux or macOS', err.getvalue())
+            self.assertEqual(list(Path(evidence).iterdir()), [], 'nothing was written')
+        self.assertEqual(ran, [], 'no subprocess ran')
 
     def test_failed_candidate_blocks_live_wake_and_binary_installers(self):
         calls, rc, summary = self.run_driver(('scripts/build.sh',), self_test=False)

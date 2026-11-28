@@ -1,0 +1,138 @@
+{
+  "lone_root": {
+    "session_start": [
+      {
+        "session_id": "01a21c30-0dd0-7053-9503-057245cd3839",
+        "transcript_path": "$SPIKE_ROOT/codex/sessions/2026/11/27/rollout-2026-11-27T00-47-21-01a21c30-0dd0-7053-9503-057245cd3839.jsonl",
+        "cwd": "$SPIKE_ROOT/work",
+        "hook_event_name": "SessionStart",
+        "model": "gpt-6.1-sol",
+        "permission_mode": "bypassPermissions",
+        "source": "startup",
+        "_at": 1795769242.4523904,
+        "_env": {
+          "CODEX_SESSION_ID": null,
+          "CODEX_THREAD_ID": null,
+          "CODEX_HOME": "$SPIKE_ROOT/codex"
+        },
+        "event": "SessionStart"
+      }
+    ],
+    "rollouts": {
+      "rollout-2026-11-27T00-47-21-01a21c30-0dd0-7053-9503-057245cd3839.jsonl": {
+        "lines": 17,
+        "session_meta": {
+          "account_scoped": true,
+          "session_id": "01a21c30-0dd0-7053-9503-057245cd3839",
+          "id": "01a21c30-0dd0-7053-9503-057245cd3839",
+          "timestamp": "2026-11-27T08:47:21.042Z",
+          "cwd": "$SPIKE_ROOT/work",
+          "runtime_workspace_roots": [
+            "$SPIKE_ROOT/work"
+          ],
+          "originator": "codex-tui",
+          "cli_version": "0.172.0",
+          "source": "cli",
+          "thread_source": "user",
+          "model_provider": "openai",
+          "history_mode": "paginated",
+          "context_window": {
+            "window_id": "01a21c30-0dd2-7972-9928-e8d828b85633"
+          }
+        }
+      }
+    }
+  },
+  "error": "side stop",
+  "partial_events": [
+    {
+      "session_id": "01a21c30-0dd0-7053-9503-057245cd3839",
+      "transcript_path": "$SPIKE_ROOT/codex/sessions/2026/11/27/rollout-2026-11-27T00-47-21-01a21c30-0dd0-7053-9503-057245cd3839.jsonl",
+      "cwd": "$SPIKE_ROOT/work",
+      "hook_event_name": "SessionStart",
+      "model": "gpt-6.1-sol",
+      "permission_mode": "bypassPermissions",
+      "source": "startup",
+      "_at": 1795769242.4523904,
+      "_env": {
+        "CODEX_SESSION_ID": null,
+        "CODEX_THREAD_ID": null,
+        "CODEX_HOME": "$SPIKE_ROOT/codex"
+      },
+      "event": "SessionStart"
+    },
+    {
+      "session_id": "01a21c30-0dd0-7053-9503-057245cd3839",
+      "turn_id": "01a21c30-0de1-7af3-87d0-a015af5ce547",
+      "transcript_path": "$SPIKE_ROOT/codex/sessions/2026/11/27/rollout-2026-11-27T00-47-21-01a21c30-0dd0-7053-9503-057245cd3839.jsonl",
+      "cwd": "$SPIKE_ROOT/work",
+      "hook_event_name": "UserPromptSubmit",
+      "model": "gpt-6.1-sol",
+      "permission_mode": "bypassPermissions",
+      "prompt": "Reply exactly SPIKE_READY without using tools.",
+      "_at": 1795769242.7486343,
+      "_env": {
+        "CODEX_SESSION_ID": null,
+        "CODEX_THREAD_ID": null,
+        "CODEX_HOME": "$SPIKE_ROOT/codex"
+      },
+      "event": "UserPromptSubmit"
+    },
+    {
+      "session_id": "01a21c30-0dd0-7053-9503-057245cd3839",
+      "turn_id": "01a21c30-0de1-7af3-87d0-a015af5ce547",
+      "transcript_path": "$SPIKE_ROOT/codex/sessions/2026/11/27/rollout-2026-11-27T00-47-21-01a21c30-0dd0-7053-9503-057245cd3839.jsonl",
+      "cwd": "$SPIKE_ROOT/work",
+      "hook_event_name": "Stop",
+      "model": "gpt-6.1-sol",
+      "permission_mode": "bypassPermissions",
+      "stop_hook_active": false,
+      "last_assistant_message": "SPIKE_READY",
+      "_at": 1795769248.481625,
+      "_env": {
+        "CODEX_SESSION_ID": null,
+        "CODEX_THREAD_ID": null,
+        "CODEX_HOME": "$SPIKE_ROOT/codex"
+      },
+      "event": "Stop"
+    },
+    {
+      "session_id": "01a21c30-2af6-70e0-8adc-40e1e8d49147",
+      "transcript_path": null,
+      "cwd": "$SPIKE_ROOT/work",
+      "hook_event_name": "SessionStart",
+      "model": "gpt-6.1-sol",
+      "permission_mode": "bypassPermissions",
+      "source": "fork",
+      "_at": 1795769249.6843083,
+      "_env": {
+        "CODEX_SESSION_ID": null,
+        "CODEX_THREAD_ID": null,
+        "CODEX_HOME": "$SPIKE_ROOT/codex"
+      },
+      "event": "SessionStart"
+    },
+    {
+      "session_id": "01a21c30-2af6-70e0-8adc-40e1e8d49147",
+      "turn_id": "01a21c30-2b0d-7dd3-af59-96e72c8e4f9c",
+      "transcript_path": null,
+      "cwd": "$SPIKE_ROOT/work",
+      "hook_event_name": "UserPromptSubmit",
+      "model": "gpt-6.1-sol",
+      "permission_mode": "bypassPermissions",
+      "prompt": "Reply exactly SIDE_READY without tools.",
+      "_at": 1795769249.8886116,
+      "_env": {
+        "CODEX_SESSION_ID": null,
+        "CODEX_THREAD_ID": null,
+        "CODEX_HOME": "$SPIKE_ROOT/codex"
+      },
+      "event": "UserPromptSubmit"
+    }
+  ],
+  "screen_tail": "Reply SPIKE_READY | work\u00075\u2022\u2022\u2022\u2022\u2022\u2022\u2022\u2022\u20226\u20227\u2022\u2022\u2022\u2022\u2022\u2022\u2022\u2022\u20228\u20229\u2022\u2022\u2022\u2022\u2022\u2022\u2022\u2022\u202230\u20221\u2022\u2022",
+  "version": "codex-cli 0.172.0",
+  "private_auth_refreshed": false,
+  "source_auth_unchanged": true,
+  "cleanup_tagged_descendants": []
+}

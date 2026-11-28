@@ -1,0 +1,9 @@
+diff --git a/docs/superpowers/runs/2026-11-26-per-seat-config-side-wake/2026-11-26-per-seat-config-side-wake-roast-design-1-step-back-keys.txt b/docs/superpowers/runs/2026-11-26-per-seat-config-side-wake/2026-11-26-per-seat-config-side-wake-roast-design-1-step-back-keys.txt
+new file mode 100644
+index 000000000..50cec67ac
+--- /dev/null
++++ b/docs/superpowers/runs/2026-11-26-per-seat-config-side-wake/2026-11-26-per-seat-config-side-wake-roast-design-1-step-back-keys.txt
+@@ -0,0 +1,3 @@
++r1 [Should-fix] Section 1 Storage ("A row exists only for a key set explicitly; absence means the registry default"; "`nudge_threshold` is a registry key whose backing store is the existing `seats.nudge_threshold` column") vs Commands (`get` "with `(default)` when unset"; `unset KEY` "delete the row")
++r1 [Should-fix] Section 1 Storage (`seat_config` columns `writer_provenance`, `writer_binding`) vs Commands (`ht human config seat set [--seat S]` any key, any named local seat, "recorded as an operator decision with provenance `operator:local-user:<uid>`"); Trust policy section
++r1 [Nit] Section 1 Registry (`nudge_threshold` integer -1..9; "an unknown key or out-of-range value is refused") vs Commands ("`nudge-threshold [N]` and `wake-on` stay as aliases … output and M12 are unchanged")

@@ -8647,3 +8647,225 @@ fn codex_end_event_stays_disconnected_until_genuine_resume() {
         "child stop and subsequent Current do not disconnect the resumed parent"
     );
 }
+
+/// ht-z41e.33: a Codex `/side` session's auxiliary evidence (null `transcript_path`) reaches the
+/// daemon through the installed hook, whichever event it arrives on, and so does the queue root.
+mod codex_auxiliary_entrypoint {
+    use super::*;
+
+    const DIR: &str = concat!(
+        env!("CARGO_MANIFEST_DIR"),
+        "/tests/fixtures/codex-0.163.0-side"
+    );
+
+    /// Codex session ids are UUIDs, which the queue wake's replay scope requires.
+    const ROOT: &str = "00000000-0000-4000-8000-0000000000a1";
+    const SIDE: &str = "00000000-0000-4000-8000-0000000000b2";
+
+    /// Runs the hooks for the fixture payloads `names` in order, every one under one fake `codex`
+    /// process, so the root and its side session share a harness process as they do in production.
+    /// The payloads are the captured ones, only their session ids swapped for UUIDs.
+    fn run_sequence(fx: &Fixture, names: &[&str]) {
+        let mut script = String::new();
+        for (i, name) in names.iter().enumerate() {
+            let mut payload: serde_json::Value =
+                serde_json::from_slice(&fs::read(format!("{DIR}/{name}")).unwrap()).unwrap();
+            payload["session_id"] = if payload["session_id"] == "root-session" {
+                ROOT
+            } else {
+                SIDE
+            }
+            .into();
+            let path = fx.root.join(format!("payload-{i}.json"));
+            fs::write(&path, serde_json::to_vec(&payload).unwrap()).unwrap();
+            script.push_str(&format!(
+                "{} < '{}' > /dev/null;\n",
+                fx.codex,
+                path.display()
+            ));
+        }
+        let mut command = herdr_threads::test_support::harness_shim::under_harness(
+            "codex",
+            Path::new("/bin/sh"),
+            &["-c", &script],
+            &[],
+        );
+        command
+            .env("HERDR_ENV", "1")
+            .env("HERDR_PANE_ID", "w9:p3")
+            .env("HERDR_SOCKET_PATH", &fx.host)
+            .env("PATH", harness_path(&fx.host))
+            .env_remove("HERDR_PLUGIN_STATE_DIR")
+            .env_remove("HERDR_BIN_PATH")
+            .stdin(Stdio::null())
+            .stdout(Stdio::piped())
+            .stderr(Stdio::piped());
+        let output = command.spawn_owned().unwrap().wait_with_output().unwrap();
+        assert!(
+            output.status.success(),
+            "{}",
+            String::from_utf8_lossy(&output.stderr)
+        );
+    }
+
+    /// A pending invitation for the seat, so a Current event's digest has advanced and its CheckIn
+    /// is sent, and the seat's operator `programmatic_wake` row (what `config seat set` writes).
+    fn seed_pending(fx: &Fixture) {
+        let db = rusqlite::Connection::open(&fx.db).unwrap();
+        let instance = fx.descriptor.node_uuid.to_string();
+        db.execute_batch(&format!(
+            "INSERT INTO seat_config(seat_id,key,value,updated_at,writer_provenance) VALUES ('cx','programmatic_wake','on',0,'operator:local-user:1000');
+             INSERT INTO threads(id,instance_id,topic,goal,created_at,updated_at,journaled) VALUES ('t','{instance}','topic','goal',0,0,0);
+             INSERT INTO memberships(thread_id,seat_id,state) VALUES ('t','cx','invited');
+             INSERT INTO invitations(id,thread_id,seat_id,episode,state,created_at,created_decision_seq,deadline_at,frozen_duration_ms,origin_node) VALUES ('inv','t','cx',1,'pending',0,1,100,100,(SELECT id FROM local_node));"
+        ))
+        .unwrap();
+    }
+
+    fn bindings(fx: &Fixture) -> Vec<(String, i64)> {
+        let db = rusqlite::Connection::open(&fx.db).unwrap();
+        let mut statement = db
+            .prepare("SELECT native_session,auxiliary_session FROM occupant_bindings WHERE seat_id='cx' AND role='top_level' AND ended_at IS NULL ORDER BY ordinal")
+            .unwrap();
+        statement
+            .query_map([], |r| Ok((r.get(0)?, r.get(1)?)))
+            .unwrap()
+            .map(Result::unwrap)
+            .collect()
+    }
+
+    /// The reservation of the seat's pending wake after the hooks ran, with the root's native turn
+    /// qualified as the notifier does, and the queue selection read in the same store.
+    fn selection(fx: &Fixture) -> herdr_threads::ports::WakeQueueSelection {
+        use herdr_threads::{
+            harness::adapter::TurnEdge,
+            ports::StorePort,
+            protocol::{
+                authority::{CallerClaim, CallerRole, Harness, LivenessFingerprint},
+                commands::TurnStateReport,
+                ids::{
+                    ExecutionId, HostLocator, HostTargetId, NativeSessionId, NativeTurnId, SeatId,
+                },
+                pagination::PageRequest,
+            },
+            store::{SqliteStore, StoreSettings},
+        };
+        let clock: Arc<dyn Clock> = Arc::new(SystemClock::new());
+        let store = SqliteStore::new(
+            StoreContext::new(fx.db.clone(), Arc::clone(&clock)),
+            fx.descriptor.node_uuid.to_string(),
+            StoreSettings {
+                daemon_boot: Some(fx.descriptor.boot_id),
+                ..StoreSettings::default()
+            },
+        )
+        .unwrap();
+        let budget = || CallBudget {
+            deadline: herdr_threads::protocol::time::MonoInstant(clock.monotonic_now().0 + 5000),
+            cancellation: Cancellation::default(),
+        };
+        let db = rusqlite::Connection::open(&fx.db).unwrap();
+        let (generation, execution, pid, start): (i64, String, i64, i64) = db
+            .query_row(
+                "SELECT generation,execution_id,liveness_pid,liveness_start FROM occupant_bindings WHERE seat_id='cx' AND native_session=?1 AND ended_at IS NULL",
+                [ROOT],
+                |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?, r.get(3)?)),
+            )
+            .unwrap();
+        for (turn, edge) in [("qualified", TurnEdge::Busy), ("qualified", TurnEdge::Idle)] {
+            let report = TurnStateReport {
+                claim: CallerClaim {
+                    auxiliary_session: false,
+                    instance: fx.descriptor.node_uuid.to_string(),
+                    host: HostLocator::parse(fx.count_text(
+                        "SELECT endpoint FROM herdr_hosts WHERE host_id=(SELECT host_id FROM seats WHERE id='cx')",
+                    ))
+                    .unwrap(),
+                    seat: SeatId::new("cx"),
+                    binding_generation: generation as u64,
+                    role: CallerRole::TopLevel,
+                    harness: Harness::Codex,
+                    native_session: NativeSessionId::new(ROOT),
+                    execution: ExecutionId::new(execution.clone()),
+                    target: HostTargetId::new("w9:p3"),
+                    agent_id: None,
+                    liveness: Some(LivenessFingerprint {
+                        pid: pid as u32,
+                        start: start as u64,
+                    }),
+                },
+                edge,
+                tmux_hint: None,
+                native_turn_id: Some(NativeTurnId::new(turn)),
+            };
+            store.record_native_turn(&report, &budget()).unwrap();
+        }
+        db.execute(
+            "UPDATE observed_targets SET occupancy='occupied',ui_state='idle' WHERE target_id='w9:p3'",
+            [],
+        )
+        .unwrap();
+        let host = herdr_threads::test_support::host_id_for_test(
+            fx.count("SELECT host_id FROM seats WHERE id='cx'"),
+        );
+        let candidate = store
+            .wake_candidates(host, PageRequest::default(), &budget())
+            .unwrap()
+            .items
+            .into_iter()
+            .find(|c| c.seat.as_str() == "cx")
+            .expect("the pending invitation owes the seat a wake");
+        let reservation = store
+            .reserve_wake(host, &candidate, &budget())
+            .unwrap()
+            .expect("the idle seat reserves its wake");
+        store
+            .queue_wake_selection(&reservation, true, &budget())
+            .unwrap()
+    }
+
+    /// The side session's first hook event is `side`: its stored binding reads auxiliary, the
+    /// root's does not, and the queue wake names the root with the side beside it.
+    fn side_first_event_reaches_the_daemon(side: &str) {
+        let fx = Fixture::start();
+        seed_pending(&fx);
+        run_sequence(&fx, &["session-start-root.json", side]);
+        assert_eq!(
+            bindings(&fx),
+            [(ROOT.to_owned(), 0), (SIDE.to_owned(), 1)],
+            "{side}"
+        );
+        let selected = selection(&fx);
+        assert!(selected.programmatic_enabled);
+        let binding = selected.binding.expect("the root is the queue target");
+        assert_eq!(binding.scope.native_session.as_str(), ROOT);
+        assert_eq!(
+            binding
+                .side_sessions
+                .iter()
+                .map(|s| s.as_str())
+                .collect::<Vec<_>>(),
+            [SIDE]
+        );
+    }
+
+    #[test]
+    fn session_start_fork_marks_the_side_binding() {
+        side_first_event_reaches_the_daemon("session-start-fork.json");
+    }
+
+    #[test]
+    fn user_prompt_submit_marks_the_side_binding() {
+        side_first_event_reaches_the_daemon("user-prompt-submit-side.json");
+    }
+
+    #[test]
+    fn pre_tool_use_marks_the_side_binding() {
+        side_first_event_reaches_the_daemon("pre-tool-use-side.json");
+    }
+
+    #[test]
+    fn stop_marks_the_side_binding() {
+        side_first_event_reaches_the_daemon("stop-side.json");
+    }
+}

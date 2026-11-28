@@ -1,0 +1,22 @@
+heavy: slot 1 acquired 09:07:08
+   Compiling herdr-threads v3.6.0 ($HOME/AleCode/herdr-threads/.worktrees/super-auto-per-seat-config-side-wake/.worktrees/super-auto-per-seat-config-side-wake--task-ht-z41e.42)
+    Finished `test` profile [unoptimized + debuginfo] target(s) in 15.68s
+     Running tests/combined.rs (target/debug/deps/combined-5fac1db49307d9d3)
+
+running 13 tests
+test queue_runtime::queue_admission_runs_once_at_arm_with_the_sibling_fact ... ok
+test queue_runtime::native_fallback_runtime::disabled_queue_retains_fallback_fences_and_completion_uses_fresh_budget ... ok
+test queue_runtime::a_busy_side_binding_does_not_refuse_the_root_wake_and_a_busy_root_does ... ok
+test queue_runtime::root_busy_at_arm_is_refused_through_attempt ... ok
+test queue_runtime::queue_admission_refusal_at_arm_falls_back_native_and_never_adds ... ok
+test wake_native_fallback::all_applicable_blockers_claim_atomically_and_partial_stale_group_cannot_release ... ok
+test wake_activation_recovery::native_fallback_no_effect_restores_coverage_but_unknown_spends_it ... ok
+test wake_native_fallback::missing_arm_timestamp_and_wrong_owner_never_grant_or_release ... ok
+test wake_activation_recovery::native_fallback_requires_due_known_quiescent_unfulfilled_submission ... ok
+test wake_native_fallback::missing_completion_spends_coverage_and_late_completion_cannot_release_newer_claim ... ok
+test wake_native_fallback::qualified_new_end_first_fulfills_without_qualifying_a_queue_baseline ... ok
+test wake_native_fallback::newer_frontier_rearms_once_and_old_item_reappearance_does_not ... ok
+test queue_runtime::queue_runtime_checks_fences_before_capture_and_never_helpers_a_known_busy_binding ... ok
+
+test result: ok. 13 passed; 0 failed; 0 ignored; 0 measured; 1457 filtered out; finished in 1.87s
+

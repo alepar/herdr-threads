@@ -359,6 +359,7 @@ fn existing_pair_reused() {
     let w = world(6);
     // The pair already exists, created by the recipient's side, which holds its own join.
     let claim = CallerClaim {
+        auxiliary_session: false,
         instance: w.target.id.to_string(),
         host: herdr_threads::test_support::test_host_locator(),
         seat: w.recipient.clone(),
@@ -399,6 +400,7 @@ fn crossed_create_same_id() {
     let w = world(7);
     // The sender's node opens the same pair before it hears of the staging.
     let claim = CallerClaim {
+        auxiliary_session: false,
         instance: w.sender.id.to_string(),
         host: herdr_threads::test_support::test_host_locator(),
         seat: w.author.clone(),

@@ -92,6 +92,7 @@ fn fixture_with_context() -> (
 }
 pub(crate) fn claim() -> CallerClaim {
     CallerClaim {
+        auxiliary_session: false,
         host: crate::test_support::test_host_locator(),
         instance: "34750f98bd59fcfc946da45aaabe933b".into(),
         seat: SeatId::new("s"),
@@ -2661,6 +2662,7 @@ fn programmatic_notices_settle_page_by_page_for_the_current_occupant() {
 
 pub(crate) fn human_claim(from: &CallerClaim, generation: u64) -> CallerClaim {
     CallerClaim {
+        auxiliary_session: false,
         host: crate::test_support::test_host_locator(),
         harness: Harness::Human,
         native_session: NativeSessionId::new("plugin_context:person"),
@@ -3598,12 +3600,239 @@ fn human_guidance_check_in_continuation_before_page_fit() {
 pub(crate) fn session_claim(session: &str, execution: &str) -> CallerClaim {
     let pid = 1000 + session.bytes().map(u32::from).sum::<u32>();
     CallerClaim {
+        auxiliary_session: false,
         host: crate::test_support::test_host_locator(),
         native_session: NativeSessionId::new(session),
         execution: ExecutionId::new(execution),
         liveness: Some(crate::protocol::authority::LivenessFingerprint { pid, start: 1 }),
         ..claim()
     }
+}
+
+/// A store-level fixture, not the hook path: it decodes a real Codex payload and builds the claim
+/// itself (copying the payload's auxiliary-session evidence by hand, as the hook's shared claim
+/// builder does), then checks the event's session in under the mode its kind maps to (a fork is an
+/// independent session, a tool boundary a plain call). `base` supplies the seat mapping, host and
+/// process; the session and its execution come from the payload. The hook path is covered by
+/// `codex_auxiliary_entrypoint` in `tests/hook_entrypoint.rs` (ht-z41e.33).
+pub(crate) fn check_in_payload(
+    store: &SqliteStore,
+    base: &CallerClaim,
+    payload: &[u8],
+    operation: &str,
+) -> Result<crate::protocol::results::CheckInResult, crate::protocol::results::ApiError> {
+    use crate::harness::context::{CheckInMode as EventMode, EventKind};
+    let event = crate::harness::adapter::DecodedEvent::from_native(
+        crate::harness::codex::parse_event_for_contract(
+            payload,
+            operation,
+            &crate::harness::codex::CodexContract::registered(),
+        )
+        .unwrap(),
+    )
+    .context_event()
+    .unwrap();
+    let session = event.native_session.clone().unwrap();
+    let digest = session.bytes().fold(0xcbf2_9ce4_8422_2325_u64, |h, b| {
+        (h ^ u64::from(b)).wrapping_mul(0x100_0000_01b3)
+    });
+    let mut claim = base.clone();
+    claim.native_session = NativeSessionId::new(session);
+    claim.execution = ExecutionId::new(format!("00000000-0000-4000-8000-{:012x}", digest >> 16));
+    claim.auxiliary_session = event.auxiliary_session;
+    let expected_binding_generation = claim.binding_generation;
+    let mode = match (event.kind, event.kind.mode()) {
+        (EventKind::Fork, _) => CheckInMode::Fork {
+            expected_binding_generation,
+        },
+        (_, EventMode::Current) => CheckInMode::Current,
+        (_, EventMode::Lifecycle) => CheckInMode::Lifecycle {
+            expected_binding_generation,
+        },
+    };
+    check_in(
+        store,
+        CheckIn {
+            readonly: false,
+            lineage_parent: None,
+            mode,
+            claim,
+            operation: OperationId::new(operation),
+            continuity_key: None,
+        },
+    )
+}
+
+macro_rules! side_payload {
+    ($name:literal) => {
+        include_bytes!(concat!("../fixtures/codex-0.163.0-side/", $name)) as &[u8]
+    };
+}
+
+/// `(concurrent_session, auxiliary_session)` of the open binding of `session`.
+fn bits(conn: &Connection, session: &str) -> (bool, bool) {
+    conn.query_row(
+        "SELECT concurrent_session,auxiliary_session FROM occupant_bindings WHERE native_session=?1",
+        [session],
+        |r| Ok((r.get(0)?, r.get(1)?)),
+    )
+    .unwrap()
+}
+
+#[test]
+fn side_first_seen_by_any_hook_event_enrolls_auxiliary_and_never_concurrent() {
+    // Each side payload enrolls its own session, beside a root enrolled by a real SessionStart.
+    for (label, payload) in [
+        (
+            "user-prompt-submit",
+            side_payload!("user-prompt-submit-side.json"),
+        ),
+        ("pre-tool-use", side_payload!("pre-tool-use-side.json")),
+        ("stop", side_payload!("stop-side.json")),
+    ] {
+        let (store, conn, _) = fixture();
+        let base = session_claim("base", "00000000-0000-4000-8000-0000000000a1");
+        check_in_payload(
+            &store,
+            &base,
+            side_payload!("session-start-root.json"),
+            "root",
+        )
+        .unwrap();
+        check_in_payload(&store, &base, payload, label).unwrap();
+        assert_eq!(
+            bits(&conn, "root-session"),
+            (false, false),
+            "{label}: the root"
+        );
+        assert_eq!(
+            bits(&conn, "side-session"),
+            (false, true),
+            "{label}: null evidence sets only the auxiliary bit"
+        );
+    }
+}
+
+#[test]
+fn fork_session_start_with_null_path_sets_both_bits_and_with_a_path_only_concurrent() {
+    let (store, conn, _) = fixture();
+    let base = session_claim("base", "00000000-0000-4000-8000-0000000000a1");
+    check_in_payload(
+        &store,
+        &base,
+        side_payload!("session-start-root.json"),
+        "root",
+    )
+    .unwrap();
+    check_in_payload(
+        &store,
+        &base,
+        side_payload!("session-start-fork.json"),
+        "side",
+    )
+    .unwrap();
+    check_in_payload(
+        &store,
+        &base,
+        side_payload!("session-start-fork-nonnull.json"),
+        "fork",
+    )
+    .unwrap();
+    assert_eq!(bits(&conn, "side-session"), (true, true));
+    assert_eq!(bits(&conn, "fork-session"), (true, false));
+    assert_eq!(bits(&conn, "root-session"), (false, false));
+}
+
+#[test]
+fn auxiliary_mark_is_sticky_and_scoped_to_its_binding_row() {
+    let (store, conn, _) = fixture();
+    let base = session_claim("base", "00000000-0000-4000-8000-0000000000a1");
+    check_in_payload(
+        &store,
+        &base,
+        side_payload!("session-start-root.json"),
+        "root",
+    )
+    .unwrap();
+    check_in_payload(
+        &store,
+        &base,
+        side_payload!("pre-tool-use-side.json"),
+        "first",
+    )
+    .unwrap();
+    assert_eq!(bits(&conn, "side-session"), (false, true));
+    // A later event of the same session with a path never clears the mark, and a replay of the
+    // null event is idempotent.
+    check_in_payload(
+        &store,
+        &base,
+        side_payload!("pre-tool-use-side-nonnull.json"),
+        "later",
+    )
+    .unwrap();
+    check_in_payload(
+        &store,
+        &base,
+        side_payload!("user-prompt-submit-side.json"),
+        "again",
+    )
+    .unwrap();
+    assert_eq!(bits(&conn, "side-session"), (false, true));
+    // A session first seen with a path stays unmarked, and a null event from it marks only it.
+    check_in_payload(
+        &store,
+        &base,
+        side_payload!("user-prompt-submit-root.json"),
+        "root-turn",
+    )
+    .unwrap();
+    assert_eq!(bits(&conn, "root-session"), (false, false));
+    check_in_payload(
+        &store,
+        &base,
+        side_payload!("pre-tool-use-root-null.json"),
+        "root-null",
+    )
+    .unwrap();
+    assert_eq!(bits(&conn, "root-session"), (false, true));
+    assert_eq!(bits(&conn, "side-session"), (false, true));
+    // A binding of a new session starts at 0 whatever its seat's other bindings read.
+    let (store, conn, _) = fixture();
+    check_in_payload(
+        &store,
+        &base,
+        side_payload!("pre-tool-use-side.json"),
+        "marked",
+    )
+    .unwrap();
+    check_in_payload(
+        &store,
+        &base,
+        side_payload!("session-start-root.json"),
+        "fresh",
+    )
+    .unwrap();
+    assert_eq!(bits(&conn, "root-session"), (false, false));
+}
+
+#[test]
+fn auxiliary_evidence_marks_no_subagent_or_person_binding() {
+    let (store, conn, _) = fixture();
+    let mut claim = session_claim("sess-A", "00000000-0000-4000-8000-0000000000a1");
+    check_in(&store, lifecycle(claim.clone(), "start")).unwrap();
+    claim.auxiliary_session = true;
+    claim.role = CallerRole::Subagent;
+    claim.agent_id = Some(AgentId::new("child-1"));
+    let _ = check_in(&store, current(&claim, "child"));
+    let marked: i64 = conn
+        .query_row(
+            "SELECT count(*) FROM occupant_bindings WHERE auxiliary_session=1",
+            [],
+            |r| r.get(0),
+        )
+        .unwrap();
+    assert_eq!(marked, 0, "a subagent claim never marks a binding");
 }
 
 #[test]
@@ -4128,6 +4357,7 @@ mod hermes_lineage {
     }
     fn session_claim(session: &str, pid: u32) -> CallerClaim {
         CallerClaim {
+            auxiliary_session: false,
             host: crate::test_support::test_host_locator(),
             harness: hermes(),
             native_session: NativeSessionId::new(session),
@@ -4788,6 +5018,7 @@ mod legacy_child_execution {
         let registered = parent.harness.as_str() == "hermes";
         let mut event = BindingEvent {
             claim: CallerClaim {
+                auxiliary_session: false,
                 role: CallerRole::Subagent,
                 agent_id: Some(AgentId::new(agent)),
                 ..parent.clone()

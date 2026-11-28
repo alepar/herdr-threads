@@ -500,3 +500,5 @@ fn lazy_fallback_new_publication_rearms_once_and_failed_noeffect_release_stays_s
     complete(&store, &clock, &next);
     assert!(candidates(&store, &clock).is_empty());
 }
+#[path = "queue_side_dispatch.rs"]
+mod queue_side_dispatch;

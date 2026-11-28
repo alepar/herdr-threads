@@ -11,6 +11,7 @@ use serde_json::json;
 
 fn claim(role: CallerRole) -> CallerClaim {
     CallerClaim {
+        auxiliary_session: false,
         host: crate::test_support::test_host_locator(),
         instance: "11111111111141118111111111111111".into(),
         seat: SeatId::new("s1"),

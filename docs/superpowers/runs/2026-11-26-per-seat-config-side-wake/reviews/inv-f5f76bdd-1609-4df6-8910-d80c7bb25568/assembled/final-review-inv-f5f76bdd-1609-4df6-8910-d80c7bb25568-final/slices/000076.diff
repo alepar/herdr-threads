@@ -1,0 +1,13 @@
+diff --git a/src/cli/nudge_threshold.rs b/src/cli/nudge_threshold.rs
+index be5070dae..0dcfe8521 100644
+--- a/src/cli/nudge_threshold.rs
++++ b/src/cli/nudge_threshold.rs
+@@ -47,7 +47,7 @@ pub fn render_inert(seat: &SeatId) -> String {
+ 
+ /// Whether the daemon classifies `seat` `no_wake` (best effort: an older daemon, or any failure,
+ /// says no). The value is still recorded either way.
+-fn has_no_idle_wake<C: LocalClient + ?Sized>(
++pub(crate) fn has_no_idle_wake<C: LocalClient + ?Sized>(
+     client: &C,
+     seat: &SeatId,
+     budget: &crate::protocol::time::CallBudget,

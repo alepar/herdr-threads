@@ -1,0 +1,28 @@
+diff --git a/tests/service/crash_matrix.rs b/tests/service/crash_matrix.rs
+index 6e2be3796..4269e62a9 100644
+--- a/tests/service/crash_matrix.rs
++++ b/tests/service/crash_matrix.rs
+@@ -235,6 +235,7 @@ impl Matrix {
+     fn check_in(&self, seat: &str) -> CallerClaim {
+         let n = self.executions.fetch_add(1, Ordering::SeqCst);
+         let claim = CallerClaim {
++            auxiliary_session: false,
+             host: crate::test_support::test_host_locator(),
+             instance: self.instance.clone(),
+             seat: SeatId::new(seat),
+@@ -1913,6 +1914,7 @@ impl Matrix {
+                 .unwrap()
+                 .1 = Some(execution.clone());
+             let claim = CallerClaim {
++                auxiliary_session: false,
+                 host: crate::test_support::test_host_locator(),
+                 instance: self.instance.clone(),
+                 seat: seat.clone(),
+@@ -2530,6 +2532,7 @@ fn resolved_never_registered_seat_registers_on_first_lifecycle_check_in_after_re
+     };
+     assert_eq!(bindings_u(), 0, "resolved but never registered");
+     let u = CallerClaim {
++        auxiliary_session: false,
+         host: crate::test_support::test_host_locator(),
+         instance: m.instance.clone(),
+         seat: seat_u.clone(),

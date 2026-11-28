@@ -1,0 +1,20 @@
+diff --git a/tests/store/named_presence.rs b/tests/store/named_presence.rs
+index 0451abaa1..5341586ab 100644
+--- a/tests/store/named_presence.rs
++++ b/tests/store/named_presence.rs
+@@ -451,6 +451,7 @@ fn delayed_empty_named_capture_preserves_newer_current_mapping_for_admission() {
+     );
+     f.publish_capture(stamp_fixed_structure(snapshot));
+     let claim = CallerClaim {
++        auxiliary_session: false,
+         host: HostLocator::parse(NAMED_HOST_LOCATOR).unwrap(),
+         instance: INSTANCE.into(),
+         seat,
+@@ -1059,6 +1060,7 @@ fn request(operation: &str, priority: Option<u8>, ack: &[&SeatId]) -> SendMessag
+         deadline_millis: None,
+         operation: OperationId::new(operation),
+         claim: CallerClaim {
++            auxiliary_session: false,
+             host: crate::test_support::test_host_locator(),
+             instance: INSTANCE.into(),
+             seat: SeatId::new("a"),

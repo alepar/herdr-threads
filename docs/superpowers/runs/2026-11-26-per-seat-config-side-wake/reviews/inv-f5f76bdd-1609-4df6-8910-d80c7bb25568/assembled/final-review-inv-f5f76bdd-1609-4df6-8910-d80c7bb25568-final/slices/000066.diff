@@ -1,0 +1,444 @@
+diff --git a/scripts/wake-e2e.py b/scripts/wake-e2e.py
+index faa4cb474..9ff9a9ea0 100755
+--- a/scripts/wake-e2e.py
++++ b/scripts/wake-e2e.py
+@@ -28,7 +28,7 @@ acknowledged inside that turn, with no wake after it.
+ busy-tool-p1/group (Codex only) is busy-send-p1 whose turn calls no shell command after the send, only `apply_patch`:
+ the item must arrive at that tool's boundary (every tool is one). Claude's mod delivers at every tool already.
+ 
+---queue-proof enables Codex programmatic waking only in the owned test instance and requires proof using bounded read-only snapshots of the run's own
++--queue-proof sets programmatic_wake on each owned Codex seat (ht human config seat set --seat, owned instance, before the first send; never node settings) and requires proof using bounded read-only snapshots of the run's own
+ canonical store. Ordinary positive cases require exact Accepted intent, arm/native baseline and observed Add-helper
+ witness; Unknown is not acceptance. No native typing after a possible queue effect is a compositional inference from
+ the reviewed dispatcher invariant, not an independent host-call trace. Native fallback is also labeled inference from
+@@ -160,6 +160,17 @@ MIXED_DEADLINE_S = 90
+ # Codex with its hooks feature off, so every session binds by a plain CLI call only (as Main's seat did on
+ # 2026-10-13): no lifecycle claim ranks the group, the same-process rule leaves all three connected.
+ SIDE_CASES = ("side-nudge/group", "side-draft/group")
++# Opt-in Codex cases with a `/side` chat left DISPLAYED when a p0 is sent (ht-z41e.8), never in the default matrix,
++# each in exactly one queue mode. side-queue (--queue-proof required): the wake is an Accepted queue intent on the
++# process's root session (never the side), the item arrives in the root's turn, and the side chat's pane shows no
++# change (nothing typed, no new turn). side-native-defer (queue off, refused under --queue-proof): a displayed side
++# composer reads non-Empty (ht-z41e.1), so native wake types nothing into it and the root is woken once the side
++# chat closes. side-nudge/side-draft keep their pass rules in both modes, with the transport expectation per mode
++# (see QueueCaseEvidence.finish): under --queue-proof a hooked recipient with side sessions is queue-woken on its root
++# (a busy side binding never refuses it, spike S2 `drop`), so side-draft's draft stays intact whether or not it wakes;
++# without it everything is native, and co-plain (plain CLI bindings, never registered) is native in both modes.
++SIDE_QUEUE_CASES = ("side-queue/group",)
++SIDE_DEFER_CASES = ("side-native-defer/group",)
+ # Opt-in Claude case, never in the default matrix: `cl-hooks`, a Claude installed by `setup claude --hooks-only` (no
+ # delivery mod), gets an ACK request while idle at T=0. Herdr must type the content-free `herdr-threads: wake up`, the
+ # UserPromptSubmit hook must put the message into the woken turn, and its ACK must come from that hook's display
+@@ -305,6 +316,64 @@ def side_nudge_passed(setup_ok, woke, checks):
+     return first and sibling_woke and bool(checks.get("sibling_delivered"))
+ 
+ 
++def side_queue_passed(setup_ok, proof, delivered_in_root, side_typed, side_view_changed):
++    """side-queue's verdict: the side chat was set up and left displayed, the queue proof passed (Accepted intent on the
++    root session naming the side sessions), the item was delivered in the root's turn, and the side chat's pane shows
++    nothing typed and no other change."""
++    return bool(setup_ok and proof and proof.get("passed") and delivered_in_root
++                and not side_typed and not side_view_changed)
++
++
++# `wake_work.last_outcome` values a pre-send composer refusal records (src/store/wake.rs, the completion
++# disposition: Unsafe, Unavailable and TimedOut refusals) and restores `retry_step` to its pre-attempt value.
++REFUSED_OUTCOMES = ("unsafe", "unavailable", "timed_out")
++
++
++def side_defer_refusal(before, state, sent_ms):
++    """True when `state` (the daemon's `wake_work` row) shows a native attempt refused after `sent_ms` with
++    `retry_step` unchanged from its pre-send value in `before` (None: the seat had no row, step 0). A refusal
++    restores the step; an advanced step is some other path (a submitted attempt), not a deferral."""
++    if not state or state.get("last_outcome") not in REFUSED_OUTCOMES:
++        return False
++    if (state.get("completed_at_utc") or 0) < sent_ms:
++        return False
++    return (state.get("retry_step") or 0) == ((before or {}).get("retry_step") or 0)
++
++
++def side_defer_passed(setup_ok, refused_while_side, typed_while_side, woke_after_close, delivered):
++    """side-native-defer's verdict: a refused native attempt was observed while the side chat was displayed, nothing
++    was typed into it, and the root woke after it closed and got the item."""
++    return bool(setup_ok and refused_while_side and not typed_while_side and woke_after_close and delivered)
++
++
++SIDE_ANSWER = re.compile(r"^[^\w\n]*SIDE-[A-Z]+-DONE", re.M)
++
++
++def side_view_state(screen):
++    """What a displayed side chat's pane shows that a wake could change: its prompt/composer rows (`› ...`) and its
++    printed `SIDE-*-DONE` answers, plus its count of wake markers. Status and footer rows are not compared."""
++    return {"prompts": [l.rstrip() for l in screen.splitlines() if l.startswith("\u203a ")],
++            "answers": SIDE_ANSWER.findall(screen), "wake_markers": len(WAKE_PATTERN.findall(screen))}
++
++
++def side_pane_verdict(before, after):
++    """(side_typed, side_view_changed) from two captures of the displayed side chat: a wake marker that was not there
++    before, and any other change to its prompt rows or answers."""
++    a, b = side_view_state(before), side_view_state(after)
++    typed = b["wake_markers"] > a["wake_markers"]
++    return typed, typed or a["prompts"] != b["prompts"] or a["answers"] != b["answers"]
++
++
++def side_draft_passed(setup_ok, woke, checks, queued):
++    """side-draft's verdict. Native: the draft is never typed into or submitted (no wake) and the sender's overdue
++    warning names the refused wake. Queue (a hooked recipient whose root is queue-woken): the queue transport never
++    types, so the draft must be intact and the item delivered; waking is expected and no refusal warning is owed."""
++    base = bool(setup_ok and checks.get("draft_intact") and checks.get("delivered"))
++    if queued:
++        return base
++    return base and not woke and checks.get("warning_wake") not in (None, "submitted")
++
++
+ # A Claude tool-call line (`⏺ Bash(...)`, `⏺ Read(...)`).
+ TOOL_CALL = re.compile(r"^\s*⏺\s*[A-Z][A-Za-z]*\(")
+ 
+@@ -1106,7 +1175,6 @@ class Run:
+         (self.state / "node").mkdir(mode=0o700)
+         (self.state / "node/settings.json").write_text(json.dumps({
+             "sync": {"discover": False},
+-            "programmatic_wake": bool(getattr(self.args, "queue_proof", False)),
+         }) + "\n")
+         (self.state / "node/settings.json").chmod(0o600)
+         self.daemon_attempted = True
+@@ -1931,6 +1999,13 @@ class QueueCaseEvidence:
+         self.latest_publication_scope = None
+         self.selected_windows = []
+         self.release_interval_ms = None
++        self.root_session = None  # set for a case whose process holds `/side` sessions: the queue target is the root
++
++    def scope_of(self, snapshot):
++        """The queue-qualified scope of a snapshot: the process root's when a root session is named, else the seat's
++        one eligible binding."""
++        from wake_e2e_queue import eligible_scope, process_root_scope
++        return process_root_scope(snapshot, self.root_session) if self.root_session else eligible_scope(snapshot)
+ 
+     def offset(self, at):
+         return round((at - self.publication_monotonic) * 1000) if self.publication_monotonic is not None else None
+@@ -1978,7 +2053,6 @@ class QueueCaseEvidence:
+         return self
+ 
+     def publication(self):
+-        from wake_e2e_queue import eligible_scope
+         with self.lock:
+             if not self.published:
+                 self.publication_monotonic = time.monotonic()
+@@ -1991,14 +2065,24 @@ class QueueCaseEvidence:
+                 current_scope = self.before
+             else:
+                 current_scope = self.read(self.after)
+-            self.latest_publication_scope = eligible_scope(current_scope)
++            self.latest_publication_scope = self.scope_of(current_scope)
+             self._capture()
+ 
+-    def qualified_activity(self):
+-        from wake_e2e_queue import queue_proof
++    def current_proof(self):
++        """The positive queue proof over the samples so far: for a `/side` case, the root-targeted one."""
++        from wake_e2e_queue import queue_proof, side_queue_proof
+         with self.lock:
+             samples = list(self.samples)
+-        proof = queue_proof(self.before, samples, "accepted")
++        if self.root_session and self.case in SIDE_QUEUE_CASES:
++            return side_queue_proof(self.before, samples, self.root_session), samples
++        if self.root_session:
++            from wake_e2e_queue import process_root_scope
++            return queue_proof(self.before, samples, "accepted",
++                               baseline=process_root_scope(self.before, self.root_session)), samples
++        return queue_proof(self.before, samples, "accepted"), samples
++
++    def qualified_activity(self):
++        proof, samples = self.current_proof()
+         if not proof["passed"]:
+             return None
+         for sample in samples:
+@@ -2034,13 +2118,20 @@ class QueueCaseEvidence:
+         self.__exit__()
+         with self.lock:
+             self._capture()
+-        if self.case in RESUME_CASES + QUEUE_NATIVE_CASES:
++        if self.case in RESUME_CASES + QUEUE_NATIVE_CASES + SIDE_DEFER_CASES:
+             expectation = "native"
++        elif self.root_session and self.case in SIDE_CASES:
++            # Queue mode with side sessions (ht-z41e.7, spike S2 `drop`): the root is queue-woken for the p0 even
++            # while a side turn is busy, and a typed draft never blocks the queue transport.
++            expectation = "accepted"
+         elif self.case in SIDE_CASES and row.get("expect_wake"):
+             expectation = "accepted" if eligible_scope(self.before) else "native"
+         else:
+             expectation = "accepted" if row.get("expect_wake") else "none"
+-        result = queue_proof(self.before, self.samples, expectation)
++        if self.root_session and expectation == "accepted":
++            result, _ = self.current_proof()
++        else:
++            result = queue_proof(self.before, self.samples, expectation)
+         required = bool(getattr(getattr(self.recipient.run, "args", None), "queue_proof", False))
+         if expectation == "accepted" and not required and not result["passed"]:
+             # Native fallback may follow a refusal before any effect even when the
+@@ -2055,7 +2146,7 @@ class QueueCaseEvidence:
+                 result = stale
+         result["accepted_wake_window_s"] = QUEUE_WAKE_WINDOW_S if result.get("attempts") else WAKE_WINDOW_S
+         if (result.get("expectation") == "native" and row.get("expect_wake")
+-                and self.case not in WAKE_BLOCK_CASES + RESUME_CASES + SIDE_CASES):
++                and self.case not in WAKE_BLOCK_CASES + RESUME_CASES + SIDE_CASES + SIDE_DEFER_CASES):
+             delay = row.get("t_wake_s")
+             if not isinstance(delay, (int, float)) or delay > WAKE_WINDOW_S:
+                 result["passed"] = False
+@@ -2404,6 +2495,7 @@ class Recipient:
+                 break
+         else:
+             raise RuntimeError(f"{self.name}: agent did not report nudge-threshold {self.threshold}: {self.tail()}")
++        self.enable_queue_wake()
+         if self.harness == "codex" and not self.plain and getattr(getattr(self.run, "args", None), "queue_proof", False):
+             from wake_e2e_queue import eligible_scope, queue_snapshot
+             end, qualified = time.monotonic() + 5, None
+@@ -2418,6 +2510,15 @@ class Recipient:
+                 raise RuntimeError(f"{self.name}: queue qualification bootstrap lacks exact matched native Start/End")
+             self.run.facts.setdefault("queue_bootstrap", {})[self.name] = qualified
+ 
++    def enable_queue_wake(self):
++        """--queue-proof: turn programmatic_wake on for this Codex seat only, through the human CLI of the owned
++        instance (never node settings, never operator config), before the queue bootstrap and any send."""
++        if self.harness != "codex" or not getattr(getattr(self.run, "args", None), "queue_proof", False):
++            return
++        out = self.run.ht("config", "seat", "set", "--seat", self.seat, "programmatic_wake", "on",
++                          human=True, tag=f"config:{self.name}")
++        self.run.facts.setdefault("queue_seats", {})[self.name] = clip(str(out).strip(), 200, getattr(self.run, "secrets", None))
++
+     def opencode_ready(self, timeout=60):
+         """opencode's home screen draws (and Herdr reports it idle) before its composer takes input: a prompt typed
+         then is dropped (seen on 1.18.1: the composer still showed its placeholder). Wait for the placeholder, then
+@@ -2837,6 +2938,22 @@ class Recipient:
+                                (self.seat,))
+         return dict(zip(("last_outcome", "completed_at_utc", "retry_step"), rows[0])) if rows else None
+ 
++    def bindings_idle(self, timeout=60):
++        """Every open top-level binding of the recipient reads idle: each binding with a `native_turn_state` row
++        (hooked Codex records them) is in phase `ended`; a binding with no turn row has no signal of its own, so
++        the pane's `wait_idle()` and the printed done marker (`settled()`) stand in for it."""
++        self.wait_idle()
++        end = time.time() + timeout
++        while True:
++            phases = [row[0] for row in self.store_rows(
++                "SELECT n.phase FROM native_turn_state n JOIN occupant_bindings b ON b.binding_id=n.binding_id "
++                "WHERE b.seat_id=? AND b.role='top_level' AND b.ended_at IS NULL", (self.seat,))]
++            if all(phase == "ended" for phase in phases):
++                return True
++            if time.time() >= end or self.run.stopping.is_set():
++                return False
++            time.sleep(0.5)
++
+     def open_sides(self, tag):
+         """SIDE_FORKS `/side` conversations, each making one herdr-threads `inbox` call under its own session,
+         then Ctrl+C back to the main thread. Returns what the store holds for the seat afterwards."""
+@@ -2863,9 +2980,150 @@ class Recipient:
+                     "instructions say.")
+         return "hello"
+ 
++    def queue_root_session(self):
++        """Under --queue-proof, the hooked Codex's root session as its queue bootstrap qualified it (before any side
++        opened), else None: a queue wake targets exactly this session, never a `/side` one."""
++        if self.plain or not getattr(getattr(self.run, "args", None), "queue_proof", False):
++            return None
++        bootstrap = (getattr(self.run, "facts", None) or {}).get("queue_bootstrap", {}).get(self.name)
++        return bootstrap["scope"]["native_session"] if bootstrap else None
++
++    def open_displayed_side(self, tag, done):
++        """One `/side` chat that runs one `inbox` turn (so its binding registers) and is LEFT displayed (no Ctrl+C),
++        its composer showing. Returns what the store holds for the seat afterwards."""
++        self.wait_idle()
++        self.run.herdr("agent", "prompt", self.pane, "/side", check=False)
++        time.sleep(2)
++        shim = self.run.bindir / "herdr-threads"
++        self.prompt(f"Side of wake-e2e {tag}: run the shell command `{shim} inbox` once, then print {done}. Do not act "
++                    "on anything it shows.", expect=re.compile(r"^[^\w\n]*" + re.escape(done), re.M))
++        self.settled()
++        return self.bindings()
++
++    def detection(self):
++        return self.run.herdr("pane", "read", self.pane, "--source", "detection", check=False).get("raw", "")
++
++    def close_side(self):
++        self.run.herdr("agent", "send-keys", self.pane, "ctrl+c", check=False)
++        time.sleep(2)
++
++    def side_queue_case(self, case):
++        """side-queue (--queue-proof): a p0 sent while a /side chat is displayed is an Accepted queue wake on the root
++        session; the item is delivered in the root's turn and the side chat's pane is untouched."""
++        tag = f"{case} {self.run.run_id}"
++        proof, root = getattr(self, "queue_evidence", None), self.queue_root_session()
++        if proof is None or not root:
++            raise RuntimeError(f"{self.name}: side-queue needs the queue evidence sampler and the bootstrap root session")
++        proof.root_session = root
++        sides = self.open_displayed_side(tag, "SIDE-QUEUE-DONE")
++        checks = {"bindings_after_side": sides, "root_session": root}
++        setup_ok = len(sides) >= 2 and any(b["session"] == root for b in sides)
++        checks["side_setup_ok"] = setup_ok
++        gap = SPACING_S - (time.time() - self.last_wake)
++        if gap > 0:
++            self.run.stopping.wait(gap)
++        self.wait_idle()
++        before_screen = self.detection()
++        ref = {"message": self.send("p0", tag, direct=False)}
++        t0, activity = time.monotonic(), None
++        while time.monotonic() - t0 < QUEUE_WAKE_WINDOW_S + 10 and not self.run.stopping.is_set():
++            activity = proof.qualified_activity()
++            if activity is not None:
++                break
++            time.sleep(0.5)
++        t_wake = round(time.monotonic() - t0, 2) if activity is not None else None
++        after_screen = self.detection()
++        checks["side_typed"], checks["side_view_changed"] = side_typed, changed = side_pane_verdict(before_screen, after_screen)
++        checks["side_view_before"], checks["side_view_after"] = side_view_state(before_screen), side_view_state(after_screen)
++        checks["activity_evidence"] = activity
++        delivered = False
++        if activity is not None and activity["native_session"] == root:
++            from wake_e2e_queue import codex_turn_delivery
++            end, delivery = time.monotonic() + TURN_TIMEOUT_MS / 1000, {"passed": False}
++            while time.monotonic() < end and not self.run.stopping.is_set():
++                delivery = codex_turn_delivery(self.run.codex_home, root, activity["turn_id"], {ref["message"]: tag})
++                if delivery.get("complete") or delivery.get("error"):
++                    break
++                self.run.stopping.wait(0.5)
++            checks["delivery_evidence"] = delivery
++            delivered = delivery["passed"]
++        checks["delivered_in_root"] = delivered
++        self.close_side()  # later cases start on the main thread
++        self.wait_idle()
++        self.settled()
++        proof_now, _ = proof.current_proof()
++        passed = side_queue_passed(setup_ok, proof_now, delivered, side_typed, changed)
++        self.run.record({"case": case, "harness": self.harness, "threshold": self.threshold, "recipient": self.name,
++                         "expect_wake": True, "woke": activity is not None, "t_wake_s": t_wake, "hello_sent": False,
++                         "checks": checks, "ref": ref, "result": "PASS" if passed else "FAIL", "utc": utc()})
++
++    def side_defer_case(self, case):
++        """side-native-defer (queue off): with a /side chat displayed a p0 types nothing into it; the root wakes once
++        the side chat closes and gets the item."""
++        tag = f"{case} {self.run.run_id}"
++        sides = self.open_displayed_side(tag, "SIDE-DEFER-DONE")
++        checks = {"bindings_after_side": sides}
++        setup_ok = len(sides) >= 2
++        checks["side_setup_ok"] = setup_ok
++        gap = SPACING_S - (time.time() - self.last_wake)
++        if gap > 0:
++            self.run.stopping.wait(gap)
++        self.wait_idle()
++        checks["bindings_idle"] = idle = self.bindings_idle()
++        setup_ok = setup_ok and idle
++        before_screen = self.detection()
++        before = self.wake_state()
++        checks["wake_state_before_send"] = before
++        sent_ms = int(time.time() * 1000)
++        ref = {"message": self.send("p0", tag, direct=False)}
++        mid = ref["message"]
++        # The side chat stays displayed until a refused native attempt is observed (or the window ends).
++        end, state = time.time() + WAKE_WINDOW_S + 10, None
++        while not self.run.stopping.is_set():
++            state = self.wake_state()
++            if side_defer_refusal(before, state, sent_ms) or time.time() >= end:
++                break
++            time.sleep(0.5)
++        refused_while_side = side_defer_refusal(before, state, sent_ms)
++        setup_ok = setup_ok and refused_while_side
++        checks["refused_while_side"] = state if refused_while_side else None
++        side_typed, _ = side_pane_verdict(before_screen, self.detection())
++        checks["wake_state_while_side"] = state
++        # a submitted wake after the send, while the side chat is still displayed, is a wake typed into it
++        submitted = bool(state) and state.get("last_outcome") == "submitted" and (state.get("completed_at_utc") or 0) >= sent_ms
++        typed_while_side = side_typed or submitted
++        checks["side_typed"], checks["submitted_while_side"] = side_typed, submitted
++        closed_ms = int(time.time() * 1000)
++        self.close_side()
++        t_wake = self.watch_for_wake(SPACING_S + self.wake_window())
++        state = self.wake_state()
++        checks["wake_state_after_close"] = state
++        # a retry typed during the close itself, finished before the watch started
++        woke_before_watch = (t_wake is None and bool(state) and state.get("last_outcome") == "submitted"
++                             and (state.get("completed_at_utc") or 0) >= closed_ms
++                             and received_in_wake_turn(self.screen(1000), mid))
++        woke = t_wake is not None or woke_before_watch
++        checks["woke_before_watch"] = woke_before_watch
++        hello = False
++        if not woke:
++            hello = True
++            self.prompt(self.follow_up())
++        self.wait_idle()
++        delivered = self.on_screen(mid)
++        checks["delivered"] = delivered
++        self.settled()
++        passed = side_defer_passed(setup_ok, refused_while_side, typed_while_side, woke, delivered)
++        self.run.record({"case": case, "harness": self.harness, "threshold": self.threshold, "recipient": self.name,
++                         "expect_wake": True, "woke": woke, "t_wake_s": t_wake, "hello_sent": hello,
++                         "checks": checks, "ref": ref, "result": "PASS" if passed else "FAIL", "utc": utc()})
++
+     def side_case(self, case):
+         action = case.split("/")[0]
+         tag = f"{case} {self.run.run_id}"
++        proof, root = getattr(self, "queue_evidence", None), self.queue_root_session()
++        queued = proof is not None and bool(root)
++        if queued:
++            proof.root_session = root
+         sides = self.open_sides(tag)
+         connected = [b for b in sides if b["liveness"] == "connected"]
+         checks = {"bindings_after_side": sides, "connected_same_pid":
+@@ -2911,8 +3169,7 @@ class Recipient:
+             hello = True
+             self.prompt(self.follow_up())
+             checks["delivered"] = self.on_screen(mid)
+-            passed = (setup_ok and not woke and checks["draft_intact"] and checks["delivered"]
+-                      and checks["warning_wake"] not in (None, "submitted"))
++            passed = side_draft_passed(setup_ok, woke, checks, queued)
+         self.settled()
+         self.run.record({"case": case, "harness": self.harness, "threshold": self.threshold, "recipient": self.name,
+                          "expect_wake": expect_wake, "woke": woke, "t_wake_s": t_wake, "hello_sent": hello,
+@@ -3258,6 +3515,10 @@ class Recipient:
+             return self.wake_block_case(case)
+         if case in RESUME_CASES:
+             return self.resume_case(case)
++        if case in SIDE_QUEUE_CASES:
++            return self.side_queue_case(case)
++        if case in SIDE_DEFER_CASES:
++            return self.side_defer_case(case)
+         if case.startswith("side-"):
+             return self.side_case(case)
+         if case.startswith("hooks-busy-"):
+@@ -3773,6 +4034,8 @@ def applies(recipient, case):
+         return getattr(recipient, "tmux", False) and case in TMUX_CASES
+     if case in SIDE_CASES:
+         return recipient.harness == "codex"
++    if case in SIDE_QUEUE_CASES + SIDE_DEFER_CASES:
++        return recipient.harness == "codex" and recipient.threshold == 0 and not getattr(recipient, "plain", False)
+     if case in PROMPT_RACE_CASES:
+         return (recipient.harness == "claude" and recipient.threshold == 0
+                 and not getattr(recipient, "hooks_only", False))
+@@ -3895,7 +4158,9 @@ def main(argv=None):
+                                                                            OPENCODE_CREDENTIAL_ENV))
+     ap.add_argument("--cases", default=",".join(CASES), help="comma-separated subset of: " + ", ".join(CASES)
+                     + "; opt-in, Codex only: " + ", ".join(SIDE_CASES + EOT_CASES + WAKE_BLOCK_CASES + UNRECEIVED_CASES
+-                                                      + RESUME_CASES + QUEUE_NATIVE_CASES)
++                                                      + RESUME_CASES + QUEUE_NATIVE_CASES + SIDE_QUEUE_CASES + SIDE_DEFER_CASES)
++                    + " (" + ", ".join(SIDE_QUEUE_CASES) + " needs --queue-proof; " + ", ".join(SIDE_DEFER_CASES)
++                    + " is refused under it)"
+                     + "; opt-in, hooks-only Claude: " + ", ".join(HOOKS_CASES)
+                     + "; opt-in, mod Claude at T=0: " + ", ".join(PROMPT_RACE_CASES)
+                     + "; opt-in, a named seat in a private tmux server (claude): " + ", ".join(TMUX_CASES))
+@@ -3958,10 +4223,16 @@ def main(argv=None):
+     cases = [c for c in args.cases.split(",") if c]
+     unknown = ([c for c in cases
+                 if c not in CASES + SIDE_CASES + HOOKS_CASES + EOT_CASES + WAKE_BLOCK_CASES + UNRECEIVED_CASES
+-                                 + RESUME_CASES + TMUX_CASES + PROMPT_RACE_CASES + QUEUE_NATIVE_CASES]
++                                 + RESUME_CASES + TMUX_CASES + PROMPT_RACE_CASES + QUEUE_NATIVE_CASES
++                                 + SIDE_QUEUE_CASES + SIDE_DEFER_CASES]
+                + [h for h in args.harness if h not in HARNESSES])
+     if unknown:
+         ap.error(f"unknown case/harness: {unknown}")
++    for case in cases:
++        if case in SIDE_QUEUE_CASES and not args.queue_proof:
++            ap.error(f"{case} requires --queue-proof")
++        if case in SIDE_DEFER_CASES and args.queue_proof:
++            ap.error(f"{case} runs without --queue-proof")
+     if any(c in PROMPT_RACE_CASES for c in cases) and not all(c in PROMPT_RACE_CASES for c in cases):
+         ap.error("the prompt-race cases (" + ", ".join(PROMPT_RACE_CASES) + ") run alone: their slow "
+                  "UserPromptSubmit hook would skew other cases")

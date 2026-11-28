@@ -1,0 +1,12 @@
+diff --git a/tests/service/lazy_hook_pull.rs b/tests/service/lazy_hook_pull.rs
+index 00b234df2..de964cba0 100644
+--- a/tests/service/lazy_hook_pull.rs
++++ b/tests/service/lazy_hook_pull.rs
+@@ -219,6 +219,7 @@ fn check_in_flagged(
+     readonly: bool,
+ ) -> CallerClaim {
+     let claim = CallerClaim {
++        auxiliary_session: false,
+         host: crate::test_support::test_host_locator(),
+         instance: "34750f98bd59fcfc946da45aaabe933b".into(),
+         seat: SeatId::new(seat),

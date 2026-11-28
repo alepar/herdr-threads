@@ -1,0 +1,8 @@
+
+running 1 test
+test herdr_release_smoke::herdr_release_wake has been running for over 60 seconds
+herdr 0.9.5: wake matrix passed
+test herdr_release_smoke::herdr_release_wake ... ok
+
+test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 354 filtered out; finished in 94.75s
+

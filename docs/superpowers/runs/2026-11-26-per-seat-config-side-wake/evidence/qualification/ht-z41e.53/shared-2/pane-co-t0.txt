@@ -1,0 +1,52 @@
+  For every herdr-threads message you receive, print exactly one line: RECEIVED  followed by its      │
+  [herdr-threads] ...: header line copied verbatim, a space and its body; never send, reply or leave  │ This will remove it from Side chats. Archive “Run
+  via herdr-threads. Keep every turn minimal. Now run herdr-threads nudge-threshold 0, then print     │ side-queue inbox ch…”?
+  exactly one line SETUP-DONE nudge_threshold=<the value it reports>.                                 │
+                                                                                                      │  Cancel    Archive
+                                                                                                      │
+• I’ll load the herdr-threads guide and set the threshold.                                            │ ←/→ choose · Enter confirm · Esc cancel
+                                                                                                      │
+• Ran herdr-threads skill                                                                             │
+  └ Administrative recovery uses immediate argv1 `human`, with exact reported routing/output globals …│
+                                                                                                      │
+    Quiet channels can archive automatically after an uninterrupted hour of verified eligibility. Pen…│
+    + 216 lines (^t to expand)                                                                        │
+                                                                                                      │
+• Exited (status 2) herdr-threads nudge-threshold 0                                                   │
+  └ herdr-threads: no resolved seat is mapped to pane w2H:p3; run `herdr-threads seat resolve --pane …│
+    + 1 line (^t to expand)                                                                           │
+                                                                                                      │
+• Ran herdr-threads --state-dir /tmp/ht-wake-e2e.5ebgynr4/state --host-endpoint $HOME/.con…│
+  └ nudge_threshold: 0 (unchanged)                                                                    │
+    + Show details                                                                                    │
+                                                                                                      │
+• SETUP-DONE nudge_threshold=0                                                                        │
+                                                                                                      │
+  Worked for 10s • 15:42                                                                              │
+                                                                                                      │
+                                                                                                      │
+› herdr-threads: wake up                                                                              │
+                                                                                                      │
+                                                                                                      │
+• I’ll accept the test invitation.                                                                    │
+                                                                                                      │
+• Ran herdr-threads --state-dir /tmp/ht-wake-e2e.5ebgynr4/state accept t8MIn8ykcfQG                   │
+  └ accepted                                                                                          │
+    value: "i8MIdCzwu5yu"                                                                             │
+                                                                                                      │
+• Accepted.                                                                                           │
+                                                                                                      │
+  Worked for 4s • 15:42                                                                               │
+                                                                                                      │
+• RECEIVED [herdr-threads] message m8MIT3JgvqYD in t8MIn8ykcfQG from s8MIo7Mzr7It [p0] [human]: side- │
+  queue/group 154227-a60b                                                                             │
+                                                                                                      │
+  Worked for 2s • 15:45                                                                               │
+                                                                                                      │
+                                                                                                      │
+›                                                                                                     │
+                                                                                                      │
+  GPT-6.2-Sol default · ~/AleCode/herdr-threads/.worktrees/super-auto-per-seat-config-side-           │
+  wake/.worktrees/super-auto-per-seat-config-side-wake--task-ht-z41e.53 · Accept automated wake       │
+  invitations                                                                                         │
+                                                                                                      │

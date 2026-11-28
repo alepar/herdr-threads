@@ -100,6 +100,7 @@ fn actor(conn: &Connection, seat: &str) -> Result<Actor, ApiError> {
 impl Actor {
     fn claim(&self) -> CallerClaim {
         CallerClaim {
+            auxiliary_session: false,
             instance: self.instance.clone(),
             host: crate::test_support::test_host_locator(),
             seat: self.seat.clone(),

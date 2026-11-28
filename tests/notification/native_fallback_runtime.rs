@@ -51,14 +51,43 @@ fn disabled_queue_retains_fallback_fences_and_completion_uses_fresh_budget() {
         expected_boot: Some(r.host_boot.clone()),
         expected_epoch: Some(r.host_epoch),
     };
+    let modes = Mutex::new(Vec::new());
     let attempt = |r: &WakeReservation, ctx: &HostCallContext| {
         runtime
-            .attempt(r, &target, true, &|| Ok(()), &|| Ok(true), ctx)
+            .attempt(
+                r,
+                &target,
+                true,
+                &|next| {
+                    modes.lock().unwrap().push(next);
+                    Ok(())
+                },
+                &|| Ok(true),
+                ctx,
+            )
             .unwrap()
     };
+    // What the native gate answers for a displayed `/side` composer: the fallback claim is
+    // refused by its own (native) guard, before any claim is spent.
+    let refused = runtime.attempt(
+        &r,
+        &target,
+        true,
+        &|next| match next {
+            GuardFor::NativeFallback => Err(ApiError::new(
+                ErrorCode::TargetUnsafe,
+                "composer is nonempty",
+            )),
+            GuardFor::Queue { .. } => Ok(()),
+        },
+        &|| Ok(true),
+        &context,
+    );
+    assert_eq!(refused.unwrap_err().code, ErrorCode::TargetUnsafe);
     let QueueDispatch::NativeFallback(ticket) = attempt(&r, &context) else {
-        panic!("missing native fallback authority")
+        panic!("a refused guard spent the native fallback claim")
     };
+    assert_eq!(*modes.lock().unwrap(), [GuardFor::NativeFallback]);
     assert_eq!(
         attempt(&r, &context),
         QueueDispatch::Refused,

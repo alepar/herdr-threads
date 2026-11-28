@@ -1,0 +1,157 @@
+{
+"producer": "inv-f5f76bdd-1609-4df6-8910-d80c7bb25568/final",
+"population": [
+{
+"ref": {
+"source": "inv-f5f76bdd-1609-4df6-8910-d80c7bb25568/final",
+"section": "Must fix before landing",
+"position": 1
+},
+"key": "[Must-fix] final review r2: bridge tool_boundary_check_in drops auxiliary evidence (B8)"
+},
+{
+"ref": {
+"source": "inv-f5f76bdd-1609-4df6-8910-d80c7bb25568/final",
+"section": "Must fix before landing",
+"position": 2
+},
+"key": "[Must-fix] final review r2: cluster 3 run docs unreviewed"
+},
+{
+"ref": {
+"source": "inv-f5f76bdd-1609-4df6-8910-d80c7bb25568/final",
+"section": "Must fix before landing",
+"position": 3
+},
+"key": "[Must-fix] final review r2: ansi-composer README stale /side placeholder clause"
+},
+{
+"ref": {
+"source": "inv-f5f76bdd-1609-4df6-8910-d80c7bb25568/final",
+"section": "Must fix before landing",
+"position": 4
+},
+"key": "[Must-fix] final review r2: ansi-composer README codex-0.163.0-side row"
+},
+{
+"ref": {
+"source": "inv-f5f76bdd-1609-4df6-8910-d80c7bb25568/final",
+"section": "Must fix before landing",
+"position": 5
+},
+"key": "[Must-fix] final review r2: install.md release driver queue-proof sentence"
+},
+{
+"ref": {
+"source": "inv-f5f76bdd-1609-4df6-8910-d80c7bb25568/final",
+"section": "Must fix before landing",
+"position": 6
+},
+"key": "[Must-fix] final review r2: SKILL.md human config seat set 'asks the person' on harnesses without ask-rule (B6)"
+},
+{
+"ref": {
+"source": "inv-f5f76bdd-1609-4df6-8910-d80c7bb25568/final",
+"section": "Must fix before landing",
+"position": 7
+},
+"key": "[Must-fix] final review r2: wake_queue_cost lone-side test vacuous"
+},
+{
+"ref": {
+"source": "inv-f5f76bdd-1609-4df6-8910-d80c7bb25568/final",
+"section": "Untested scope",
+"position": 1
+},
+"key": "[Must-fix] untested r2: no build or test at head for any cluster"
+},
+{
+"ref": {
+"source": "inv-f5f76bdd-1609-4df6-8910-d80c7bb25568/final",
+"section": "Untested scope",
+"position": 2
+},
+"key": "[Must-fix] untested r2: live qualification not run"
+},
+{
+"ref": {
+"source": "inv-f5f76bdd-1609-4df6-8910-d80c7bb25568/final",
+"section": "Untested scope",
+"position": 3
+},
+"key": "[Must-fix] untested r2: no real hook-path aux bit end to end"
+},
+{
+"ref": {
+"source": "inv-f5f76bdd-1609-4df6-8910-d80c7bb25568/final",
+"section": "Untested scope",
+"position": 4
+},
+"key": "[Must-fix] untested r2: no live root contact under targeted session UUID"
+},
+{
+"ref": {
+"source": "inv-f5f76bdd-1609-4df6-8910-d80c7bb25568/final",
+"section": "Untested scope",
+"position": 5
+},
+"key": "[Must-fix] untested r2: refusal-backoff retry timing after side closes unmeasured"
+},
+{
+"ref": {
+"source": "inv-f5f76bdd-1609-4df6-8910-d80c7bb25568/final",
+"section": "Untested scope",
+"position": 6
+},
+"key": "[Must-fix] untested r2: doctor report_captured wiring not end to end"
+},
+{
+"ref": {
+"source": "inv-f5f76bdd-1609-4df6-8910-d80c7bb25568/final",
+"section": "Untested scope",
+"position": 7
+},
+"key": "[Must-fix] untested r2: human config seat set without --seat in a pane only via test seam"
+},
+{
+"ref": {
+"source": "inv-f5f76bdd-1609-4df6-8910-d80c7bb25568/final",
+"section": "Untested scope",
+"position": 8
+},
+"key": "[Must-fix] untested r2: release-qualify --queue-proof pass-through untested"
+},
+{
+"ref": {
+"source": "inv-f5f76bdd-1609-4df6-8910-d80c7bb25568/final",
+"section": "Untested scope",
+"position": 9
+},
+"key": "[Must-fix] untested r2: scheduler/queue paths untested (OutcomeUnknown with root, unknown root, fallback scope)"
+},
+{
+"ref": {
+"source": "inv-f5f76bdd-1609-4df6-8910-d80c7bb25568/final",
+"section": "Untested scope",
+"position": 10
+},
+"key": "[Must-fix] untested r2: service-level gaps (subagent human-tier write, human unset nudge_threshold, operator replay)"
+},
+{
+"ref": {
+"source": "inv-f5f76bdd-1609-4df6-8910-d80c7bb25568/final",
+"section": "Untested scope",
+"position": 11
+},
+"key": "[Must-fix] untested r2: mark_auxiliary guards and reversible-close operator write untested"
+},
+{
+"ref": {
+"source": "inv-f5f76bdd-1609-4df6-8910-d80c7bb25568/final",
+"section": "Untested scope",
+"position": 12
+},
+"key": "[Must-fix] untested r2: skill.rs needles for new sentences missing"
+}
+]
+}

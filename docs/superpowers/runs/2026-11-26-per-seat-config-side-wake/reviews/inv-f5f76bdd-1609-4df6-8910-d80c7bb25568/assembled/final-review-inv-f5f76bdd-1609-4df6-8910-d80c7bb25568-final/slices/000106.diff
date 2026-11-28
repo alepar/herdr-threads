@@ -1,0 +1,12 @@
+diff --git a/src/protocol/service.rs b/src/protocol/service.rs
+index 4cf4c955d..8a97e3265 100644
+--- a/src/protocol/service.rs
++++ b/src/protocol/service.rs
+@@ -1241,6 +1241,7 @@ mod contract_tests {
+             expected_revision: 1,
+             operation: OperationId::new("accept-1"),
+             claim: CallerClaim {
++                auxiliary_session: false,
+                 host: crate::test_support::test_host_locator(),
+                 instance: INSTANCE.into(),
+                 seat: current.seat.clone(),

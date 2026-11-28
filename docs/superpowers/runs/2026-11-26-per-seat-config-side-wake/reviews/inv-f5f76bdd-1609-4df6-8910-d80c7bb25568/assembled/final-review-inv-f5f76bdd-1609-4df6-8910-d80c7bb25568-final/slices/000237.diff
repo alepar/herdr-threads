@@ -1,0 +1,12 @@
+diff --git a/tests/store/summary.rs b/tests/store/summary.rs
+index 598e6b00e..bd0a1eb1f 100644
+--- a/tests/store/summary.rs
++++ b/tests/store/summary.rs
+@@ -128,6 +128,7 @@ impl Fx {
+ 
+     fn claim(&self, seat: &str, role: CallerRole) -> CallerClaim {
+         CallerClaim {
++            auxiliary_session: false,
+             host: crate::test_support::test_host_locator(),
+             instance: "34750f98bd59fcfc946da45aaabe933b".into(),
+             seat: SeatId::new(seat),

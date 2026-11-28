@@ -1,0 +1,211 @@
+diff --git a/tests/protocol/capabilities.rs b/tests/protocol/capabilities.rs
+index 6cccebbf7..e3cead8fb 100644
+--- a/tests/protocol/capabilities.rs
++++ b/tests/protocol/capabilities.rs
+@@ -281,6 +281,7 @@ fn capability_constants_are_stable() {
+     assert_eq!(SEAT_BINDING_DETAILS_V1, "seat.binding_details_v1");
+     assert_eq!(SEAT_READONLY_V1, "seat.readonly_v1");
+     assert_eq!(SEAT_CONTINUITY_KEY_V1, "seat.continuity_key_v1");
++    assert_eq!(SEAT_AUXILIARY_SESSION_V1, "seat.auxiliary_session_v1");
+     assert_eq!(INBOX_BATCH, "inbox.batch_v1");
+     assert_eq!(LAZY_HOOK_DELIVERY, "hook.lazy_delivery_v1");
+     assert_eq!(HOOK_CONTEXT_RECEIPTS_V1, "hook.context_receipts_v1");
+@@ -307,6 +308,7 @@ fn capability_constants_are_stable() {
+     assert_eq!(LAUNCH_GATE_V1, "launch.gate_v1");
+     assert_eq!(LOCAL_LAUNCH_GATE_V1, "launch.local_gate_v1");
+     assert_eq!(PEER_HANDOFF_STAGE_V1, "handoff.peer_stage_v1");
++    assert_eq!(SEAT_CONFIG_V1, "seat.config_v1");
+     assert_eq!(
+         ADVERTISED,
+         &[
+@@ -339,6 +341,7 @@ fn capability_constants_are_stable() {
+             "seat.wake_on_v1",
+             "seat.readonly_v1",
+             "seat.continuity_key_v1",
++            "seat.auxiliary_session_v1",
+             "delivery.pull_v1",
+             "hook.lazy_delivery_v1",
+             "hook.context_receipts_v1",
+@@ -367,7 +370,8 @@ fn capability_constants_are_stable() {
+             "handoff.automatic_target_v1",
+             "launch.gate_v1",
+             "launch.local_gate_v1",
+-            "handoff.peer_stage_v1"
++            "handoff.peer_stage_v1",
++            "seat.config_v1"
+         ]
+     );
+ }
+@@ -521,6 +525,7 @@ fn every_advertised_capability_has_a_handler() {
+                         recipient: crate::protocol::ids::SeatId::new("peer"),
+                         operation: crate::protocol::ids::OperationId::new("direct-probe"),
+                         claim: crate::protocol::authority::CallerClaim {
++                            auxiliary_session: false,
+                             host: crate::test_support::test_host_locator(),
+                             instance: "34750f98bd59fcfc946da45aaabe933b".into(),
+                             seat: crate::protocol::ids::SeatId::new("sender"),
+@@ -658,6 +663,42 @@ fn every_advertised_capability_has_a_handler() {
+                     ErrorCode::NotFound
+                 );
+             }
++            SEAT_CONFIG_V1 => {
++                // The three commands are on the wire, new fields default (a minimal payload
++                // decodes), and the daemon routes the read (an unknown seat is NotFound) and the
++                // human-tier writes (NotFound from the stub, not an unknown command).
++                let handler = daemon_handler(crate::node::NodeUuid::new_v4(), Uuid::new_v4());
++                let get: Command = serde_json::from_value(
++                    serde_json::json!({"kind":"get_seat_config","args":{"seat":"nobody"}}),
++                )
++                .unwrap();
++                assert!(get.validate().is_ok());
++                assert_eq!(
++                    handler
++                        .handle(get, PeerIdentity::from_kernel(501), &budget())
++                        .unwrap_err()
++                        .code,
++                    ErrorCode::NotFound
++                );
++                for json in [
++                    serde_json::json!({"kind":"set_seat_config","args":{"key":"programmatic_wake","value":"on","tier":"human","operation":"op"}}),
++                    serde_json::json!({"kind":"unset_seat_config","args":{"key":"programmatic_wake","tier":"human","operation":"op"}}),
++                ] {
++                    let command: Command = serde_json::from_value(json).unwrap();
++                    assert!(command.validate().is_ok());
++                    let round = serde_json::to_value(&command).unwrap();
++                    assert_eq!(serde_json::from_value::<Command>(round).unwrap(), command);
++                    // The control service's domain stub answers like the other probes; the
++                    // handlers are driven by `tests/service/seat_config.rs`.
++                    assert_eq!(
++                        handler
++                            .handle(command, PeerIdentity::from_kernel(501), &budget())
++                            .unwrap_err()
++                            .code,
++                        ErrorCode::NotFound
++                    );
++                }
++            }
+             PEER_HANDOFF_STAGE_V1 => {
+                 let command = Command::PeerHandoffStage {
+                     request: "00000000-0000-0000-0000-000000000001".into(),
+@@ -845,6 +886,41 @@ fn every_advertised_capability_has_a_handler() {
+                     .unwrap_err();
+                 assert_ne!(error.code, ErrorCode::InvalidRequest, "{error:?}");
+             }
++            SEAT_AUXILIARY_SESSION_V1 => {
++                // `CallerClaim.auxiliary_session` decodes, round-trips and stays out of a default
++                // claim's bytes; the daemon refuses the claim (no such seat), not the field.
++                let handler = daemon_handler(crate::node::NodeUuid::new_v4(), Uuid::new_v4());
++                let wire = |extra: serde_json::Value| {
++                    let mut claim = serde_json::json!({"host":"/host.sock","instance":"34750f98bd59fcfc946da45aaabe933b","seat":"nobody","binding_generation":1,"role":"top_level","harness":"codex","native_session":"n","execution":"00000000-0000-4000-8000-0000000000aa","target":"pa"});
++                    if !extra.is_null() {
++                        claim["auxiliary_session"] = extra;
++                    }
++                    serde_json::from_value::<Command>(serde_json::json!({"kind":"check_in","args":{"mode":{"kind":"current"},"operation":"op","claim":claim}})).unwrap()
++                };
++                let command = wire(serde_json::json!(true));
++                let Command::CheckIn(check) = &command else {
++                    panic!("expected CheckIn")
++                };
++                assert!(check.claim.auxiliary_session);
++                assert!(command.validate().is_ok());
++                let json = serde_json::to_value(&command).unwrap();
++                assert_eq!(serde_json::from_value::<Command>(json).unwrap(), command);
++                let Command::CheckIn(plain) = wire(serde_json::Value::Null) else {
++                    panic!("expected CheckIn")
++                };
++                assert!(!plain.claim.auxiliary_session);
++                assert!(
++                    serde_json::to_value(&plain.claim)
++                        .unwrap()
++                        .get("auxiliary_session")
++                        .is_none(),
++                    "a default claim's bytes are unchanged"
++                );
++                let error = handler
++                    .handle(command, PeerIdentity::from_kernel(501), &budget())
++                    .unwrap_err();
++                assert_ne!(error.code, ErrorCode::InvalidRequest, "{error:?}");
++            }
+             SEAT_READONLY_V1 => {
+                 // `CheckIn.readonly` decodes and round-trips; the daemon refuses the claim (no
+                 // such seat), not the field.
+@@ -926,6 +1002,7 @@ fn every_advertised_capability_has_a_handler() {
+                 let command = Command::AdvanceCursors(crate::protocol::commands::AdvanceCursors {
+                     in_turn: true,
+                     claim: crate::protocol::authority::CallerClaim {
++                        auxiliary_session: false,
+                         host: crate::test_support::test_host_locator(),
+                         instance: "34750f98bd59fcfc946da45aaabe933b".into(),
+                         seat: crate::protocol::ids::SeatId::new("s"),
+@@ -959,6 +1036,7 @@ fn every_advertised_capability_has_a_handler() {
+                         seat: crate::protocol::ids::SeatId::new("s"),
+                         lazy: false,
+                         claim: Some(crate::protocol::authority::CallerClaim {
++                            auxiliary_session: false,
+                             host: crate::test_support::test_host_locator(),
+                             instance: "34750f98bd59fcfc946da45aaabe933b".into(),
+                             seat: crate::protocol::ids::SeatId::new("s"),
+@@ -1197,6 +1275,7 @@ fn probe_hook_context_receipts() {
+     let check_in = |seat: &str| {
+         let session = format!("session-{seat}");
+         let claim = CallerClaim {
++            auxiliary_session: false,
+             host: crate::test_support::test_host_locator(),
+             instance: instance.to_string(),
+             seat: SeatId::new(seat),
+@@ -1326,6 +1405,7 @@ fn probe_binding_cursors() {
+         in_turn: false,
+         invitations: Vec::new(),
+         claim: CallerClaim {
++            auxiliary_session: false,
+             host: crate::test_support::test_host_locator(),
+             instance: "34750f98bd59fcfc946da45aaabe933b".into(),
+             seat: SeatId::new("nobody"),
+@@ -1397,6 +1477,7 @@ fn probe_mod_watch(presentation_v2: bool) {
+     let request = WatchRequest {
+         presentation_v2,
+         claim: CallerClaim {
++            auxiliary_session: false,
+             host: crate::test_support::test_host_locator(),
+             instance: "34750f98bd59fcfc946da45aaabe933b".into(),
+             seat: SeatId::new("nobody"),
+@@ -1493,6 +1574,7 @@ fn bare_daemon_advertises_legacy_capabilities_without_v2_recorder() {
+             "seat.wake_on_v1",
+             "seat.readonly_v1",
+             "seat.continuity_key_v1",
++            "seat.auxiliary_session_v1",
+             "delivery.pull_v1",
+             "hook.lazy_delivery_v1",
+             "hook.context_receipts_v1",
+@@ -1522,6 +1604,7 @@ fn bare_daemon_advertises_legacy_capabilities_without_v2_recorder() {
+             "launch.gate_v1",
+             "launch.local_gate_v1",
+             "handoff.peer_stage_v1",
++            "seat.config_v1",
+             "invitation.confirmation_v1",
+             "handoff.summary_prompt_v1",
+             "handoff.sender_prompt_v2",
+@@ -2141,6 +2224,7 @@ fn probe_invitation_reject() {
+         reason: "Outside assigned role".into(),
+         operation: OperationId::new("reject-probe"),
+         claim: CallerClaim {
++            auxiliary_session: false,
+             host: crate::test_support::test_host_locator(),
+             instance: "34750f98bd59fcfc946da45aaabe933b".into(),
+             seat: SeatId::new("s1"),
+@@ -2888,6 +2972,7 @@ fn probe_thread_join() {
+         thread: crate::protocol::ids::ThreadId::new("t1"),
+         operation: crate::protocol::ids::OperationId::new("join-probe"),
+         claim: crate::protocol::authority::CallerClaim {
++            auxiliary_session: false,
+             host: crate::test_support::test_host_locator(),
+             instance: "34750f98bd59fcfc946da45aaabe933b".into(),
+             seat: crate::protocol::ids::SeatId::new("s1"),
+@@ -3094,6 +3179,7 @@ fn presentation_capability_routes_use_configured_domain() {
+     let check_in = |seat: &str| {
+         let session = format!("session-{seat}");
+         let claim = CallerClaim {
++            auxiliary_session: false,
+             host: crate::test_support::test_host_locator(),
+             instance: instance.to_string(),
+             seat: SeatId::new(seat),

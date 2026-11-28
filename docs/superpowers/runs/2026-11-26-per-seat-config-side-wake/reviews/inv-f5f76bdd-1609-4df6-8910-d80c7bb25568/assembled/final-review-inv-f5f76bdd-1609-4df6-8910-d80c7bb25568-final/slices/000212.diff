@@ -1,0 +1,12 @@
+diff --git a/tests/store/fact_convergence_invitation.rs b/tests/store/fact_convergence_invitation.rs
+index a36f777fe..b1657daf6 100644
+--- a/tests/store/fact_convergence_invitation.rs
++++ b/tests/store/fact_convergence_invitation.rs
+@@ -32,6 +32,7 @@ use crate::facts_thread::sync_all;
+ /// write guard armed by [`Node::run`].
+ fn open_direct(node: &Node, caller: &SeatId, recipient: &SeatId) -> (ThreadId, bool) {
+     let claim = CallerClaim {
++        auxiliary_session: false,
+         instance: node.id.to_string(),
+         host: herdr_threads::test_support::test_host_locator(),
+         seat: caller.clone(),

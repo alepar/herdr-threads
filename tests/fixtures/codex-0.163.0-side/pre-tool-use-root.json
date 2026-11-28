@@ -1,0 +1,12 @@
+{
+  "session_id": "root-session",
+  "turn_id": "root-turn-1",
+  "transcript_path": "/private/tmp/side-fixture/rollout-root-session.jsonl",
+  "cwd": "/private/tmp/side-fixture",
+  "hook_event_name": "PreToolUse",
+  "model": "gpt-6.1-sol",
+  "permission_mode": "default",
+  "tool_name": "Bash",
+  "tool_input": {"command": "echo root"},
+  "tool_use_id": "call-root-1"
+}

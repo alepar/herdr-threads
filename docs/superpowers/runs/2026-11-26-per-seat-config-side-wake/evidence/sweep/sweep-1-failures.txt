@@ -1,0 +1,9 @@
+        FAIL [   0.007s] ( 4260/10077) herdr-threads ports::allocation_tests::ports_have_no_unsupported_defaults_or_admitted_duplicates
+        FAIL [   1.068s] (  234/10077) herdr-threads::hook_entrypoint native_hook_auto_ack_preserves_sibling_unread_and_delivery_wake
+        PASS [   0.007s] (  407/10077) herdr-threads app::lane_liveness_tests::panicked_lane_degrades_health_naming_it
+      left: [BindingId("d7ae0e213acb8be076b5ced27a6829ea"), BindingId("be67ced6fac9c0c00feb130b09ffedfb")]
+     Summary [1100.947s] 10077 tests run: 10075 passed (1 slow), 2 failed, 67 skipped
+     right: [BindingId("be67ced6fac9c0c00feb130b09ffedfb")]
+    thread 'native_hook_auto_ack_preserves_sibling_unread_and_delivery_wake' (2173737) panicked at tests/hook_entrypoint.rs:2439:5:
+    thread 'ports::allocation_tests::ports_have_no_unsupported_defaults_or_admitted_duplicates' (2555873) panicked at src/ports.rs:5887:13:
+    trait default returns Unsupported near byte 136088

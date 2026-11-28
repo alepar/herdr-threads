@@ -268,13 +268,19 @@ pub fn load_candidate(
         nonnegative(episode)?,
         open != 0,
         attention.frontier,
-    );
-    let targets = wake_targets(
+    )
+    .with_programmatic_wake(super::seat_config::programmatic_wake_on(db, seat));
+    // A lazy wake widens to the process's bindings (`TargetScope::Process`), so the dispatcher's
+    // text-evidence check and queue selection see the same set.
+    let targets = wake_targets_in(
         db,
         seat,
-        attention.has_pending_invitation
-            || attention.has_pending_receipt
-            || attention.latest_warning_seq.is_some(),
+        TargetScope::of(
+            attention.has_pending_invitation
+                || attention.has_pending_receipt
+                || attention.latest_warning_seq.is_some(),
+            attention.frontier.lazy.is_some(),
+        ),
     )?;
     // Served in-turn is per binding (ht-705): the seat's pending items count as served only when
     // every binding a wake could reach saw them, so one binding's turn never hides a sibling's
@@ -361,7 +367,54 @@ pub fn wake_targets(
     seat: &SeatId,
     seat_attention: bool,
 ) -> Result<Vec<WakeTarget>, ApiError> {
-    Ok(wake_target_rows(db, seat, seat_attention)?
+    wake_targets_in(db, seat, TargetScope::of(seat_attention, false))
+}
+
+/// Which connected bindings a wake reaches.
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum TargetScope {
+    /// Bindings with the row unread.
+    Unread,
+    /// Lazy-only wake: bindings with the row unread plus every binding sharing a harness process
+    /// with one of them (a `/side` sibling that already displayed the row is still in that
+    /// process's wake).
+    Process,
+    /// Invitation, receipt, warning or soft deadline: every connected binding can act on it.
+    Seat,
+}
+
+impl TargetScope {
+    fn of(seat_level: bool, lazy: bool) -> Self {
+        if seat_level {
+            Self::Seat
+        } else if lazy {
+            Self::Process
+        } else {
+            Self::Unread
+        }
+    }
+
+    /// The scope a reservation was made under, from its reasons.
+    fn of_reservation(reasons: &[String]) -> Self {
+        let has = |names: &[&str]| reasons.iter().any(|r| names.contains(&r.as_str()));
+        Self::of(
+            has(&[
+                "pending_invitation",
+                "pending_receipt",
+                "actionable_warning",
+                "soft_deadline",
+            ]),
+            has(&["lazy"]),
+        )
+    }
+}
+
+fn wake_targets_in(
+    db: &Connection,
+    seat: &SeatId,
+    scope: TargetScope,
+) -> Result<Vec<WakeTarget>, ApiError> {
+    Ok(wake_target_rows(db, seat, scope)?
         .into_iter()
         .map(|row| row.target)
         .collect())
@@ -380,9 +433,9 @@ struct TargetRow {
 fn wake_target_rows(
     db: &Connection,
     seat: &SeatId,
-    seat_attention: bool,
+    scope: TargetScope,
 ) -> Result<Vec<TargetRow>, ApiError> {
-    const COLUMNS: &str = "SELECT binding_id,harness,liveness_pid,generation,target_generation,target_id,terminal_id,incarnation,registered_at IS NOT NULL,observation_provenance FROM occupant_bindings";
+    const COLUMNS: &str = "SELECT binding_id,harness,liveness_pid,generation,target_generation,target_id,terminal_id,incarnation,registered_at IS NOT NULL,observation_provenance,liveness_start,liveness_boot FROM occupant_bindings";
     let dormant = super::lazy_delivery::dormant_top_level(db, seat.as_str())?;
     let (sql, key) = match &dormant {
         Some(binding) => (format!("{COLUMNS} WHERE binding_id=?1"), binding.as_str()),
@@ -408,40 +461,74 @@ fn wake_target_rows(
                 r.get::<_, Option<String>>(7)?,
                 r.get::<_, bool>(8)?,
                 r.get::<_, String>(9)?,
+                r.get::<_, Option<i64>>(10)?,
+                r.get::<_, Option<String>>(11)?,
             ))
         })
         .map_err(store_error)?
         .collect::<Result<Vec<_>, _>>()
         .map_err(store_error)?;
     let corrupt = |_| api_error(ErrorCode::StoreCorrupt, "invalid binding row");
+    // Per row: is it owed by itself (a dormant target, or the row unread). The `Process` scope then
+    // adds the rows sharing a harness process (pid, start stamp, boot) with an owed one; a row with
+    // no recorded pid shares nothing.
+    let mut owed_rows = Vec::with_capacity(rows.len());
+    for row in &rows {
+        let binding = BindingId::parse(row.0.clone()).map_err(corrupt)?;
+        owed_rows.push(
+            scope == TargetScope::Seat
+                || if dormant.is_some() {
+                    super::lazy_delivery::wake_frontier(
+                        db,
+                        seat.as_str(),
+                        super::seats::nudge_threshold(db, seat)?,
+                    )?
+                    .is_some()
+                } else {
+                    super::read_cursors::has_unread(db, &binding)?
+                },
+        );
+    }
+    let process_keys: Vec<Option<(i64, i64, Option<String>)>> = rows
+        .iter()
+        .map(|row| {
+            row.2
+                .zip(row.10)
+                .map(|(pid, start)| (pid, start, row.11.clone()))
+        })
+        .collect();
+    let owed_processes: Vec<&(i64, i64, Option<String>)> = process_keys
+        .iter()
+        .zip(&owed_rows)
+        .filter_map(|(key, owed)| key.as_ref().filter(|_| *owed))
+        .collect();
     let mut targets = Vec::with_capacity(rows.len());
     for (
-        binding,
-        harness,
-        pid,
-        generation,
-        target_generation,
-        target_id,
-        terminal,
-        incarnation,
-        registered,
-        provenance,
+        (
+            binding,
+            harness,
+            pid,
+            generation,
+            target_generation,
+            target_id,
+            terminal,
+            incarnation,
+            registered,
+            provenance,
+            _,
+            _,
+        ),
+        (owed, key),
     ) in rows
+        .into_iter()
+        .zip(owed_rows.into_iter().zip(&process_keys))
     {
         let binding = BindingId::parse(binding).map_err(corrupt)?;
-        // A dormant binding holds no pending view for `has_unread` to read, and only what its
-        // threshold admits may wake it.
-        let owed = seat_attention
-            || if dormant.is_some() {
-                super::lazy_delivery::wake_frontier(
-                    db,
-                    seat.as_str(),
-                    super::seats::nudge_threshold(db, seat)?,
-                )?
-                .is_some()
-            } else {
-                super::read_cursors::has_unread(db, &binding)?
-            };
+        let owed = owed
+            || (scope == TargetScope::Process
+                && key
+                    .as_ref()
+                    .is_some_and(|key| owed_processes.contains(&key)));
         if !owed {
             continue;
         }
@@ -499,7 +586,7 @@ fn current_authority(
     target_generation: u64,
     boot: &HostBootId,
     epoch: u64,
-    seat_attention: bool,
+    scope: TargetScope,
 ) -> Result<Option<ReservedWakeAuthority>, ApiError> {
     // A person's pane identity (`me init`) is never prompted: its mail waits
     // for the person to read and ACK it by hand.
@@ -534,7 +621,7 @@ fn current_authority(
             generation,
             target_generation,
             &observation,
-            seat_attention,
+            scope,
         );
     };
     if observation.occupancy != "occupied"
@@ -599,7 +686,7 @@ fn cooperative_authority(
     generation: u64,
     target_generation: u64,
     observation: &effective::EffectiveObservation,
-    seat_attention: bool,
+    scope: TargetScope,
 ) -> Result<Option<ReservedWakeAuthority>, ApiError> {
     if observation.occupancy == "empty_shell"
         || effective::turn_in_progress(&observation.ui_state)
@@ -613,7 +700,7 @@ fn cooperative_authority(
     ) else {
         return Ok(None);
     };
-    let placed: Vec<TargetRow> = wake_target_rows(db, seat, seat_attention)?
+    let placed: Vec<TargetRow> = wake_target_rows(db, seat, scope)?
         .into_iter()
         .filter(|row| {
             u64::try_from(row.generation) == Ok(generation)
@@ -691,11 +778,14 @@ pub fn wake_text_evidence_current(
     if targets.is_empty() {
         return Ok(false);
     }
-    let current: Vec<_> =
-        wake_target_rows(db, &reservation.seat, reservation.for_seat_attention())?
-            .into_iter()
-            .map(|row| row.target)
-            .collect();
+    let current: Vec<_> = wake_target_rows(
+        db,
+        &reservation.seat,
+        TargetScope::of_reservation(&reservation.reasons),
+    )?
+    .into_iter()
+    .map(|row| row.target)
+    .collect();
     Ok(current == targets)
 }
 
@@ -906,8 +996,8 @@ pub fn reserve(
         let Some(target)=target.map(HostTargetId::new) else {return Ok(None)};
         let boot=HostBootId::new(boot);
         let host_epoch:i64=tx.query_row("SELECT host_epoch FROM herdr_hosts WHERE host_id=?1",[host.get()],|r|r.get(0)).map_err(store_error)?;
-        let seat_attention=current.has_pending_invitation||current.has_pending_receipt||current.actionable_warning_seq.is_some();
-        let Some(authority)=current_authority(tx,host,&candidate.seat,&target,nonnegative(generation)?,nonnegative(target_generation)?,&boot,nonnegative(host_epoch)?,seat_attention)? else {return Ok(None)};
+        let scope=TargetScope::of(current.has_pending_invitation||current.has_pending_receipt||current.actionable_warning_seq.is_some(),witness.frontier().lazy.is_some());
+        let Some(authority)=current_authority(tx,host,&candidate.seat,&target,nonnegative(generation)?,nonnegative(target_generation)?,&boot,nonnegative(host_epoch)?,scope)? else {return Ok(None)};
         Ok(Some((target,boot,nonnegative(host_epoch)?,nonnegative(target_generation)?,authority,current)))
     },|tx,at,prepared|{
         let Some((target,host_boot,host_epoch,target_generation,authority,current))=prepared else {return Ok(None)};
@@ -1026,9 +1116,12 @@ pub fn validate_reservation(
         reservation.target_generation,
         &reservation.host_boot,
         reservation.host_epoch,
-        candidate.has_pending_invitation
-            || candidate.has_pending_receipt
-            || candidate.actionable_warning_seq.is_some(),
+        TargetScope::of(
+            candidate.has_pending_invitation
+                || candidate.has_pending_receipt
+                || candidate.actionable_warning_seq.is_some(),
+            false,
+        ),
     )?;
     // The target list is the frozen delivery plan: a binding reading its mail since the
     // reservation does not void it (the scope, not the list, is the fence). One exception: a
@@ -1227,7 +1320,7 @@ pub fn reserve_poke(
         if current.effectively_retired || !current.continuity_resolved || current.reservation_id.is_some() {return Ok(None)}
         let boot=HostBootId::new(boot);
         // A due receipt is seat-level attention: every connected top-level binding can act on it.
-        let Some(authority)=current_authority(tx,host,seat,&target,nonnegative(generation)?,nonnegative(target_generation)?,&boot,nonnegative(host_epoch)?,true)? else {return Ok(None)};
+        let Some(authority)=current_authority(tx,host,seat,&target,nonnegative(generation)?,nonnegative(target_generation)?,&boot,nonnegative(host_epoch)?,TargetScope::Seat)? else {return Ok(None)};
         if authority.targets().iter().any(|t|t.dormant) {return Ok(None)}
         let witness=WakeAttentionWitness::from_complete(instance.into(),seat.clone(),nonnegative(decision_seq)?,false,true,None,nonnegative(episode)?,open!=0,LogicalAttentionFrontier::default());
         Ok(Some((target,boot,nonnegative(host_epoch)?,nonnegative(target_generation)?,authority,current,witness,receipts)))

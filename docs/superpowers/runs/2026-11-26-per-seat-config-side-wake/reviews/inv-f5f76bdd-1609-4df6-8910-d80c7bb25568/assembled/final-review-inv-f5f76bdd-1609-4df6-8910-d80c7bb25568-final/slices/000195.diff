@@ -1,0 +1,12 @@
+diff --git a/tests/service/mod_channels.rs b/tests/service/mod_channels.rs
+index 871134580..4c3f9f09f 100644
+--- a/tests/service/mod_channels.rs
++++ b/tests/service/mod_channels.rs
+@@ -1034,6 +1034,7 @@ mod domain {
+         WatchRequest {
+             presentation_v2: false,
+             claim: CallerClaim {
++                auxiliary_session: false,
+                 host: crate::test_support::test_host_locator(),
+                 instance: "34750f98bd59fcfc946da45aaabe933b".into(),
+                 seat: seat("s"),

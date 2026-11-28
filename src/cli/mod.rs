@@ -5,6 +5,7 @@ pub mod caller;
 pub mod caller_guard;
 pub mod caller_location;
 pub mod commands;
+pub mod config_seat;
 pub mod direct_send;
 pub mod doctor;
 pub mod exit;
@@ -684,6 +685,12 @@ fn run_parsed_in_pane<W: Write>(
         writer.write_all(skill::SKILL_MD.as_bytes())?;
         writer.flush()?;
         return Ok(());
+    }
+    if matches!(
+        parsed.action,
+        CliAction::ConfigSeat(commands::ConfigSeatAction::List)
+    ) {
+        return config_seat::run_list(&parsed, writer);
     }
     if let Some(caller_location::CallerLocator::Named(_)) = site {
         if matches!(parsed.action, CliAction::MeInit { .. }) {
@@ -1523,6 +1530,9 @@ fn run_parsed_in_pane<W: Write>(
         CliAction::NudgeThreshold(_) => {
             unreachable!("nudge-threshold always derives a caller selection")
         }
+        CliAction::ConfigSeat(_) => {
+            unreachable!("config seat is handled before the unselected dispatch")
+        }
         CliAction::SelfRetire { .. } => {
             unreachable!("seat retire --self always derives a caller selection")
         }
@@ -1828,6 +1838,21 @@ where
             writer,
         )?;
         return Ok(None);
+    }
+    if matches!(&parsed.action, CliAction::ConfigSeat(_)) {
+        let (instance, client) = connection.get()?;
+        let host = context.claim_host().map_err(context_error)?;
+        return config_seat::run(
+            &parsed,
+            None,
+            paths,
+            *instance,
+            &host,
+            client,
+            clock.as_ref(),
+            writer,
+        )
+        .map(|()| None);
     }
     let text_read = text_display(&parsed);
     match parsed.action {
@@ -3268,6 +3293,18 @@ pub(crate) fn run_selected<C: LocalClient + ?Sized, W: Write>(
             &parsed, value, selection, paths, instance, host, client, clock, writer,
         );
     }
+    if matches!(&parsed.action, CliAction::ConfigSeat(_)) {
+        return config_seat::run(
+            &parsed,
+            Some(selection),
+            paths,
+            instance,
+            host,
+            client,
+            clock,
+            writer,
+        );
+    }
     if let CliAction::SelfRetire { force } = &parsed.action {
         let force = *force;
         return self_retire::run(
@@ -3602,6 +3639,7 @@ fn exact_check_in_replay(
                 // The daemon echoes the frozen claim, liveness fingerprint included.
                 let mut echoed = check.context.clone();
                 echoed.liveness = None;
+                echoed.auxiliary_session = false;
                 return Ok(echoed
                     == bridge::caller_claim(
                         &response.context,
@@ -4195,6 +4233,7 @@ fn caller_need(parsed: &commands::ParsedCli, paths: &NodePaths) -> Result<Caller
         return Ok(CallerNeed::None);
     }
     Ok(match &parsed.action {
+        CliAction::ConfigSeat(action) => config_seat_need(action, parsed.actor),
         CliAction::Mutation(mutation) => {
             if matches!(
                 mutation,
@@ -4263,8 +4302,43 @@ fn caller_need(parsed: &commands::ParsedCli, paths: &NodePaths) -> Result<Caller
     })
 }
 
+/// `config seat`: `list` and any `--seat` form need no caller; an agent write acts as its own seat;
+/// a read, or a person's write without `--seat`, defaults to the caller's seat when one is located
+/// (never required: the run reports a seatless caller itself).
+fn config_seat_need(
+    action: &commands::ConfigSeatAction,
+    actor: actor_route::InvocationActor,
+) -> CallerNeed {
+    use commands::ConfigSeatAction as A;
+    match action {
+        A::List => CallerNeed::None,
+        A::Get { seat: Some(_), .. } => CallerNeed::None,
+        A::Get { seat: None, .. } => CallerNeed::SeatDefault { required: false },
+        A::Set { seat, .. } | A::Unset { seat, .. } => {
+            if actor != actor_route::InvocationActor::Human {
+                CallerNeed::Selection
+            } else if seat.is_some() {
+                CallerNeed::None
+            } else {
+                CallerNeed::SeatDefault { required: false }
+            }
+        }
+    }
+}
+
+/// Test seam: the seat the caller derivation fills (`default_seat`).
+#[cfg(test)]
+pub(crate) fn default_seat_for_test(action: &mut CliAction, seat: crate::protocol::ids::SeatId) {
+    default_seat(action, seat);
+}
+
 fn default_seat(action: &mut CliAction, seat: crate::protocol::ids::SeatId) {
     match action {
+        CliAction::ConfigSeat(config) => {
+            if let Some(slot) = config.seat_mut().filter(|slot| slot.is_none()) {
+                *slot = Some(seat);
+            }
+        }
         CliAction::Wire(Command::Thread(query)) => query.caller = Some(seat),
         CliAction::Wire(Command::Participants(query)) => query.caller = Some(seat),
         _ => {
@@ -5355,6 +5429,7 @@ pub fn run_cooperative<C: LocalClient + ?Sized, W: Write>(
         CliAction::Mutation(MutationSpec::CheckIn) => {
             let context = current()?;
             let event = LifecycleEvent {
+                auxiliary_session: false,
                 harness: context.harness,
                 source: "current".into(),
                 kind: EventKind::Tool,
@@ -5402,6 +5477,7 @@ pub fn run_cooperative<C: LocalClient + ?Sized, W: Write>(
                 _ => native_session,
             };
             let event = LifecycleEvent {
+                auxiliary_session: false,
                 harness: seed.harness,
                 source: "explicit".into(),
                 kind: EventKind::Startup,
@@ -5596,6 +5672,7 @@ pub fn run_cooperative<C: LocalClient + ?Sized, W: Write>(
                         crate::harness::context::SessionReference::PluginContext(_) => None,
                     });
                 let event = LifecycleEvent {
+                    auxiliary_session: false,
                     harness: seed.harness,
                     source: "retry".into(),
                     kind: match mode {

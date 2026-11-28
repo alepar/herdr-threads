@@ -1,0 +1,29 @@
+diff --git a/docs/superpowers/runs/2026-11-26-per-seat-config-side-wake/findings-ledger.md b/docs/superpowers/runs/2026-11-26-per-seat-config-side-wake/findings-ledger.md
+new file mode 100644
+index 000000000..58569cb0e
+--- /dev/null
++++ b/docs/superpowers/runs/2026-11-26-per-seat-config-side-wake/findings-ledger.md
+@@ -0,0 +1,23 @@
++# findings ledger — code — through r1
++triggers: none
++blocking: r0=- r1=0 carriedB=- regressedB=- degraded=none not-computable=no-progress,returned,regressed
++ignored-overrides: 0
++- [Should-fix] scripts/wake-e2e.py:2979 · raised r1@5b25963d8 · open · source roast · text docs/superpowers/runs/2026-11-26-per-seat-config-side-wake/2026-11-27-per-seat-config-side-wake-roast-pr-1.md
++- [Should-fix] tests/integration/herdr_release_smoke.rs:1175 · raised r1@5b25963d8 · open · source roast · text docs/superpowers/runs/2026-11-26-per-seat-config-side-wake/2026-11-27-per-seat-config-side-wake-roast-pr-1.md
++- [Should-fix] src/store/wake.rs:272 · raised r1@5b25963d8 · open · source roast · text docs/superpowers/runs/2026-11-26-per-seat-config-side-wake/2026-11-27-per-seat-config-side-wake-roast-pr-1.md
++- [Should-fix] src/scheduler/mod.rs:1012 · raised r1@5b25963d8 · open · source roast · text docs/superpowers/runs/2026-11-26-per-seat-config-side-wake/2026-11-27-per-seat-config-side-wake-roast-pr-1.md
++- [Nit] src/harness/codex.rs:1525 · raised r1@5b25963d8 · dissolved@r1 · source roast · text docs/superpowers/runs/2026-11-26-per-seat-config-side-wake/2026-11-27-per-seat-config-side-wake-roast-pr-1.md
++- [Nit] src/store/seat_config.rs:489; src/store/seat_config.rs:462 · raised r1@5b25963d8 · open · source roast · text docs/superpowers/runs/2026-11-26-per-seat-config-side-wake/2026-11-27-per-seat-config-side-wake-roast-pr-1.md
++- [Nit] TRUST-POLICY.md:4277 · raised r1@5b25963d8 · dissolved@r1 · source roast · text docs/superpowers/runs/2026-11-26-per-seat-config-side-wake/2026-11-27-per-seat-config-side-wake-roast-pr-1.md
++- [Nit] scripts/wake-e2e.py:3044 · raised r1@5b25963d8 · open · source roast · text docs/superpowers/runs/2026-11-26-per-seat-config-side-wake/2026-11-27-per-seat-config-side-wake-roast-pr-1.md
++- [Nit] docs/superpowers/runs/2026-11-26-per-seat-config-side-wake/2026-11-26-per-seat-config-side-wake-design.md:221 · raised r1@5b25963d8 · dissolved@r1 · source roast · text docs/superpowers/runs/2026-11-26-per-seat-config-side-wake/2026-11-27-per-seat-config-side-wake-roast-pr-1.md
++- [Must-fix] final review: run ignored herdr_release_wake on the final SHA · raised r1@- · open · source final-review · text docs/superpowers/runs/2026-11-26-per-seat-config-side-wake/2026-11-27-per-seat-config-side-wake-roast-pr-1-final-review-keys.txt
++- [Must-fix] final review: complete live-qualification row (ht-z41e.10) · raised r1@- · open · source final-review · text docs/superpowers/runs/2026-11-26-per-seat-config-side-wake/2026-11-27-per-seat-config-side-wake-roast-pr-1-final-review-keys.txt
++- [Must-fix] untested: whole-epic review incomplete (bounded hunks only) · raised r1@- · open · source final-review · text docs/superpowers/runs/2026-11-26-per-seat-config-side-wake/2026-11-27-per-seat-config-side-wake-roast-pr-1-final-review-keys.txt
++- [Must-fix] untested: no full-suite measurement of this branch · raised r1@- · open · source final-review · text docs/superpowers/runs/2026-11-26-per-seat-config-side-wake/2026-11-27-per-seat-config-side-wake-roast-pr-1-final-review-keys.txt
++- [Must-fix] untested: side-queue and side-native-defer never run live · raised r1@- · open · source final-review · text docs/superpowers/runs/2026-11-26-per-seat-config-side-wake/2026-11-27-per-seat-config-side-wake-roast-pr-1-final-review-keys.txt
++- [Must-fix] untested: Codex non-/side fork with original binding connected · raised r1@- · open · source final-review · text docs/superpowers/runs/2026-11-26-per-seat-config-side-wake/2026-11-27-per-seat-config-side-wake-roast-pr-1-final-review-keys.txt
++- [Must-fix] untested: review-inputs provenance gap · raised r1@- · open · source final-review · text docs/superpowers/runs/2026-11-26-per-seat-config-side-wake/2026-11-27-per-seat-config-side-wake-roast-pr-1-final-review-keys.txt
++- [Must-fix] untested: changed docs paths not inspected · raised r1@- · open · source final-review · text docs/superpowers/runs/2026-11-26-per-seat-config-side-wake/2026-11-27-per-seat-config-side-wake-roast-pr-1-final-review-keys.txt
++- [Must-fix] untested: TRUST-POLICY /side and stale-authority hunks not inspected · raised r1@- · open · source final-review · text docs/superpowers/runs/2026-11-26-per-seat-config-side-wake/2026-11-27-per-seat-config-side-wake-roast-pr-1-final-review-keys.txt
++- [Must-fix] untested: stale-authority fallback after flag flip only store-level · raised r1@- · open · source final-review · text docs/superpowers/runs/2026-11-26-per-seat-config-side-wake/2026-11-27-per-seat-config-side-wake-roast-pr-1-final-review-keys.txt

@@ -1,0 +1,9 @@
+{
+  "session_id": "root-session",
+  "transcript_path": "/private/tmp/side-fixture/rollout-root-session.jsonl",
+  "cwd": "/private/tmp/side-fixture",
+  "hook_event_name": "SessionStart",
+  "model": "gpt-6.1-sol",
+  "permission_mode": "default",
+  "source": "startup"
+}

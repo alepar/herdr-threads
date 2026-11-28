@@ -1,0 +1,14 @@
+diff --git a/src/service/kicks.rs b/src/service/kicks.rs
+index a37c1fccf..7b82ffe70 100644
+--- a/src/service/kicks.rs
++++ b/src/service/kicks.rs
+@@ -209,6 +209,9 @@ pub const KNOWN_UNMAPPED: &[&str] = &[
+     // Once-per-episode no-wake report marks (NodeDelta 0013): written by the sender-side
+     // `wake_status` read, they only suppress a repeat report and create no work for a lane.
+     "no_wake_reports",
++    // Per-seat config (ht-z41e.2): read per decision by its consumers; a column-backed key's wake
++    // re-judgement goes through `wake::note_new_attention`, which kicks on its own.
++    "seat_config",
+     // A plain local launch's gate-only record (H3): read only by the gate's own polling.
+     "local_launch_gates",
+     // Programmatic-wake history uses its bounded node recovery owner, not per-host kicks.

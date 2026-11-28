@@ -9,7 +9,7 @@ use super::caller_location::{CallerEnv, CallerSite, caller_continuity_key};
 use super::{caller, commands::ParsedCli};
 use crate::ports::LocalClient;
 use crate::protocol::{
-    capabilities::{SEAT_CONTINUITY_KEY_V1, SEAT_READONLY_V1},
+    capabilities::{SEAT_AUXILIARY_SESSION_V1, SEAT_CONTINUITY_KEY_V1, SEAT_READONLY_V1},
     commands::{Command, ResolveThreadQuery},
     ids::{ContinuityKey, HostLocator, HostTargetId, SeatId},
     results::{ApiError, CommandResult, ErrorCode},
@@ -36,6 +36,23 @@ pub fn require_readonly<C: LocalClient + ?Sized>(
             Err(ApiError::new(ErrorCode::Unsupported, READONLY_REFUSAL))
         }
         _ => Ok(()),
+    }
+}
+
+/// Drops the auxiliary-session evidence of a check-in's claim when the daemon does not advertise
+/// [`SEAT_AUXILIARY_SESSION_V1`] (`CallerClaim` is `deny_unknown_fields`): only queue root selection
+/// reads it, so an older daemon loses queue routing for that session and nothing else. No round
+/// trip for a claim without the evidence, so a default caller's bytes are unchanged.
+pub fn drop_unadvertised_auxiliary<C: LocalClient + ?Sized>(
+    command: &mut Command,
+    client: &C,
+    budget: &CallBudget,
+) {
+    if let Command::CheckIn(check) | Command::OperatorCheckIn(check) = command
+        && check.claim.auxiliary_session
+        && !client.supports_capability(SEAT_AUXILIARY_SESSION_V1, budget)
+    {
+        check.claim.auxiliary_session = false;
     }
 }
 
@@ -186,8 +203,8 @@ pub(crate) fn resolve_arm_key<C: LocalClient + ?Sized>(
 
 /// Passes when the daemon advertises `capability`; otherwise refuses with `refusal_line` as an
 /// `Unsupported` error, before anything is sent.
-pub fn require_site_capability(
-    client: &dyn LocalClient,
+pub fn require_site_capability<C: LocalClient + ?Sized>(
+    client: &C,
     capability: &str,
     refusal_line: &str,
     budget: &CallBudget,
@@ -311,6 +328,7 @@ mod tests {
         CheckIn {
             mode: CheckInMode::Current,
             claim: CallerClaim {
+                auxiliary_session: false,
                 instance: "i".into(),
                 host: HostLocator::parse("/claim.sock").unwrap(),
                 seat: SeatId::new("s"),
@@ -375,6 +393,33 @@ mod tests {
         )
         .unwrap();
         assert_eq!(READONLY_REFUSAL.len(), 58);
+    }
+
+    #[test]
+    fn auxiliary_evidence_reaches_only_a_daemon_that_advertises_it() {
+        let marked = |command: &Command| match command {
+            Command::CheckIn(check) | Command::OperatorCheckIn(check) => {
+                check.claim.auxiliary_session
+            }
+            _ => unreachable!(),
+        };
+        for wrap in [Command::CheckIn, Command::OperatorCheckIn] {
+            let mut check = check_in(false);
+            check.claim.auxiliary_session = true;
+            let mut command = wrap(check);
+            drop_unadvertised_auxiliary(
+                &mut command,
+                &Fake(&[SEAT_AUXILIARY_SESSION_V1]),
+                &budget(),
+            );
+            assert!(marked(&command), "an advertising daemon gets the evidence");
+            drop_unadvertised_auxiliary(&mut command, &Fake(&[]), &budget());
+            assert!(!marked(&command), "an older daemon never sees the field");
+        }
+        // A check-in without the evidence asks the daemon nothing.
+        let mut plain = Command::CheckIn(check_in(false));
+        drop_unadvertised_auxiliary(&mut plain, &Panics, &budget());
+        assert!(!marked(&plain));
     }
 
     fn keyed_env(key: &str) -> CallerEnv {

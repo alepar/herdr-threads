@@ -1,0 +1,12 @@
+diff --git a/tests/cli/output.rs b/tests/cli/output.rs
+index 61f124212..019ea1887 100644
+--- a/tests/cli/output.rs
++++ b/tests/cli/output.rs
+@@ -305,6 +305,7 @@ fn invitation_policy_lazy_hook_display_remains_recoverable_without_acceptance()
+         receipt_completion: true,
+         in_turn_offer: false,
+         claim: CallerClaim {
++            auxiliary_session: false,
+             host: crate::test_support::test_host_locator(),
+             instance: "instance".into(),
+             seat: SeatId::new("seat"),

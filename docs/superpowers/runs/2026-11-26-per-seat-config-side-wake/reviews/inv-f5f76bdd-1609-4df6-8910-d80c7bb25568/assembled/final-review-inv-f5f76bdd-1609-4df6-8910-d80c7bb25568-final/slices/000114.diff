@@ -1,0 +1,20 @@
+diff --git a/src/store/control/retirement.rs b/src/store/control/retirement.rs
+index e1b09e5b7..7080c4478 100644
+--- a/src/store/control/retirement.rs
++++ b/src/store/control/retirement.rs
+@@ -308,6 +308,7 @@ pub(crate) fn insert_retirement_job(
+         params![job.as_str(),seat.as_str(),cutover.0,inputs.boot,inputs.epoch,inputs.target,inputs.generation,inputs.closure_evidence,inputs.absence_evidence]).map_err(store_error)?;
+     continuity_keys::release_for_final(tx, seat)?;
+     crate::store::seats::delete_shell_fingerprint(tx, seat)?;
++    crate::store::seat_config::delete_for_final_retirement(tx, seat)?;
+     Ok(RetirementJob {
+         id: job,
+         seat: seat.clone(),
+@@ -334,6 +335,7 @@ pub(crate) fn insert_replicated_retirement_job(
+     )
+     .map_err(store_error)?;
+     crate::store::seats::delete_shell_fingerprint(tx, seat)?;
++    crate::store::seat_config::delete_for_final_retirement(tx, seat)?;
+     continuity_keys::release_for_final(tx, seat)
+ }
+ 

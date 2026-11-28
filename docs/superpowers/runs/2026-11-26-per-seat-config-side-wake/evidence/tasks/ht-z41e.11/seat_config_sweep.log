@@ -1,0 +1,13 @@
+heavy: slot 1 acquired 02:04:14
+   Compiling herdr-threads v3.6.0 ($HOME/AleCode/herdr-threads/.worktrees/super-auto-per-seat-config-side-wake/.worktrees/super-auto-per-seat-config-side-wake--task-ht-z41e.11)
+    Finished `test` profile [unoptimized + debuginfo] target(s) in 2m 38s
+     Running tests/combined.rs (target/debug/deps/combined-5fac1db49307d9d3)
+
+running 3 tests
+test seat_config_sweep::agent_sets_its_own_threshold_through_config_seat ... ok
+test seat_config_sweep::queue_targets_root_beside_side_and_native_defers_on_side_composer ... ok
+test seat_config_sweep::person_enables_queue_wake_on_one_seat ... ok
+
+test result: ok. 3 passed; 0 failed; 0 ignored; 0 measured; 1464 filtered out; finished in 7.69s
+
+exit=0

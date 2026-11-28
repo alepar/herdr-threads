@@ -1,0 +1,12 @@
+diff --git a/tests/harness/role_witness.rs b/tests/harness/role_witness.rs
+index 21bfae3c9..9612c166e 100644
+--- a/tests/harness/role_witness.rs
++++ b/tests/harness/role_witness.rs
+@@ -29,6 +29,7 @@ fn event(role: EventRole, intent: EventIntent, delivery: DeliveryEligibility) ->
+         event_id: "event".into(),
+         intent,
+         metadata: EventMetadata {
++            auxiliary_session: false,
+             native_turn_id: None,
+             turn_end: false,
+             skill_pointer: false,

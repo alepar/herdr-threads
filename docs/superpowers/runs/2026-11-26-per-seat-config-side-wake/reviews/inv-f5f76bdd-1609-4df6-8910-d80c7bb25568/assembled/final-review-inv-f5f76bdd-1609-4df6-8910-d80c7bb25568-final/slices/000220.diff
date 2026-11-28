@@ -1,0 +1,12 @@
+diff --git a/tests/store/multi_binding_readers.rs b/tests/store/multi_binding_readers.rs
+index 3581c8341..b457c154b 100644
+--- a/tests/store/multi_binding_readers.rs
++++ b/tests/store/multi_binding_readers.rs
+@@ -89,6 +89,7 @@ fn fingerprint(session: &str) -> LivenessFingerprint {
+ 
+ fn claim(session: &str) -> CallerClaim {
+     CallerClaim {
++        auxiliary_session: false,
+         host: crate::test_support::test_host_locator(),
+         instance: "34750f98bd59fcfc946da45aaabe933b".into(),
+         seat: SeatId::new("s"),

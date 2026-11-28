@@ -7,6 +7,7 @@ use crate::{
     },
     ports::*,
     protocol::{
+        ids::{NativeSessionId, WakeAttemptId},
         results::{ApiError, ErrorCode},
         time::{CallBudget, Cancellation, Clock, MonoInstant},
     },
@@ -33,19 +34,33 @@ pub trait QueueWakePort: Send + Sync {
     ) -> Result<(), ApiError> {
         Ok(())
     }
+    /// The root native session of a queued attempt that returned `Submitted` or `Unknown`,
+    /// handed over once; the scheduler awaits that session's contact (receipt scope).
+    fn take_root(&self, _attempt: &WakeAttemptId) -> Option<NativeSessionId> {
+        None
+    }
     #[allow(clippy::too_many_arguments)]
     fn attempt(
         &self,
         reservation: &WakeReservation,
         target: &SafeWakeTarget,
         use_queue: bool,
-        guard: &dyn Fn() -> Result<(), ApiError>,
+        guard: &dyn Fn(GuardFor) -> Result<(), ApiError>,
         owed: &dyn Fn() -> Result<bool, ApiError>,
         context: &HostCallContext,
     ) -> Result<QueueDispatch, ApiError>;
 }
+/// What the queue runtime asks its guard to admit next.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum GuardFor {
+    /// A native-fallback claim: native composer typing follows (an empty composer only).
+    NativeFallback,
+    /// Arm of a programmatic wake to the selected root: `siblings` is true when the root's process
+    /// has other bindings (`WakeIntentPreparation.side_sessions` non-empty), so a pane-wide
+    /// `working` status may be theirs.
+    Queue { siblings: bool },
+}
 pub struct QueueWakeRuntime {
-    programmatic_wake: bool,
     store: Arc<dyn StorePort>,
     writer: Arc<FairWriter>,
     clock: Arc<dyn Clock>,
@@ -54,7 +69,13 @@ pub struct QueueWakeRuntime {
     turn_state: Arc<TurnStateBook>,
     recovery: Arc<QueueRecovery>,
     error_log: Arc<dyn crate::daemon::logs::LaneErrorLog>,
+    /// Queued attempts' root sessions until the dispatcher takes them (bounded, see `ROOTS_MAX`).
+    roots: std::sync::Mutex<std::collections::HashMap<WakeAttemptId, NativeSessionId>>,
+    /// Test seam: a wake control used in place of the registry's.
+    control_override: Option<Arc<dyn WakeControl>>,
 }
+/// More retained roots than this means the dispatcher stopped taking them; they are dropped.
+const ROOTS_MAX: usize = 256;
 fn unavailable(detail: &str) -> ApiError {
     ApiError::new(ErrorCode::TargetUnsafe, detail)
 }
@@ -70,7 +91,6 @@ impl QueueWakeRuntime {
         recovery: Arc<QueueRecovery>,
     ) -> Self {
         Self {
-            programmatic_wake: false,
             store,
             writer,
             clock,
@@ -79,10 +99,14 @@ impl QueueWakeRuntime {
             turn_state,
             recovery,
             error_log: Arc::new(crate::daemon::logs::NoopLaneErrorLog),
+            roots: Default::default(),
+            control_override: None,
         }
     }
-    pub fn with_programmatic_wake(mut self, enabled: bool) -> Self {
-        self.programmatic_wake = enabled;
+    /// Uses `control` in place of the selected adapter's own wake control.
+    #[cfg(any(test, feature = "test-support"))]
+    pub fn with_wake_control(mut self, control: Arc<dyn WakeControl>) -> Self {
+        self.control_override = Some(control);
         self
     }
     pub fn with_error_log(mut self, error_log: Arc<dyn crate::daemon::logs::LaneErrorLog>) -> Self {
@@ -153,7 +177,8 @@ impl QueueWakeRuntime {
         }
         slot.settled()
     }
-    /// Complete an already captured adapter target under canonical submission fences.
+    /// Complete an already captured adapter target under canonical submission fences, keeping the
+    /// target's root session for the scheduler's receipt check when the queue may have delivered.
     #[allow(clippy::too_many_arguments)]
     fn submit_captured(
         &self,
@@ -161,7 +186,29 @@ impl QueueWakeRuntime {
         key: &TurnKey,
         preparation: WakeIntentPreparation,
         control: &dyn WakeControl,
-        guard: &dyn Fn() -> Result<(), ApiError>,
+        guard: &dyn Fn(GuardFor) -> Result<(), ApiError>,
+        owed: &dyn Fn() -> Result<bool, ApiError>,
+        context: &HostCallContext,
+    ) -> Result<QueueDispatch, ApiError> {
+        let dispatch = self.submit_prepared(r, key, preparation, control, guard, owed, context)?;
+        if matches!(dispatch, QueueDispatch::Submitted | QueueDispatch::Unknown)
+            && let Ok(mut roots) = self.roots.lock()
+        {
+            if roots.len() >= ROOTS_MAX {
+                roots.clear();
+            }
+            roots.insert(r.attempt.clone(), key.native_session.clone());
+        }
+        Ok(dispatch)
+    }
+    #[allow(clippy::too_many_arguments)]
+    fn submit_prepared(
+        &self,
+        r: &WakeReservation,
+        key: &TurnKey,
+        preparation: WakeIntentPreparation,
+        control: &dyn WakeControl,
+        guard: &dyn Fn(GuardFor) -> Result<(), ApiError>,
         owed: &dyn Fn() -> Result<bool, ApiError>,
         context: &HostCallContext,
     ) -> Result<QueueDispatch, ApiError> {
@@ -199,11 +246,17 @@ impl QueueWakeRuntime {
         };
         let nonce = uuid::Uuid::new_v4();
         let mut reporting_ticket = None;
+        let siblings = !preparation.side_sessions.is_empty();
+        let mut root_not_idle = false;
         let mut authorize = || {
+            // The root's hook turn state is the idle evidence; a root that turned Busy or Unknown
+            // since selection is refused before any host call.
             if self.turn_state.state(key) != TurnState::Idle {
+                root_not_idle = true;
                 return Ok(false);
             }
-            guard()?;
+            // The queue's only host admission: once per attempt, right before arm.
+            guard(GuardFor::Queue { siblings })?;
             if !owed()? {
                 return Ok(false);
             }
@@ -333,6 +386,10 @@ impl QueueWakeRuntime {
                 QueueDispatch::Unknown
             }),
             WakeAddOutcome::Unknown(_) => Ok(QueueDispatch::Unknown),
+            // A root that turned Busy/Unknown after selection is refused for the ladder, never
+            // typed into in the same attempt (rule 4); it has no root to await (`roots` gets
+            // nothing), so no receipt is pending. Stale authority and admission refusals fall back.
+            WakeAddOutcome::RefusedBeforeEffect(_) if root_not_idle => Ok(QueueDispatch::Refused),
             WakeAddOutcome::RefusedBeforeEffect(_) => self.native_if_clear(r, &budget),
         }
     }
@@ -355,7 +412,7 @@ impl QueueWakePort for QueueWakeRuntime {
         r: &WakeReservation,
         target: &SafeWakeTarget,
         use_queue: bool,
-        guard: &dyn Fn() -> Result<(), ApiError>,
+        guard: &dyn Fn(GuardFor) -> Result<(), ApiError>,
         owed: &dyn Fn() -> Result<bool, ApiError>,
         context: &HostCallContext,
     ) -> Result<QueueDispatch, ApiError> {
@@ -367,13 +424,12 @@ impl QueueWakePort for QueueWakeRuntime {
             return Err(unavailable("queue target changed"));
         }
         // Fences are checked before capture, including unsupported native-only paths.
-        let selection = self.store.queue_wake_selection(
-            r,
-            use_queue && self.programmatic_wake,
-            &context.budget,
-        )?;
+        // The seat's own `programmatic_wake` is read inside the selection transaction.
+        let selection = self
+            .store
+            .queue_wake_selection(r, use_queue, &context.budget)?;
         if selection.blockers.native {
-            guard()?;
+            guard(GuardFor::NativeFallback)?;
             if !owed()? {
                 return Ok(QueueDispatch::Refused);
             }
@@ -387,7 +443,7 @@ impl QueueWakePort for QueueWakeRuntime {
                 QueueDispatch::Refused
             });
         }
-        if !use_queue || !self.programmatic_wake || selection.blockers.programmatic {
+        if !use_queue || !selection.programmatic_enabled || selection.blockers.programmatic {
             return Ok(QueueDispatch::Native);
         }
         let Some(binding) = selection.binding else {
@@ -404,17 +460,17 @@ impl QueueWakePort for QueueWakeRuntime {
             TurnState::Unknown => return Ok(QueueDispatch::Native),
             TurnState::Idle => {}
         }
-        guard()?;
         if !owed()? {
             return Ok(QueueDispatch::Refused);
         }
         let registry = builtins();
-        let Some(control) = registry
+        let registered = registry
             .by_id(binding.adapter)
             .ok()
-            .and_then(|a| a.wake_control())
-        else {
-            return Ok(QueueDispatch::Native);
+            .and_then(|a| a.wake_control());
+        let control: &dyn WakeControl = match (self.control_override.as_deref(), registered) {
+            (Some(control), _) | (None, Some(control)) => control,
+            (None, None) => return Ok(QueueDispatch::Native),
         };
         let observation = WakeControlContext {
             clock: self.clock.as_ref(),
@@ -432,8 +488,12 @@ impl QueueWakePort for QueueWakeRuntime {
             replay_scope: binding.replay_scope,
             target: captured,
             correlation: r.attempt.as_str().into(),
+            side_sessions: binding.side_sessions,
         };
         self.submit_captured(r, &key, preparation, control, guard, owed, context)
+    }
+    fn take_root(&self, attempt: &WakeAttemptId) -> Option<NativeSessionId> {
+        self.roots.lock().ok()?.remove(attempt)
     }
 }
 
@@ -650,12 +710,22 @@ mod tests {
                 &key,
                 preparation.clone(),
                 &control,
-                &|| Ok(()),
+                &|_| Ok(()),
                 &|| Ok(true),
                 &context,
             )
             .unwrap();
         assert_eq!(dispatch, QueueDispatch::Submitted);
+        assert_eq!(
+            runtime.take_root(&control.reservation.attempt),
+            Some(key.native_session.clone()),
+            "a queued attempt hands the scheduler its root session"
+        );
+        assert_eq!(
+            runtime.take_root(&control.reservation.attempt),
+            None,
+            "taken once"
+        );
         let row = control
             .store
             .wake_intent(&control.reservation.attempt, &context.budget)
@@ -678,7 +748,7 @@ mod tests {
                     &key,
                     preparation,
                     &control,
-                    &|| Ok(()),
+                    &|_| Ok(()),
                     &|| Ok(true),
                     &context
                 )
@@ -710,7 +780,7 @@ mod tests {
                     &key,
                     preparation,
                     &control,
-                    &|| Ok(()),
+                    &|_| Ok(()),
                     &|| Ok(true),
                     &context
                 )
@@ -791,10 +861,72 @@ mod tests {
         );
     }
     #[test]
+    fn programmatic_wake_flipped_off_before_arm_refuses_no_effect_and_falls_back_native() {
+        let (runtime, control, preparation, key, context) = runtime_fixture(false);
+        let seat = control.reservation.seat.as_str().to_string();
+        let flipped = AtomicUsize::new(0);
+        // The guard runs inside `authorize`, after selection and prepare and before arm:
+        // the operator turns the seat's opt-in off exactly there.
+        let guard = |_: GuardFor| {
+            fixture_support::set_programmatic_wake(&control.store, &seat, false);
+            flipped.fetch_add(1, Ordering::SeqCst);
+            Ok(())
+        };
+        let dispatch = runtime
+            .submit_captured(
+                &control.reservation,
+                &key,
+                preparation,
+                &control,
+                &guard,
+                &|| Ok(true),
+                &context,
+            )
+            .unwrap();
+        assert_eq!(flipped.load(Ordering::SeqCst), 1);
+        assert_eq!(
+            dispatch,
+            QueueDispatch::Native,
+            "stale authority settles the same attempt as a native wake"
+        );
+        assert_eq!(
+            runtime.take_root(&control.reservation.attempt),
+            None,
+            "a fallback to native has no root: its receipt is seat-scoped"
+        );
+        assert_eq!(control.calls.load(Ordering::SeqCst), 1);
+        assert_eq!(
+            control.effects.load(Ordering::SeqCst),
+            0,
+            "arm refused: the queue add effect never ran"
+        );
+        let row = control
+            .store
+            .wake_intent(&control.reservation.attempt, &context.budget)
+            .unwrap()
+            .unwrap();
+        assert_eq!(row.phase, WakeIntentPhase::NoEffect);
+        assert!(row.arm_nonce.is_none(), "never armed");
+        assert!(row.owned_ids.is_empty());
+        let blockers = control
+            .store
+            .wake_intent_blockers(
+                &control.reservation.seat,
+                row.preparation.adapter,
+                &row.preparation.replay_scope,
+                &context.budget,
+            )
+            .unwrap();
+        assert!(
+            !blockers.native && !blockers.programmatic,
+            "a never-armed NoEffect leaves no fence on the native wake"
+        );
+    }
+    #[test]
     fn final_guard_refusal_after_prepare_never_arms_or_adds() {
         let (runtime, control, preparation, key, context) = runtime_fixture(false);
         let checks = AtomicUsize::new(0);
-        let guard = || {
+        let guard = |_: GuardFor| {
             let row = control
                 .store
                 .wake_intent(&control.reservation.attempt, &context.budget)?
@@ -830,6 +962,75 @@ mod tests {
         assert!(!row.cleanup_quarantined);
         assert_eq!(control.effects.load(Ordering::SeqCst), 0);
     }
+    /// Catches a root that turned Busy or Unknown after selection reaching the host admission,
+    /// being typed into by a native fallback in the same attempt, or leaving a fence or a receipt
+    /// root behind: `authorize` reads the turn state first and the attempt is refused for the
+    /// ladder.
+    #[test]
+    fn root_turned_busy_or_unknown_at_arm_is_refused_without_native_fallback() {
+        for busy in [true, false] {
+            let (runtime, control, preparation, key, context) = runtime_fixture(false);
+            // `submit_captured` skips `attempt`'s early turn check, so `authorize` reads it first.
+            let key = if busy {
+                runtime.turn_state.record(&key, TurnEdge::Busy, 1001);
+                key
+            } else {
+                TurnKey {
+                    native_session: crate::protocol::ids::NativeSessionId::new("unrecorded"),
+                    ..key
+                }
+            };
+            let guards = AtomicUsize::new(0);
+            let guard = |_: GuardFor| {
+                guards.fetch_add(1, Ordering::SeqCst);
+                Ok(())
+            };
+            assert_eq!(
+                runtime
+                    .submit_captured(
+                        &control.reservation,
+                        &key,
+                        preparation,
+                        &control,
+                        &guard,
+                        &|| Ok(true),
+                        &context,
+                    )
+                    .unwrap(),
+                QueueDispatch::Refused,
+                "busy={busy}"
+            );
+            assert_eq!(
+                guards.load(Ordering::SeqCst),
+                0,
+                "the turn check precedes the host admission"
+            );
+            assert_eq!(control.effects.load(Ordering::SeqCst), 0);
+            let row = control
+                .store
+                .wake_intent(&control.reservation.attempt, &context.budget)
+                .unwrap()
+                .unwrap();
+            assert_eq!(row.phase, WakeIntentPhase::NoEffect);
+            assert!(row.arm_nonce.is_none(), "never armed");
+            assert!(!native_blocked(&control, &row), "no native fence");
+            let blockers = control
+                .store
+                .wake_intent_blockers(
+                    &control.reservation.seat,
+                    row.preparation.adapter,
+                    &row.preparation.replay_scope,
+                    &context.budget,
+                )
+                .unwrap();
+            assert!(!blockers.programmatic, "no programmatic fence");
+            assert_eq!(
+                runtime.take_root(&control.reservation.attempt),
+                None,
+                "no root to await: no receipt is pending"
+            );
+        }
+    }
     fn reject_no_effect(store: &SqliteStore) -> rusqlite::Connection {
         let fault = store.context().open_writer().unwrap();
         fault.execute_batch("CREATE TRIGGER reject_runtime_refusal BEFORE UPDATE OF phase ON wake_intents WHEN NEW.phase='no_effect' BEGIN SELECT RAISE(ABORT,'injected refusal metadata failure'); END;").unwrap();
@@ -851,7 +1052,7 @@ mod tests {
     fn pre_arm_refusal_metadata_failure_retries_same_boot_without_add() {
         let (runtime, control, preparation, key, context) = runtime_fixture(false);
         let fault = std::sync::Mutex::new(None);
-        let guard = || {
+        let guard = |_: GuardFor| {
             *fault.lock().unwrap() = Some(reject_no_effect(&control.store));
             Err(unavailable("UI changed before arm"))
         };
@@ -1057,7 +1258,7 @@ mod tests {
                     &key,
                     preparation,
                     &control,
-                    &|| Ok(()),
+                    &|_| Ok(()),
                     &|| Ok(true),
                     &context
                 )
@@ -1094,7 +1295,7 @@ mod tests {
                     &key,
                     preparation,
                     &control,
-                    &|| Ok(()),
+                    &|_| Ok(()),
                     &|| Ok(true),
                     &context,
                 )
@@ -1169,7 +1370,7 @@ mod tests {
                     &key,
                     preparation.clone(),
                     &control,
-                    &|| Ok(()),
+                    &|_| Ok(()),
                     &|| Ok(true),
                     &context
                 )
@@ -1219,7 +1420,7 @@ mod tests {
                     &key,
                     preparation,
                     &control,
-                    &|| Ok(()),
+                    &|_| Ok(()),
                     &|| Ok(true),
                     &context
                 )

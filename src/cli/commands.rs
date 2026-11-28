@@ -79,6 +79,8 @@ pub enum SeatSlot {
     RebindSeat,
     /// `seat rebind --replace NEW`.
     RebindReplace,
+    /// `config seat get|set|unset --seat` (the human verbs and the reads).
+    ConfigSeat,
     /// `handoff --existing --seat`.
     HandoffExistingSeat,
 }
@@ -115,7 +117,7 @@ impl SeatSlot {
     /// name matching more than one seat anywhere is refused with the candidates.
     pub fn tiering(self) -> super::seat_selector::Tiering {
         match self {
-            Self::RetireSeat | Self::RebindSeat | Self::RebindReplace => {
+            Self::RetireSeat | Self::RebindSeat | Self::RebindReplace | Self::ConfigSeat => {
                 super::seat_selector::Tiering::Global
             }
             _ => super::seat_selector::Tiering::Proximity,
@@ -180,6 +182,10 @@ impl SeatSlot {
                 Self::HandoffExistingSeat,
                 CliAction::TopologyHandoff(TopologyRequest { seat: slot, .. }),
             ) => *slot = Some(seat.as_str().to_owned()),
+            (Self::ConfigSeat, CliAction::ConfigSeat(config)) => match config.seat_mut() {
+                Some(slot) => *slot = Some(seat),
+                None => return Err(invalid("command has no recipient seat selector")),
+            },
             _ => return Err(invalid("command has no recipient seat selector")),
         }
         Ok(())
@@ -241,6 +247,7 @@ impl SeatSlot {
                 Self::HandoffExistingSeat,
                 CliAction::TopologyHandoff(TopologyRequest { seat, .. }),
             ) => seat.as_deref(),
+            (Self::ConfigSeat, CliAction::ConfigSeat(config)) => config.seat().map(SeatId::as_str),
             _ => None,
         }
     }
@@ -352,6 +359,15 @@ fn collect_seat_selectors(command: &Top) -> Vec<SeatSelectorArg> {
             _ => {}
         },
         Top::Handoff(args) => record(SeatSlot::HandoffExistingSeat, &args.seat),
+        Top::Config {
+            command:
+                ConfigSub::Seat {
+                    command:
+                        ConfigSeatSub::Get { seat, .. }
+                        | ConfigSeatSub::Set { seat, .. }
+                        | ConfigSeatSub::Unset { seat, .. },
+                },
+        } => record(SeatSlot::ConfigSeat, seat),
         _ => {}
     }
     out
@@ -528,11 +544,53 @@ pub enum CliAction {
     /// `nudge-threshold [N]`: read or set the invoking seat's nudge threshold; same
     /// caller rules as `wake-on`.
     NudgeThreshold(Option<NudgeThreshold>),
+    /// `config seat list|get|set|unset` and the `human` set/unset (ht-z41e): per-seat settings.
+    ConfigSeat(ConfigSeatAction),
     /// `seat retire --self [--force]`: the invoking named seat retires itself; acts as the seat
     /// (cooperative claim), never journaled.
     SelfRetire {
         force: bool,
     },
+}
+
+/// One `config seat` verb. `seat` is `None` until the caller's own seat fills it (or a
+/// `--seat` argument freezes it); `Set` and `Unset` carry the tier through `ParsedCli::actor`.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum ConfigSeatAction {
+    List,
+    Get {
+        key: Option<String>,
+        seat: Option<SeatId>,
+    },
+    Set {
+        key: String,
+        value: String,
+        seat: Option<SeatId>,
+    },
+    Unset {
+        key: String,
+        seat: Option<SeatId>,
+    },
+}
+
+impl ConfigSeatAction {
+    pub fn seat(&self) -> Option<&SeatId> {
+        match self {
+            Self::List => None,
+            Self::Get { seat, .. } | Self::Set { seat, .. } | Self::Unset { seat, .. } => {
+                seat.as_ref()
+            }
+        }
+    }
+
+    pub fn seat_mut(&mut self) -> Option<&mut Option<SeatId>> {
+        match self {
+            Self::List => None,
+            Self::Get { seat, .. } | Self::Set { seat, .. } | Self::Unset { seat, .. } => {
+                Some(seat)
+            }
+        }
+    }
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -706,6 +764,7 @@ pub fn dispatch<B: CliBackend>(
         | CliAction::Summary(_)
         | CliAction::WakeOn(_)
         | CliAction::NudgeThreshold(_)
+        | CliAction::ConfigSeat(_)
         | CliAction::SelfRetire { .. } => {
             return Err(ApiError::unsupported(
                 "setup, launch and skill are local compositions without a daemon backend",
@@ -1281,6 +1340,13 @@ enum Top {
     /// Show or set this seat's nudge threshold T (-1..=9, default 0): an idle seat wakes on a
     /// pending message iff its priority is at most T; a negative value wakes for every message.
     NudgeThreshold(NudgeThresholdArgs),
+    /// Per-seat settings: `config seat list` shows every key with its values, default, tier and
+    /// effect; `get` reads; `set`/`unset` write an agent-tier key on your own seat. A human-tier
+    /// key is written only by a person's `ht human config seat set|unset [--seat S]`.
+    Config {
+        #[command(subcommand)]
+        command: ConfigSub,
+    },
     /// Mod delivery child: streams herdr-threads deliveries as JSON lines.
     #[command(
         hide = true,
@@ -1365,6 +1431,49 @@ enum WatchSub {
 enum DoctorSub {
     /// Attempt safe, owned repairs and report remaining manual actions.
     Fix,
+}
+
+#[derive(Subcommand)]
+enum ConfigSub {
+    /// Per-seat settings (node-local).
+    Seat {
+        #[command(subcommand)]
+        command: ConfigSeatSub,
+    },
+}
+
+#[derive(Subcommand)]
+enum ConfigSeatSub {
+    /// Every per-seat setting with its values, default, tier and effect; agent-tier keys are set
+    /// with `ht config seat set`, human-tier keys only with `ht human config seat set`. Needs no
+    /// daemon; --json for a JSON array.
+    List,
+    /// Read the effective value of one key, or of every key; `(default)` marks an unset key.
+    /// Any seat with --seat; subagents may read.
+    Get {
+        /// The key; omit for every key.
+        key: Option<String>,
+        /// SEAT: exact ID or SPACE/TAB/PANE[@MACHINE]; defaults to your own seat.
+        #[arg(long, value_name = "SEAT")]
+        seat: Option<String>,
+    },
+    /// Set an agent-tier key on your own seat; a human-tier key needs
+    /// `ht human config seat set [--seat S] KEY VALUE`.
+    Set {
+        key: String,
+        #[arg(allow_negative_numbers = true)]
+        value: String,
+        /// Only for `ht human config seat set`: the seat to write.
+        #[arg(long, value_name = "SEAT")]
+        seat: Option<String>,
+    },
+    /// Return a key to its default (same rules as set).
+    Unset {
+        key: String,
+        /// Only for `ht human config seat unset`: the seat to write.
+        #[arg(long, value_name = "SEAT")]
+        seat: Option<String>,
+    },
 }
 
 #[derive(Args)]
@@ -2880,6 +2989,9 @@ where
         }
         return Err(ParseFailure::Invalid(invalid(guidance(&original, None))));
     }
+    if actor == InvocationActor::Agent {
+        refuse_agent_config_write(&parsed.action, &parsed.seat_selectors)?;
+    }
     if actor == InvocationActor::Human
         && let CliAction::Mutation(MutationSpec::Invite { confirmation, .. }) = &mut parsed.action
     {
@@ -2888,6 +3000,37 @@ where
     }
     parsed.actor = actor;
     Ok(parsed)
+}
+
+/// `--seat` on an agent `config seat set|unset` (77 bytes).
+pub const CONFIG_SEAT_FLAG_REFUSAL: &str =
+    "--seat is for ht human config seat set|unset; an agent sets only its own seat";
+
+/// The agent path of `config seat set|unset`: `--seat` is refused, and so is a human-tier key,
+/// before anything is sent, with the exact `ht human` spelling the person runs (under 100 bytes
+/// for the registered keys).
+fn refuse_agent_config_write(
+    action: &CliAction,
+    selectors: &[SeatSelectorArg],
+) -> Result<(), ParseFailure> {
+    let (key, human_args) = match action {
+        CliAction::ConfigSeat(ConfigSeatAction::Set { key, value, .. }) => {
+            (key, format!("set {key} {value}"))
+        }
+        CliAction::ConfigSeat(ConfigSeatAction::Unset { key, .. }) => (key, format!("unset {key}")),
+        _ => return Ok(()),
+    };
+    if selectors.iter().any(|arg| arg.slot == SeatSlot::ConfigSeat) {
+        return Err(ParseFailure::Invalid(invalid(CONFIG_SEAT_FLAG_REFUSAL)));
+    }
+    if crate::protocol::seat_config::key(key)
+        .is_ok_and(|k| k.tier == crate::protocol::seat_config::ConfigTier::Human)
+    {
+        return Err(ParseFailure::Invalid(invalid(
+            crate::protocol::seat_config::human_tier_refusal(key, &human_args),
+        )));
+    }
+    Ok(())
 }
 
 /// Apply the registry's agent namespace to every selector, including global
@@ -4183,6 +4326,24 @@ fn parse_cli_in_registry(
                 })
                 .transpose()?,
         ),
+        Top::Config {
+            command: ConfigSub::Seat { command },
+        } => CliAction::ConfigSeat(match command {
+            ConfigSeatSub::List => ConfigSeatAction::List,
+            ConfigSeatSub::Get { key, seat } => ConfigSeatAction::Get {
+                key,
+                seat: seat.map(|_| placeholder_seat()),
+            },
+            ConfigSeatSub::Set { key, value, seat } => ConfigSeatAction::Set {
+                key,
+                value,
+                seat: seat.map(|_| placeholder_seat()),
+            },
+            ConfigSeatSub::Unset { key, seat } => ConfigSeatAction::Unset {
+                key,
+                seat: seat.map(|_| placeholder_seat()),
+            },
+        }),
         Top::NudgeThreshold(args) => CliAction::NudgeThreshold(
             args.value
                 .map(|value| NudgeThreshold::parse(&value).map_err(invalid))

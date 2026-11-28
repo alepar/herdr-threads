@@ -1,0 +1,8 @@
+nudge-threshold 0
+inbox
+--state-dir /tmp/ht-wake-e2e.5ab0i15d/state --host-endpoint $HOME/.config/herdr/herdr.sock accept tQNyxfByuxmc
+inbox
+inbox
+inbox
+inbox
+inbox

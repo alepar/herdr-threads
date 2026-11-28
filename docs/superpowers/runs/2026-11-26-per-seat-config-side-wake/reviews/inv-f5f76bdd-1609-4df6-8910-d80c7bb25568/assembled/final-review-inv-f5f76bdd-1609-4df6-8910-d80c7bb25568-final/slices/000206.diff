@@ -1,0 +1,12 @@
+diff --git a/tests/store/catch_up.rs b/tests/store/catch_up.rs
+index 66bd01c02..c7b348977 100644
+--- a/tests/store/catch_up.rs
++++ b/tests/store/catch_up.rs
+@@ -903,6 +903,7 @@ fn store() -> Store {
+ 
+ fn claim(execution: &str, generation: u64) -> CallerClaim {
+     CallerClaim {
++        auxiliary_session: false,
+         host: crate::test_support::test_host_locator(),
+         instance: "34750f98bd59fcfc946da45aaabe933b".into(),
+         seat: seat("s"),

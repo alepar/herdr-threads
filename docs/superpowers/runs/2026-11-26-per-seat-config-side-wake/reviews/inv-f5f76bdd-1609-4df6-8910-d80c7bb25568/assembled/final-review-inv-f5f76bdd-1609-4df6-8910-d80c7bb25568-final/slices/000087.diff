@@ -1,0 +1,61 @@
+diff --git a/src/harness/codex/permission_rules.rs b/src/harness/codex/permission_rules.rs
+index 82bc10c50..aad8fb425 100644
+--- a/src/harness/codex/permission_rules.rs
++++ b/src/harness/codex/permission_rules.rs
+@@ -84,4 +84,56 @@ mod tests {
+         .collect();
+         assert_eq!(prompts, expected);
+     }
++
++    // Seat config: the person's `human config seat set|unset` prompts under both spellings, while
++    // the agent verbs stay allowed (the strictest matching decision wins).
++    #[test]
++    fn permission_codex_prompts_on_human_config_seat_for_both_spellings() {
++        let (union, rules) = decode(&render());
++        let decision = |argv: &[&str]| {
++            assert!(union.iter().any(|s| s == argv[0]), "{argv:?}");
++            let matching: Vec<&str> = rules
++                .iter()
++                .filter(|(tokens, _)| {
++                    argv[1..].len() >= tokens.len()
++                        && tokens.iter().zip(&argv[1..]).all(|(a, b)| a == b)
++                })
++                .map(|(_, d)| d.as_str())
++                .collect();
++            if matching.contains(&"prompt") {
++                "prompt"
++            } else {
++                "allow"
++            }
++        };
++        for spelling in SPELLINGS {
++            for human in [
++                ["human", "config", "seat", "set", "programmatic_wake", "on"].as_slice(),
++                [
++                    "human",
++                    "config",
++                    "seat",
++                    "set",
++                    "--seat",
++                    "S",
++                    "nudge_threshold",
++                    "3",
++                ]
++                .as_slice(),
++                ["human", "config", "seat", "unset", "programmatic_wake"].as_slice(),
++            ] {
++                let mut argv = vec![spelling];
++                argv.extend_from_slice(human);
++                assert_eq!(decision(&argv), "prompt", "{argv:?}");
++            }
++            for agent in [
++                ["config", "seat", "set", "nudge_threshold", "3"].as_slice(),
++                ["config", "seat", "list"].as_slice(),
++            ] {
++                let mut argv = vec![spelling];
++                argv.extend_from_slice(agent);
++                assert_eq!(decision(&argv), "allow", "{argv:?}");
++            }
++        }
++    }
+ }

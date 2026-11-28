@@ -1799,6 +1799,7 @@ fn producer_ordering_control(
         relays_user: false,
         operation: OperationId::new("send"),
         claim: CallerClaim {
+            auxiliary_session: false,
             host: herdr_threads::test_support::test_host_locator(),
             instance: "34750f98bd59fcfc946da45aaabe933b".into(),
             seat: SeatId::new("a"),

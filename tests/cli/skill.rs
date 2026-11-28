@@ -195,6 +195,21 @@ fn skill_describes_text_inbox_display_ack_and_read_only_subagent_path() {
     }
 }
 
+// Kills: a per-seat sentence that drops the list pointer or the human spelling, claims every
+// harness asks the person before a human-tier write, or a /side sentence that loses the native deferral.
+#[test]
+fn skill_states_per_seat_settings_and_side_deferral() {
+    for needle in [
+        "`herdr-threads config seat list` shows them",
+        "`set KEY VALUE` sets an agent-tier key on your own seat",
+        "only via `herdr-threads human config seat set`, run only when your user asks; Claude and Codex ask the person first, other harnesses do not",
+        "While a side chat is displayed, a native wake waits until it closes (it is never typed into the side chat)",
+    ] {
+        assert!(SKILL_MD.contains(needle), "missing {needle}");
+    }
+    assert!(!SKILL_MD.contains("which asks the person"), "stale ask claim");
+}
+
 // Kills: a bare-wake rule that misses the opening of a harness's delivered
 // block (Codex, Hermes and the Claude hooks get `INBOX_HEADER`, the Claude mod
 // and agy the frame header), so a delivered wake triggers an extra `inbox`; or

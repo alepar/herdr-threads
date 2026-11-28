@@ -50,6 +50,10 @@ pub enum CommandResult {
     WakeOn(WakeOnState),
     /// A seat's nudge threshold (read, or the outcome of a set).
     NudgeThreshold(NudgeThresholdState),
+    /// A seat's effective config (`GetSeatConfig`).
+    SeatConfig(SeatConfigView),
+    /// The outcome of a seat config set or unset.
+    SeatConfigWritten(SeatConfigWrite),
     Warnings(Page<WarningRef>),
     ActiveWarnings(Page<WarningRef>),
     Thread(ThreadDetails),
@@ -1713,6 +1717,38 @@ pub enum AbandonedKind {
 pub struct NudgeThresholdState {
     pub seat: SeatId,
     pub threshold: crate::protocol::priority::NudgeThreshold,
+    pub changed: bool,
+}
+
+/// A seat's effective config: one entry per registered key (or the one asked for).
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct SeatConfigView {
+    pub seat: SeatId,
+    pub entries: Vec<SeatConfigEntry>,
+}
+
+/// One key's effective value. `is_default` is true when the key is unset (a column-backed key:
+/// when the column equals the default); `writer` and `updated_at` come from the last write's row.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct SeatConfigEntry {
+    pub key: String,
+    pub value: String,
+    pub is_default: bool,
+    pub tier: crate::protocol::seat_config::ConfigTier,
+    #[serde(default)]
+    pub writer: Option<String>,
+    #[serde(default)]
+    pub updated_at: Option<UtcMillis>,
+}
+
+/// The outcome of `SetSeatConfig` / `UnsetSeatConfig`: the value now in force. `changed` is true
+/// only when the effective value or the key's set/unset state changed.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct SeatConfigWrite {
+    pub seat: SeatId,
+    pub key: String,
+    pub value: String,
+    pub is_default: bool,
     pub changed: bool,
 }
 

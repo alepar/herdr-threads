@@ -79,6 +79,7 @@ fn request_for(seat: &str, op: &str, session: &str, target: &str, exec: &str) ->
         deadline_millis: None,
         operation: OperationId::new(op),
         claim: CallerClaim {
+            auxiliary_session: false,
             host: herdr_threads::test_support::test_host_locator(),
             instance: "34750f98bd59fcfc946da45aaabe933b".into(),
             seat: SeatId::new(seat),

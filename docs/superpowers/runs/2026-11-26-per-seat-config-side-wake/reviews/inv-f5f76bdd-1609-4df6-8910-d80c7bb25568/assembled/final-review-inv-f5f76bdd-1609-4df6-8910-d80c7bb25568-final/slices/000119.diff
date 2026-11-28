@@ -1,0 +1,529 @@
+diff --git a/src/store/seat_config.rs b/src/store/seat_config.rs
+new file mode 100644
+index 000000000..816370a4e
+--- /dev/null
++++ b/src/store/seat_config.rs
+@@ -0,0 +1,523 @@
++//! Per-seat config storage (`seat_config`, NodeDelta 0020) behind the closed registry in
++//! `protocol::seat_config`.
++//!
++//! Responsibility: read a seat's effective config, write it through the two tiers (the agent
++//! tier as an accountable cooperative transaction on the caller's own seat, the human tier as an
++//! idempotent operator decision), and drop a seat's rows on final retirement. A `Table`-backed
++//! key has a row only while set explicitly; a column-backed key (`nudge_threshold`) keeps its
++//! value in `seats.nudge_threshold` and only an audit row here. The registry decides every key
++//! and value; no SQL here names a key, so a new `Table` key needs no code in this file.
++//! Node-local, never replicated; reversible retirement keeps the rows, final retirement drops them.
++
++use crate::protocol::{
++    authority::{CallerClaim, CallerRole, MutationPermit, ObligationRef, OperatorActor},
++    commands::{SetSeatConfig, UnsetSeatConfig},
++    ids::{OperationId, SeatId},
++    priority::NudgeThreshold,
++    results::{
++        ApiError, CommandResult, ErrorCode, SeatConfigEntry, SeatConfigView, SeatConfigWrite,
++    },
++    seat_config::{self, ConfigBacking, ConfigKey, ConfigTier},
++    time::{CallBudget, UtcMillis},
++};
++use crate::store::{
++    connection::{StoreContext, api_error, store_error},
++    control, schema, seats,
++};
++use rusqlite::{Connection, OptionalExtension, params};
++
++/// What a write does to one key.
++#[derive(Debug, Clone, Copy)]
++enum Change<'a> {
++    /// Set to this already validated, canonical value.
++    Set(&'a str),
++    /// Return to the registry default.
++    Unset,
++}
++
++fn refuse(detail: impl Into<String>) -> ApiError {
++    api_error(ErrorCode::InvalidRequest, detail)
++}
++
++fn registry_key(name: &str) -> Result<&'static ConfigKey, ApiError> {
++    seat_config::key(name).map_err(refuse)
++}
++
++/// The one-line refusal of an agent-tier write to a human-tier key.
++fn human_tier_refusal(key: &ConfigKey) -> ApiError {
++    refuse(seat_config::human_tier_refusal(
++        key.name,
++        &format!("set {} <value>", key.name),
++    ))
++}
++
++/// Audit-only row of a column-backed key: who last wrote it and when; the value stays in the column.
++pub(crate) fn record_audit(
++    tx: &Connection,
++    seat: &SeatId,
++    key: &str,
++    writer_provenance: &str,
++    writer_binding: Option<&str>,
++    at: UtcMillis,
++) -> Result<(), ApiError> {
++    tx.execute(
++        "INSERT INTO seat_config(seat_id,key,value,updated_at,writer_provenance,writer_binding) \
++         VALUES (?1,?2,NULL,?3,?4,?5) \
++         ON CONFLICT(seat_id,key) DO UPDATE SET value=NULL,updated_at=?3,writer_provenance=?4,writer_binding=?5",
++        params![seat.as_str(), key, at.0, writer_provenance, writer_binding],
++    )
++    .map(|_| ())
++    .map_err(store_error)
++}
++
++/// Final retirement drops the seat's rows, in the transaction that writes its `retirements` row
++/// ([`crate::store::control::insert_retirement_job`]). Reversible retirement and revival never call it.
++pub(crate) fn delete_for_final_retirement(tx: &Connection, seat: &SeatId) -> Result<(), ApiError> {
++    tx.execute("DELETE FROM seat_config WHERE seat_id=?1", [seat.as_str()])
++        .map(|_| ())
++        .map_err(store_error)
++}
++
++/// `(value, updated_at, writer_provenance)` of the key's row, when there is one.
++fn row(
++    db: &Connection,
++    seat: &SeatId,
++    key: &str,
++) -> Result<Option<(Option<String>, i64, String)>, ApiError> {
++    db.query_row(
++        "SELECT value,updated_at,writer_provenance FROM seat_config WHERE seat_id=?1 AND key=?2",
++        params![seat.as_str(), key],
++        |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?)),
++    )
++    .optional()
++    .map_err(store_error)
++}
++
++/// The key's effective value for the seat. A read error must fail closed at the caller (queue
++/// selection treats an unreadable setting as "off"). A column-backed key reads its column only.
++pub fn effective_value(
++    db: &Connection,
++    seat: &SeatId,
++    key: &ConfigKey,
++) -> Result<String, ApiError> {
++    Ok(effective(db, seat, key)?.0)
++}
++
++/// The registry name of the key that lets a seat use its harness's programmatic wake transport.
++pub const PROGRAMMATIC_WAKE: &str = "programmatic_wake";
++
++/// Whether the seat's `programmatic_wake` reads `on`, failing closed: an unreadable value, or a
++/// registry without the key, reads `false` so queue selection and arming fall back to native.
++pub(crate) fn programmatic_wake_on(db: &Connection, seat: &SeatId) -> bool {
++    seat_config::key(PROGRAMMATIC_WAKE)
++        .ok()
++        .and_then(|key| effective_value(db, seat, key).ok())
++        .is_some_and(|value| value == "on")
++}
++
++/// Seats whose explicit `seat_config` row for `key` equals `value`, in seat-id order (read-only;
++/// `doctor` lists the seats with `programmatic_wake on`).
++pub fn seats_with_value(db: &Connection, key: &str, value: &str) -> Result<Vec<String>, ApiError> {
++    let mut statement = db
++        .prepare("SELECT seat_id FROM seat_config WHERE key=?1 AND value=?2 ORDER BY seat_id")
++        .map_err(store_error)?;
++    statement
++        .query_map(params![key, value], |r| r.get::<_, String>(0))
++        .map_err(store_error)?
++        .collect::<Result<Vec<_>, _>>()
++        .map_err(store_error)
++}
++
++/// `(value, is_default)`.
++fn effective(db: &Connection, seat: &SeatId, key: &ConfigKey) -> Result<(String, bool), ApiError> {
++    match key.backing {
++        ConfigBacking::NudgeThresholdColumn => {
++            let value = i64::from(seats::nudge_threshold(db, seat)?).to_string();
++            let is_default = value == key.default;
++            Ok((value, is_default))
++        }
++        ConfigBacking::Table => Ok(
++            match row(db, seat, key.name)?.and_then(|(value, _, _)| value) {
++                Some(value) => (value, false),
++                None => (key.default.to_owned(), true),
++            },
++        ),
++    }
++}
++
++/// `GetSeatConfig`: every registered key (or the one asked for) of a local seat. Any caller.
++pub fn get(db: &Connection, seat: &SeatId, key: Option<&str>) -> Result<SeatConfigView, ApiError> {
++    seats::require_local_seat_setting(db, seat, "seat config")?;
++    let keys: Vec<&'static ConfigKey> = match key {
++        Some(name) => vec![registry_key(name)?],
++        None => seat_config::REGISTRY.iter().collect(),
++    };
++    let mut entries = Vec::with_capacity(keys.len());
++    for key in keys {
++        let (value, is_default) = effective(db, seat, key)?;
++        let audit = row(db, seat, key.name)?;
++        entries.push(SeatConfigEntry {
++            key: key.name.to_owned(),
++            value,
++            is_default,
++            tier: key.tier,
++            writer: audit.as_ref().map(|(_, _, writer)| writer.clone()),
++            updated_at: audit.map(|(_, at, _)| UtcMillis(at)),
++        });
++    }
++    Ok(SeatConfigView {
++        seat: seat.clone(),
++        entries,
++    })
++}
++
++/// Apply one validated change to one key of a local seat inside the caller's transaction: the
++/// single write body of both tiers. A column-backed key goes through the shared column write
++/// (wake re-judgement included); a table-backed key upserts or deletes its row.
++fn apply(
++    tx: &Connection,
++    key: &ConfigKey,
++    seat: &SeatId,
++    change: Change<'_>,
++    writer_provenance: &str,
++    writer_binding: Option<&str>,
++    at: UtcMillis,
++) -> Result<SeatConfigWrite, ApiError> {
++    let (value, changed) = match key.backing {
++        ConfigBacking::NudgeThresholdColumn => {
++            let target = match change {
++                Change::Set(text) => {
++                    let parsed: i64 = text.parse().map_err(|_| refuse("invalid stored value"))?;
++                    NudgeThreshold::new(parsed).map_err(refuse)?
++                }
++                Change::Unset => NudgeThreshold::DEFAULT,
++            };
++            let changed =
++                seats::write_column(tx, seat, target, writer_provenance, writer_binding, at)?;
++            (i64::from(target).to_string(), changed)
++        }
++        ConfigBacking::Table => match change {
++            Change::Set(text) => {
++                let previous = row(tx, seat, key.name)?.and_then(|(value, _, _)| value);
++                tx.execute(
++                    "INSERT INTO seat_config(seat_id,key,value,updated_at,writer_provenance,writer_binding) \
++                     VALUES (?1,?2,?3,?4,?5,?6) \
++                     ON CONFLICT(seat_id,key) DO UPDATE SET value=?3,updated_at=?4,writer_provenance=?5,writer_binding=?6",
++                    params![seat.as_str(), key.name, text, at.0, writer_provenance, writer_binding],
++                )
++                .map_err(store_error)?;
++                (text.to_owned(), previous.as_deref() != Some(text))
++            }
++            Change::Unset => {
++                let deleted = tx
++                    .execute(
++                        "DELETE FROM seat_config WHERE seat_id=?1 AND key=?2",
++                        params![seat.as_str(), key.name],
++                    )
++                    .map_err(store_error)?;
++                (key.default.to_owned(), deleted > 0)
++            }
++        },
++    };
++    if changed && key.backing == ConfigBacking::Table {
++        // A table-backed value can change who may be woken and how (programmatic wake): re-judge
++        // the seat's wake reasons in the same transaction, as a threshold change does.
++        super::wake::note_new_attention(tx, seat)?;
++    }
++    let is_default = match key.backing {
++        ConfigBacking::NudgeThresholdColumn => value == key.default,
++        ConfigBacking::Table => matches!(change, Change::Unset),
++    };
++    Ok(SeatConfigWrite {
++        seat: seat.clone(),
++        key: key.name.to_owned(),
++        value,
++        is_default,
++        changed,
++    })
++}
++
++/// Resolve a request into `(key, change)`: the registry decides the key and the value.
++fn resolve(
++    key: &str,
++    value: Option<&str>,
++) -> Result<(&'static ConfigKey, Option<String>), ApiError> {
++    let key = registry_key(key)?;
++    let value = value.map(|v| key.validate(v).map_err(refuse)).transpose()?;
++    Ok((key, value))
++}
++
++// ---- agent tier ------------------------------------------------------------------------------
++
++/// `SetSeatConfig` at the agent tier: only the caller's own seat, only an agent-tier key, never
++/// from a subagent or a read-only binding. `nudge_threshold` shares `write_threshold` with the
++/// `nudge-threshold`/`wake-on` aliases.
++pub fn set_agent(
++    context: &StoreContext,
++    conn: &mut Connection,
++    budget: &CallBudget,
++    command: &SetSeatConfig,
++    permit: MutationPermit,
++) -> Result<CommandResult, ApiError> {
++    let (key, value) = resolve(&command.key, Some(&command.value))?;
++    agent_write(
++        context,
++        conn,
++        budget,
++        permit,
++        command.claim.as_ref(),
++        command.seat.as_ref(),
++        command.tier,
++        &command.operation,
++        control::cooperative_payload_hash("set_seat_config", command)?,
++        key,
++        value.as_deref().map_or(Change::Unset, Change::Set),
++    )
++}
++
++/// `UnsetSeatConfig` at the agent tier: [`set_agent`]'s rules.
++pub fn unset_agent(
++    context: &StoreContext,
++    conn: &mut Connection,
++    budget: &CallBudget,
++    command: &UnsetSeatConfig,
++    permit: MutationPermit,
++) -> Result<CommandResult, ApiError> {
++    let (key, _) = resolve(&command.key, None)?;
++    agent_write(
++        context,
++        conn,
++        budget,
++        permit,
++        command.claim.as_ref(),
++        command.seat.as_ref(),
++        command.tier,
++        &command.operation,
++        control::cooperative_payload_hash("unset_seat_config", command)?,
++        key,
++        Change::Unset,
++    )
++}
++
++#[allow(clippy::too_many_arguments)]
++fn agent_write(
++    context: &StoreContext,
++    conn: &mut Connection,
++    budget: &CallBudget,
++    mut permit: MutationPermit,
++    claim: Option<&CallerClaim>,
++    seat: Option<&SeatId>,
++    tier: ConfigTier,
++    operation: &OperationId,
++    digest: [u8; 32],
++    key: &ConfigKey,
++    change: Change<'_>,
++) -> Result<CommandResult, ApiError> {
++    if tier != ConfigTier::Agent {
++        return Err(refuse("seat config tier mismatch"));
++    }
++    let claim = claim.ok_or_else(|| refuse("agent seat config write needs a caller claim"))?;
++    if claim.role == CallerRole::Subagent {
++        return Err(refuse("declared subagents cannot write seat config"));
++    }
++    if seat.is_some_and(|seat| *seat != claim.seat) {
++        return Err(refuse(
++            "agent seat config writes only the caller's own seat; use `ht human config seat set --seat`",
++        ));
++    }
++    if key.tier == ConfigTier::Human {
++        return Err(human_tier_refusal(key));
++    }
++    let seat = claim.seat.clone();
++    // Before the transaction: its claim precheck would refuse a remote seat with the less useful
++    // "cooperative seat is not local".
++    seats::require_local_seat_setting(conn, &seat, "seat config")?;
++    match (key.backing, change) {
++        (ConfigBacking::NudgeThresholdColumn, change) => {
++            let target = match change {
++                Change::Set(text) => {
++                    NudgeThreshold::new(text.parse().map_err(|_| refuse("invalid stored value"))?)
++                        .map_err(refuse)?
++                }
++                Change::Unset => NudgeThreshold::DEFAULT,
++            };
++            match seats::write_threshold(
++                context,
++                conn,
++                budget,
++                permit,
++                claim,
++                operation,
++                digest,
++                "declared subagents cannot write seat config",
++                target,
++                true,
++            )? {
++                CommandResult::NudgeThreshold(state) => {
++                    let value = i64::from(state.threshold).to_string();
++                    Ok(CommandResult::SeatConfigWritten(SeatConfigWrite {
++                        seat: state.seat,
++                        key: key.name.to_owned(),
++                        is_default: value == key.default,
++                        value,
++                        changed: state.changed,
++                    }))
++                }
++                other => Ok(other),
++            }
++        }
++        (ConfigBacking::Table, change) => {
++            let obligation = ObligationRef::CheckIn(seat.clone());
++            schema::execute_accountable_transaction(
++                context,
++                conn,
++                budget,
++                permit.cooperative_metadata(),
++                &format!("seat:{}", seat.as_str()),
++                operation.as_str(),
++                digest,
++                |_| Ok(()),
++                |tx, at| {
++                    let actor = control::decide_accountable(
++                        context,
++                        tx,
++                        at,
++                        &mut permit,
++                        claim,
++                        &seat,
++                        operation,
++                        &obligation,
++                        &digest,
++                    )?;
++                    if crate::store::bindings::is_readonly(tx, &actor.binding_id)? {
++                        return Err(refuse("read-only binding cannot write seat config"));
++                    }
++                    apply(
++                        tx,
++                        key,
++                        &seat,
++                        change,
++                        actor.provenance,
++                        Some(actor.binding_id.as_str()),
++                        at.utc,
++                    )
++                    .map(CommandResult::SeatConfigWritten)
++                },
++            )
++        }
++    }
++}
++
++// ---- human tier ------------------------------------------------------------------------------
++
++/// `SetSeatConfig` at the human tier: an operator decision on any local seat, any key, recorded
++/// under the operator's provenance (`operator:local-user:<uid>`). The caller has already matched
++/// the peer against the elected owner.
++pub fn set_operator(
++    context: &StoreContext,
++    conn: &mut Connection,
++    instance: &str,
++    command: &SetSeatConfig,
++    actor: &OperatorActor,
++) -> Result<CommandResult, ApiError> {
++    let (key, value) = resolve(&command.key, Some(&command.value))?;
++    operator_write(
++        context,
++        conn,
++        instance,
++        command.seat.as_ref(),
++        command.tier,
++        &command.operation,
++        control::cooperative_payload_hash("set_seat_config_operator", command)?,
++        key,
++        value.as_deref().map_or(Change::Unset, Change::Set),
++        actor,
++    )
++}
++
++/// `UnsetSeatConfig` at the human tier: [`set_operator`]'s rules.
++pub fn unset_operator(
++    context: &StoreContext,
++    conn: &mut Connection,
++    instance: &str,
++    command: &UnsetSeatConfig,
++    actor: &OperatorActor,
++) -> Result<CommandResult, ApiError> {
++    let (key, _) = resolve(&command.key, None)?;
++    operator_write(
++        context,
++        conn,
++        instance,
++        command.seat.as_ref(),
++        command.tier,
++        &command.operation,
++        control::cooperative_payload_hash("unset_seat_config_operator", command)?,
++        key,
++        Change::Unset,
++        actor,
++    )
++}
++
++#[allow(clippy::too_many_arguments)]
++fn operator_write(
++    context: &StoreContext,
++    conn: &mut Connection,
++    instance: &str,
++    seat: Option<&SeatId>,
++    tier: ConfigTier,
++    operation: &OperationId,
++    digest: [u8; 32],
++    key: &ConfigKey,
++    change: Change<'_>,
++    actor: &OperatorActor,
++) -> Result<CommandResult, ApiError> {
++    if tier != ConfigTier::Human {
++        return Err(refuse("seat config tier mismatch"));
++    }
++    let seat = seat
++        .ok_or_else(|| refuse("human seat config needs --seat or a caller seat"))?
++        .clone();
++    let label = actor.audit_label();
++    schema::execute_idempotent_transaction(
++        context,
++        conn,
++        &actor.operation_scope(instance),
++        operation.as_str(),
++        digest,
++        |tx| {
++            seats::require_local_seat_setting(tx, &seat, "seat config")?;
++            // Final retirement only: `seats.state` reads `retired` for a reversible one too, and
++            // that keeps its rows.
++            let finally_retired: bool = tx
++                .query_row(
++                    "SELECT EXISTS(SELECT 1 FROM retirements WHERE seat_id=?1)",
++                    params![seat.as_str()],
++                    |r| r.get(0),
++                )
++                .map_err(store_error)?;
++            if finally_retired {
++                return Err(refuse(format!("seat retired: {}", seat.as_str())));
++            }
++            let known: bool = tx
++                .query_row(
++                    "SELECT EXISTS(SELECT 1 FROM seats WHERE id=?1 AND instance_id=?2)",
++                    params![seat.as_str(), instance],
++                    |r| r.get(0),
++                )
++                .map_err(store_error)?;
++            if known {
++                Ok(())
++            } else {
++                Err(api_error(ErrorCode::NotFound, "seat not found"))
++            }
++        },
++        |tx, at| {
++            apply(tx, key, &seat, change, &label, None, at.utc)
++                .map(CommandResult::SeatConfigWritten)
++        },
++    )
++}
++
++#[cfg(test)]
++#[path = "../../tests/store/seat_config.rs"]
++mod tests;

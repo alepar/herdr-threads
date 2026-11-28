@@ -1636,6 +1636,7 @@ fn ensure_command(
         recipient: SeatId::new("seat-b"),
         operation: OperationId::new(operation),
         claim: CallerClaim {
+            auxiliary_session: false,
             host: isolated_host(),
             instance: herdr_threads::node::NodeUuid::from_u128(1).to_string(),
             seat: SeatId::new("seat-a"),

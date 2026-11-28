@@ -1,0 +1,12 @@
+diff --git a/tests/sync/facts_message.rs b/tests/sync/facts_message.rs
+index f85c71a52..635d6d442 100644
+--- a/tests/sync/facts_message.rs
++++ b/tests/sync/facts_message.rs
+@@ -976,6 +976,7 @@ impl Sender {
+             deadline_millis: deadline,
+             operation: OperationId::new(operation),
+             claim: CallerClaim {
++                auxiliary_session: false,
+                 host: herdr_threads::test_support::test_host_locator(),
+                 instance: Self::INSTANCE.into(),
+                 seat: self.author.clone(),

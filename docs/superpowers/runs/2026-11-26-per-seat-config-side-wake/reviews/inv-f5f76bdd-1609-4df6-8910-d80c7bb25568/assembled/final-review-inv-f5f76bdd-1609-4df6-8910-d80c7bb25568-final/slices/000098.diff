@@ -1,0 +1,30 @@
+diff --git a/src/ports/wake_intents.rs b/src/ports/wake_intents.rs
+index 94ebcd641..c1d367ac7 100644
+--- a/src/ports/wake_intents.rs
++++ b/src/ports/wake_intents.rs
+@@ -21,6 +21,9 @@ pub struct WakeIntentPreparation {
+     pub replay_scope: WakeReplayScope,
+     pub target: WakeControlTarget,
+     pub correlation: String,
++    /// The target's process-mates that are never targets; recorded as `wake_intents.side_sessions`
++    /// (JSON array, NULL when none).
++    pub side_sessions: Vec<crate::protocol::ids::NativeSessionId>,
+ }
+ #[derive(Debug, Clone, Copy, PartialEq, Eq)]
+ pub enum WakeIntentPhase {
+@@ -143,9 +146,15 @@ pub struct WakeQueueBinding {
+     pub adapter: AgentHarnessId,
+     pub scope: crate::harness::wake::WakeScope,
+     pub replay_scope: WakeReplayScope,
++    /// The other top-level sessions of the target's process (a Codex `/side` chat): never
++    /// targets, recorded on the intent for diagnostics.
++    pub side_sessions: Vec<crate::protocol::ids::NativeSessionId>,
+ }
+ #[derive(Debug, Clone, PartialEq, Eq)]
+ pub struct WakeQueueSelection {
+     pub binding: Option<WakeQueueBinding>,
+     pub blockers: WakeIntentBlockers,
++    /// The reserving seat's `programmatic_wake` read `on` in the selection transaction; an
++    /// unreadable value reads `false` (fail closed to native).
++    pub programmatic_enabled: bool,
+ }

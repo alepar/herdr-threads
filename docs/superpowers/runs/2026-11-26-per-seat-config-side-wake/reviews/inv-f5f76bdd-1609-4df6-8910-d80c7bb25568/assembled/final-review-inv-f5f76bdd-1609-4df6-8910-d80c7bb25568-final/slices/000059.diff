@@ -1,0 +1,17 @@
+diff --git a/integrations/codex/README.md b/integrations/codex/README.md
+index 177361f66..a76235853 100644
+--- a/integrations/codex/README.md
++++ b/integrations/codex/README.md
+@@ -273,6 +273,12 @@ message settles it, attributed to that binding, without advancing its sibling's
+ cursor. JSON/machine inbox stays read-only. Ordinary replacement sessions and
+ Hermes `/branch` successor semantics are unchanged.
+ 
++While a side chat is displayed, a native wake is never typed into it: the side
++composer (`Ask a follow-up question`) is not an empty composer, so the wake is
++refused before typing. With `programmatic_wake` off (the default) it defers on
++the refusal backoff (every <= 30 s, no give-up) until the side chat closes, and
++a sender's overdue line shows the refused wake (`wake=`).
++
+ The measured `/side` is ephemeral and has no transcript path; native restoration
+ after closing it is not promised. The observed Ctrl-C close emits no SessionEnd,
+ so the side binding stays connected until a native end event or process exit;

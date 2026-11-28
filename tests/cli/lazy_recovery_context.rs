@@ -44,6 +44,7 @@ fn claim(w: &World, who: usize) -> CallerClaim {
         )
         .unwrap();
     CallerClaim {
+        auxiliary_session: false,
         host: HostLocator::parse(w.host.to_str().unwrap()).unwrap(),
         instance: instance.to_string(),
         seat: SeatId::new(w.seats[who].clone()),

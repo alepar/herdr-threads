@@ -1716,6 +1716,7 @@ fn locate_seat_for(
 
 fn pending_event(pending: &PendingCheckIn) -> LifecycleEvent {
     LifecycleEvent {
+        auxiliary_session: false,
         harness: pending.context.harness,
         source: "retry".into(),
         kind: match pending.mode {
@@ -2331,6 +2332,7 @@ pub(super) fn watch_continuity(
         key_capability: std::cell::OnceCell::new(),
     };
     let event = LifecycleEvent {
+        auxiliary_session: false,
         harness: harness.into(),
         source: crate::protocol::commands::ContinuityCheckIn::SAME_SESSION_SOURCE.into(),
         kind: EventKind::Tool,

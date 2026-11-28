@@ -1,0 +1,6 @@
+        FAIL [   0.014s] (  434/10078) herdr-threads cli::commands::tests::actor_prerequisite_human_grammar_preserves_routing_and_format
+        FAIL [   0.016s] (  438/10078) herdr-threads cli::commands::tests::actor_route_os_string_identity_is_preserved
+        FAIL [   0.469s] (  615/10078) herdr-threads cli::cooperative_tests::frozen_human_ordinary_retry_pending_canonical_refuses
+        FAIL [   0.769s] (  614/10078) herdr-threads cli::cooperative_tests::frozen_human_ordinary_retry_after_agent_binding
+     Summary [1309.218s] 10078 tests run: 10074 passed (1 slow), 4 failed, 67 skipped
+rerun of the 4 with CLAUDE*/CODEX_*/HERDR_*/HC_*/ANTHROPIC_* unset: 4 passed (tb nsenter env leak, reported to main)

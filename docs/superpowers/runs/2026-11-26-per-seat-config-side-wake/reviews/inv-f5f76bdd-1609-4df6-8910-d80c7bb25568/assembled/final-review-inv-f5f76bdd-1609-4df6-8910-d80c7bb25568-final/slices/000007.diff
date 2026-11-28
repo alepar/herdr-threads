@@ -1,0 +1,13 @@
+diff --git a/docs/evidence/ansi-composer/README.md b/docs/evidence/ansi-composer/README.md
+index b8488ea22..ea33a4c1d 100644
+--- a/docs/evidence/ansi-composer/README.md
++++ b/docs/evidence/ansi-composer/README.md
+@@ -19,7 +19,7 @@ Captured 2026-10-23 on Linux from panes created in an isolated Herdr 0.9.5 serve
+   - The placeholder text varies per launch. `Try "fix lint errors"` (`placeholder-uncaptured`) is not the one captured placeholder, so the plain detection read finds it `Unreadable`.
+ - **Codex**:
+   - The glyph `›` is bold. The placeholder `Ask Codex to do anything` and the `/side` placeholder `Ask a follow-up question` are dim. Typed text is unstyled.
+-  - The plain detection read classified the `/side` placeholder as typed `Text`, so every wake under `/side` was refused.
++  - The plain detection read classified the `/side` placeholder as typed `Text`, so every wake under `/side` was refused (since ht-z41e.1 the side placeholder reads as text, not empty: a side chat is not the wake target).
+   - Codex's source (0.163 `bottom_pane/chat_composer.rs`) also draws `Viewing sub-agent — direct input is disabled` dim, with a bold glyph, while it blocks a typed submit. So "dim means empty" is not safe for Codex, and the `/side` placeholder is added to the known placeholders instead.
+ 
+ | File | Shows | Plain read | Styled read |

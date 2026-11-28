@@ -1,0 +1,18 @@
+diff --git a/src/notification/dispatch.rs b/src/notification/dispatch.rs
+index d6922a125..af274a218 100644
+--- a/src/notification/dispatch.rs
++++ b/src/notification/dispatch.rs
+@@ -831,6 +831,13 @@ impl<H: HostPort + ?Sized, C: ReservationCheck + ?Sized> NotificationPort
+             .unwrap_or(WakeTransport::Composer)
+     }
+ 
++    fn take_queue_root(
++        &self,
++        attempt: &WakeAttemptId,
++    ) -> Option<crate::protocol::ids::NativeSessionId> {
++        self.queue?.take_root(attempt)
++    }
++
+     fn take_verification(&self, seat: &SeatId) -> Option<SubmissionVerification> {
+         self.verifications.lock().ok()?.remove(seat)
+     }

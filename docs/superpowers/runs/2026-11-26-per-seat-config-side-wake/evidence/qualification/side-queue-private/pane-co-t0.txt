@@ -1,0 +1,40 @@
+› You are a test recipient in an automated herdr-threads wake e2e run (the us… │ Run side-…×                        +
+• Ran herdr-threads --help                                                     │
+  └   5  outcome unknown; inspect `herdr-threads pending-ops` and `retry` the …│
+                                                                               │• I didn’t run inbox. The hook permits
+    Are you an AI agent? Before using threads, run `herdr-threads skill` for c…│  it only for delivery continuations or
+    + 95 lines (^t to expand)                                                  │  unavailable deliveries.
+                                                                               │
+• Ran herdr-threads --state-dir /tmp/ht-wake-e2e.pqwh238i/state --host-endpoin…│  Worked for 1s • 14:32
+  └ nudge_threshold: 0 (unchanged)                                             │
+    + Show details                                                             │
+                                                                               │› hello
+• SETUP-DONE nudge_threshold=0                                                 │
+                                                                               │
+  Worked for 10s • 14:16                                                       │• Hello!
+                                                                               │
+                                                                               │  Worked for 1s • 14:38
+› herdr-threads: wake up                                                       │
+                                                                               │
+                                                                               │› hello
+• I’ll accept the test invitation.                                             │
+                                                                               │
+• Ran herdr-threads --state-dir /tmp/ht-wake-e2e.pqwh238i/state accept t62nyu4…│• Hello! What can I help with?
+  └ accepted                                                                   │
+    value: "i62nx3Y95DuO"                                                      │  Worked for 1s • 14:39
+    + Show details                                                             │
+                                                                               │
+• Accepted.                                                                    │› hello
+                                                                               │
+  Worked for 5s • 14:16                                                        │
+                                                                               │• Hello!
+• RECEIVED [herdr-threads] message m62nfK4mFirR in t62nyu4YthRH from           │
+  s62nFczWlAfi [p0] [human]: side-queue/group 141609-3fff                      │  Worked for 2s • 14:40
+                                                                               │
+                                                                               │
+›                                                                              │› Ask a follow-up question
+                                                                               │
+  GPT-6.2-Sol default · ~/AleCode/herdr-threads/.worktrees/super-auto-per-seat-│  GPT-6.2-Sol default · ~/AleCode/
+  config-side-wake/.worktrees/super-auto-per-seat-config-side-wake--task-ht-   │  herdr-threads/.worktrees/super-auto-
+  z41e.31 · Run wake e2e recipient                                             │  per-seat-config-side-wake/.worktrees…
+                                                                               │  ← for agents · ? for shortcuts

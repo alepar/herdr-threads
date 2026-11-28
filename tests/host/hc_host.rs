@@ -473,3 +473,37 @@ fn probe_connect_honours_its_budget_on_a_full_backlog() {
     drop(held);
     let _ = std::fs::remove_file(&path);
 }
+
+// Kills: an hc seat arming the queue transport through a host admission it does not have.
+#[test]
+fn hc_host_never_admits_a_queue_wake() {
+    let (_fake, host) = host_with_t1();
+    let target = crate::ports::SafeWakeTarget {
+        seat: SeatId::new("seat_1"),
+        target: HostTargetId::new("t1"),
+        host_boot: crate::protocol::ids::HostBootId::new("boot"),
+        generation: 1,
+        terminal: crate::protocol::ids::TerminalId::new("term"),
+        incarnation: "inc".into(),
+        basis: crate::ports::WakeTargetBasis::CooperativeAgent,
+        epoch: 1,
+        observation_sequence: 1,
+        bound_harness: Some("codex".into()),
+    };
+    for siblings in [true, false] {
+        let error = host
+            .admit_queue_wake(&target, siblings, &context())
+            .unwrap_err();
+        assert_eq!(
+            error.code,
+            crate::protocol::results::ErrorCode::TargetUnsafe
+        );
+        assert!(
+            error
+                .detail
+                .contains("host queue wake admission unavailable"),
+            "{}",
+            error.detail
+        );
+    }
+}

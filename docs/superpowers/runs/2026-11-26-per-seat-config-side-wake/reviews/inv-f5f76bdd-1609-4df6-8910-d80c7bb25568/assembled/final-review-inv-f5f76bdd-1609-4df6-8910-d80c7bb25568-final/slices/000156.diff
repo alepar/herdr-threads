@@ -1,0 +1,15 @@
+diff --git a/tests/fixtures/codex-0.163.0-side/session-start-fork-nonnull.json b/tests/fixtures/codex-0.163.0-side/session-start-fork-nonnull.json
+new file mode 100644
+index 000000000..1b330ce9a
+--- /dev/null
++++ b/tests/fixtures/codex-0.163.0-side/session-start-fork-nonnull.json
+@@ -0,0 +1,9 @@
++{
++  "session_id": "fork-session",
++  "transcript_path": "/private/tmp/side-fixture/rollout-fork-session.jsonl",
++  "cwd": "/private/tmp/side-fixture",
++  "hook_event_name": "SessionStart",
++  "model": "gpt-6.1-sol",
++  "permission_mode": "default",
++  "source": "fork"
++}

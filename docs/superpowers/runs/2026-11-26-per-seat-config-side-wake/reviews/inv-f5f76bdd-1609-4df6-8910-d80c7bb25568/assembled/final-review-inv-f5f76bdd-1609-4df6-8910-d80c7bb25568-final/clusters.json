@@ -1,0 +1,1004 @@
+{
+ "changed": [
+  "AGENTS.md",
+  "CHANGELOG.md",
+  "README.md",
+  "RELEASE.md",
+  "TRUST-POLICY.md",
+  "docs/agent-usage.md",
+  "docs/evidence/ansi-composer/README.md",
+  "docs/install.md",
+  "docs/superpowers/runs/2026-11-26-per-seat-config-side-wake/2026-11-26-per-seat-config-side-wake-design.md",
+  "docs/superpowers/runs/2026-11-26-per-seat-config-side-wake/2026-11-26-per-seat-config-side-wake-roast-design-1-step-back-keys.txt",
+  "docs/superpowers/runs/2026-11-26-per-seat-config-side-wake/2026-11-26-per-seat-config-side-wake-roast-design-1-step-back.md",
+  "docs/superpowers/runs/2026-11-26-per-seat-config-side-wake/2026-11-26-per-seat-config-side-wake-roast-design-1.md",
+  "docs/superpowers/runs/2026-11-26-per-seat-config-side-wake/2026-11-26-per-seat-config-side-wake-roast-design-2.md",
+  "docs/superpowers/runs/2026-11-26-per-seat-config-side-wake/2026-11-27-per-seat-config-side-wake-roast-design-3.md",
+  "docs/superpowers/runs/2026-11-26-per-seat-config-side-wake/2026-11-27-per-seat-config-side-wake-roast-pr-1-final-review-keys.refmap.json",
+  "docs/superpowers/runs/2026-11-26-per-seat-config-side-wake/2026-11-27-per-seat-config-side-wake-roast-pr-1-final-review-keys.txt",
+  "docs/superpowers/runs/2026-11-26-per-seat-config-side-wake/2026-11-27-per-seat-config-side-wake-roast-pr-1-step-back-keys.txt",
+  "docs/superpowers/runs/2026-11-26-per-seat-config-side-wake/2026-11-27-per-seat-config-side-wake-roast-pr-1-step-back.md",
+  "docs/superpowers/runs/2026-11-26-per-seat-config-side-wake/2026-11-27-per-seat-config-side-wake-roast-pr-1.md",
+  "docs/superpowers/runs/2026-11-26-per-seat-config-side-wake/amend-code-1.md",
+  "docs/superpowers/runs/2026-11-26-per-seat-config-side-wake/coverage-findings-round-1.md",
+  "docs/superpowers/runs/2026-11-26-per-seat-config-side-wake/coverage-findings-round-2.md",
+  "docs/superpowers/runs/2026-11-26-per-seat-config-side-wake/coverage-ledger.md",
+  "docs/superpowers/runs/2026-11-26-per-seat-config-side-wake/coverage-round-1-requirements.md",
+  "docs/superpowers/runs/2026-11-26-per-seat-config-side-wake/coverage-round-2-requirements.md",
+  "docs/superpowers/runs/2026-11-26-per-seat-config-side-wake/evidence/leak-check.txt",
+  "docs/superpowers/runs/2026-11-26-per-seat-config-side-wake/evidence/run-2/driver.log",
+  "docs/superpowers/runs/2026-11-26-per-seat-config-side-wake/evidence/run-2/side-results.json",
+  "docs/superpowers/runs/2026-11-26-per-seat-config-side-wake/evidence/run-3/driver.log",
+  "docs/superpowers/runs/2026-11-26-per-seat-config-side-wake/evidence/run-3/side-results.json",
+  "docs/superpowers/runs/2026-11-26-per-seat-config-side-wake/evidence/side_spike.py",
+  "docs/superpowers/runs/2026-11-26-per-seat-config-side-wake/findings-ledger-design.md",
+  "docs/superpowers/runs/2026-11-26-per-seat-config-side-wake/findings-ledger.md",
+  "docs/superpowers/runs/2026-11-26-per-seat-config-side-wake/findings-overrides-design.md",
+  "docs/superpowers/runs/2026-11-26-per-seat-config-side-wake/findings-overrides.md",
+  "docs/superpowers/runs/2026-11-26-per-seat-config-side-wake/friction.md",
+  "docs/superpowers/runs/2026-11-26-per-seat-config-side-wake/profile-inv1.json",
+  "docs/superpowers/runs/2026-11-26-per-seat-config-side-wake/profile-inv1.md",
+  "docs/superpowers/runs/2026-11-26-per-seat-config-side-wake/reviews/inv-78cf59fa-89c0-4cd2-9bc6-b210465af1d2/assembled/final-review-inv-78cf59fa-89c0-4cd2-9bc6-b210465af1d2-final/bounded-coverage.json",
+  "docs/superpowers/runs/2026-11-26-per-seat-config-side-wake/reviews/inv-78cf59fa-89c0-4cd2-9bc6-b210465af1d2/assembled/final-review-inv-78cf59fa-89c0-4cd2-9bc6-b210465af1d2-final/bounded-draft.md",
+  "docs/superpowers/runs/2026-11-26-per-seat-config-side-wake/reviews/inv-78cf59fa-89c0-4cd2-9bc6-b210465af1d2/assembled/final-review-inv-78cf59fa-89c0-4cd2-9bc6-b210465af1d2-final/diffstat.txt",
+  "docs/superpowers/runs/2026-11-26-per-seat-config-side-wake/reviews/inv-78cf59fa-89c0-4cd2-9bc6-b210465af1d2/assembled/final-review-inv-78cf59fa-89c0-4cd2-9bc6-b210465af1d2-final/generated-input-provenance.md",
+  "docs/superpowers/runs/2026-11-26-per-seat-config-side-wake/reviews/inv-78cf59fa-89c0-4cd2-9bc6-b210465af1d2/assembled/final-review-inv-78cf59fa-89c0-4cd2-9bc6-b210465af1d2-final/review-inputs.json",
+  "docs/superpowers/runs/2026-11-26-per-seat-config-side-wake/reviews/inv-78cf59fa-89c0-4cd2-9bc6-b210465af1d2/final-review-inv-78cf59fa-89c0-4cd2-9bc6-b210465af1d2.md",
+  "docs/superpowers/runs/2026-11-26-per-seat-config-side-wake/roast-design-1-tree.md",
+  "docs/superpowers/runs/2026-11-26-per-seat-config-side-wake/roast-design-2-tree.md",
+  "docs/superpowers/runs/2026-11-26-per-seat-config-side-wake/roast-design-3-tree.md",
+  "docs/superpowers/runs/2026-11-26-per-seat-config-side-wake/run.md",
+  "docs/superpowers/runs/2026-11-26-per-seat-config-side-wake/spike-side-identity.md",
+  "docs/superpowers/specs/INDEX.md",
+  "docs/validation/herdr-release-matrix.md",
+  "evidence/ht-z41e.11/checks.log",
+  "evidence/ht-z41e.11/seat_config_sweep.log",
+  "evidence/ht-z41e.3/checks.log",
+  "evidence/ht-z41e.3/clippy.log",
+  "evidence/ht-z41e.3/golden.log",
+  "evidence/ht-z41e.3/lib-tests.log",
+  "evidence/ht-z41e.8/selftest.log",
+  "integrations/codex/README.md",
+  "integrations/skill/SKILL.md",
+  "migrations/node/0020_seat_config.sql",
+  "migrations/node/0021_side_queue_routing.sql",
+  "migrations/node/0022_binding_auxiliary_session.sql",
+  "scripts/release-qualify",
+  "scripts/tests/test_release_qualify.py",
+  "scripts/wake-e2e.py",
+  "scripts/wake_e2e_queue.py",
+  "scripts/wake_e2e_queue_selftest.py",
+  "scripts/wake_e2e_selftest.py",
+  "src/app.rs",
+  "src/cli/commands.rs",
+  "src/cli/config_seat.rs",
+  "src/cli/doctor.rs",
+  "src/cli/hook.rs",
+  "src/cli/mod.rs",
+  "src/cli/nudge_threshold.rs",
+  "src/cli/peer_launch.rs",
+  "src/cli/site_capability.rs",
+  "src/daemon/settings.rs",
+  "src/harness/adapter.rs",
+  "src/harness/agy/decode.rs",
+  "src/harness/bridge.rs",
+  "src/harness/claude.rs",
+  "src/harness/claude/permission_rules.rs",
+  "src/harness/codex.rs",
+  "src/harness/codex/composer.rs",
+  "src/harness/codex/permission_rules.rs",
+  "src/harness/composer.rs",
+  "src/harness/hermes.rs",
+  "src/harness/mod.rs",
+  "src/harness/opencode/decode.rs",
+  "src/harness/pi/decode.rs",
+  "src/harness/registry.rs",
+  "src/host/native.rs",
+  "src/notification/dispatch.rs",
+  "src/notification/queue.rs",
+  "src/ports.rs",
+  "src/ports/wake_intents.rs",
+  "src/protocol/authority.rs",
+  "src/protocol/capabilities.rs",
+  "src/protocol/commands.rs",
+  "src/protocol/handoff.rs",
+  "src/protocol/mod.rs",
+  "src/protocol/results.rs",
+  "src/protocol/seat_config.rs",
+  "src/protocol/service.rs",
+  "src/scheduler/mod.rs",
+  "src/service/config.rs",
+  "src/service/delivery_pull.rs",
+  "src/service/dispatch.rs",
+  "src/service/kicks.rs",
+  "src/store/archival.rs",
+  "src/store/bindings.rs",
+  "src/store/control/retirement.rs",
+  "src/store/invitation_content.rs",
+  "src/store/mod.rs",
+  "src/store/queries.rs",
+  "src/store/schema.rs",
+  "src/store/seat_config.rs",
+  "src/store/seats/continuity.rs",
+  "src/store/seats/cooperative.rs",
+  "src/store/seats/threshold.rs",
+  "src/store/wake.rs",
+  "src/store/wake_intents.rs",
+  "src/store/wake_intents/selection.rs",
+  "src/test_support/history.rs",
+  "src/test_support/mod.rs",
+  "tests/cli/accept_delivery.rs",
+  "tests/cli/commands.rs",
+  "tests/cli/config_seat.rs",
+  "tests/cli/cooperative.rs",
+  "tests/cli/direct_send.rs",
+  "tests/cli/doctor_json.rs",
+  "tests/cli/follow_retry.rs",
+  "tests/cli/golden_contract.rs",
+  "tests/cli/handoff.rs",
+  "tests/cli/hook.rs",
+  "tests/cli/hook_inbox.rs",
+  "tests/cli/journal.rs",
+  "tests/cli/lazy_display.rs",
+  "tests/cli/lazy_markers.rs",
+  "tests/cli/lazy_recovery_context.rs",
+  "tests/cli/output.rs",
+  "tests/cli/wake_on.rs",
+  "tests/cli/watch.rs",
+  "tests/combined.rs",
+  "tests/contracts.rs",
+  "tests/daemon/launch_gate_guards.rs",
+  "tests/daemon/multi_host.rs",
+  "tests/daemon/self_retire.rs",
+  "tests/daemon/watch_connection.rs",
+  "tests/fixtures/codex-0.163.0-side/pre-tool-use-root-null.json",
+  "tests/fixtures/codex-0.163.0-side/pre-tool-use-root.json",
+  "tests/fixtures/codex-0.163.0-side/pre-tool-use-side-nonnull.json",
+  "tests/fixtures/codex-0.163.0-side/pre-tool-use-side.json",
+  "tests/fixtures/codex-0.163.0-side/session-start-fork-nonnull.json",
+  "tests/fixtures/codex-0.163.0-side/session-start-root.json",
+  "tests/fixtures/codex-0.163.0-side/stop-side.json",
+  "tests/fixtures/codex-0.163.0-side/user-prompt-submit-root.json",
+  "tests/fixtures/codex-0.163.0-side/user-prompt-submit-side.json",
+  "tests/fixtures/herdr-matrix/codex.js",
+  "tests/fixtures/wake_intent.rs",
+  "tests/harness/agy_delivery.rs",
+  "tests/harness/agy_wake.rs",
+  "tests/harness/bridge.rs",
+  "tests/harness/codex.rs",
+  "tests/harness/role_witness.rs",
+  "tests/hook_entrypoint/agy.rs",
+  "tests/integration/herdr_release_smoke.rs",
+  "tests/integration/lazy_attention.rs",
+  "tests/integration/notice_wake.rs",
+  "tests/integration/seat_config_sweep.rs",
+  "tests/integration/summary_flow.rs",
+  "tests/integration/sweep_remaining.rs",
+  "tests/integration/topology_activation.rs",
+  "tests/lifecycle_ux.rs",
+  "tests/notification/queue_runtime.rs",
+  "tests/protocol/capabilities.rs",
+  "tests/protocol/delivery.rs",
+  "tests/protocol/priority.rs",
+  "tests/protocol/watch.rs",
+  "tests/release/release_qualify_test.py",
+  "tests/scheduler/dispatch.rs",
+  "tests/scheduler/poke_flow.rs",
+  "tests/scheduler/wake_receipt.rs",
+  "tests/service/composition.rs",
+  "tests/service/cooperative.rs",
+  "tests/service/crash_matrix.rs",
+  "tests/service/delivery_pull.rs",
+  "tests/service/graph_d2.rs",
+  "tests/service/graph_send.rs",
+  "tests/service/host_routing.rs",
+  "tests/service/lazy_hook_pull.rs",
+  "tests/service/mod_ack_dispatch.rs",
+  "tests/service/mod_channels.rs",
+  "tests/service/mod_digest_flag.rs",
+  "tests/service/named_startup.rs",
+  "tests/service/peer_handoff.rs",
+  "tests/service/presentation_owner_budget_controls.rs",
+  "tests/service/resolution.rs",
+  "tests/service/seat_config.rs",
+  "tests/service/turn_state.rs",
+  "tests/store/attention.rs",
+  "tests/store/binding_inbox.rs",
+  "tests/store/bindings.rs",
+  "tests/store/catch_up.rs",
+  "tests/store/control.rs",
+  "tests/store/cooperative_checkin.rs",
+  "tests/store/deadline_window.rs",
+  "tests/store/facade.rs",
+  "tests/store/fact_convergence.rs",
+  "tests/store/fact_convergence_invitation.rs",
+  "tests/store/fact_convergence_membership.rs",
+  "tests/store/handoff_fences.rs",
+  "tests/store/invitation_content.rs",
+  "tests/store/lazy_inbox.rs",
+  "tests/store/lazy_publication.rs",
+  "tests/store/messages.rs",
+  "tests/store/mod_ack.rs",
+  "tests/store/multi_binding_readers.rs",
+  "tests/store/multi_host.rs",
+  "tests/store/named_presence.rs",
+  "tests/store/notice_replay.rs",
+  "tests/store/nudge_threshold.rs",
+  "tests/store/peer_handoff.rs",
+  "tests/store/priority_send.rs",
+  "tests/store/query_work_q4.rs",
+  "tests/store/receipts.rs",
+  "tests/store/retention.rs",
+  "tests/store/reversible_reads.rs",
+  "tests/store/reversible_retirement.rs",
+  "tests/store/schema.rs",
+  "tests/store/seat_config.rs",
+  "tests/store/send_fence.rs",
+  "tests/store/service_send.rs",
+  "tests/store/snapshot_eligibility.rs",
+  "tests/store/summary.rs",
+  "tests/store/wake.rs",
+  "tests/store/wake_activation_recovery.rs",
+  "tests/store/wake_intents.rs",
+  "tests/store/wake_on.rs",
+  "tests/store/wake_queue_cost.rs",
+  "tests/sync/facts_message.rs",
+  "tests/sync/facts_receipt.rs"
+ ],
+ "clusters": [
+  {
+   "name": "docs-evidence",
+   "files": [
+    "docs/evidence/ansi-composer/README.md"
+   ],
+   "slices": [
+    "slices/000007.diff"
+   ]
+  },
+  {
+   "name": "docs-root",
+   "files": [
+    "docs/agent-usage.md",
+    "docs/install.md"
+   ],
+   "slices": [
+    "slices/000006.diff",
+    "slices/000008.diff"
+   ]
+  },
+  {
+   "name": "docs-sp-runs-2026-11-26-per-seat-config-side-wake",
+   "files": [
+    "docs/superpowers/runs/2026-11-26-per-seat-config-side-wake/2026-11-26-per-seat-config-side-wake-design.md",
+    "docs/superpowers/runs/2026-11-26-per-seat-config-side-wake/2026-11-26-per-seat-config-side-wake-roast-design-1-step-back-keys.txt",
+    "docs/superpowers/runs/2026-11-26-per-seat-config-side-wake/2026-11-26-per-seat-config-side-wake-roast-design-1-step-back.md",
+    "docs/superpowers/runs/2026-11-26-per-seat-config-side-wake/2026-11-26-per-seat-config-side-wake-roast-design-1.md",
+    "docs/superpowers/runs/2026-11-26-per-seat-config-side-wake/2026-11-26-per-seat-config-side-wake-roast-design-2.md",
+    "docs/superpowers/runs/2026-11-26-per-seat-config-side-wake/2026-11-27-per-seat-config-side-wake-roast-design-3.md",
+    "docs/superpowers/runs/2026-11-26-per-seat-config-side-wake/2026-11-27-per-seat-config-side-wake-roast-pr-1-final-review-keys.refmap.json",
+    "docs/superpowers/runs/2026-11-26-per-seat-config-side-wake/2026-11-27-per-seat-config-side-wake-roast-pr-1-final-review-keys.txt",
+    "docs/superpowers/runs/2026-11-26-per-seat-config-side-wake/2026-11-27-per-seat-config-side-wake-roast-pr-1-step-back-keys.txt",
+    "docs/superpowers/runs/2026-11-26-per-seat-config-side-wake/2026-11-27-per-seat-config-side-wake-roast-pr-1-step-back.md",
+    "docs/superpowers/runs/2026-11-26-per-seat-config-side-wake/2026-11-27-per-seat-config-side-wake-roast-pr-1.md",
+    "docs/superpowers/runs/2026-11-26-per-seat-config-side-wake/amend-code-1.md",
+    "docs/superpowers/runs/2026-11-26-per-seat-config-side-wake/coverage-findings-round-1.md",
+    "docs/superpowers/runs/2026-11-26-per-seat-config-side-wake/coverage-findings-round-2.md",
+    "docs/superpowers/runs/2026-11-26-per-seat-config-side-wake/coverage-ledger.md",
+    "docs/superpowers/runs/2026-11-26-per-seat-config-side-wake/coverage-round-1-requirements.md",
+    "docs/superpowers/runs/2026-11-26-per-seat-config-side-wake/coverage-round-2-requirements.md",
+    "docs/superpowers/runs/2026-11-26-per-seat-config-side-wake/evidence/leak-check.txt",
+    "docs/superpowers/runs/2026-11-26-per-seat-config-side-wake/evidence/run-2/driver.log",
+    "docs/superpowers/runs/2026-11-26-per-seat-config-side-wake/evidence/run-2/side-results.json",
+    "docs/superpowers/runs/2026-11-26-per-seat-config-side-wake/evidence/run-3/driver.log",
+    "docs/superpowers/runs/2026-11-26-per-seat-config-side-wake/evidence/run-3/side-results.json",
+    "docs/superpowers/runs/2026-11-26-per-seat-config-side-wake/evidence/side_spike.py",
+    "docs/superpowers/runs/2026-11-26-per-seat-config-side-wake/findings-ledger-design.md",
+    "docs/superpowers/runs/2026-11-26-per-seat-config-side-wake/findings-ledger.md",
+    "docs/superpowers/runs/2026-11-26-per-seat-config-side-wake/findings-overrides-design.md",
+    "docs/superpowers/runs/2026-11-26-per-seat-config-side-wake/findings-overrides.md",
+    "docs/superpowers/runs/2026-11-26-per-seat-config-side-wake/friction.md",
+    "docs/superpowers/runs/2026-11-26-per-seat-config-side-wake/profile-inv1.json",
+    "docs/superpowers/runs/2026-11-26-per-seat-config-side-wake/profile-inv1.md",
+    "docs/superpowers/runs/2026-11-26-per-seat-config-side-wake/reviews/inv-78cf59fa-89c0-4cd2-9bc6-b210465af1d2/assembled/final-review-inv-78cf59fa-89c0-4cd2-9bc6-b210465af1d2-final/bounded-coverage.json",
+    "docs/superpowers/runs/2026-11-26-per-seat-config-side-wake/reviews/inv-78cf59fa-89c0-4cd2-9bc6-b210465af1d2/assembled/final-review-inv-78cf59fa-89c0-4cd2-9bc6-b210465af1d2-final/bounded-draft.md",
+    "docs/superpowers/runs/2026-11-26-per-seat-config-side-wake/reviews/inv-78cf59fa-89c0-4cd2-9bc6-b210465af1d2/assembled/final-review-inv-78cf59fa-89c0-4cd2-9bc6-b210465af1d2-final/diffstat.txt",
+    "docs/superpowers/runs/2026-11-26-per-seat-config-side-wake/reviews/inv-78cf59fa-89c0-4cd2-9bc6-b210465af1d2/assembled/final-review-inv-78cf59fa-89c0-4cd2-9bc6-b210465af1d2-final/generated-input-provenance.md",
+    "docs/superpowers/runs/2026-11-26-per-seat-config-side-wake/reviews/inv-78cf59fa-89c0-4cd2-9bc6-b210465af1d2/assembled/final-review-inv-78cf59fa-89c0-4cd2-9bc6-b210465af1d2-final/review-inputs.json",
+    "docs/superpowers/runs/2026-11-26-per-seat-config-side-wake/reviews/inv-78cf59fa-89c0-4cd2-9bc6-b210465af1d2/final-review-inv-78cf59fa-89c0-4cd2-9bc6-b210465af1d2.md",
+    "docs/superpowers/runs/2026-11-26-per-seat-config-side-wake/roast-design-1-tree.md",
+    "docs/superpowers/runs/2026-11-26-per-seat-config-side-wake/roast-design-2-tree.md",
+    "docs/superpowers/runs/2026-11-26-per-seat-config-side-wake/roast-design-3-tree.md",
+    "docs/superpowers/runs/2026-11-26-per-seat-config-side-wake/run.md",
+    "docs/superpowers/runs/2026-11-26-per-seat-config-side-wake/spike-side-identity.md"
+   ],
+   "slices": [
+    "slices/000009.diff",
+    "slices/000010.diff",
+    "slices/000011.diff",
+    "slices/000012.diff",
+    "slices/000013.diff",
+    "slices/000014.diff",
+    "slices/000015.diff",
+    "slices/000016.diff",
+    "slices/000017.diff",
+    "slices/000018.diff",
+    "slices/000019.diff",
+    "slices/000020.diff",
+    "slices/000021.diff",
+    "slices/000022.diff",
+    "slices/000023.diff",
+    "slices/000024.diff",
+    "slices/000025.diff",
+    "slices/000026.diff",
+    "slices/000027.diff",
+    "slices/000028.diff",
+    "slices/000029.diff",
+    "slices/000030.diff",
+    "slices/000031.diff",
+    "slices/000032.diff",
+    "slices/000033.diff",
+    "slices/000034.diff",
+    "slices/000035.diff",
+    "slices/000036.diff",
+    "slices/000037.diff",
+    "slices/000038.diff",
+    "slices/000039.diff",
+    "slices/000040.diff",
+    "slices/000041.diff",
+    "slices/000042.diff",
+    "slices/000043.diff",
+    "slices/000044.diff",
+    "slices/000045.diff",
+    "slices/000046.diff",
+    "slices/000047.diff",
+    "slices/000048.diff",
+    "slices/000049.diff"
+   ]
+  },
+  {
+   "name": "docs-sp-specs",
+   "files": [
+    "docs/superpowers/specs/INDEX.md"
+   ],
+   "slices": [
+    "slices/000050.diff"
+   ]
+  },
+  {
+   "name": "docs-validation",
+   "files": [
+    "docs/validation/herdr-release-matrix.md"
+   ],
+   "slices": [
+    "slices/000051.diff"
+   ]
+  },
+  {
+   "name": "evidence",
+   "files": [
+    "evidence/ht-z41e.11/checks.log",
+    "evidence/ht-z41e.11/seat_config_sweep.log",
+    "evidence/ht-z41e.3/checks.log",
+    "evidence/ht-z41e.3/clippy.log",
+    "evidence/ht-z41e.3/golden.log",
+    "evidence/ht-z41e.3/lib-tests.log",
+    "evidence/ht-z41e.8/selftest.log"
+   ],
+   "slices": [
+    "slices/000052.diff",
+    "slices/000053.diff",
+    "slices/000054.diff",
+    "slices/000055.diff",
+    "slices/000056.diff",
+    "slices/000057.diff",
+    "slices/000058.diff"
+   ]
+  },
+  {
+   "name": "integrations-codex",
+   "files": [
+    "integrations/codex/README.md"
+   ],
+   "slices": [
+    "slices/000059.diff"
+   ]
+  },
+  {
+   "name": "integrations-skill",
+   "files": [
+    "integrations/skill/SKILL.md"
+   ],
+   "slices": [
+    "slices/000060.diff"
+   ]
+  },
+  {
+   "name": "migrations",
+   "files": [
+    "migrations/node/0020_seat_config.sql",
+    "migrations/node/0021_side_queue_routing.sql",
+    "migrations/node/0022_binding_auxiliary_session.sql"
+   ],
+   "slices": [
+    "slices/000061.diff",
+    "slices/000062.diff",
+    "slices/000063.diff"
+   ]
+  },
+  {
+   "name": "root-files",
+   "files": [
+    "AGENTS.md",
+    "CHANGELOG.md",
+    "README.md",
+    "RELEASE.md",
+    "TRUST-POLICY.md"
+   ],
+   "slices": [
+    "slices/000001.diff",
+    "slices/000002.diff",
+    "slices/000003.diff",
+    "slices/000004.diff",
+    "slices/000005.diff"
+   ]
+  },
+  {
+   "name": "scripts-root",
+   "files": [
+    "scripts/release-qualify",
+    "scripts/wake-e2e.py",
+    "scripts/wake_e2e_queue.py",
+    "scripts/wake_e2e_queue_selftest.py",
+    "scripts/wake_e2e_selftest.py"
+   ],
+   "slices": [
+    "slices/000064.diff",
+    "slices/000066.diff",
+    "slices/000067.diff",
+    "slices/000068.diff",
+    "slices/000069.diff"
+   ]
+  },
+  {
+   "name": "scripts-tests",
+   "files": [
+    "scripts/tests/test_release_qualify.py"
+   ],
+   "slices": [
+    "slices/000065.diff"
+   ]
+  },
+  {
+   "name": "src-cli",
+   "files": [
+    "src/cli/commands.rs",
+    "src/cli/config_seat.rs",
+    "src/cli/doctor.rs",
+    "src/cli/hook.rs",
+    "src/cli/mod.rs",
+    "src/cli/nudge_threshold.rs",
+    "src/cli/peer_launch.rs",
+    "src/cli/site_capability.rs"
+   ],
+   "slices": [
+    "slices/000071.diff",
+    "slices/000072.diff",
+    "slices/000073.diff",
+    "slices/000074.diff",
+    "slices/000075.diff",
+    "slices/000076.diff",
+    "slices/000077.diff",
+    "slices/000078.diff"
+   ]
+  },
+  {
+   "name": "src-daemon",
+   "files": [
+    "src/daemon/settings.rs"
+   ],
+   "slices": [
+    "slices/000079.diff"
+   ]
+  },
+  {
+   "name": "src-harness",
+   "files": [
+    "src/harness/adapter.rs",
+    "src/harness/agy/decode.rs",
+    "src/harness/bridge.rs",
+    "src/harness/claude.rs",
+    "src/harness/claude/permission_rules.rs",
+    "src/harness/codex.rs",
+    "src/harness/codex/composer.rs",
+    "src/harness/codex/permission_rules.rs",
+    "src/harness/composer.rs",
+    "src/harness/hermes.rs",
+    "src/harness/mod.rs",
+    "src/harness/opencode/decode.rs",
+    "src/harness/pi/decode.rs",
+    "src/harness/registry.rs"
+   ],
+   "slices": [
+    "slices/000080.diff",
+    "slices/000081.diff",
+    "slices/000082.diff",
+    "slices/000083.diff",
+    "slices/000084.diff",
+    "slices/000085.diff",
+    "slices/000086.diff",
+    "slices/000087.diff",
+    "slices/000088.diff",
+    "slices/000089.diff",
+    "slices/000090.diff",
+    "slices/000091.diff",
+    "slices/000092.diff",
+    "slices/000093.diff"
+   ]
+  },
+  {
+   "name": "src-host",
+   "files": [
+    "src/host/native.rs"
+   ],
+   "slices": [
+    "slices/000094.diff"
+   ]
+  },
+  {
+   "name": "src-notification",
+   "files": [
+    "src/notification/dispatch.rs",
+    "src/notification/queue.rs"
+   ],
+   "slices": [
+    "slices/000095.diff",
+    "slices/000096.diff"
+   ]
+  },
+  {
+   "name": "src-ports",
+   "files": [
+    "src/ports/wake_intents.rs"
+   ],
+   "slices": [
+    "slices/000098.diff"
+   ]
+  },
+  {
+   "name": "src-protocol",
+   "files": [
+    "src/protocol/authority.rs",
+    "src/protocol/capabilities.rs",
+    "src/protocol/commands.rs",
+    "src/protocol/handoff.rs",
+    "src/protocol/mod.rs",
+    "src/protocol/results.rs",
+    "src/protocol/seat_config.rs",
+    "src/protocol/service.rs"
+   ],
+   "slices": [
+    "slices/000099.diff",
+    "slices/000100.diff",
+    "slices/000101.diff",
+    "slices/000102.diff",
+    "slices/000103.diff",
+    "slices/000104.diff",
+    "slices/000105.diff",
+    "slices/000106.diff"
+   ]
+  },
+  {
+   "name": "src-root",
+   "files": [
+    "src/app.rs",
+    "src/ports.rs"
+   ],
+   "slices": [
+    "slices/000070.diff",
+    "slices/000097.diff"
+   ]
+  },
+  {
+   "name": "src-scheduler",
+   "files": [
+    "src/scheduler/mod.rs"
+   ],
+   "slices": [
+    "slices/000107.diff"
+   ]
+  },
+  {
+   "name": "src-service",
+   "files": [
+    "src/service/config.rs",
+    "src/service/delivery_pull.rs",
+    "src/service/dispatch.rs",
+    "src/service/kicks.rs"
+   ],
+   "slices": [
+    "slices/000108.diff",
+    "slices/000109.diff",
+    "slices/000110.diff",
+    "slices/000111.diff"
+   ]
+  },
+  {
+   "name": "src-store",
+   "files": [
+    "src/store/archival.rs",
+    "src/store/bindings.rs",
+    "src/store/control/retirement.rs",
+    "src/store/invitation_content.rs",
+    "src/store/mod.rs",
+    "src/store/queries.rs",
+    "src/store/schema.rs",
+    "src/store/seat_config.rs",
+    "src/store/seats/continuity.rs",
+    "src/store/seats/cooperative.rs",
+    "src/store/seats/threshold.rs",
+    "src/store/wake.rs",
+    "src/store/wake_intents.rs",
+    "src/store/wake_intents/selection.rs"
+   ],
+   "slices": [
+    "slices/000112.diff",
+    "slices/000113.diff",
+    "slices/000114.diff",
+    "slices/000115.diff",
+    "slices/000116.diff",
+    "slices/000117.diff",
+    "slices/000118.diff",
+    "slices/000119.diff",
+    "slices/000120.diff",
+    "slices/000121.diff",
+    "slices/000122.diff",
+    "slices/000123.diff",
+    "slices/000124.diff",
+    "slices/000125.diff"
+   ]
+  },
+  {
+   "name": "src-test-support",
+   "files": [
+    "src/test_support/history.rs",
+    "src/test_support/mod.rs"
+   ],
+   "slices": [
+    "slices/000126.diff",
+    "slices/000127.diff"
+   ]
+  },
+  {
+   "name": "tests-cli",
+   "files": [
+    "tests/cli/accept_delivery.rs",
+    "tests/cli/commands.rs",
+    "tests/cli/config_seat.rs",
+    "tests/cli/cooperative.rs",
+    "tests/cli/direct_send.rs",
+    "tests/cli/doctor_json.rs",
+    "tests/cli/follow_retry.rs",
+    "tests/cli/golden_contract.rs",
+    "tests/cli/handoff.rs",
+    "tests/cli/hook.rs",
+    "tests/cli/hook_inbox.rs",
+    "tests/cli/journal.rs",
+    "tests/cli/lazy_display.rs",
+    "tests/cli/lazy_markers.rs",
+    "tests/cli/lazy_recovery_context.rs",
+    "tests/cli/output.rs",
+    "tests/cli/wake_on.rs",
+    "tests/cli/watch.rs"
+   ],
+   "slices": [
+    "slices/000128.diff",
+    "slices/000129.diff",
+    "slices/000130.diff",
+    "slices/000131.diff",
+    "slices/000132.diff",
+    "slices/000133.diff",
+    "slices/000134.diff",
+    "slices/000135.diff",
+    "slices/000136.diff",
+    "slices/000137.diff",
+    "slices/000138.diff",
+    "slices/000139.diff",
+    "slices/000140.diff",
+    "slices/000141.diff",
+    "slices/000142.diff",
+    "slices/000143.diff",
+    "slices/000144.diff",
+    "slices/000145.diff"
+   ]
+  },
+  {
+   "name": "tests-daemon",
+   "files": [
+    "tests/daemon/launch_gate_guards.rs",
+    "tests/daemon/multi_host.rs",
+    "tests/daemon/self_retire.rs",
+    "tests/daemon/watch_connection.rs"
+   ],
+   "slices": [
+    "slices/000148.diff",
+    "slices/000149.diff",
+    "slices/000150.diff",
+    "slices/000151.diff"
+   ]
+  },
+  {
+   "name": "tests-fixtures",
+   "files": [
+    "tests/fixtures/codex-0.163.0-side/pre-tool-use-root-null.json",
+    "tests/fixtures/codex-0.163.0-side/pre-tool-use-root.json",
+    "tests/fixtures/codex-0.163.0-side/pre-tool-use-side-nonnull.json",
+    "tests/fixtures/codex-0.163.0-side/pre-tool-use-side.json",
+    "tests/fixtures/codex-0.163.0-side/session-start-fork-nonnull.json",
+    "tests/fixtures/codex-0.163.0-side/session-start-root.json",
+    "tests/fixtures/codex-0.163.0-side/stop-side.json",
+    "tests/fixtures/codex-0.163.0-side/user-prompt-submit-root.json",
+    "tests/fixtures/codex-0.163.0-side/user-prompt-submit-side.json",
+    "tests/fixtures/herdr-matrix/codex.js",
+    "tests/fixtures/wake_intent.rs"
+   ],
+   "slices": [
+    "slices/000152.diff",
+    "slices/000153.diff",
+    "slices/000154.diff",
+    "slices/000155.diff",
+    "slices/000156.diff",
+    "slices/000157.diff",
+    "slices/000158.diff",
+    "slices/000159.diff",
+    "slices/000160.diff",
+    "slices/000161.diff",
+    "slices/000162.diff"
+   ]
+  },
+  {
+   "name": "tests-harness",
+   "files": [
+    "tests/harness/agy_delivery.rs",
+    "tests/harness/agy_wake.rs",
+    "tests/harness/bridge.rs",
+    "tests/harness/codex.rs",
+    "tests/harness/role_witness.rs"
+   ],
+   "slices": [
+    "slices/000163.diff",
+    "slices/000164.diff",
+    "slices/000165.diff",
+    "slices/000166.diff",
+    "slices/000167.diff"
+   ]
+  },
+  {
+   "name": "tests-hook-entrypoint",
+   "files": [
+    "tests/hook_entrypoint/agy.rs"
+   ],
+   "slices": [
+    "slices/000168.diff"
+   ]
+  },
+  {
+   "name": "tests-integration",
+   "files": [
+    "tests/integration/herdr_release_smoke.rs",
+    "tests/integration/lazy_attention.rs",
+    "tests/integration/notice_wake.rs",
+    "tests/integration/seat_config_sweep.rs",
+    "tests/integration/summary_flow.rs",
+    "tests/integration/sweep_remaining.rs",
+    "tests/integration/topology_activation.rs"
+   ],
+   "slices": [
+    "slices/000169.diff",
+    "slices/000170.diff",
+    "slices/000171.diff",
+    "slices/000172.diff",
+    "slices/000173.diff",
+    "slices/000174.diff",
+    "slices/000175.diff"
+   ]
+  },
+  {
+   "name": "tests-notification",
+   "files": [
+    "tests/notification/queue_runtime.rs"
+   ],
+   "slices": [
+    "slices/000177.diff"
+   ]
+  },
+  {
+   "name": "tests-protocol",
+   "files": [
+    "tests/protocol/capabilities.rs",
+    "tests/protocol/delivery.rs",
+    "tests/protocol/priority.rs",
+    "tests/protocol/watch.rs"
+   ],
+   "slices": [
+    "slices/000178.diff",
+    "slices/000179.diff",
+    "slices/000180.diff",
+    "slices/000181.diff"
+   ]
+  },
+  {
+   "name": "tests-release",
+   "files": [
+    "tests/release/release_qualify_test.py"
+   ],
+   "slices": [
+    "slices/000182.diff"
+   ]
+  },
+  {
+   "name": "tests-root",
+   "files": [
+    "tests/combined.rs",
+    "tests/contracts.rs",
+    "tests/lifecycle_ux.rs"
+   ],
+   "slices": [
+    "slices/000146.diff",
+    "slices/000147.diff",
+    "slices/000176.diff"
+   ]
+  },
+  {
+   "name": "tests-scheduler",
+   "files": [
+    "tests/scheduler/dispatch.rs",
+    "tests/scheduler/poke_flow.rs",
+    "tests/scheduler/wake_receipt.rs"
+   ],
+   "slices": [
+    "slices/000183.diff",
+    "slices/000184.diff",
+    "slices/000185.diff"
+   ]
+  },
+  {
+   "name": "tests-service",
+   "files": [
+    "tests/service/composition.rs",
+    "tests/service/cooperative.rs",
+    "tests/service/crash_matrix.rs",
+    "tests/service/delivery_pull.rs",
+    "tests/service/graph_d2.rs",
+    "tests/service/graph_send.rs",
+    "tests/service/host_routing.rs",
+    "tests/service/lazy_hook_pull.rs",
+    "tests/service/mod_ack_dispatch.rs",
+    "tests/service/mod_channels.rs",
+    "tests/service/mod_digest_flag.rs",
+    "tests/service/named_startup.rs",
+    "tests/service/peer_handoff.rs",
+    "tests/service/presentation_owner_budget_controls.rs",
+    "tests/service/resolution.rs",
+    "tests/service/seat_config.rs",
+    "tests/service/turn_state.rs"
+   ],
+   "slices": [
+    "slices/000186.diff",
+    "slices/000187.diff",
+    "slices/000188.diff",
+    "slices/000189.diff",
+    "slices/000190.diff",
+    "slices/000191.diff",
+    "slices/000192.diff",
+    "slices/000193.diff",
+    "slices/000194.diff",
+    "slices/000195.diff",
+    "slices/000196.diff",
+    "slices/000197.diff",
+    "slices/000198.diff",
+    "slices/000199.diff",
+    "slices/000200.diff",
+    "slices/000201.diff",
+    "slices/000202.diff"
+   ]
+  },
+  {
+   "name": "tests-store",
+   "files": [
+    "tests/store/attention.rs",
+    "tests/store/binding_inbox.rs",
+    "tests/store/bindings.rs",
+    "tests/store/catch_up.rs",
+    "tests/store/control.rs",
+    "tests/store/cooperative_checkin.rs",
+    "tests/store/deadline_window.rs",
+    "tests/store/facade.rs",
+    "tests/store/fact_convergence.rs",
+    "tests/store/fact_convergence_invitation.rs",
+    "tests/store/fact_convergence_membership.rs",
+    "tests/store/handoff_fences.rs",
+    "tests/store/invitation_content.rs",
+    "tests/store/lazy_inbox.rs",
+    "tests/store/lazy_publication.rs",
+    "tests/store/messages.rs",
+    "tests/store/mod_ack.rs",
+    "tests/store/multi_binding_readers.rs",
+    "tests/store/multi_host.rs",
+    "tests/store/named_presence.rs",
+    "tests/store/notice_replay.rs",
+    "tests/store/nudge_threshold.rs",
+    "tests/store/peer_handoff.rs",
+    "tests/store/priority_send.rs",
+    "tests/store/query_work_q4.rs",
+    "tests/store/receipts.rs",
+    "tests/store/retention.rs",
+    "tests/store/reversible_reads.rs",
+    "tests/store/reversible_retirement.rs",
+    "tests/store/schema.rs",
+    "tests/store/seat_config.rs",
+    "tests/store/send_fence.rs",
+    "tests/store/service_send.rs",
+    "tests/store/snapshot_eligibility.rs",
+    "tests/store/summary.rs",
+    "tests/store/wake.rs",
+    "tests/store/wake_activation_recovery.rs",
+    "tests/store/wake_intents.rs",
+    "tests/store/wake_on.rs",
+    "tests/store/wake_queue_cost.rs"
+   ],
+   "slices": [
+    "slices/000203.diff",
+    "slices/000204.diff",
+    "slices/000205.diff",
+    "slices/000206.diff",
+    "slices/000207.diff",
+    "slices/000208.diff",
+    "slices/000209.diff",
+    "slices/000210.diff",
+    "slices/000211.diff",
+    "slices/000212.diff",
+    "slices/000213.diff",
+    "slices/000214.diff",
+    "slices/000215.diff",
+    "slices/000216.diff",
+    "slices/000217.diff",
+    "slices/000218.diff",
+    "slices/000219.diff",
+    "slices/000220.diff",
+    "slices/000221.diff",
+    "slices/000222.diff",
+    "slices/000223.diff",
+    "slices/000224.diff",
+    "slices/000225.diff",
+    "slices/000226.diff",
+    "slices/000227.diff",
+    "slices/000228.diff",
+    "slices/000229.diff",
+    "slices/000230.diff",
+    "slices/000231.diff",
+    "slices/000232.diff",
+    "slices/000233.diff",
+    "slices/000234.diff",
+    "slices/000235.diff",
+    "slices/000236.diff",
+    "slices/000237.diff",
+    "slices/000238.diff",
+    "slices/000239.diff",
+    "slices/000240.diff",
+    "slices/000241.diff",
+    "slices/000242.diff"
+   ]
+  },
+  {
+   "name": "tests-sync",
+   "files": [
+    "tests/sync/facts_message.rs",
+    "tests/sync/facts_receipt.rs"
+   ],
+   "slices": [
+    "slices/000243.diff",
+    "slices/000244.diff"
+   ]
+  }
+ ]
+}

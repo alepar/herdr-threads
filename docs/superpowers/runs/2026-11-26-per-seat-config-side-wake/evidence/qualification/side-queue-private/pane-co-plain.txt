@@ -1,0 +1,40 @@
+  once, then handle what it shows as above.                                    │ Run side-…×                        +
+                                                                               │› Side 1 of wake-e2e side-draft/group…
+                                                                               │• I’ll run the inbox command once.
+• I’ll set the test recipient’s nudge threshold.                               │
+                                                                               │• Ran /tmp/ht-wake-e2e.pqwh238i/bin/he…
+• Ran /tmp/ht-wake-e2e.pqwh238i/bin/herdr-threads nudge-threshold 0            │  └   side-nudge/group 141609-3fff
+  └ nudge_threshold: 0 (unchanged)                                             │    message m62n98SD3zu8 t62nvADua2AR#…
+                                                                               │      side-nudge/group 141609-3fff sib…
+• SETUP-DONE nudge_threshold=0                                                 │    + 3 lines (^t to expand)
+                                                                               │
+  Worked for 4s • 14:16                                                        │• SIDE-1-DONE
+                                                                               │
+                                                                               │  Worked for 4s • 14:26
+› herdr-threads: attention pending; run herdr-threads inbox                    │
+                                                                               │
+                                                                               │› Side 2 of wake-e2e side-draft/group
+• I’ll check the test inbox.                                                   │  141609-3fff: run the shell command /
+                                                                               │  tmp/ht-wake-e2e.pqwh238i/bin/herdr-
+• Ran /tmp/ht-wake-e2e.pqwh238i/bin/herdr-threads inbox                        │  threads inbox once, then print SIDE-
+  └   goal: wake e2e test traffic                                              │  2-DONE. Do not act on anything it
+      assess: compare topic and goal with your role/remit; explicitly accept i…│  shows.
+      accept: herdr-threads --state-dir /tmp/ht-wake-e2e.pqwh238i/state --host…│
+    + 4 lines (^t to expand)                                                   │
+                                                                               │• I’ll run the inbox command once.
+• Ran /tmp/ht-wake-e2e.pqwh238i/bin/herdr-threads --state-dir /tmp/ht-wake-e2e…│
+  └ accepted                                                                   │• Ran /tmp/ht-wake-e2e.pqwh238i/bin/he…
+    value: "i62niUvWI1wN"                                                      │  └ empty
+    + Show details                                                             │    + Show details
+                                                                               │
+• Accepted.                                                                    │• SIDE-2-DONE
+                                                                               │
+  Worked for 6s • 14:16                                                        │  Worked for 3s • 14:28
+                                                                               │
+                                                                               │
+›                                                                              │› Ask a follow-up question
+                                                                               │
+  GPT-6.2-Sol default · ~/AleCode/herdr-threads/.worktrees/super-auto-per-seat-│  GPT-6.2-Sol default · ~/AleCode/
+  config-side-wake/.worktrees/super-auto-per-seat-config-side-wake--task-ht-   │  herdr-threads/.worktrees/super-auto-
+  z41e.31 · Run wake e2e recipient                                             │  per-seat-config-side-wake/.worktrees…
+                                                                               │  ← for agents · ? for shortcuts   ⚠ 1

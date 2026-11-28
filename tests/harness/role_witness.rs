@@ -29,6 +29,7 @@ fn event(role: EventRole, intent: EventIntent, delivery: DeliveryEligibility) ->
         event_id: "event".into(),
         intent,
         metadata: EventMetadata {
+            auxiliary_session: false,
             native_turn_id: None,
             turn_end: false,
             skill_pointer: false,

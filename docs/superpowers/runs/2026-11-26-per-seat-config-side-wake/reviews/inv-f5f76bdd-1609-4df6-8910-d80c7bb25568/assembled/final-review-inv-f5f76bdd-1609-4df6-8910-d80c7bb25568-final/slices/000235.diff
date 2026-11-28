@@ -1,0 +1,12 @@
+diff --git a/tests/store/service_send.rs b/tests/store/service_send.rs
+index f7e9b2822..58f2cc513 100644
+--- a/tests/store/service_send.rs
++++ b/tests/store/service_send.rs
+@@ -789,6 +789,7 @@ fn reads_and_notify_create_no_acks() {
+     .unwrap();
+     // A check-in by a recipient presents the pending item and acknowledges nothing.
+     let claim = CallerClaim {
++        auxiliary_session: false,
+         host: crate::test_support::test_host_locator(),
+         instance: "34750f98bd59fcfc946da45aaabe933b".into(),
+         seat: SeatId::new("s1"),

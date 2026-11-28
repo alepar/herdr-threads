@@ -1,0 +1,9 @@
+diff --git a/docs/superpowers/runs/2026-11-26-per-seat-config-side-wake/evidence/leak-check.txt b/docs/superpowers/runs/2026-11-26-per-seat-config-side-wake/evidence/leak-check.txt
+new file mode 100644
+index 000000000..05a699ee3
+--- /dev/null
++++ b/docs/superpowers/runs/2026-11-26-per-seat-config-side-wake/evidence/leak-check.txt
+@@ -0,0 +1,3 @@
++no leaked test temp files (no ledger for this run)
++no leaked test processes
++exit 0

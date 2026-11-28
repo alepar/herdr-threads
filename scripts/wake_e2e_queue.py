@@ -59,6 +59,18 @@ def _scope(value):
             "process": _process(value["process"]), "kernel_boot": _text(value["kernel_boot"], 64)}
 
 
+def _side_sessions(value):
+    """The intent's `side_sessions` column: NULL is no side sessions, else a bounded JSON array of identifiers."""
+    if value is None:
+        return []
+    if not isinstance(value, str) or len(value) > 8192:
+        raise ValueError("invalid side sessions")
+    items = json.loads(value)
+    if not isinstance(items, list) or len(items) > MAX_BINDINGS:
+        raise ValueError("invalid side sessions")
+    return [_text(item) for item in items]
+
+
 def _helper(value):
     if value is None:
         return None
@@ -136,7 +148,9 @@ def queue_snapshot(state: Path, seat: str, after: int = 0) -> dict:
                 snapshot["wake_work"] = dict(zip(("active_attempt", "active_boot", "last_attempt", "last_boot", "last_outcome", "reserved_at_utc", "last_reserved_at_utc", "completed_at_utc", "reason_bits", "retry_step"), work))
                 for key in ("active_attempt", "active_boot", "last_attempt", "last_boot", "last_outcome"):
                     snapshot["wake_work"][key] = _text(snapshot["wake_work"][key], optional=True)
-            intents = db.execute("SELECT ordinal,attempt,adapter,target_json,phase,revision,owner_boot,arm_nonce,arm_native_id,arm_native_ordinal,logical_status,fulfillment_turn,fulfillment_ordinal,cleanup_quarantined,cleanup_list_attempted,native_no_add_exception,helper_json,add_helper_json,ids_complete,created_at,updated_at,diagnostic FROM wake_intents WHERE instance_id=? AND origin_seat=? AND ordinal>? ORDER BY ordinal LIMIT 33", (seat_scope["instance"], seat, after)).fetchall()
+            # A store without the column (older schema) projects None: unknown, never "no side sessions".
+            has_side = any(column[1] == "side_sessions" for column in db.execute("PRAGMA table_info(wake_intents)"))
+            intents = db.execute("SELECT ordinal,attempt,adapter,target_json,phase,revision,owner_boot,arm_nonce,arm_native_id,arm_native_ordinal,logical_status,fulfillment_turn,fulfillment_ordinal,cleanup_quarantined,cleanup_list_attempted,native_no_add_exception,helper_json,add_helper_json,ids_complete,created_at,updated_at,diagnostic," + ("side_sessions" if has_side else "NULL AS side_sessions") + " FROM wake_intents WHERE instance_id=? AND origin_seat=? AND ordinal>? ORDER BY ordinal LIMIT 33", (seat_scope["instance"], seat, after)).fetchall()
             snapshot["truncated"] |= len(intents) > MAX_INTENTS
             for intent in intents[:MAX_INTENTS]:
                 ids = db.execute("SELECT queue_id,cleanup_attempted FROM wake_intent_ids WHERE intent_ordinal=? ORDER BY queue_id LIMIT 129", (intent["ordinal"],)).fetchall()
@@ -156,7 +170,8 @@ def queue_snapshot(state: Path, seat: str, after: int = 0) -> dict:
                     "add_helper": _helper(intent["add_helper_json"]),
                     "ids": [{"id": _text(item["queue_id"]), "cleanup_attempted": bool(item["cleanup_attempted"])} for item in ids[:MAX_IDS]],
                     "ids_complete": bool(intent["ids_complete"]), "created_at": intent["created_at"], "updated_at": intent["updated_at"],
-                    "stale_authority": intent["diagnostic"] == STALE_AUTHORITY})
+                    "stale_authority": intent["diagnostic"] == STALE_AUTHORITY,
+                    "side_sessions": _side_sessions(intent["side_sessions"]) if has_side else None})
             db.execute("ROLLBACK")
         if len(json.dumps(snapshot, separators=(",", ":")).encode()) > MAX_BYTES:
             return _failure("snapshot_byte_limit", True)
@@ -167,14 +182,8 @@ def queue_snapshot(state: Path, seat: str, after: int = 0) -> dict:
         return _failure("invalid_evidence")
 
 
-def eligible_scope(snapshot: dict, phase: str = "ended") -> dict | None:
-    """Unique current hooked Codex scope at the requested native phase (Ended by default)."""
-    if not snapshot.get("ok") or snapshot.get("truncated") or not snapshot.get("census_complete"):
-        return None
-    connected = [b for b in snapshot["bindings"] if b["connected"] and b["top_level"]]
-    if len(connected) != 1:
-        return None
-    binding = connected[0]
+def _binding_scope(snapshot: dict, binding: dict, phase: str) -> dict | None:
+    """The queue-qualified view of one connected top-level binding at the requested native phase."""
     scope, seat = binding["scope"], snapshot["seat_scope"]
     if (not scope or binding["adapter"] != "codex" or not binding["registered"] or not binding["root_agent"]
             or seat["state"] != "resolved" or scope["generation"] != seat["generation"]
@@ -185,6 +194,38 @@ def eligible_scope(snapshot: dict, phase: str = "ended") -> dict | None:
     if len(native) != 1:
         return None
     return {"adapter": binding["adapter"], "scope": scope, "turn_id": native[0]["turn_id"], "ordinal": native[0]["ordinal"]}
+
+
+def eligible_scope(snapshot: dict, phase: str = "ended") -> dict | None:
+    """Unique current hooked Codex scope at the requested native phase (Ended by default)."""
+    if not snapshot.get("ok") or snapshot.get("truncated") or not snapshot.get("census_complete"):
+        return None
+    connected = [b for b in snapshot["bindings"] if b["connected"] and b["top_level"]]
+    if len(connected) != 1:
+        return None
+    return _binding_scope(snapshot, connected[0], phase)
+
+
+def process_root_scope(snapshot: dict, root_session: str, phase: str = "ended") -> dict | None:
+    """The queue scope of the process's root session when the seat's connected top-level bindings are all
+    one process (the root and its `/side` sessions). Same qualification as eligible_scope for the root binding;
+    `side_sessions` lists the other bindings' native sessions. None when the root is not exactly one of them,
+    the bindings span processes, or any binding lacks a process scope."""
+    if not snapshot.get("ok") or snapshot.get("truncated") or not snapshot.get("census_complete"):
+        return None
+    connected = [b for b in snapshot["bindings"] if b["connected"] and b["top_level"]]
+    scopes = [b["scope"] for b in connected]
+    if not connected or any(s is None for s in scopes):
+        return None
+    if len({(s["process"]["pid"], s["process"]["start"], s["kernel_boot"]) for s in scopes}) != 1:
+        return None
+    roots = [b for b in connected if b["scope"]["native_session"] == root_session]
+    if len(roots) != 1:
+        return None
+    qualified = _binding_scope(snapshot, roots[0], phase)
+    if qualified is None:
+        return None
+    return dict(qualified, side_sessions=sorted(b["scope"]["native_session"] for b in connected if b is not roots[0]))
 
 
 def _add_witness(intent):
@@ -199,12 +240,13 @@ def _add_witness(intent):
     return helper
 
 
-def queue_proof(before: dict, samples: list[dict], expectation: str) -> dict:
+def queue_proof(before: dict, samples: list[dict], expectation: str, baseline=...) -> dict:
     """Judge only the measured interval. Unknown is never positive transport proof.
 
     The Accepted row and its immutable arm-time Add witness remain readable after
     cleanup replaces the current helper. The pre-send matched Ended baseline must
-    still agree. Fulfillment is activity, never a receipt.
+    still agree. Fulfillment is activity, never a receipt. `baseline` defaults to the
+    seat's unique eligible scope; a case with `/side` sessions passes the root's.
     """
     result = {"passed": False, "expectation": expectation, "reasons": [], "attempts": [],
               "observed": {"samples": len(samples), "intents": 0, "armed": 0, "accepted": 0, "unknown": 0, "add_witnesses": 0},
@@ -221,7 +263,8 @@ def queue_proof(before: dict, samples: list[dict], expectation: str) -> dict:
     if any(s.get("seat") != before.get("seat") or s.get("after", 0) > before["watermark"] for s in samples):
         result["reasons"].append("wrong_seat_or_interval_projection_gap")
         return result
-    baseline = eligible_scope(before)
+    if baseline is ...:
+        baseline = eligible_scope(before)
     intents = [i for sample in samples for i in sample["intents"] if i["ordinal"] > before["watermark"]]
     attempts = {i["attempt"] for i in intents}
     result["observed"]["intents"] = len(attempts)
@@ -268,6 +311,32 @@ def queue_proof(before: dict, samples: list[dict], expectation: str) -> dict:
     result["transport_inference"] = "compositional no-native-typing inference from reviewed Accepted/no-fallback path"
     if len(json.dumps(result, separators=(",", ":")).encode()) > MAX_BYTES:
         result.update(passed=False, attempts=[], reasons=["proof_byte_limit"])
+    return result
+
+
+def side_queue_proof(before: dict, samples: list[dict], root_session: str) -> dict:
+    """queue_proof "accepted" for a process holding `/side` sessions: the baseline is the root's scope, the
+    accepted intent targets that exact root session, and it records the seat's side sessions (non-empty,
+    never the root). Native-only (no intent) fails: the proof is required, never inferred."""
+    result = queue_proof(before, samples, "accepted", baseline=process_root_scope(before, root_session))
+    result["root_session"] = root_session
+    if not result["passed"]:
+        return result
+    intents = {(i["attempt"], i["ordinal"]): i for sample in samples for i in sample["intents"]}
+    for attempt in result["attempts"]:
+        intent = intents.get((attempt["attempt"], attempt["ordinal"]))
+        sides = intent.get("side_sessions") if intent else None
+        attempt["side_sessions"] = sides
+        if intent is None or intent["scope"]["native_session"] != root_session:
+            reason = "accepted_intent_not_root_session"
+        elif sides is None:
+            reason = "side_sessions_unavailable"
+        elif not sides or root_session in sides:
+            reason = "side_sessions_empty_or_include_root"
+        else:
+            continue
+        result["passed"] = False
+        result["reasons"].append(reason)
     return result
 
 

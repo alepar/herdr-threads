@@ -290,6 +290,7 @@ mod fixtures {
         CheckInResult {
             context_disposition: CheckInContextDisposition::Current,
             context: CallerClaim {
+                auxiliary_session: false,
                 host: crate::test_support::test_host_locator(),
                 instance: "instance-1".into(),
                 seat: SeatId::new("seat-a"),

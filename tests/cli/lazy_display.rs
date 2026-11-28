@@ -27,6 +27,7 @@ impl Fixture {
             root,
             journal,
             claim: CallerClaim {
+                auxiliary_session: false,
                 host: herdr_threads::test_support::test_host_locator(),
                 instance: "instance".into(),
                 seat: SeatId::new("seat"),
@@ -431,6 +432,7 @@ fn lazy_display_default_text_routes_v2_settles_complete_body() {
     assert_eq!(
         completion.claim,
         CallerClaim {
+            auxiliary_session: false,
             host: herdr_threads::test_support::test_host_locator(),
             instance: herdr_threads::node::NodeUuid::from_u128(1).to_string(),
             seat: SeatId::new("seat"),

@@ -1,0 +1,12 @@
+diff --git a/src/test_support/mod.rs b/src/test_support/mod.rs
+index ad688e16d..aaad249a9 100644
+--- a/src/test_support/mod.rs
++++ b/src/test_support/mod.rs
+@@ -569,6 +569,7 @@ pub mod synthetic_fourth {
+                 metadata: EventMetadata {
+                     native_turn_id: None,
+                     turn_end: false,
++                    auxiliary_session: false,
+                     enrollment_witness: None,
+                     skill_pointer: false,
+                     callback_deadline: None,

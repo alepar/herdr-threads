@@ -561,15 +561,16 @@ State is preserved. There is no data-deletion command.
 
 ### Opt in to programmatic wake
 
-Queue-backed wake (Codex on Linux and macOS) is off by default. Set `"programmatic_wake": true` alongside
-the existing keys in the selected install's `<state>/node/settings.json` to opt
-in; false or an absent key keeps native typed wake. Like other node settings,
-the value is read at the next daemon start. This changes only new programmatic
-adds. Existing intent fences and recovery remain active when off, and cleanup
-may still run helpers for previously queued work. Bodies and ACKs still arrive
-through the normal hooks.
+Queue-backed wake (Codex on Linux and macOS) is off by default and is enabled per seat:
+`ht human config seat set --seat <seat> programmatic_wake on` (`off` or `unset` returns to
+native typed wake). It takes effect on the seat's next wake attempt, with no daemon restart.
+`ht doctor` lists the seats that have it on. The `"programmatic_wake"` key of
+`<state>/node/settings.json` is obsolete: it still loads and has no effect, and doctor says
+so. This changes only new programmatic adds. Existing intent fences and recovery remain
+active when off, and cleanup may still run helpers for previously queued work. Bodies and
+ACKs still arrive through the normal hooks.
 
 `--queue-proof` enables queue wake only in the release driver's owned isolated
 qualification instance; it does not edit the operator's settings or restart the
-operator's daemon. The release driver also selects that proof when the selected
-install has opted in.
+operator's daemon. `scripts/release-qualify` selects the proof only with an explicit
+`--queue-proof` (Linux and macOS); it reads no operator settings.

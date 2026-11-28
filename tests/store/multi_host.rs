@@ -436,6 +436,7 @@ const FOREIGN_NODE: &str = "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa";
 
 fn claim(seat: &str, socket: &str, target: &str) -> CallerClaim {
     CallerClaim {
+        auxiliary_session: false,
         host: HostLocator::parse(socket).unwrap(),
         instance: NODE.into(),
         seat: SeatId::new(seat),

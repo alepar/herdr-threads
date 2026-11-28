@@ -1,0 +1,1 @@
+LEAK rule=orphan-temp pid=3930011 ppid=1 cmd=$HOME/AleCode/herdr-threads/.worktrees/release-233/bin/herdr-threads daemon run --state-dir /tmp/ht-wake-e2e.h21f8pzr/state --host-endpoint /tmp/hwe.v5xu842d/h.sock

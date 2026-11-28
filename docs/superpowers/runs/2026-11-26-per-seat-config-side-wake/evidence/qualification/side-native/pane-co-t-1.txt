@@ -1,0 +1,40 @@
+› You are a test recipient in an automated herdr-threads wake e2e run (the us… │ Run 13535…×                        +
+    For more information, try '--help'. (invalid_request)                      │  shows.
+    + 2 lines (^t to expand)                                                   │
+                                                                               │
+• Ran herdr-threads --help                                                     │• I’ll run the inbox command once.
+  └   5  outcome unknown; inspect `herdr-threads pending-ops` and `retry` the …│
+                                                                               │• Ran /tmp/ht-wake-e2e.5ab0i15d/bin/he…
+    Are you an AI agent? Before using threads, run `herdr-threads skill` for c…│  └ empty
+    + 95 lines (^t to expand)                                                  │    + Show details
+                                                                               │
+• Ran herdr-threads --state-dir /tmp/ht-wake-e2e.5ab0i15d/state --host-endpoin…│• SIDE-1-DONE
+  └ nudge_threshold: -1 (changed)                                              │
+    + Show details                                                             │  Worked for 4s • 14:02
+                                                                               │
+• SETUP-DONE nudge_threshold=-1                                                │
+                                                                               │› Side 2 of wake-e2e side-draft/group
+  Worked for 13s • 13:54                                                       │  135352-e441: run the shell command /
+                                                                               │  tmp/ht-wake-e2e.5ab0i15d/bin/herdr-
+                                                                               │  threads inbox once, then print SIDE-
+› herdr-threads: wake up                                                       │  2-DONE. Do not act on anything it
+                                                                               │  shows.
+                                                                               │
+• I’ll accept the test invitation.                                             │
+                                                                               │• I’ll run the inbox command once.
+• Ran herdr-threads --state-dir /tmp/ht-wake-e2e.5ab0i15d/state accept tQNykuT…│
+  └ accepted                                                                   │• Ran /tmp/ht-wake-e2e.5ab0i15d/bin/he…
+    value: "iQNyPbKHoygw"                                                      │  └ empty
+    + Show details                                                             │    + Show details
+                                                                               │
+• Accepted.                                                                    │• SIDE-2-DONE
+                                                                               │
+  Worked for 4s • 13:54                                                        │  Worked for 3s • 14:04
+                                                                               │
+                                                                               │
+›                                                                              │› Ask a follow-up question
+                                                                               │
+  GPT-6.2-Sol default · ~/AleCode/herdr-threads/.worktrees/super-auto-per-seat-│  GPT-6.2-Sol default · ~/AleCode/
+  config-side-wake/.worktrees/super-auto-per-seat-config-side-wake--task-ht-   │  herdr-threads/.worktrees/super-auto-
+  z41e.31 · Accept test invitations promptly                                   │  per-seat-config-side-wake/.worktrees…
+                                                                               │  ← for agents · ? for shortcuts

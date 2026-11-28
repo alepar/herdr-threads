@@ -1,0 +1,12 @@
+diff --git a/tests/harness/agy_delivery.rs b/tests/harness/agy_delivery.rs
+index 37b40feb6..b10818cb8 100644
+--- a/tests/harness/agy_delivery.rs
++++ b/tests/harness/agy_delivery.rs
+@@ -54,6 +54,7 @@ fn runtime(now: u64, identity: &Identity) -> Runtime {
+ }
+ fn claim(generation: u64) -> CallerClaim {
+     CallerClaim {
++        auxiliary_session: false,
+         host: crate::test_support::test_host_locator(),
+         instance: "34750f98bd59fcfc946da45aaabe933b".into(),
+         seat: SeatId::new("s"),

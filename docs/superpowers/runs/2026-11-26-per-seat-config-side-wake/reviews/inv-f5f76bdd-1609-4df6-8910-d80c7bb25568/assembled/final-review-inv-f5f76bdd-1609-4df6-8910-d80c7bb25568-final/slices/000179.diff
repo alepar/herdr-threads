@@ -1,0 +1,12 @@
+diff --git a/tests/protocol/delivery.rs b/tests/protocol/delivery.rs
+index 4881e79e1..c5430aaca 100644
+--- a/tests/protocol/delivery.rs
++++ b/tests/protocol/delivery.rs
+@@ -11,6 +11,7 @@ use serde_json::json;
+ 
+ fn claim(role: CallerRole) -> CallerClaim {
+     CallerClaim {
++        auxiliary_session: false,
+         host: crate::test_support::test_host_locator(),
+         instance: "11111111111141118111111111111111".into(),
+         seat: SeatId::new("s1"),

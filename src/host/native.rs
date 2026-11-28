@@ -1591,6 +1591,15 @@ impl HostPort for NativeCli {
         self.wake_submit_limit(context).map(|_| ())
     }
 
+    fn admit_queue_wake(
+        &self,
+        target: &SafeWakeTarget,
+        siblings: bool,
+        context: &HostCallContext,
+    ) -> Result<(), ApiError> {
+        self.queue_wake_admission(target, siblings, context)
+    }
+
     /// Fresh witnessed `agent.get` recheck immediately before a witnessed
     /// `agent.prompt`: the same pane and terminal in the same server
     /// incarnation and connection epoch, a recognized harness agent
@@ -1953,6 +1962,36 @@ fn cooperative_wake_ready(
     target: &SafeWakeTarget,
     registry: &Registry,
 ) -> Result<(), String> {
+    cooperative_wake_identity(agent, target, registry)?;
+    let status = agent
+        .get("agent_status")
+        .and_then(serde_json::Value::as_str);
+    let ready = status.is_some_and(|status| WAKE_READY_STATUSES.contains(&status));
+    if !ready {
+        return Err(not_awaiting_input(status));
+    }
+    Ok(())
+}
+
+fn not_awaiting_input(status: Option<&str>) -> String {
+    format!(
+        "agent is not awaiting input (status {})",
+        status
+            .unwrap_or("none")
+            .chars()
+            .take(32)
+            .collect::<String>()
+    )
+}
+
+/// The Herdr agent record names the wake target's pane and terminal, is a recognized harness of
+/// the bound kind, and the target is a cooperative agent: every `cooperative_wake_ready` check
+/// except the status.
+fn cooperative_wake_identity(
+    agent: &serde_json::Value,
+    target: &SafeWakeTarget,
+    registry: &Registry,
+) -> Result<(), String> {
     let text = |name: &str| agent.get(name).and_then(serde_json::Value::as_str);
     if text("pane_id") != Some(target.target.as_str())
         || text("terminal_id") != Some(target.terminal.as_str())
@@ -1990,18 +2029,6 @@ fn cooperative_wake_ready(
             return Err("no bound harness for a cooperative wake".into());
         }
         _ => {}
-    }
-    let status = text("agent_status");
-    let ready = status.is_some_and(|status| WAKE_READY_STATUSES.contains(&status));
-    if !ready {
-        return Err(format!(
-            "agent is not awaiting input (status {})",
-            status
-                .unwrap_or("none")
-                .chars()
-                .take(32)
-                .collect::<String>()
-        ));
     }
     Ok(())
 }
@@ -2237,6 +2264,116 @@ impl NativeCli {
         Ok(())
     }
 
+    /// The queue transport's admission (`HostPort::admit_queue_wake`): the identity, incarnation,
+    /// epoch and budget checks of `idle_wake_gate`, then the status (`working` only beside
+    /// `siblings`) and the composer (empty or an adapter-declared idle placeholder). It never
+    /// keeps, reads or resets a focus window: the queue types nothing, so a focused pane needs no
+    /// dwell and a queue attempt must not qualify the native composer window.
+    fn queue_wake_admission(
+        &self,
+        target: &SafeWakeTarget,
+        siblings: bool,
+        context: &HostCallContext,
+    ) -> Result<(), ApiError> {
+        let refuse = |detail: &str| {
+            error(
+                ErrorCode::TargetUnsafe,
+                format!("queue wake refused before arm: {detail}"),
+            )
+        };
+        if target.basis != WakeTargetBasis::CooperativeAgent {
+            return Err(refuse("native execution is unverified"));
+        }
+        if self.safe_prompt_capability() != CapabilityState::Supported {
+            return Err(refuse("no server incarnation witness on this platform"));
+        }
+        if context.expected_boot.as_ref() != Some(&target.host_boot)
+            || context.expected_epoch != Some(target.epoch)
+            || self.epoch() != target.epoch
+        {
+            return Err(refuse("host context changed"));
+        }
+        let budget = &context.budget;
+        if budget.cancellation.is_cancelled() {
+            return Err(error(ErrorCode::Cancelled, "wake prompt cancelled"));
+        }
+        let left = budget
+            .deadline
+            .0
+            .saturating_sub(self.clock.monotonic_now().0);
+        if left <= 2 * MIN_PROMPT_MILLIS {
+            return Err(error(
+                ErrorCode::DeadlineExceeded,
+                "insufficient wake prompt budget",
+            ));
+        }
+        let recheck_limit = Duration::from_millis(
+            left.saturating_sub(MIN_PROMPT_MILLIS)
+                .min(PROMPT_RECHECK_MILLIS),
+        );
+        let (raw, witness) = match self.run_witnessed(
+            &["agent", "get", target.target.as_str()],
+            budget,
+            recheck_limit,
+        ) {
+            Ok(response) => response,
+            Err(failure) => {
+                return Err(match failure.code {
+                    ErrorCode::Cancelled
+                    | ErrorCode::DeadlineExceeded
+                    | ErrorCode::HostUnavailable => failure,
+                    _ => refuse(&failure.detail),
+                });
+            }
+        };
+        if !self.same_incarnation(witness.as_ref(), target) || self.epoch() != target.epoch {
+            return Err(refuse("host server incarnation or epoch changed"));
+        }
+        let agent = serde_json::from_str::<serde_json::Value>(&raw)
+            .ok()
+            .and_then(|value| value.pointer("/result/agent").cloned())
+            .ok_or_else(|| refuse("unreadable agent recheck"))?;
+        cooperative_wake_identity(&agent, target, self.registry)
+            .map_err(|detail| refuse(&detail))?;
+        let status = agent
+            .get("agent_status")
+            .and_then(serde_json::Value::as_str);
+        let admitted = match status {
+            Some(status) if WAKE_READY_STATUSES.contains(&status) => true,
+            // Herdr reports one status per pane: beside other bindings of the root's process it
+            // may be theirs, and the root's own idle evidence is its hook (checked by the caller).
+            Some("working") => siblings,
+            _ => false,
+        };
+        if !admitted {
+            return Err(refuse(&not_awaiting_input(status)));
+        }
+        let harness = target
+            .bound_harness
+            .as_deref()
+            .and_then(|id| self.registry.agent(id).ok())
+            .map(Harness::Agent)
+            .ok_or_else(|| refuse("no bound harness for composer read"))?;
+        match self.read_composer_text(&target.target, harness, context)? {
+            ComposerRead::Empty => {}
+            ComposerRead::Unreadable => return Err(refuse("composer is unreadable")),
+            ComposerRead::Text(text) | ComposerRead::Unsafe { text, .. } => {
+                if !self
+                    .composer_policy(harness)
+                    .is_some_and(|policy| policy.is_idle_placeholder(&text))
+                {
+                    return Err(refuse("composer has typed text"));
+                }
+            }
+        }
+        self.check_epoch(target.epoch)?;
+        self.check_context(context)?;
+        if budget.cancellation.is_cancelled() {
+            return Err(error(ErrorCode::Cancelled, "wake prompt cancelled"));
+        }
+        Ok(())
+    }
+
     fn wake_submit_limit(&self, context: &HostCallContext) -> Result<Duration, ApiError> {
         let left = context
             .budget
@@ -2393,8 +2530,8 @@ impl NativeCli {
         } else {
             (status_ui(&pane, self.registry), None)
         };
-        let reset_empty = !matches!(pane.status.as_str(), "idle" | "done")
-            || (composer_ui && ui != HostUiState::Idle);
+        // The composer read inside `observed_ui` already reset the window unless it read empty.
+        let reset_empty = !matches!(pane.status.as_str(), "idle" | "done");
         let sequence = self.next_sequence();
         let mut observation = self.observation(
             pane,
@@ -4991,6 +5128,257 @@ pub(crate) mod tests {
         }
     }
 
+    /// A codex agent record in the wake fixture's pane, with `status` and the pane focus.
+    #[cfg(any(target_os = "macos", target_os = "linux"))]
+    fn codex_agent(status: &str, focused: bool) -> Value {
+        let mut agent = wake_agent(status, Some("codex"), "term_1");
+        agent["focused"] = json!(focused);
+        agent
+    }
+
+    /// Catches the queue admission judging the composer like native typing (refusing a displayed
+    /// `/side` placeholder), keeping a focus dwell, or sending input: it reads the agent record and
+    /// the composer once and nothing else, whatever the status, focus or siblings.
+    #[cfg(any(target_os = "macos", target_os = "linux"))]
+    #[test]
+    fn admit_queue_wake_admits_an_idle_root_on_empty_and_side_composers() {
+        for status in ["idle", "done"] {
+            for screen in [CODEX_EMPTY, CODEX_SIDE] {
+                for focused in [false, true] {
+                    for siblings in [false, true] {
+                        let (result, methods) = cooperative_wake_submit(
+                            registry::builtins(),
+                            vec![
+                                recheck_exchange(codex_agent(status, focused)),
+                                detection_exchange(screen),
+                            ],
+                            None,
+                            |target, _| target.bound_harness = Some("codex".into()),
+                            |cli, target, context, _| {
+                                cli.admit_queue_wake(target, siblings, context)
+                            },
+                        );
+                        result.unwrap_or_else(|error| {
+                            panic!("{status} focused={focused} siblings={siblings}: {error:?}")
+                        });
+                        assert_eq!(
+                            *methods.lock().unwrap(),
+                            ["pane.get", "agent.get", "agent.read"]
+                        );
+                    }
+                }
+            }
+        }
+    }
+
+    /// Catches a lone root admitted while Herdr shows `working` (its own turn), and siblings
+    /// refused it (a busy side turn the pane status may be showing).
+    #[cfg(any(target_os = "macos", target_os = "linux"))]
+    #[test]
+    fn admit_queue_wake_working_admits_only_beside_siblings() {
+        for screen in [CODEX_SIDE, CODEX_EMPTY] {
+            let (result, methods) = cooperative_wake_submit(
+                registry::builtins(),
+                vec![
+                    recheck_exchange(codex_agent("working", false)),
+                    detection_exchange(screen),
+                ],
+                None,
+                |target, _| target.bound_harness = Some("codex".into()),
+                |cli, target, context, _| cli.admit_queue_wake(target, true, context),
+            );
+            result.unwrap();
+            assert_eq!(
+                *methods.lock().unwrap(),
+                ["pane.get", "agent.get", "agent.read"]
+            );
+            let (result, methods) = cooperative_wake_submit(
+                registry::builtins(),
+                vec![recheck_exchange(codex_agent("working", false))],
+                None,
+                |target, _| target.bound_harness = Some("codex".into()),
+                |cli, target, context, _| cli.admit_queue_wake(target, false, context),
+            );
+            let error = result.unwrap_err();
+            assert_eq!(error.code, ErrorCode::TargetUnsafe);
+            assert!(error.detail.contains("status working"), "{}", error.detail);
+            // The lone-root refusal comes before the composer read.
+            assert_eq!(*methods.lock().unwrap(), ["pane.get", "agent.get"]);
+        }
+    }
+
+    /// Catches a typed draft (side or root), an unreadable screen, a blocked or unknown status
+    /// (even beside siblings), another terminal or harness kind, or a stale context admitting a
+    /// queue wake.
+    #[cfg(any(target_os = "macos", target_os = "linux"))]
+    #[test]
+    fn admit_queue_wake_refuses_typed_text_modal_blocked_and_identity() {
+        for screen in [CODEX_DRAFT, CODEX_SIDE_DRAFT, "unknown layout"] {
+            let (result, methods) = cooperative_wake_submit(
+                registry::builtins(),
+                vec![
+                    recheck_exchange(codex_agent("idle", false)),
+                    detection_exchange(screen),
+                ],
+                None,
+                |target, _| target.bound_harness = Some("codex".into()),
+                |cli, target, context, _| cli.admit_queue_wake(target, true, context),
+            );
+            let error = result.unwrap_err();
+            assert_eq!(error.code, ErrorCode::TargetUnsafe);
+            assert!(
+                error
+                    .detail
+                    .starts_with("queue wake refused before arm: composer "),
+                "{}",
+                error.detail
+            );
+            assert_eq!(
+                *methods.lock().unwrap(),
+                ["pane.get", "agent.get", "agent.read"]
+            );
+        }
+        for agent in [
+            codex_agent("blocked", false),
+            codex_agent("unknown", false),
+            wake_agent("idle", Some("codex"), "other_terminal"),
+            wake_agent("idle", Some("claude"), "term_1"),
+        ] {
+            let (result, methods) = cooperative_wake_submit(
+                registry::builtins(),
+                vec![recheck_exchange(agent)],
+                None,
+                |target, _| target.bound_harness = Some("codex".into()),
+                |cli, target, context, _| cli.admit_queue_wake(target, true, context),
+            );
+            assert_eq!(result.unwrap_err().code, ErrorCode::TargetUnsafe);
+            assert_eq!(*methods.lock().unwrap(), ["pane.get", "agent.get"]);
+        }
+        for case in 0..3 {
+            let (result, methods) = cooperative_wake_submit(
+                registry::builtins(),
+                vec![],
+                None,
+                |target, context| match case {
+                    0 => context.expected_epoch = Some(target.epoch + 1),
+                    1 => context.budget.cancellation.cancel(),
+                    _ => context.budget.deadline = MonoInstant(2 * MIN_PROMPT_MILLIS),
+                },
+                |cli, target, context, _| cli.admit_queue_wake(target, true, context),
+            );
+            assert_eq!(
+                result.unwrap_err().code,
+                match case {
+                    0 => ErrorCode::TargetUnsafe,
+                    1 => ErrorCode::Cancelled,
+                    _ => ErrorCode::DeadlineExceeded,
+                }
+            );
+            assert_eq!(*methods.lock().unwrap(), ["pane.get"]);
+        }
+    }
+
+    /// Catches a queue attempt reading, resetting or qualifying the native focus window: the
+    /// native dwell still starts at its own first empty read.
+    #[cfg(any(target_os = "macos", target_os = "linux"))]
+    #[test]
+    fn queue_admission_leaves_the_native_dwell_untouched() {
+        // One focused codex pane; each sample is (clock, queue admission?, screen).
+        let run = |samples: &[(u64, bool, &'static str)]| -> Vec<Result<(), ApiError>> {
+            let clock = Arc::new(NudgeClock(AtomicU64::new(0)));
+            let mut exchanges = vec![pane_exchange()];
+            for (_, _, screen) in samples {
+                exchanges.push(recheck_exchange(codex_agent("idle", true)));
+                exchanges.push(detection_exchange(*screen));
+            }
+            let (socket, mut cli, worker) = serve_sequence(exchanges);
+            cli.clock = clock.clone();
+            let observation = cli
+                .observe_current_target(&HostTargetId::new("w4:p1"), &pane_agent_context())
+                .unwrap();
+            let mut target = cli
+                .safe_wake_target(&SeatId::new("seat_1"), &observation)
+                .unwrap();
+            target.bound_harness = Some("codex".into());
+            let results = samples
+                .iter()
+                .map(|(at, queue, _)| {
+                    clock.0.store(*at, Ordering::SeqCst);
+                    let mut context = wake_context(&observation);
+                    context.budget.deadline = MonoInstant(at + 10_000);
+                    if *queue {
+                        cli.admit_queue_wake(&target, true, &context)
+                    } else {
+                        cli.check_idle_wake(&target, &context)
+                    }
+                })
+                .collect();
+            worker.join().unwrap();
+            fs::remove_file(socket).unwrap();
+            results
+        };
+        let dwell = "focused composer has not been observed empty for one minute";
+        // (a) a queue admission on the side composer between two native samples neither resets
+        // nor consumes the native window.
+        let results = run(&[
+            (0, false, CODEX_EMPTY),
+            (30_000, true, CODEX_SIDE),
+            (60_000, false, CODEX_EMPTY),
+        ]);
+        assert!(results[0].as_ref().unwrap_err().detail.contains(dwell));
+        results[1].as_ref().unwrap();
+        results[2].as_ref().unwrap();
+        // (b) a queue admission on an empty composer never qualifies the native window.
+        let results = run(&[
+            (0, true, CODEX_EMPTY),
+            (1, false, CODEX_EMPTY),
+            (60_001, false, CODEX_EMPTY),
+        ]);
+        results[0].as_ref().unwrap();
+        assert!(results[1].as_ref().unwrap_err().detail.contains(dwell));
+        results[2].as_ref().unwrap();
+    }
+
+    /// Catches native typing admitting the real `/side` placeholder.
+    #[cfg(any(target_os = "macos", target_os = "linux"))]
+    #[test]
+    fn native_admission_still_refuses_the_real_side_capture() {
+        let (result, methods) = cooperative_wake_submit(
+            registry::builtins(),
+            vec![
+                recheck_exchange(wake_agent("idle", Some("codex"), "term_1")),
+                detection_exchange(CODEX_SIDE),
+            ],
+            None,
+            |target, _| target.bound_harness = Some("codex".into()),
+            |cli, target, context, _| cli.check_idle_wake(target, context),
+        );
+        assert_eq!(result.unwrap_err().code, ErrorCode::TargetUnsafe);
+        assert_eq!(
+            *methods.lock().unwrap(),
+            ["pane.get", "agent.get", "agent.read"]
+        );
+        let (result, methods) = cooperative_wake_submit(
+            registry::builtins(),
+            vec![
+                recheck_exchange(wake_agent("idle", Some("codex"), "term_1")),
+                detection_exchange(CODEX_SIDE),
+            ],
+            None,
+            |target, _| target.bound_harness = Some("codex".into()),
+            |cli, target, context, _| {
+                cli.submit_prompt_if_owed(target, "wake marker", context, &|| {
+                    panic!("a side composer must refuse before still_owed")
+                })
+            },
+        );
+        assert_eq!(result.unwrap_err().code, ErrorCode::TargetUnsafe);
+        assert_eq!(
+            *methods.lock().unwrap(),
+            ["pane.get", "agent.get", "agent.read"]
+        );
+    }
+
     #[cfg(any(target_os = "macos", target_os = "linux"))]
     #[test]
     fn check_idle_wake_refuses_stale_context_cancelled_and_short_budget() {
@@ -5977,6 +6365,62 @@ pub(crate) mod tests {
         assert_eq!(*methods.lock().unwrap(), ["pane.get", "agent.get"]);
     }
 
+    /// A /side chat's composer is not the wake target: the wake is refused before the owed check and
+    /// nothing is typed; once the composer reads the main placeholder again the wake is prompted.
+    #[cfg(any(target_os = "macos", target_os = "linux"))]
+    #[test]
+    fn cooperative_wake_defers_on_a_side_composer_and_prompts_once_it_reads_empty() {
+        let side = CODEX_EMPTY.replace("› Ask Codex to do anything", "› Ask a follow-up question");
+        let (result, methods) = cooperative_wake_submit(
+            registry::builtins(),
+            vec![
+                recheck_exchange(wake_agent("idle", Some("codex"), "term_1")),
+                detection_exchange(side),
+            ],
+            None,
+            |target, _| target.bound_harness = Some("codex".into()),
+            |cli, target, context, _| {
+                cli.submit_prompt_if_owed(target, "wake marker", context, &|| {
+                    panic!("a side composer must refuse before still_owed")
+                })
+            },
+        );
+        assert_eq!(result.unwrap_err().code, ErrorCode::TargetUnsafe);
+        assert_eq!(
+            *methods.lock().unwrap(),
+            ["pane.get", "agent.get", "agent.read"]
+        );
+
+        // The same pane with the main placeholder back: prompted.
+        let prompt: Exchange = Box::new(move |stream, request| {
+            assert_eq!(request["method"], "agent.prompt");
+            assert_eq!(
+                request["params"],
+                json!({"target":"w4:p1","text":"wake marker"})
+            );
+            answer(
+                stream,
+                &request,
+                json!({"type":"agent_prompted","agent":wake_agent("idle", Some("codex"), "term_1")}),
+            );
+        });
+        let (result, methods) = cooperative_wake_submit(
+            registry::builtins(),
+            vec![
+                recheck_exchange(wake_agent("idle", Some("codex"), "term_1")),
+                detection_exchange(CODEX_EMPTY.to_owned()),
+                prompt,
+            ],
+            None,
+            |target, _| target.bound_harness = Some("codex".into()),
+            |cli, target, context, _| {
+                cli.submit_prompt_if_owed(target, "wake marker", context, &|| Ok(true))
+            },
+        );
+        assert_eq!(result.unwrap(), Some(ports::PromptOutcome::Submitted));
+        assert_eq!(methods.lock().unwrap().last().unwrap(), "agent.prompt");
+    }
+
     /// Characterizes the shared Native check/type gap, not a repaired safety property or the
     /// cause of a native qualification incident. The endpoint records an RPC, not UI typing.
     #[cfg(any(target_os = "macos", target_os = "linux"))]
@@ -6629,6 +7073,15 @@ pub(crate) mod tests {
     #[cfg(any(target_os = "macos", target_os = "linux"))]
     const CLAUDE_IMAGE: &str = include_str!(
         "../../docs/evidence/poke-spike/captures/claude-q2-image-placeholder.read-detection.txt"
+    );
+    const CODEX_SIDE: &str = include_str!(
+        "../../docs/evidence/ansi-composer/captures/codex-0.163.0-side.read-detection.txt"
+    );
+    const CODEX_SIDE_DRAFT: &str = include_str!(
+        "../../docs/evidence/ansi-composer/captures/codex-0.163.0-side-draft.read-detection.txt"
+    );
+    const CODEX_DRAFT: &str = include_str!(
+        "../../docs/evidence/ansi-composer/captures/codex-0.163.0-draft.read-detection.txt"
     );
     const CODEX_EMPTY: &str =
         include_str!("../../docs/evidence/poke-spike/captures/codex-q6-workers.read-detection.txt");

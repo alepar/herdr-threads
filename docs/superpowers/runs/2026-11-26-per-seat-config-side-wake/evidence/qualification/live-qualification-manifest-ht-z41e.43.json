@@ -1,0 +1,110 @@
+{
+ "task": "ht-z41e.43",
+ "binary_sha256": "2a096d766a6fe65b06a8e33f9c55b339d938283604360c751865742eb88d3ae1",
+ "herdr": "0.9.5 (private, scripts/wake-e2e-herdr)",
+ "codex": "codex-cli 0.172.0",
+ "invocations": [
+  {
+   "dir": "docs/superpowers/runs/2026-11-26-per-seat-config-side-wake/evidence/qualification/side-queue-focused",
+   "sha": "7c32531a0061cf89d009acdbfd70671fb0afd4b3",
+   "tree": "46bc66d71499f2651f53d4b131e6ccb0657249f2",
+   "command": "scripts/wake-e2e-herdr 0.9.5 --harness codex --codex-auth-home ~/.aisw/profiles/codex/codex-2 --queue-proof --cases side-queue-focused/group",
+   "exit": 1,
+   "rows": "0/1",
+   "leak_check": "side-queue-focused/leak-check.txt"
+  },
+  {
+   "dir": "docs/superpowers/runs/2026-11-26-per-seat-config-side-wake/evidence/qualification/root-draft-queue",
+   "sha": "fc3612e3f",
+   "tree": "567a461eb792675fb9c2aaed27c8532257dbad66",
+   "command": "scripts/wake-e2e-herdr 0.9.5 --harness codex --codex-auth-home ~/.aisw/profiles/codex/codex-2 --queue-proof --cases root-draft-queue/group",
+   "exit": 0,
+   "rows": "1/1",
+   "leak_check": "root-draft-queue/leak-check.txt"
+  },
+  {
+   "dir": "docs/superpowers/runs/2026-11-26-per-seat-config-side-wake/evidence/qualification/diag-plain-queue-control",
+   "sha": "144b17d85",
+   "command": "... --cases send-p0/group",
+   "exit": 0,
+   "rows": "3/3"
+  },
+  {
+   "dir": "docs/superpowers/runs/2026-11-26-per-seat-config-side-wake/evidence/qualification/diag-side-queue-control",
+   "sha": "bf335ef3f",
+   "command": "... --cases side-queue/group",
+   "exit": 1,
+   "rows": "0/1",
+   "leak_check": "diag-side-queue-control/leak-check.txt (another worktree's orphan)"
+  },
+  {
+   "dir": "docs/superpowers/runs/2026-11-26-per-seat-config-side-wake/evidence/qualification/attempt-1-driver-defects",
+   "sha": "52ca84695",
+   "exit": 1,
+   "rows": "0/2"
+  },
+  {
+   "dir": "docs/superpowers/runs/2026-11-26-per-seat-config-side-wake/evidence/qualification/attempt-2-queue-lane-not-engaged",
+   "sha": "bf335ef3f",
+   "exit": 1,
+   "rows": "0/1"
+  },
+  {
+   "dir": "docs/superpowers/runs/2026-11-26-per-seat-config-side-wake/evidence/qualification/attempt-3-root-draft-driver-defect",
+   "sha": "144b17d85",
+   "exit": 1,
+   "rows": "0/1"
+  },
+  {
+   "dir": "docs/superpowers/runs/2026-11-26-per-seat-config-side-wake/evidence/qualification/attempt-4-side-queue-focused",
+   "sha": "144b17d85",
+   "exit": 1,
+   "rows": "0/1"
+  },
+  {
+   "dir": "docs/superpowers/runs/2026-11-26-per-seat-config-side-wake/evidence/qualification/attempt-5-lazy-targets-fix-only",
+   "sha": "a7d1d92e0",
+   "exit": 1,
+   "rows": "0/1",
+   "note": "fix 1 only: intent never prepared (side read as plain fork)"
+  },
+  {
+   "dir": "docs/superpowers/runs/2026-11-26-per-seat-config-side-wake/evidence/qualification/attempt-6-side-auxiliary-composer-split",
+   "sha": "0f6082f72",
+   "exit": 1,
+   "rows": "0/1",
+   "note": "fix 1+2: intent prepared, refused at arm: composer has typed text (split view)"
+  },
+  {
+   "dir": "docs/superpowers/runs/2026-11-26-per-seat-config-side-wake/evidence/qualification/attempt-7-queue-accepted-settle-rule-defect",
+   "sha": "fix 1-3 (composer commit)",
+   "exit": 1,
+   "rows": "0/1",
+   "note": "Accepted in 0.4 s, delivered in root; driver settle rule failed it"
+  },
+  {
+   "dir": "docs/superpowers/runs/2026-11-26-per-seat-config-side-wake/evidence/qualification/side-queue-focused-accepted",
+   "sha": "d8e87ea03eebe01f742d33ed52f466b29dd8b4ac",
+   "tree": "40a9d17467dee48c411441b228ababebe6b581df",
+   "command": "scripts/wake-e2e-herdr 0.9.5 --harness codex --codex-auth-home ~/.aisw/profiles/codex/codex-2 --queue-proof --cases side-queue-focused/group",
+   "exit": 0,
+   "rows": "1/1",
+   "note": "FINAL: armed 0.49 s, first attempt, busy side (Herdr working), nothing typed into the side"
+  },
+  {
+   "dir": "docs/superpowers/runs/2026-11-26-per-seat-config-side-wake/evidence/qualification/root-draft-queue-final",
+   "sha": "d8e87ea03eebe01f742d33ed52f466b29dd8b4ac",
+   "tree": "40a9d17467dee48c411441b228ababebe6b581df",
+   "command": "scripts/wake-e2e-herdr 0.9.5 --harness codex --codex-auth-home ~/.aisw/profiles/codex/codex-2 --queue-proof --cases root-draft-queue/group",
+   "exit": 0,
+   "rows": "1/1",
+   "note": "FINAL root-draft row at the same SHA"
+  }
+ ],
+ "fix_pass": {
+  "head": "d8e87ea03eebe01f742d33ed52f466b29dd8b4ac",
+  "tree": "40a9d17467dee48c411441b228ababebe6b581df",
+  "binary_sha256": "ce0daa6ebd684e61b4b7724ef957d31b7f3c61a499be9169dec185e5403d11d2",
+  "note": "binary built from src at 0f6082f72's tree (later commits change scripts and docs only)"
+ }
+}

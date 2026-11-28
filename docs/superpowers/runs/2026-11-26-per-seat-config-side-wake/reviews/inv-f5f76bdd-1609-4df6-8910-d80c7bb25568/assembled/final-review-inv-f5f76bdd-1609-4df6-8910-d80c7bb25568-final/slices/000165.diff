@@ -1,0 +1,20 @@
+diff --git a/tests/harness/bridge.rs b/tests/harness/bridge.rs
+index d4d9954cf..b959cec86 100644
+--- a/tests/harness/bridge.rs
++++ b/tests/harness/bridge.rs
+@@ -52,6 +52,7 @@ fn fixture() -> (
+         role: Role::TopLevel,
+     };
+     let e = LifecycleEvent {
++        auxiliary_session: false,
+         harness: Harness::Codex,
+         source: "explicit".into(),
+         kind: EventKind::Startup,
+@@ -1780,6 +1781,7 @@ impl crate::ports::LocalClient for Mailbox {
+ }
+ fn tool_event() -> LifecycleEvent {
+     LifecycleEvent {
++        auxiliary_session: false,
+         harness: Harness::Codex,
+         source: "PreToolUse".into(),
+         kind: EventKind::Tool,

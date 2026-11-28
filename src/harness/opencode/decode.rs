@@ -128,6 +128,7 @@ pub(super) fn decode(
         metadata: EventMetadata {
             native_turn_id: None,
             turn_end: false,
+            auxiliary_session: false,
             skill_pointer,
             callback_deadline: None,
             context_source,

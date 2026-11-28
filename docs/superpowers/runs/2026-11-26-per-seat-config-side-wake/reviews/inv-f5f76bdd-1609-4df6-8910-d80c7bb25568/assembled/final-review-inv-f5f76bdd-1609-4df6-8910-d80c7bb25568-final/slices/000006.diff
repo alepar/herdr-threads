@@ -1,0 +1,15 @@
+diff --git a/docs/agent-usage.md b/docs/agent-usage.md
+index 332d61126..88ea9fa42 100644
+--- a/docs/agent-usage.md
++++ b/docs/agent-usage.md
+@@ -184,6 +184,10 @@ Accepting the active invitation to a direct one-to-one thread preserves each bin
+ 
+ **Upgrading.** Re-run `herdr-threads setup` (and `setup hermes --profile NAME`) so the SessionStart, SubagentStart/SubagentStop, Codex SessionEnd and Hermes finalize hooks are installed; `doctor` and `setup-status` report a `stale_install` finding naming the missing events and the exact `herdr-threads setup HARNESS` fix (`the installed claude integration lacks ...: re-run ... (agents started before the upgrade also need a restart)`). A binding migrated from the older model is re-adopted, cursors kept, by the first agent call whose session id matches the one it recorded; idle agents that have not made a call since the upgrade are not woken until they do. Mixed versions are refused: protocol 9 rejects an older CLI or daemon before dispatch, so upgrade both together. Linked nodes may run different versions: a node parks a replicated fact kind it does not know and still relays it.
+ 
++### Per-seat config
++
++Node-local settings per seat, a closed registry (`herdr-threads config seat list`: key, values, default, tier, effect; no daemon needed). `config seat get [KEY] [--seat S]` reads any local seat (subagents too; `(default)` marks an unset key). `config seat set KEY VALUE` and `config seat unset KEY` write an agent-tier key (today `nudge_threshold`, the same value `nudge-threshold` sets) on your own seat as its top-level binding. A human-tier key (today `programmatic_wake`, `on|off`) is written only by a person's `herdr-threads human config seat set|unset [--seat S] KEY [VALUE]`, which the harness permission policy asks about; `--seat` exists only on `get` and the human verbs, and a shell with no seat must pass it. A daemon that predates `seat.config_v1` refuses with one line.
++
+ ## Presentation contract
+ 
+ Every read result a person or an agent sees in text has a fixed presentation. Two text modes exist: `compact` (the non-TTY agent form, `src/protocol/output_compact.rs`) and `human` (the terminal form, `src/cli/human.rs`). `--json` is the wire form and is not covered here. The table lists, per result type and mode, the fields a rendering must keep and the labels printed before each next-step command. A label is always followed by an exact `herdr-threads ...` argv. `tests/cli/golden_contract.rs` renders one fixture per row, compares it with `tests/cli/golden/<result_type>.<mode>.txt`, and checks that every listed label is printed before a command. `HT_BLESS=1 cargo test golden_files_match` rewrites the golden files after an intended change.

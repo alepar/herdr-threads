@@ -71,6 +71,7 @@ impl Node {
     /// The cooperative claim of `seat` bound by [`Node::bind_commands`].
     pub fn claim_of(&self, seat: &SeatId) -> CallerClaim {
         CallerClaim {
+            auxiliary_session: false,
             host: herdr_threads::test_support::test_host_locator(),
             instance: self.id.to_string(),
             seat: seat.clone(),

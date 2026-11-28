@@ -1,0 +1,19 @@
+diff --git a/src/harness/claude/permission_rules.rs b/src/harness/claude/permission_rules.rs
+index 012b649ce..2dfac91da 100644
+--- a/src/harness/claude/permission_rules.rs
++++ b/src/harness/claude/permission_rules.rs
+@@ -66,6 +66,14 @@ mod tests {
+                 (" doctor --debug", "allow"),
+                 (" human", "ask"),
+                 (" human me init", "ask"),
++                (" human config seat set nudge_threshold 3", "ask"),
++                (
++                    " human config seat set --seat S programmatic_wake on",
++                    "ask",
++                ),
++                (" human config seat unset programmatic_wake", "ask"),
++                (" config seat set nudge_threshold 3", "allow"),
++                (" config seat get", "allow"),
+                 (" setup claude --json", "ask"),
+                 (" unsetup", "ask"),
+                 (" doctor fix", "ask"),

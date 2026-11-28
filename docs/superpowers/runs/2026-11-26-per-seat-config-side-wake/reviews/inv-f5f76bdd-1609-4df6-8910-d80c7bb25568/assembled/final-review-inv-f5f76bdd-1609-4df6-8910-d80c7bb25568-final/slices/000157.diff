@@ -1,0 +1,15 @@
+diff --git a/tests/fixtures/codex-0.163.0-side/session-start-root.json b/tests/fixtures/codex-0.163.0-side/session-start-root.json
+new file mode 100644
+index 000000000..7e110c493
+--- /dev/null
++++ b/tests/fixtures/codex-0.163.0-side/session-start-root.json
+@@ -0,0 +1,9 @@
++{
++  "session_id": "root-session",
++  "transcript_path": "/private/tmp/side-fixture/rollout-root-session.jsonl",
++  "cwd": "/private/tmp/side-fixture",
++  "hook_event_name": "SessionStart",
++  "model": "gpt-6.1-sol",
++  "permission_mode": "default",
++  "source": "startup"
++}

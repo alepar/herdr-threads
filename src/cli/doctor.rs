@@ -264,6 +264,38 @@ fn held_names_report(node_dir: &std::path::Path) -> Vec<Value> {
         .collect()
 }
 
+/// Seats whose `programmatic_wake` is `on`, read-only from the store file (queue wake is per seat
+/// since ht-z41e.4, so doctor is where an operator sees who has it). No store or an older schema
+/// names nothing.
+fn programmatic_wake_seats_report(node_dir: &std::path::Path) -> Vec<String> {
+    let Some(conn) = open_store_read_only(node_dir) else {
+        return Vec::new();
+    };
+    crate::store::seat_config::seats_with_value(
+        &conn,
+        crate::store::seat_config::PROGRAMMATIC_WAKE,
+        "on",
+    )
+    .unwrap_or_default()
+}
+
+/// The text lines for the per-seat queue wake report: one obsolete-setting line when
+/// `settings.json` still sets `programmatic_wake` (about 125 bytes), one `programmatic wake: on for
+/// <seat>, ...` line when a seat has it on. Neither appears on a default node.
+fn programmatic_wake_text(report: &Value) -> String {
+    let mut out = String::new();
+    if report["programmatic_wake_node_setting"] == json!("obsolete") {
+        out.push_str("settings.json: programmatic_wake is obsolete (no effect); use ht human config seat set --seat <seat> programmatic_wake on\n");
+    }
+    if let Some(seats) = report["programmatic_wake_seats"].as_array() {
+        let seats: Vec<&str> = seats.iter().filter_map(Value::as_str).collect();
+        if !seats.is_empty() {
+            out.push_str(&format!("programmatic wake: on for {}\n", seats.join(", ")));
+        }
+    }
+    out
+}
+
 /// How long doctor waits for one stored host's socket to classify itself.
 const DOCTOR_PROBE_BUDGET: std::time::Duration = std::time::Duration::from_millis(500);
 
@@ -1135,6 +1167,15 @@ fn report_captured(
             unattachable_hosts = unattachable_hosts_report(&paths.node_dir);
             mismatched_hosts = kind_mismatch_hosts_report(&paths.node_dir);
             held_names = held_names_report(&paths.node_dir);
+            if crate::daemon::settings::load(&paths.node_dir)
+                .is_ok_and(|settings| settings.programmatic_wake.is_some())
+            {
+                report["programmatic_wake_node_setting"] = json!("obsolete");
+            }
+            let programmatic_seats = programmatic_wake_seats_report(&paths.node_dir);
+            if !programmatic_seats.is_empty() {
+                report["programmatic_wake_seats"] = json!(programmatic_seats);
+            }
             agent_status = agent_status_report(&paths.node_dir, clock);
             report["daemon_log"] = json!(daemon_log_path(&paths).display().to_string());
             report["harness_manifest"] = harness_manifest_report(
@@ -1559,6 +1600,7 @@ pub(crate) fn render_debug_text_in(
         if report["update_check"].is_object() {
             out.push_str(&update_check_text(&report["update_check"]));
         }
+        out.push_str(&programmatic_wake_text(report));
         let daemon = &report["daemon"];
         out.push_str(&format!("daemon: {}\n", scalar(&daemon["state"])));
         for key in [
@@ -1672,6 +1714,7 @@ pub(crate) fn render_text_in(
         out.push_str("issue: daemon version differs from this CLI; inspect with --debug\n");
     }
     out.push_str(&wake_text(report, false));
+    out.push_str(&programmatic_wake_text(report));
     out.push_str(&super::legacy::report_lines(&report["legacy"]));
     for registration in &adapters {
         let hooks = &report["hooks"][registration.metadata().id];

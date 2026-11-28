@@ -1,0 +1,12 @@
+diff --git a/tests/daemon/self_retire.rs b/tests/daemon/self_retire.rs
+index d8463f5f0..3b81b5028 100644
+--- a/tests/daemon/self_retire.rs
++++ b/tests/daemon/self_retire.rs
+@@ -121,6 +121,7 @@ fn fixture(named: bool) -> Fixture {
+ 
+ fn claim(named: bool, harness: Harness, session: &str, execution: &str) -> CallerClaim {
+     CallerClaim {
++        auxiliary_session: false,
+         host: if named {
+             HostLocator::parse(NAMED_HOST_LOCATOR).unwrap()
+         } else {

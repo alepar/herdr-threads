@@ -1,0 +1,20 @@
+r1 [Should-fix] scripts/wake-e2e.py:2979
+r1 [Should-fix] tests/integration/herdr_release_smoke.rs:1175
+r1 [Should-fix] src/store/wake.rs:272
+r1 [Should-fix] src/scheduler/mod.rs:1012
+r1 [Nit] src/harness/codex.rs:1525
+r1 [Nit] src/store/seat_config.rs:489; src/store/seat_config.rs:462
+r1 [Nit] TRUST-POLICY.md:4277
+r1 [Nit] scripts/wake-e2e.py:3044
+r1 [Nit] docs/superpowers/runs/2026-11-26-per-seat-config-side-wake/2026-11-26-per-seat-config-side-wake-design.md:221
+r1 [Nit] src/harness/codex.rs:1525
+r1 [Must-fix] final review: run ignored herdr_release_wake on the final SHA
+r1 [Must-fix] final review: complete live-qualification row (ht-z41e.10)
+r1 [Must-fix] untested: whole-epic review incomplete (bounded hunks only)
+r1 [Must-fix] untested: no full-suite measurement of this branch
+r1 [Must-fix] untested: side-queue and side-native-defer never run live
+r1 [Must-fix] untested: Codex non-/side fork with original binding connected
+r1 [Must-fix] untested: review-inputs provenance gap
+r1 [Must-fix] untested: changed docs paths not inspected
+r1 [Must-fix] untested: TRUST-POLICY /side and stale-authority hunks not inspected
+r1 [Must-fix] untested: stale-authority fallback after flag flip only store-level

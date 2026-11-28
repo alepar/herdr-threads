@@ -19,8 +19,8 @@
 //!   spacing between wake attempts.
 //! - `"wake_batch_delay_ms"` (default 0, zero disables): initial
 //!   ordinary attention batching, separate from retry spacing.
-//! - `"programmatic_wake"` (default false): enable new programmatic wake
-//!   attempts. Retained effect fences and cleanup remain active when false.
+//! - `"programmatic_wake"` (obsolete, no effect): parsed so an existing file still loads. Queue
+//!   wake is per seat now: `ht human config seat set --seat S programmatic_wake on`.
 //! - `"auto_archive_after_ms"` (default 3600000, zero disables): quiet-channel grace.
 //! - `"mod_delivery": "on" | "off"` (default `on`): `off` refuses mod watch
 //!   registrations (`disabled`); delivery stays on hooks plus native wake.
@@ -75,7 +75,10 @@ pub struct InstanceSettings {
     pub receipt_default_ms: u64,
     pub minimum_wake_delay_ms: u64,
     pub wake_batch_delay_ms: u64,
-    pub programmatic_wake: bool,
+    /// Obsolete since ht-z41e.4: parsed so an existing file still loads under
+    /// `deny_unknown_fields`; has no effect. Queue wake is per seat
+    /// (`ht human config seat set --seat S programmatic_wake on`).
+    pub programmatic_wake: Option<bool>,
     #[serde(rename = "auto_archive_after_ms")]
     pub archive_after_ms: u64,
     pub mod_delivery: crate::protocol::watch::ModDeliverySetting,
@@ -112,7 +115,7 @@ impl Default for InstanceSettings {
             receipt_default_ms: DEFAULT_RECEIPT_MS,
             minimum_wake_delay_ms: DEFAULT_MINIMUM_WAKE_DELAY_MS,
             wake_batch_delay_ms: DEFAULT_WAKE_BATCH_DELAY_MS,
-            programmatic_wake: false,
+            programmatic_wake: None,
             archive_after_ms: crate::store::archival::DEFAULT_AFTER_MS,
             mod_delivery: crate::protocol::watch::ModDeliverySetting::default(),
             summary: crate::protocol::summary::SummarySettings::default(),
@@ -214,22 +217,19 @@ mod tests {
     }
 
     #[test]
-    fn programmatic_wake_accepts_explicit_booleans_only() {
+    fn obsolete_programmatic_wake_still_parses_booleans_only() {
         let absent = parse(b"{}").unwrap();
-        assert!(!absent.programmatic_wake);
-        assert!(
-            !crate::service::config::ServiceConfig::from_settings(&absent)
-                .unwrap()
-                .programmatic_wake()
-        );
+        assert_eq!(absent.programmatic_wake, None);
         let enabled = parse(br#"{"programmatic_wake":true}"#).unwrap();
-        assert!(enabled.programmatic_wake);
-        assert!(
-            crate::service::config::ServiceConfig::from_settings(&enabled)
+        assert_eq!(enabled.programmatic_wake, Some(true));
+        // No effect: the service config no longer carries the flag, it still builds.
+        assert!(crate::service::config::ServiceConfig::from_settings(&enabled).is_ok());
+        assert_eq!(
+            parse(br#"{"programmatic_wake":false}"#)
                 .unwrap()
-                .programmatic_wake()
+                .programmatic_wake,
+            Some(false)
         );
-        assert!(parse(br#"{"programmatic_wake":false}"#).is_ok());
         assert!(parse(br#"{"programmatic_wake":"on"}"#).is_err());
     }
     #[test]

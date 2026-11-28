@@ -1,0 +1,13 @@
+diff --git a/tests/combined.rs b/tests/combined.rs
+index 4d08323f7..58ca4fa5c 100644
+--- a/tests/combined.rs
++++ b/tests/combined.rs
+@@ -226,6 +226,8 @@ mod host_no_wake_tripwire;
+ mod opencode_plugin_js;
+ #[path = "integration/priority_sweep.rs"]
+ mod priority_sweep;
++#[path = "integration/seat_config_sweep.rs"]
++mod seat_config_sweep;
+ #[path = "update/update_cli.rs"]
+ mod update_cli;
+ 

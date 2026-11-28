@@ -1,0 +1,12 @@
+diff --git a/tests/cli/handoff.rs b/tests/cli/handoff.rs
+index c9aa46d6e..172caec97 100644
+--- a/tests/cli/handoff.rs
++++ b/tests/cli/handoff.rs
+@@ -1128,6 +1128,7 @@ fn task48_progress_unknown_and_oversized_tails_fail_before_begin() {
+ 
+ fn claim() -> CallerClaim {
+     CallerClaim {
++        auxiliary_session: false,
+         host: crate::test_support::test_host_locator(),
+         instance: "000000000000000000000000000000b1".into(),
+         seat: SeatId::new("sender"),

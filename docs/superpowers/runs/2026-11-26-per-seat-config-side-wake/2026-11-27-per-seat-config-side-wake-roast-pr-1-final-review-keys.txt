@@ -1,0 +1,11 @@
+review: not ready
+[Must-fix] final review: run ignored herdr_release_wake on the final SHA
+[Must-fix] final review: complete live-qualification row (ht-z41e.10)
+[Must-fix] untested: whole-epic review incomplete (bounded hunks only)
+[Must-fix] untested: no full-suite measurement of this branch
+[Must-fix] untested: side-queue and side-native-defer never run live
+[Must-fix] untested: Codex non-/side fork with original binding connected
+[Must-fix] untested: review-inputs provenance gap
+[Must-fix] untested: changed docs paths not inspected
+[Must-fix] untested: TRUST-POLICY /side and stale-authority hunks not inspected
+[Must-fix] untested: stale-authority fallback after flag flip only store-level

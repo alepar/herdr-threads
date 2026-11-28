@@ -1,0 +1,16 @@
+diff --git a/tests/fixtures/codex-0.163.0-side/user-prompt-submit-side.json b/tests/fixtures/codex-0.163.0-side/user-prompt-submit-side.json
+new file mode 100644
+index 000000000..912649f9c
+--- /dev/null
++++ b/tests/fixtures/codex-0.163.0-side/user-prompt-submit-side.json
+@@ -0,0 +1,10 @@
++{
++  "session_id": "side-session",
++  "turn_id": "side-turn-1",
++  "transcript_path": null,
++  "cwd": "/private/tmp/side-fixture",
++  "hook_event_name": "UserPromptSubmit",
++  "model": "gpt-6.1-sol",
++  "permission_mode": "default",
++  "prompt": "side question"
++}

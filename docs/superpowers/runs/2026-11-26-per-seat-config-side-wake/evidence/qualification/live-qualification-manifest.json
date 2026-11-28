@@ -1,0 +1,65 @@
+{
+ "sha": "715d3a8ce25877e3b5617b2564c191fb0c12127c",
+ "sourceTree": "0547b8794b389ce6abf1eb337c4a30f49efe45c5",
+ "binary_sha256": "ce0daa6ebd684e61b4b7724ef957d31b7f3c61a499be9169dec185e5403d11d2",
+ "herdr": "0.9.5",
+ "codex_profile": "codex-2",
+ "invocations": [
+  {
+   "name": "self-test",
+   "command": "python3 scripts/wake-e2e.py --self-test",
+   "exit": 0,
+   "rows": "350/350 tests OK",
+   "evidence_dir": null,
+   "leak_check": null
+  },
+  {
+   "name": "herdr-release-wake",
+   "command": "scripts/herdr-release-smoke --versions 0.9.5 --case herdr_release_wake --logs-dir ... --report ...",
+   "exit": 0,
+   "rows": "1/1 (94.8 s, after the causality fix; first run 109.7 s also PASS)",
+   "evidence_dir": "docs/superpowers/runs/2026-11-26-per-seat-config-side-wake/evidence/qualification/herdr-release-wake",
+   "leak_check": "docs/superpowers/runs/2026-11-26-per-seat-config-side-wake/evidence/qualification/herdr-release-wake/leak-check.txt"
+  },
+  {
+   "name": "codex-queue",
+   "command": "python3 scripts/wake-e2e.py --harness codex --codex-auth-home ~/.aisw/profiles/codex/codex-2 --queue-proof",
+   "exit": 1,
+   "rows": "59/60 (FAIL busy-invite/group co-t0: 'busy prompt not on screen')",
+   "evidence_dir": "docs/superpowers/runs/2026-11-26-per-seat-config-side-wake/evidence/qualification/codex-queue",
+   "leak_check": "docs/superpowers/runs/2026-11-26-per-seat-config-side-wake/evidence/qualification/codex-queue/leak-check.txt"
+  },
+  {
+   "name": "codex-queue-busy-invite-rerun",
+   "command": "same flags + --cases busy-invite/group",
+   "exit": 0,
+   "rows": "3/3",
+   "evidence_dir": "docs/superpowers/runs/2026-11-26-per-seat-config-side-wake/evidence/qualification/codex-queue-busy-invite-rerun",
+   "leak_check": "docs/superpowers/runs/2026-11-26-per-seat-config-side-wake/evidence/qualification/codex-queue-busy-invite-rerun/leak-check.txt"
+  },
+  {
+   "name": "side-queue",
+   "command": "same flags + --cases side-queue/group,side-nudge/group,side-draft/group,flag-flip/group (shared Herdr 0.9.5 server)",
+   "exit": 1,
+   "rows": "0/10",
+   "evidence_dir": "docs/superpowers/runs/2026-11-26-per-seat-config-side-wake/evidence/qualification/side-queue",
+   "leak_check": "docs/superpowers/runs/2026-11-26-per-seat-config-side-wake/evidence/qualification/side-queue/leak-check.txt"
+  },
+  {
+   "name": "side-queue-private",
+   "command": "scripts/wake-e2e-herdr 0.9.5 with the side-queue flags (private Herdr 0.9.5 server)",
+   "exit": 1,
+   "rows": "1/10 (side-queue/group PASS)",
+   "evidence_dir": "docs/superpowers/runs/2026-11-26-per-seat-config-side-wake/evidence/qualification/side-queue-private",
+   "leak_check": "docs/superpowers/runs/2026-11-26-per-seat-config-side-wake/evidence/qualification/side-queue-private/leak-check.txt"
+  },
+  {
+   "name": "side-native",
+   "command": "python3 scripts/wake-e2e.py --harness codex --codex-auth-home ... --cases side-native-defer/group,side-nudge/group,side-draft/group,config-prose/group,resume-idle/group",
+   "exit": 1,
+   "rows": "0/11",
+   "evidence_dir": "docs/superpowers/runs/2026-11-26-per-seat-config-side-wake/evidence/qualification/side-native",
+   "leak_check": "docs/superpowers/runs/2026-11-26-per-seat-config-side-wake/evidence/qualification/side-native/leak-check.txt"
+  }
+ ]
+}

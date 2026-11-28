@@ -215,6 +215,7 @@ fn codex_stop_without_continuation_idle() {
 
 fn claim(role: CallerRole, liveness: Option<LivenessFingerprint>) -> CallerClaim {
     CallerClaim {
+        auxiliary_session: false,
         instance: "i".into(),
         host: HostLocator::parse("/h.sock").unwrap(),
         seat: SeatId::new("s"),

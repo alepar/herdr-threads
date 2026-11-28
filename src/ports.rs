@@ -2929,6 +2929,10 @@ pub struct WakeAttentionWitness {
     /// Complete logical publication maxima at the same decision snapshot.
     /// Projection cannot advance these immutable keys.
     pub(crate) frontier: LogicalAttentionFrontier,
+    /// The seat's `programmatic_wake` at this snapshot. A change lifts the unreceived
+    /// suppression of the seat's last submitted wake: how it may be woken changed.
+    #[serde(default)]
+    pub(crate) programmatic_wake: bool,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Serialize)]
@@ -3034,7 +3038,16 @@ impl WakeAttentionWitness {
             unavailability_episode,
             unavailability_open,
             frontier,
+            programmatic_wake: false,
         }
+    }
+    #[must_use]
+    pub(crate) fn with_programmatic_wake(mut self, enabled: bool) -> Self {
+        self.programmatic_wake = enabled;
+        self
+    }
+    pub fn programmatic_wake(&self) -> bool {
+        self.programmatic_wake
     }
     pub fn frontier(&self) -> LogicalAttentionFrontier {
         self.frontier
@@ -3711,6 +3724,14 @@ pub trait StorePort: ModStoreReads + Send + Sync {
     ) -> Result<Option<Vec<SeatId>>, ApiError> {
         Ok(None)
     }
+    /// A human-tier `SetSeatConfig` / `UnsetSeatConfig`, decided as `actor` (the elected owner's
+    /// operator decision, TRUST-POLICY A5).
+    fn seat_config_operator(
+        &self,
+        command: &crate::protocol::commands::Command,
+        actor: &crate::protocol::authority::OperatorActor,
+        budget: &CallBudget,
+    ) -> Result<CommandResult, ApiError>;
     fn archival_pass(
         &self,
         runtime: &crate::store::archival::Runtime,
@@ -5190,7 +5211,7 @@ pub trait HostPort: Send + Sync {
     ) -> Option<SafeWakeTarget> {
         self.safe_wake_target(seat, observation)
     }
-    /// Reuse the host's final idle/UI/composer guard without writing any input.
+    /// The native composer guard (an empty composer) without writing any input.
     fn check_idle_wake(
         &self,
         _target: &SafeWakeTarget,
@@ -5199,6 +5220,25 @@ pub trait HostPort: Send + Sync {
         Err(ApiError::new(
             ErrorCode::TargetUnsafe,
             "host idle wake guard unavailable",
+        ))
+    }
+    /// The queue (programmatic) transport's admission, checked once per queue attempt right before arm.
+    /// It is root-scoped, not a typing gate: identity, server incarnation, boot and epoch, budget and
+    /// cancellation, and the modal/blocked-screen refusal (Herdr `blocked` or `unknown`, an unreadable
+    /// composer). Herdr `working` admits only when `siblings` (the root's process has other bindings,
+    /// whose turn the pane status may be showing); a lone root keeps it. An empty composer or an idle
+    /// placeholder (`ComposerPolicy::is_idle_placeholder`) admits; typed text refuses. No focus dwell,
+    /// and no native composer window is read or reset. The root's own hook turn state is checked by
+    /// the caller. Default: refuse, so the attempt falls back to the native wake path.
+    fn admit_queue_wake(
+        &self,
+        _target: &SafeWakeTarget,
+        _siblings: bool,
+        _context: &HostCallContext,
+    ) -> Result<(), ApiError> {
+        Err(ApiError::new(
+            ErrorCode::TargetUnsafe,
+            "host queue wake admission unavailable",
         ))
     }
     fn submit_prompt(
@@ -5629,6 +5669,17 @@ pub trait HookPullOutlook: Send + Sync {
     fn contacted_since(&self, _seat: &SeatId, _since: UtcMillis) -> Option<bool> {
         None
     }
+    /// As `contacted_since`, but only a call claiming `seat` from native session `session` (any
+    /// binding carrying that session UUID) counts: a queued wake is received by its root session
+    /// alone, never by a sibling `/side` session of the same seat.
+    fn contacted_since_session(
+        &self,
+        _seat: &SeatId,
+        _session: &NativeSessionId,
+        _since: UtcMillis,
+    ) -> Option<bool> {
+        None
+    }
 }
 
 /// The default outlook: nothing is known.
@@ -5644,6 +5695,11 @@ pub trait NotificationPort: Send + Sync {
     ) -> Result<WakeOutcome, ApiError>;
     fn take_transport(&self, _attempt: &WakeAttemptId) -> WakeTransport {
         WakeTransport::Composer
+    }
+    /// The root native session a `Queue` attempt was delivered to, taken once after
+    /// `take_transport` reported `Queue`. `None`: unknown, so the attempt is not awaited.
+    fn take_queue_root(&self, _attempt: &WakeAttemptId) -> Option<NativeSessionId> {
+        None
     }
     /// A soft-deadline poke (spec §10) through the same reservation checks as
     /// a wake. The default cannot poke: `PokeOnly` is unavailable and

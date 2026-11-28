@@ -1,0 +1,17 @@
+{"utc_ms": 1795808238708, "pane": "w2:p3", "event": "SessionStart", "session": "01a21e83-0f09-70f0-b44b-fa04c855ed51", "source": "startup", "transcript_path": "present"}
+{"utc_ms": 1795808238846, "pane": "w2:p3", "event": "UserPromptSubmit", "session": "01a21e83-0f09-70f0-b44b-fa04c855ed51", "source": null, "transcript_path": "present"}
+{"utc_ms": 1795808241488, "pane": "w2:p3", "event": "PreToolUse", "session": "01a21e83-0f09-70f0-b44b-fa04c855ed51", "source": null, "transcript_path": "present"}
+{"utc_ms": 1795808243965, "pane": "w2:p3", "event": "PreToolUse", "session": "01a21e83-0f09-70f0-b44b-fa04c855ed51", "source": null, "transcript_path": "present"}
+{"utc_ms": 1795808247239, "pane": "w2:p3", "event": "PreToolUse", "session": "01a21e83-0f09-70f0-b44b-fa04c855ed51", "source": null, "transcript_path": "present"}
+{"utc_ms": 1795808248480, "pane": "w2:p3", "event": "Stop", "session": "01a21e83-0f09-70f0-b44b-fa04c855ed51", "source": null, "transcript_path": "present"}
+{"utc_ms": 1795808254623, "pane": "w2:p3", "event": "UserPromptSubmit", "session": "01a21e83-0f09-70f0-b44b-fa04c855ed51", "source": null, "transcript_path": "present"}
+{"utc_ms": 1795808258502, "pane": "w2:p3", "event": "PreToolUse", "session": "01a21e83-0f09-70f0-b44b-fa04c855ed51", "source": null, "transcript_path": "present"}
+{"utc_ms": 1795808260000, "pane": "w2:p3", "event": "Stop", "session": "01a21e83-0f09-70f0-b44b-fa04c855ed51", "source": null, "transcript_path": "present"}
+{"utc_ms": 1795808265350, "pane": "w2:p3", "event": "SessionStart", "session": "01a21e83-7a03-7f92-a618-5ad7ac596d6e", "source": "fork", "transcript_path": "present"}
+{"utc_ms": 1795808265585, "pane": "w2:p3", "event": "UserPromptSubmit", "session": "01a21e83-7a03-7f92-a618-5ad7ac596d6e", "source": null, "transcript_path": "present"}
+{"utc_ms": 1795808269234, "pane": "w2:p3", "event": "PreToolUse", "session": "01a21e83-7a03-7f92-a618-5ad7ac596d6e", "source": null, "transcript_path": "present"}
+{"utc_ms": 1795808270452, "pane": "w2:p3", "event": "Stop", "session": "01a21e83-7a03-7f92-a618-5ad7ac596d6e", "source": null, "transcript_path": "present"}
+{"utc_ms": 1795808308077, "pane": "w2:p3", "event": "UserPromptSubmit", "session": "01a21e83-7a03-7f92-a618-5ad7ac596d6e", "source": null, "transcript_path": "present"}
+{"utc_ms": 1795808310559, "pane": "w2:p3", "event": "PreToolUse", "session": "01a21e83-7a03-7f92-a618-5ad7ac596d6e", "source": null, "transcript_path": "present"}
+{"utc_ms": 1795808411866, "pane": "w2:p3", "event": "Stop", "session": "01a21e83-7a03-7f92-a618-5ad7ac596d6e", "source": null, "transcript_path": "present"}
+{"utc_ms": 1795808502267, "pane": "w2:p3", "event": "SessionEnd", "session": "01a21e83-7a03-7f92-a618-5ad7ac596d6e", "source": null, "transcript_path": "present"}

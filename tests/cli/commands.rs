@@ -407,6 +407,7 @@ fn claim() -> crate::protocol::authority::CallerClaim {
         ids::*,
     };
     CallerClaim {
+        auxiliary_session: false,
         host: crate::test_support::test_host_locator(),
         instance: "i".into(),
         seat: SeatId::new("legacy-fixture"),
@@ -3980,6 +3981,7 @@ fn stamp_agent_id_sets_only_the_claim_agent_id() {
     use crate::protocol::{authority::*, ids::*};
     let parsed = parse_argv(["herdr-threads", "--agent-id=a1", "thread", "list"]).unwrap();
     let claim = CallerClaim {
+        auxiliary_session: false,
         host: crate::test_support::test_host_locator(),
         instance: "i".into(),
         seat: SeatId::new("s"),
@@ -4714,6 +4716,7 @@ fn seat_slot_mapping_matches_d4() {
         SeatSlot::RetireSeat,
         SeatSlot::RebindSeat,
         SeatSlot::RebindReplace,
+        SeatSlot::ConfigSeat,
         SeatSlot::HandoffExistingSeat,
     ];
     for slot in all {
@@ -4772,6 +4775,17 @@ fn every_seat_valued_clap_argument_is_a_recorded_slot() {
             &["human", "seat", "rebind", "s1", "--pane", "w1:p1", "--replace", "zz9", "--operator"],
         ),
         ("handoff", "seat", &["handoff", "--existing", "--seat", "zz9", "--", "work"]),
+        ("config seat get", "seat", &["config", "seat", "get", "--seat", "zz9"]),
+        (
+            "config seat set",
+            "seat",
+            &["human", "config", "seat", "set", "--seat", "zz9", "programmatic_wake", "on"],
+        ),
+        (
+            "config seat unset",
+            "seat",
+            &["human", "config", "seat", "unset", "--seat", "zz9", "programmatic_wake"],
+        ),
     ];
     fn walk(cmd: &clap::Command, path: &str, found: &mut Vec<(String, String)>) {
         for arg in cmd.get_arguments() {
@@ -5301,4 +5315,99 @@ fn remote_handoff_plan_size_precheck() {
     };
     assert_eq!(error, "launch plan too large");
     assert_eq!(error.len(), 21);
+}
+
+fn config_seat(argv: &[&str]) -> ParsedCli {
+    let mut full = vec!["herdr-threads"];
+    full.extend(argv);
+    parse_argv(full).unwrap_or_else(|e| panic!("{argv:?}: {e:?}"))
+}
+
+#[test]
+fn config_seat_verbs_parse_with_their_tier() {
+    use crate::cli::actor_route::InvocationActor::{Agent, Human};
+    let p = config_seat(&["config", "seat", "list"]);
+    assert_eq!(p.action, CliAction::ConfigSeat(ConfigSeatAction::List));
+    assert_eq!(p.actor, Agent);
+    let p = config_seat(&["config", "seat", "get"]);
+    assert_eq!(p.action, CliAction::ConfigSeat(ConfigSeatAction::Get { key: None, seat: None }));
+    let p = config_seat(&["config", "seat", "get", "nudge_threshold", "--seat", "S"]);
+    assert_eq!(
+        p.action,
+        CliAction::ConfigSeat(ConfigSeatAction::Get {
+            key: Some("nudge_threshold".into()),
+            seat: Some(placeholder_seat()),
+        })
+    );
+    assert_eq!(p.seat_selectors.len(), 1);
+    assert_eq!(p.seat_selectors[0].slot, SeatSlot::ConfigSeat);
+    assert_eq!(p.seat_selectors[0].raw, "S");
+    let p = config_seat(&["config", "seat", "set", "nudge_threshold", "3"]);
+    assert_eq!(
+        p.action,
+        CliAction::ConfigSeat(ConfigSeatAction::Set {
+            key: "nudge_threshold".into(),
+            value: "3".into(),
+            seat: None,
+        })
+    );
+    assert_eq!(p.actor, Agent);
+    // A negative value is a value, not a flag.
+    let p = config_seat(&["config", "seat", "set", "nudge_threshold", "-1"]);
+    assert!(matches!(p.action, CliAction::ConfigSeat(ConfigSeatAction::Set { value, .. }) if value == "-1"));
+    let p = config_seat(&["config", "seat", "unset", "nudge_threshold"]);
+    assert!(matches!(p.action, CliAction::ConfigSeat(ConfigSeatAction::Unset { seat: None, .. })));
+    let p = config_seat(&["human", "config", "seat", "set", "--seat", "S", "programmatic_wake", "on"]);
+    assert_eq!(p.actor, Human);
+    assert!(matches!(
+        p.action,
+        CliAction::ConfigSeat(ConfigSeatAction::Set { ref key, ref value, seat: Some(_) })
+            if key == "programmatic_wake" && value == "on"
+    ));
+    let p = config_seat(&["human", "config", "seat", "unset", "programmatic_wake"]);
+    assert_eq!(p.actor, Human);
+    assert!(matches!(p.action, CliAction::ConfigSeat(ConfigSeatAction::Unset { seat: None, .. })));
+    assert!(p.seat_selectors.is_empty());
+}
+
+#[test]
+fn an_agent_config_write_refuses_seat_and_human_tier_keys_before_anything_is_sent() {
+    // --seat belongs to the human verbs (CONFIG_SEAT_FLAG_REFUSAL, 77 bytes).
+    let error = parse_argv(["herdr-threads", "config", "seat", "set", "--seat", "S", "nudge_threshold", "3"])
+        .unwrap_err();
+    assert_eq!(error.detail, CONFIG_SEAT_FLAG_REFUSAL);
+    assert_eq!(CONFIG_SEAT_FLAG_REFUSAL.len(), 77);
+    // A human-tier key names the exact human spelling (89 bytes for `on`).
+    let error = parse_argv(["herdr-threads", "config", "seat", "set", "programmatic_wake", "on"]).unwrap_err();
+    assert_eq!(
+        error.detail,
+        "seat config key `programmatic_wake` needs `ht human config seat set programmatic_wake on`"
+    );
+    assert_eq!(error.detail.len(), 89);
+    let error = parse_argv(["herdr-threads", "config", "seat", "unset", "programmatic_wake"]).unwrap_err();
+    assert_eq!(
+        error.detail,
+        "seat config key `programmatic_wake` needs `ht human config seat unset programmatic_wake`"
+    );
+    assert!(error.detail.len() < 100);
+    // An unknown key is the daemon's to refuse (it names the key list).
+    assert!(parse_argv(["herdr-threads", "config", "seat", "set", "nope", "x"]).is_ok());
+}
+
+#[test]
+fn human_tier_needs_human_as_argv_one() {
+    // Neither a flag before `human` nor the `--human` output flag makes a human caller.
+    for argv in [
+        vec!["herdr-threads", "--agent-id", "X", "human", "config", "seat", "set", "programmatic_wake", "on"],
+        vec!["herdr-threads", "--state-dir", "/x", "human", "config", "seat", "unset", "programmatic_wake"],
+    ] {
+        let error = parse_argv(argv.clone()).unwrap_err();
+        assert!(error.detail.contains("human"), "{argv:?}: {}", error.detail);
+    }
+    let error = parse_argv(["herdr-threads", "--human", "config", "seat", "set", "programmatic_wake", "on"])
+        .unwrap_err();
+    assert!(error.detail.contains("ht human config seat set programmatic_wake on"), "{}", error.detail);
+    // An agent-tier key through `--human` stays the agent tier.
+    let parsed = parse_argv(["herdr-threads", "--human", "config", "seat", "set", "nudge_threshold", "2"]).unwrap();
+    assert_eq!(parsed.actor, crate::cli::actor_route::InvocationActor::Agent);
 }

@@ -1,0 +1,72 @@
+diff --git a/tests/scheduler/dispatch.rs b/tests/scheduler/dispatch.rs
+index f0978441a..85bb833d5 100644
+--- a/tests/scheduler/dispatch.rs
++++ b/tests/scheduler/dispatch.rs
+@@ -271,6 +271,67 @@ fn new_attention_retries_a_refusal_backed_off_seat_at_once_and_keeps_the_backoff
+     assert!(!state.can_reserve(&seat, MonoInstant(1_000 + 23_999)));
+ }
+ 
++/// ht-z41e.1: a /side chat's composer refuses every native wake. The refusal never climbs the wake ladder
++/// (4 steps) and never gives up: the seat stays retryable every <= 30 s for as long as the side chat is
++/// displayed, and the first attempt after it closes submits and clears the backoff.
++#[test]
++fn side_composer_refusals_retry_past_the_ladder_length_until_a_wake_submits() {
++    let seat = SeatId::new("seat");
++    let boot = daemon_boot();
++    let mut state =
++        DispatchState::new(RetryConfig::default(), MonoInstant(0), boot).with_refusal_seed(11);
++    state.restore(seat.clone(), fresh()).unwrap();
++    state
++        .observe_frontier(
++            &seat,
++            Default::default(),
++            LogicalAttentionFrontier {
++                invitation: Some(LogicalPublicationKey {
++                    decision_seq: 1,
++                    event_offset: 0,
++                }),
++                ..Default::default()
++            },
++        )
++        .unwrap();
++    let mut now = 0_u64;
++    for n in 0..12 {
++        assert!(state.can_reserve(&seat, MonoInstant(now)), "attempt {n}");
++        let attempt = WakeAttemptId::new(format!("attempt-{n}"));
++        state
++            .reserved(seat.clone(), attempt.clone(), boot, MonoInstant(now))
++            .unwrap();
++        assert!(
++            state
++                .finish(&seat, &attempt, &boot, MonoInstant(now))
++                .unwrap()
++        );
++        state.record_outcome(
++            &seat,
++            WakeOutcome::Refused(RefusalCause::Unsafe),
++            MonoInstant(now),
++        );
++        state.restore_prior_guard(&seat);
++        let due = state.next_due_at(MonoInstant(now)).unwrap();
++        // The wake ladder's fourth step is 300 s: staying within 30 s proves it did not advance.
++        assert!(due.0 - now <= 30_000, "attempt {n} waits {}", due.0 - now);
++        assert!(due.0 == now || !state.can_reserve(&seat, MonoInstant(due.0 - 1)));
++        now = due.0;
++    }
++    assert_eq!(state.refusal_attempts(&seat), Some(12));
++    assert!(state.can_reserve(&seat, MonoInstant(now)));
++    // The side chat closed: the next attempt submits and clears the refusal backoff.
++    let attempt = WakeAttemptId::new("attempt-submit");
++    state
++        .reserved(seat.clone(), attempt.clone(), boot, MonoInstant(now))
++        .unwrap();
++    state
++        .finish(&seat, &attempt, &boot, MonoInstant(now))
++        .unwrap();
++    state.record_outcome(&seat, WakeOutcome::Submitted, MonoInstant(now));
++    assert_eq!(state.refusal_attempts(&seat), Some(0));
++}
++
+ #[test]
+ fn reservation_from_an_old_daemon_boot_never_occupies_a_slot() {
+     let seat = SeatId::new("seat");

@@ -5,7 +5,7 @@ use crate::scheduler::SubmissionVerification;
 use crate::{
     notification::{
         dispatch::MAX_ACTIVE_PROMPTS,
-        queue::{QueueDispatch, QueueWakePort},
+        queue::{GuardFor, QueueDispatch, QueueWakePort},
     },
     ports::{
         AgentComposerState, NoPokeCapabilities, PokeMode, PokePlan, WakeTarget, WakeTransport,
@@ -42,6 +42,15 @@ struct QueueHost {
     prompts: Mutex<Vec<u64>>,
     verified: AtomicUsize,
     cleared: AtomicUsize,
+    /// The composer the host shows, judged by native typing's guard (`None`: it admits).
+    composer: Option<crate::harness::composer::ComposerRead>,
+    /// Refuses native typing's guard with this error when set (a pane the native path may not type into).
+    native_answer: Option<ApiError>,
+    /// What the queue admission answers (`Err`: it refuses).
+    queue_answer: Result<(), ApiError>,
+    /// Queue admissions asked, and the `siblings` fact each carried.
+    queue_admissions: AtomicUsize,
+    admission_siblings: Mutex<Vec<bool>>,
 }
 impl QueueHost {
     fn new() -> Self {
@@ -57,7 +66,15 @@ impl QueueHost {
             prompts: Mutex::new(Vec::new()),
             verified: AtomicUsize::new(0),
             cleared: AtomicUsize::new(0),
+            composer: None,
+            native_answer: None,
+            queue_answer: Ok(()),
+            queue_admissions: AtomicUsize::new(0),
+            admission_siblings: Mutex::new(Vec::new()),
         }
+    }
+    fn composer_refusal() -> ApiError {
+        ApiError::new(ErrorCode::TargetUnsafe, "composer is nonempty")
     }
 }
 impl HostPort for QueueHost {
@@ -94,12 +111,45 @@ impl HostPort for QueueHost {
     fn enumerate_targets(&self, ctx: &HostCallContext) -> Result<HostSnapshot, ApiError> {
         self.inner.enumerate_targets(ctx)
     }
+    /// Mirrors `NativeCli::safe_wake_target`: no target on an active turn or an open approval.
     fn safe_wake_target(&self, seat: &SeatId, obs: &HostObservation) -> Option<SafeWakeTarget> {
+        if matches!(
+            obs.ui,
+            HostUiState::ActiveTurn | HostUiState::ApprovalOrQuestion
+        ) {
+            return None;
+        }
+        self.inner.safe_wake_target(seat, obs)
+    }
+    /// Mirrors `NativeCli::safe_poke_target`: only an open approval or question is excluded.
+    fn safe_poke_target(&self, seat: &SeatId, obs: &HostObservation) -> Option<SafeWakeTarget> {
+        if obs.ui == HostUiState::ApprovalOrQuestion {
+            return None;
+        }
         self.inner.safe_wake_target(seat, obs)
     }
     fn check_idle_wake(&self, _: &SafeWakeTarget, ctx: &HostCallContext) -> Result<(), ApiError> {
         self.guards.lock().unwrap().push(ctx.budget.deadline.0);
-        Ok(())
+        if let Some(refusal) = &self.native_answer {
+            return Err(refusal.clone());
+        }
+        match &self.composer {
+            Some(read) if *read != crate::harness::composer::ComposerRead::Empty => {
+                Err(Self::composer_refusal())
+            }
+            _ => Ok(()),
+        }
+    }
+    fn admit_queue_wake(
+        &self,
+        _: &SafeWakeTarget,
+        siblings: bool,
+        ctx: &HostCallContext,
+    ) -> Result<(), ApiError> {
+        self.guards.lock().unwrap().push(ctx.budget.deadline.0);
+        self.queue_admissions.fetch_add(1, Ordering::SeqCst);
+        self.admission_siblings.lock().unwrap().push(siblings);
+        self.queue_answer.clone()
     }
     fn submit_prompt(
         &self,
@@ -211,13 +261,13 @@ impl QueueWakePort for Queue {
         _: &WakeReservation,
         _: &SafeWakeTarget,
         use_queue: bool,
-        guard: &dyn Fn() -> Result<(), ApiError>,
+        guard: &dyn Fn(GuardFor) -> Result<(), ApiError>,
         owed: &dyn Fn() -> Result<bool, ApiError>,
         _: &HostCallContext,
     ) -> Result<QueueDispatch, ApiError> {
         self.calls.lock().unwrap().push(use_queue);
         self.clock.0.store(self.advance, Ordering::SeqCst);
-        guard()?;
+        guard(GuardFor::Queue { siblings: false })?;
         if !owed()? {
             return Ok(QueueDispatch::Refused);
         }
@@ -240,6 +290,12 @@ fn hooked() -> WakeReservation {
         }],
     });
     r.reasons = vec!["pending_invitation".into()];
+    r
+}
+/// [`hooked`] with the seat's `programmatic_wake` on, as the reservation carries it.
+fn hooked_queue_on() -> WakeReservation {
+    let mut r = hooked();
+    r.attention_witness = r.attention_witness.with_programmatic_wake(true);
     r
 }
 fn context() -> HostCallContext {
@@ -324,6 +380,89 @@ fn queue_transport_unsafe_modal_is_refused_before_queue() {
     assert!(queue.calls.lock().unwrap().is_empty());
 }
 #[test]
+fn queue_transport_one_process_targets_try_the_queue_and_others_stay_native() {
+    let sibling = |edit: &dyn Fn(&mut WakeTarget)| {
+        let mut r = hooked();
+        if let ReservedWakeAuthority::Cooperative { targets, .. } = &mut r.authority {
+            let mut side = WakeTarget {
+                binding: BindingId::new("side"),
+                ..targets[0].clone()
+            };
+            edit(&mut side);
+            targets.push(side);
+        }
+        r
+    };
+    let run = |r: WakeReservation, dispatch: QueueDispatch| {
+        let clock = Arc::new(QueueClock::default());
+        let mut host = QueueHost::new();
+        host.inner.observation.ui = HostUiState::Idle;
+        let queue = Queue::new(dispatch, &clock);
+        let dispatcher = NativeWakeDispatcher::new(&host, &CurrentReservation, clock.as_ref())
+            .with_queue(&queue);
+        let outcome = dispatcher.attempt_wake(r, &context()).unwrap();
+        let calls = queue.calls.lock().unwrap().clone();
+        let typed = host.inner.typed.lock().unwrap().len();
+        (outcome, calls, typed)
+    };
+    // A root and its /side session: same pid and harness.
+    let (outcome, calls, typed) = run(sibling(&|_| {}), QueueDispatch::Submitted);
+    assert_eq!(outcome, WakeOutcome::Submitted);
+    assert_eq!(calls, [true]);
+    assert_eq!(typed, 0);
+    type Edit = fn(&mut WakeTarget);
+    let negatives: [(&str, Edit); 4] = [
+        ("another process", |t| t.fingerprint_pid = Some(222)),
+        ("another harness", |t| t.harness = "claude".into()),
+        ("dormant sibling", |t| t.dormant = true),
+        ("no pids", |t| t.fingerprint_pid = None),
+    ];
+    for (name, edit) in negatives {
+        let mut r = sibling(&edit);
+        if name == "no pids"
+            && let ReservedWakeAuthority::Cooperative { targets, .. } = &mut r.authority
+        {
+            targets[0].fingerprint_pid = None;
+        }
+        let (_, calls, typed) = run(r, QueueDispatch::Refused);
+        // A mixed-harness pair may be refused before the queue is asked at all; either way the
+        // queue is never tried and nothing is typed.
+        assert!(!calls.contains(&true), "{name}");
+        assert_eq!(typed, 0, "{name}");
+    }
+}
+#[test]
+fn queue_transport_text_is_judged_on_the_root_not_the_reduce_over_siblings() {
+    let run = |root: &str, side: &str| {
+        let mut r = hooked();
+        if let ReservedWakeAuthority::Cooperative { targets, .. } = &mut r.authority {
+            targets[0].provenance = root.into();
+            targets.push(WakeTarget {
+                binding: BindingId::new("side"),
+                provenance: side.into(),
+                ..targets[0].clone()
+            });
+        }
+        let clock = Arc::new(QueueClock::default());
+        let mut host = QueueHost::new();
+        host.inner.observation.ui = HostUiState::Idle;
+        let queue = Queue::new(QueueDispatch::Refused, &clock);
+        let dispatcher = NativeWakeDispatcher::new(&host, &CurrentReservation, clock.as_ref())
+            .with_queue(&queue);
+        let _ = dispatcher.attempt_wake(r, &context()).unwrap();
+        let calls = queue.calls.lock().unwrap().clone();
+        drop(dispatcher);
+        calls
+    };
+    // A top-level root with an inbox-marker side still tries the queue.
+    assert_eq!(
+        run("cooperative_top_level", "cooperative_env_session"),
+        [true]
+    );
+    // No target with the content-free text: the queue is never tried.
+    assert!(!run("cooperative_env_session", "cooperative_env_session").contains(&true));
+}
+#[test]
 fn queue_transport_native_only_paths_still_check_durable_fences() {
     for case in 0..5 {
         let clock = Arc::new(QueueClock::default());
@@ -337,6 +476,7 @@ fn queue_transport_native_only_paths_still_check_durable_fences() {
                 3 => {
                     targets.push(WakeTarget {
                         binding: BindingId::new("sibling"),
+                        fingerprint_pid: Some(222),
                         ..targets[0].clone()
                     });
                     host.inner.observation.ui = HostUiState::Idle;
@@ -505,3 +645,47 @@ fn native_fallback_completion_uses_exact_host_boundary_before_verification() {
 
 #[path = "queue_fallback_lazy.rs"]
 mod fallback_lazy;
+
+// Kills: a queue-candidate exemption that ignores the seat's `programmatic_wake` or the harness's
+// queue support, so a default-off or non-queue seat skips the early busy/typed refusal (ht-z41e.45).
+#[test]
+fn queue_candidate_needs_programmatic_wake_and_a_queue_capable_harness() {
+    let run = |r: WakeReservation, ui: HostUiState| {
+        let clock = Arc::new(QueueClock::default());
+        let mut host = QueueHost::new();
+        host.inner.observation.ui = ui;
+        let queue = Queue::new(QueueDispatch::Submitted, &clock);
+        let dispatcher = NativeWakeDispatcher::new(&host, &CurrentReservation, clock.as_ref())
+            .with_queue(&queue);
+        let outcome = dispatcher.attempt_wake(r, &context()).unwrap();
+        let calls = queue.calls.lock().unwrap().clone();
+        let typed = host.inner.typed.lock().unwrap().len();
+        let admissions = host.queue_admissions.load(Ordering::SeqCst);
+        (outcome, calls, typed, admissions)
+    };
+    let unsafe_refusal = WakeOutcome::Refused(crate::ports::RefusalCause::Unsafe);
+    for ui in [HostUiState::ActiveTurn, HostUiState::HumanInput] {
+        // Default off (the hand-built witness): refused before the queue lane, nothing typed.
+        let (outcome, calls, typed, admissions) = run(hooked(), ui);
+        assert_eq!(outcome, unsafe_refusal, "{ui:?}");
+        assert!(calls.is_empty(), "{ui:?}: the queue lane is never entered");
+        assert_eq!((typed, admissions), (0, 0), "{ui:?}");
+        // Flag on but a harness with no wake control: the same early refusal.
+        let mut claude = hooked_queue_on();
+        if let ReservedWakeAuthority::Cooperative {
+            harness, targets, ..
+        } = &mut claude.authority
+        {
+            *harness = Some("claude".into());
+            targets[0].harness = "claude".into();
+        }
+        let (outcome, calls, ..) = run(claude, ui);
+        assert_eq!(outcome, unsafe_refusal, "{ui:?}");
+        assert!(calls.is_empty(), "{ui:?}");
+        // Positive control: flag on, Codex (queue-capable) reaches the queue lane.
+        let (outcome, calls, typed, _) = run(hooked_queue_on(), ui);
+        assert_eq!(calls, [true], "{ui:?}: a queue candidate reaches the queue");
+        assert_eq!(outcome, WakeOutcome::Submitted, "{ui:?}");
+        assert_eq!(typed, 0, "{ui:?}");
+    }
+}

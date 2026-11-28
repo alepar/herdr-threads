@@ -1241,6 +1241,7 @@ mod contract_tests {
             expected_revision: 1,
             operation: OperationId::new("accept-1"),
             claim: CallerClaim {
+                auxiliary_session: false,
                 host: crate::test_support::test_host_locator(),
                 instance: INSTANCE.into(),
                 seat: current.seat.clone(),

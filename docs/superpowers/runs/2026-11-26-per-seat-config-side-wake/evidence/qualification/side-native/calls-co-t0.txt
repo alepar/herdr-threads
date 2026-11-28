@@ -1,0 +1,9 @@
+inbox
+inbox
+inbox
+inbox
+inbox
+inbox
+--state-dir /tmp/ht-wake-e2e.5ab0i15d/state config seat list
+human --state-dir /tmp/ht-wake-e2e.5ab0i15d/state --host-endpoint $HOME/.config/herdr/herdr.sock config seat set --seat sQNy9I3M72mv programmatic_wake on
+skill

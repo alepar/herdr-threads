@@ -1,0 +1,12 @@
+diff --git a/tests/store/invitation_content.rs b/tests/store/invitation_content.rs
+index 992747aa1..1bee04135 100644
+--- a/tests/store/invitation_content.rs
++++ b/tests/store/invitation_content.rs
+@@ -247,6 +247,7 @@ mod binding_presentation {
+         }
+         fn claim(&self, name: &str) -> CallerClaim {
+             CallerClaim {
++                auxiliary_session: false,
+                 host: herdr_threads::test_support::test_host_locator(),
+                 instance: "34750f98bd59fcfc946da45aaabe933b".into(),
+                 seat: SeatId::new("s"),

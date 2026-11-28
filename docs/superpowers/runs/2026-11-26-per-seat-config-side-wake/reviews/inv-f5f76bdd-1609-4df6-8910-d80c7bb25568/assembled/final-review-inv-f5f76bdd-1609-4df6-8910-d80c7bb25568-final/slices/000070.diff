@@ -1,0 +1,14 @@
+diff --git a/src/app.rs b/src/app.rs
+index 2635d34ef..b14b0788e 100644
+--- a/src/app.rs
++++ b/src/app.rs
+@@ -2150,8 +2150,7 @@ where
+                             state_dir.clone(),
+                             Arc::clone(&turn_state),
+                             Arc::clone(&recovery),
+-                        ).with_programmatic_wake(config.programmatic_wake())
+-                        .with_error_log(Arc::clone(&factory_lane_log)));
++                        ).with_error_log(Arc::clone(&factory_lane_log)));
+                     (Some(recovery), Some(wake))
+                 }
+                 None => (None, None),

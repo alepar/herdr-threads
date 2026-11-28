@@ -1,0 +1,11 @@
+{"utc_ms": 1795812618302, "pane": "w2:p3", "event": "SessionStart", "session": "01a21ec5-e147-7fd3-a1d4-1d1d801450fe", "source": "startup", "transcript_path": "present"}
+{"utc_ms": 1795812618532, "pane": "w2:p3", "event": "UserPromptSubmit", "session": "01a21ec5-e147-7fd3-a1d4-1d1d801450fe", "source": null, "transcript_path": "present"}
+{"utc_ms": 1795812621244, "pane": "w2:p3", "event": "PreToolUse", "session": "01a21ec5-e147-7fd3-a1d4-1d1d801450fe", "source": null, "transcript_path": "present"}
+{"utc_ms": 1795812623809, "pane": "w2:p3", "event": "PreToolUse", "session": "01a21ec5-e147-7fd3-a1d4-1d1d801450fe", "source": null, "transcript_path": "present"}
+{"utc_ms": 1795812627043, "pane": "w2:p3", "event": "PreToolUse", "session": "01a21ec5-e147-7fd3-a1d4-1d1d801450fe", "source": null, "transcript_path": "present"}
+{"utc_ms": 1795812628960, "pane": "w2:p3", "event": "Stop", "session": "01a21ec5-e147-7fd3-a1d4-1d1d801450fe", "source": null, "transcript_path": "present"}
+{"utc_ms": 1795812634290, "pane": "w2:p3", "event": "UserPromptSubmit", "session": "01a21ec5-e147-7fd3-a1d4-1d1d801450fe", "source": null, "transcript_path": "present"}
+{"utc_ms": 1795812637625, "pane": "w2:p3", "event": "PreToolUse", "session": "01a21ec5-e147-7fd3-a1d4-1d1d801450fe", "source": null, "transcript_path": "present"}
+{"utc_ms": 1795812638896, "pane": "w2:p3", "event": "Stop", "session": "01a21ec5-e147-7fd3-a1d4-1d1d801450fe", "source": null, "transcript_path": "present"}
+{"utc_ms": 1795812734169, "pane": "w2:p3", "event": "UserPromptSubmit", "session": "01a21ec5-e147-7fd3-a1d4-1d1d801450fe", "source": null, "transcript_path": "present"}
+{"utc_ms": 1795812737519, "pane": "w2:p3", "event": "Stop", "session": "01a21ec5-e147-7fd3-a1d4-1d1d801450fe", "source": null, "transcript_path": "present"}

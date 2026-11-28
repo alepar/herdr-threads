@@ -1735,6 +1735,7 @@ fn snapshot_stage_is_hidden_bounded_and_allows_a_foreground_writer() {
 
 fn claim(seat: &str) -> CallerClaim {
     CallerClaim {
+        auxiliary_session: false,
         host: crate::test_support::test_host_locator(),
         instance: "34750f98bd59fcfc946da45aaabe933b".into(),
         seat: SeatId::new(seat),
@@ -1965,6 +1966,7 @@ fn required_then_independent_ordinary_acceptance_keeps_one_join_interval() {
         expected_revision: requirement.revision,
         operation: OperationId::new("accept-required-two"),
         claim: CallerClaim {
+            auxiliary_session: false,
             host: crate::test_support::test_host_locator(),
             seat: SeatId::new("s2"),
             ..claim("s2")
@@ -2299,6 +2301,7 @@ fn required_then_independent_ordinary_acceptance_keeps_one_join_interval() {
         expected_revision: reverse_requirement.revision,
         operation: OperationId::new("accept-required-reverse"),
         claim: CallerClaim {
+            auxiliary_session: false,
             host: crate::test_support::test_host_locator(),
             seat: SeatId::new("s2"),
             ..claim("s2")
@@ -2472,6 +2475,7 @@ fn native_ordinary_offer_after_required_offer_can_be_accepted_after_join() {
         expected_revision: req.revision,
         operation: OperationId::new("accept-required-native-offer"),
         claim: CallerClaim {
+            auxiliary_session: false,
             host: crate::test_support::test_host_locator(),
             seat: SeatId::new("s2"),
             ..claim("s2")

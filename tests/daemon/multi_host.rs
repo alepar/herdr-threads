@@ -610,6 +610,7 @@ impl Rig {
         liveness: LivenessFingerprint,
     ) -> CallerClaim {
         CallerClaim {
+            auxiliary_session: false,
             instance: self.instance.clone(),
             host: host.clone(),
             seat: seat.clone(),

@@ -1,0 +1,12 @@
+diff --git a/tests/service/mod_ack_dispatch.rs b/tests/service/mod_ack_dispatch.rs
+index 82d98af48..a89d6c3cc 100644
+--- a/tests/service/mod_ack_dispatch.rs
++++ b/tests/service/mod_ack_dispatch.rs
+@@ -168,6 +168,7 @@ fn claim(
+     generation: u64,
+ ) -> CallerClaim {
+     CallerClaim {
++        auxiliary_session: false,
+         host: crate::test_support::test_host_locator(),
+         instance: "34750f98bd59fcfc946da45aaabe933b".into(),
+         seat: SeatId::new(seat),

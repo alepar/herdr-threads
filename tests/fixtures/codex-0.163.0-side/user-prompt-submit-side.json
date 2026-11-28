@@ -1,0 +1,10 @@
+{
+  "session_id": "side-session",
+  "turn_id": "side-turn-1",
+  "transcript_path": null,
+  "cwd": "/private/tmp/side-fixture",
+  "hook_event_name": "UserPromptSubmit",
+  "model": "gpt-6.1-sol",
+  "permission_mode": "default",
+  "prompt": "side question"
+}

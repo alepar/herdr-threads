@@ -104,9 +104,20 @@ pub struct DeliveryPullState {
     ledger: Mutex<OfferedLedger>,
     /// The last daemon call claiming each seat, for the wake receipt check (ht-wake-loop).
     contacts: Mutex<HashMap<crate::protocol::ids::SeatId, crate::protocol::time::UtcMillis>>,
+    /// The same, per (seat, native session): a queued wake is received only by its root session,
+    /// and a native session UUID survives a binding re-registration (a binding id does not).
+    session_contacts: Mutex<SessionContacts>,
     #[cfg(any(test, feature = "test-support"))]
     probe: PullProbe,
 }
+
+type SessionContacts = HashMap<
+    (
+        crate::protocol::ids::SeatId,
+        crate::protocol::ids::NativeSessionId,
+    ),
+    crate::protocol::time::UtcMillis,
+>;
 
 /// Runs once on the ledger just before a pull records its page (a rotation racing the pull).
 #[cfg(any(test, feature = "test-support"))]
@@ -140,12 +151,24 @@ impl DeliveryPullState {
             .copied()
     }
 
-    /// Records a daemon call claiming `seat` at `now`.
+    /// Records a daemon call claiming `seat` from native session `session` at `now`, on the
+    /// seat-scoped time and on the (seat, session) time.
     pub fn record_contact(
         &self,
         seat: &crate::protocol::ids::SeatId,
+        session: &crate::protocol::ids::NativeSessionId,
         now: crate::protocol::time::UtcMillis,
     ) {
+        {
+            let mut by_session = self
+                .session_contacts
+                .lock()
+                .unwrap_or_else(|poison| poison.into_inner());
+            let last = by_session
+                .entry((seat.clone(), session.clone()))
+                .or_insert(now);
+            last.0 = last.0.max(now.0);
+        }
         let mut contacts = self
             .contacts
             .lock()
@@ -187,6 +210,23 @@ impl crate::ports::HookPullOutlook for DeliveryPullState {
             .lock()
             .unwrap_or_else(|poison| poison.into_inner());
         Some(contacts.get(seat).is_some_and(|last| last.0 >= since.0))
+    }
+
+    fn contacted_since_session(
+        &self,
+        seat: &crate::protocol::ids::SeatId,
+        session: &crate::protocol::ids::NativeSessionId,
+        since: crate::protocol::time::UtcMillis,
+    ) -> Option<bool> {
+        let contacts = self
+            .session_contacts
+            .lock()
+            .unwrap_or_else(|poison| poison.into_inner());
+        Some(
+            contacts
+                .get(&(seat.clone(), session.clone()))
+                .is_some_and(|last| last.0 >= since.0),
+        )
     }
 }
 
@@ -917,6 +957,7 @@ impl DomainService {
             // Decided against the canonical binding, never the client's hint.
             let effective = DeliveryConfirm {
                 claim: CallerClaim {
+                    auxiliary_session: false,
                     instance: self.instance.clone(),
                     host: confirm.claim.host.clone(),
                     seat: seat.clone(),

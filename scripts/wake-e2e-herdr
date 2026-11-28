@@ -79,6 +79,16 @@ def release_binary(version: str) -> Path:
     return smoke.fetch(version, asset, releases[version][asset], cache)
 
 
+def driver_command(root: Path, handoff: Path, log: Path, rc: Path, e2e_args) -> str:
+    """The pane command that runs the driver. The pane's login shell rc can put another `herdr` ahead of this
+    release's, so PATH is set in the command. The driver gets HT_WAKE_E2E_PRIVATE_HERDR=1: the one marker that
+    lets a case focus panes (it would move the user's focus on the shared server)."""
+    return (f"cd {shlex.quote(str(ROOT))} && . {shlex.quote(str(handoff))} && rm -f {shlex.quote(str(handoff))} "
+            f"&& PATH={shlex.quote(str(root / 'bin'))}:\"$PATH\" "
+            f"HT_WAKE_E2E_PRIVATE_HERDR=1 python3 scripts/wake-e2e.py {shlex.join(e2e_args)} "
+            f"> {shlex.quote(str(log))} 2>&1; echo $? > {shlex.quote(str(rc))}")
+
+
 def main() -> int:
     if len(sys.argv) < 2 or sys.argv[1].startswith("-"):
         sys.exit(__doc__)
@@ -120,11 +130,7 @@ def main() -> int:
         log, rc = root / "wake-e2e.log", root / "wake-e2e.rc"
         handoff = root / "handoff.env"
         handoff_file(handoff, os.environ)
-        # The pane's login shell rc can put another `herdr` ahead of this release's: set PATH in the command.
-        command = (f"cd {shlex.quote(str(ROOT))} && . {shlex.quote(str(handoff))} && rm -f {shlex.quote(str(handoff))} "
-                   f"&& PATH={shlex.quote(str(root / 'bin'))}:\"$PATH\" "
-                   f"python3 scripts/wake-e2e.py {shlex.join(e2e_args)} "
-                   f"> {shlex.quote(str(log))} 2>&1; echo $? > {shlex.quote(str(rc))}")
+        command = driver_command(root, handoff, log, rc, e2e_args)
         herdr_cli("pane", "run", pane, command)
         deadline, shown = time.time() + TIMEOUT_S, 0
         while not rc.exists():

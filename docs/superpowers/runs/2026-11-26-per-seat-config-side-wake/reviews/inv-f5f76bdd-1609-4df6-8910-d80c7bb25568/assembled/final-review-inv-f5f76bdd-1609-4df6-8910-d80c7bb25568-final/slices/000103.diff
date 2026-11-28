@@ -1,0 +1,12 @@
+diff --git a/src/protocol/mod.rs b/src/protocol/mod.rs
+index 5705ebbbb..2387f9dcc 100644
+--- a/src/protocol/mod.rs
++++ b/src/protocol/mod.rs
+@@ -11,6 +11,7 @@ pub mod output;
+ pub mod pagination;
+ pub mod priority;
+ pub mod results;
++pub mod seat_config;
+ pub mod service;
+ pub mod summary;
+ pub mod sync_admin;

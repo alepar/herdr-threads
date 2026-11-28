@@ -1,0 +1,242 @@
+//! ht-z41e.11: the per-seat config and `/side` queue routing goals end to end, one test per flow.
+//! Flows 1 and 2 drive the public CLI against a real isolated daemon (the `lazy_config_smoke`
+//! world); flow 3 runs the queue selection and the composer read through the library.
+//!
+//! 1. `config seat list`, then `human config seat set --seat S programmatic_wake on`: S reads `on`,
+//!    the other seat `off (default)`, doctor lists S, and the store value queue selection reads
+//!    (`effective_value`) agrees. A real Codex queue cannot run here; that selection reads the flag
+//!    only for the flagged seat is proved by `store::wake_intents::selection`'s
+//!    `per_seat_flag_selects_queue_only_for_the_flagged_seat` (Task 5), and flow 3 below selects
+//!    through the same `queue_wake_selection` port.
+//! 2. an agent sets its own `nudge_threshold` through `config seat set`: the wake frontier honours
+//!    it (`-p 3` wakes, `-p 4` does not), `unset` returns it to 0, and the human-tier key is refused.
+//! 3. with a `/side` binding beside the root, the queue targets the root and lists the side;
+//!    the native composer read of a side chat's placeholder is not empty, so a native wake is
+//!    refused before anything is typed (the per-seam test is `host::native`'s
+//!    `cooperative_wake_defers_on_a_side_composer_and_prompts_once_it_reads_empty`, Task 1).
+//!
+//! Unwired-value sweep (recorded 2026-11-27, ht-z41e.11): `programmatic_wake` outside docs history
+//! and migrations is the seat key (`protocol::seat_config::REGISTRY`, read by queue selection and
+//! arming through `store::seat_config::programmatic_wake_on`, listed by doctor through
+//! `seats_with_value`) or the obsolete node-setting parse and its doctor line (`daemon::settings`,
+//! `cli::doctor`); `nudge_threshold` is read through the `seats.nudge_threshold` frontier column
+//! (flow 2); `SEAT_CONFIG_V1` is in `ADVERTISED` and gates every CLI verb but `list`.
+use super::lazy_config_smoke::World;
+use super::priority_config_smoke::{Wake, eventually, published_row, wake};
+use herdr_threads::{
+    harness::{
+        composer::{ComposerRead, read_composer},
+        registry::OccupantHarness,
+    },
+    ports::StorePort,
+    protocol::{ids::SeatId, seat_config},
+    store::seat_config::effective_value,
+};
+use serde_json::Value;
+
+const NONE: Wake = Wake {
+    delivery_row: false,
+    invitation: false,
+    receipt: false,
+};
+
+fn stdout(o: &std::process::Output) -> String {
+    String::from_utf8_lossy(&o.stdout).into_owned()
+}
+
+fn stderr(o: &std::process::Output) -> String {
+    String::from_utf8_lossy(&o.stderr).into_owned()
+}
+
+/// Flow 1.
+#[test]
+fn person_enables_queue_wake_on_one_seat() {
+    let w = World::agents_only();
+    let (other, seat) = (&w.seats[0], &w.seats[1]);
+
+    // The agent's view of the keys needs no daemon and names the human spelling.
+    let list = w.raw(Some(1), false, &["config", "seat", "list"]);
+    assert!(list.status.success(), "{}", stderr(&list));
+    let list = stdout(&list);
+    for key in seat_config::REGISTRY {
+        assert!(list.contains(key.name), "list names {}: {list}", key.name);
+    }
+    assert!(
+        list.contains("tier=human") && list.contains("ht human config seat set"),
+        "{list}"
+    );
+
+    // The person turns it on for one seat, with no caller seat of their own.
+    let set = w.raw(
+        None,
+        true,
+        &[
+            "config",
+            "seat",
+            "set",
+            "--seat",
+            seat,
+            "programmatic_wake",
+            "on",
+        ],
+    );
+    assert!(set.status.success(), "{}", stderr(&set));
+    assert!(
+        stdout(&set).contains("programmatic_wake: on (changed)"),
+        "{}",
+        stdout(&set)
+    );
+
+    let get = |who: &str| {
+        let o = w.raw(
+            None,
+            true,
+            &["config", "seat", "get", "--seat", who, "programmatic_wake"],
+        );
+        assert!(o.status.success(), "{}", stderr(&o));
+        stdout(&o)
+    };
+    assert_eq!(get(seat), "programmatic_wake: on\n");
+    assert_eq!(get(other), "programmatic_wake: off (default)\n");
+
+    // Doctor names only the flagged seat.
+    let doctor = w.raw(None, false, &["--json", "doctor"]);
+    let report: Value = serde_json::from_slice(&doctor.stdout)
+        .unwrap_or_else(|e| panic!("doctor json: {e}: {}", stdout(&doctor)));
+    let seats = &report["doctor"]["programmatic_wake_seats"];
+    assert_eq!(seats, &serde_json::json!([seat]), "{report}");
+
+    // The value queue selection reads (the daemon's store, not the CLI's answer).
+    let db = w.db();
+    let key = seat_config::key("programmatic_wake").unwrap();
+    assert_eq!(
+        effective_value(&db, &SeatId::new(seat.as_str()), key).unwrap(),
+        "on"
+    );
+    assert_eq!(
+        effective_value(&db, &SeatId::new(other.as_str()), key).unwrap(),
+        "off"
+    );
+}
+
+/// Flow 2.
+#[test]
+fn agent_sets_its_own_threshold_through_config_seat() {
+    let w = World::agents_only();
+    let set = |value: &str| {
+        w.text(
+            1,
+            false,
+            &["config", "seat", "set", "nudge_threshold", value],
+        )
+    };
+    let wakes_on = |priority: &str| -> bool {
+        let id = w.send(&format!("p{priority} body"), &["-p", priority]);
+        eventually("row published", || published_row(&w, &id));
+        let woke = wake(&w).delivery_row;
+        assert_eq!(
+            wake(&w),
+            Wake {
+                delivery_row: woke,
+                ..NONE
+            }
+        );
+        w.text(1, false, &["inbox"]);
+        assert_eq!(wake(&w), NONE, "displaying settles the wake");
+        woke
+    };
+
+    assert!(set("3").contains("nudge_threshold: 3 (changed)"));
+    assert_eq!(
+        w.text(1, false, &["config", "seat", "get", "nudge_threshold"]),
+        "nudge_threshold: 3\n"
+    );
+    assert!(w.text(1, false, &["nudge-threshold"]).contains('3'));
+    assert!(wakes_on("3"), "T=3 wakes for a p3 item");
+    assert!(!wakes_on("4"), "T=3 does not wake for a p4 item");
+
+    let unset = w.text(1, false, &["config", "seat", "unset", "nudge_threshold"]);
+    assert!(unset.contains("nudge_threshold: 0"), "{unset}");
+    assert_eq!(
+        w.text(1, false, &["config", "seat", "get", "nudge_threshold"]),
+        "nudge_threshold: 0 (default)\n"
+    );
+    assert!(!wakes_on("3"), "back at T=0 a p3 item does not wake");
+
+    // An agent cannot flip the human-tier key; the refusal names the person's spelling.
+    let refused = w.raw(
+        Some(1),
+        false,
+        &["config", "seat", "set", "programmatic_wake", "on"],
+    );
+    assert!(!refused.status.success());
+    assert!(
+        stderr(&refused).contains("ht human config seat set programmatic_wake on"),
+        "{}",
+        stderr(&refused)
+    );
+    assert_eq!(
+        w.text(1, false, &["config", "seat", "get", "programmatic_wake"]),
+        "programmatic_wake: off (default)\n"
+    );
+}
+
+mod fixture {
+    include!("../fixtures/wake_intent.rs");
+}
+
+const SIDE: &str = "00000000-0000-0000-0000-0000000000a1";
+const ROOT: &str = "00000000-0000-0000-0000-000000000001";
+
+/// The Codex main composer and the `/side` chat's, as `read_composer` sees them.
+const CODEX_MAIN: &str =
+    include_str!("../../docs/evidence/poke-spike/captures/codex-q6-workers.read-detection.txt");
+
+/// Flow 3.
+#[test]
+fn queue_targets_root_beside_side_and_native_defers_on_side_composer() {
+    // A /side (fork) session of the same process, beside the fixture's root binding, enrolled by
+    // its own SessionStart hook payload before the wake is reserved (a check-in advances the
+    // decision sequence, which stales an earlier reservation).
+    let (store, _path, r, p) = fixture::fixture_with(|store| {
+        fixture::enroll_payload(
+            store,
+            include_bytes!("../fixtures/codex-0.163.0-side/session-start-fork.json"),
+            SIDE,
+            10,
+            "side-session-start",
+        )
+        .unwrap();
+    });
+    for edge in [
+        herdr_threads::harness::adapter::TurnEdge::Busy,
+        herdr_threads::harness::adapter::TurnEdge::Idle,
+    ] {
+        StorePort::record_native_turn(
+            &store,
+            &fixture::native_report(&store, &r, &p, "qualified", edge),
+            &fixture::budget(),
+        )
+        .unwrap();
+    }
+
+    let selection = StorePort::queue_wake_selection(&store, &r, true, &fixture::budget()).unwrap();
+    assert!(selection.programmatic_enabled);
+    let binding = selection.binding.expect("queue binding selected");
+    assert_eq!(binding.scope.native_session.as_str(), ROOT);
+    let sides: Vec<&str> = binding.side_sessions.iter().map(|s| s.as_str()).collect();
+    assert_eq!(sides, [SIDE]);
+
+    // Native: the side chat's composer is not the empty main composer, so nothing is typed.
+    let side = CODEX_MAIN.replace("› Ask Codex to do anything", "› Ask a follow-up question");
+    assert_ne!(side, CODEX_MAIN, "the capture holds the main placeholder");
+    let codex = OccupantHarness::Codex;
+    assert!(matches!(
+        read_composer(codex, CODEX_MAIN, Some(120)),
+        ComposerRead::Empty
+    ));
+    assert!(
+        !matches!(read_composer(codex, &side, Some(120)), ComposerRead::Empty),
+        "a /side placeholder must not read as an empty composer"
+    );
+}

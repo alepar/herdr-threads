@@ -1,0 +1,12 @@
+diff --git a/src/harness/pi/decode.rs b/src/harness/pi/decode.rs
+index cd2123dea..476048870 100644
+--- a/src/harness/pi/decode.rs
++++ b/src/harness/pi/decode.rs
+@@ -120,6 +120,7 @@ pub(super) fn decode(_: &PiAdmission, input: &HookInput) -> Result<DecodedEvent,
+         metadata: EventMetadata {
+             native_turn_id: None,
+             turn_end: false,
++            auxiliary_session: false,
+             skill_pointer,
+             callback_deadline: None,
+             context_source,

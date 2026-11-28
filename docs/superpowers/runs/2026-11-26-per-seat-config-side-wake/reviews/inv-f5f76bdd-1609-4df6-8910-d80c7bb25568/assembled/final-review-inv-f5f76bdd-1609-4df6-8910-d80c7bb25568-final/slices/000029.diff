@@ -1,0 +1,7 @@
+diff --git a/docs/superpowers/runs/2026-11-26-per-seat-config-side-wake/evidence/run-3/driver.log b/docs/superpowers/runs/2026-11-26-per-seat-config-side-wake/evidence/run-3/driver.log
+new file mode 100644
+index 000000000..9247cd8aa
+--- /dev/null
++++ b/docs/superpowers/runs/2026-11-26-per-seat-config-side-wake/evidence/run-3/driver.log
+@@ -0,0 +1 @@
++foreground TUI ready; native session captured

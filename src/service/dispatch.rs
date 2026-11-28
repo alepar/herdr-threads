@@ -1622,6 +1622,46 @@ impl DomainService {
         self.store.binding_event(request, budget)
     }
 
+    /// `SetSeatConfig` / `UnsetSeatConfig` (TRUST-POLICY A5): the agent tier is a cooperative
+    /// mutation of the caller's own seat, decided as `SetNudgeThreshold`; the human tier is an
+    /// operator decision of the elected owner's peer and claims no target.
+    fn seat_config_write(
+        &self,
+        command: Command,
+        peer: PeerIdentity,
+        budget: &CallBudget,
+        read: ReadContext,
+    ) -> Result<CommandResult, ApiError> {
+        let tier = match &command {
+            Command::SetSeatConfig(v) => v.tier,
+            Command::UnsetSeatConfig(v) => v.tier,
+            _ => unreachable!("routed by the caller"),
+        };
+        match tier {
+            crate::protocol::seat_config::ConfigTier::Agent => {
+                let mutation = PermitMutation::try_from(command).map_err(|_| {
+                    error(
+                        ErrorCode::InvalidRequest,
+                        "agent seat config write needs a caller claim",
+                    )
+                })?;
+                self.cooperative_mutation(mutation, peer, budget, read, false)
+            }
+            crate::protocol::seat_config::ConfigTier::Human => {
+                let actor = self
+                    .operator_owner_uid
+                    .and_then(|uid| OperatorActor::from_peer(peer, uid))
+                    .ok_or_else(|| {
+                        error(
+                            ErrorCode::Unauthorized,
+                            "operator peer does not match elected owner",
+                        )
+                    })?;
+                self.store.seat_config_operator(&command, &actor, budget)
+            }
+        }
+    }
+
     pub(super) fn cooperative_mutation(
         &self,
         mutation: PermitMutation,
@@ -1827,6 +1867,7 @@ impl DomainService {
         } else {
             AckModDelivered {
                 claim: CallerClaim {
+                    auxiliary_session: false,
                     instance: self.instance.clone(),
                     host: request.claim.host.clone(),
                     seat: seat.clone(),
@@ -2113,8 +2154,11 @@ impl LocalService for DomainService {
         // Any call claiming a seat shows its session ran after a wake (ht-wake-loop); a hint for
         // the wake lane's receipt check, never authority.
         if let Some(claim) = contact_claim(&command) {
-            self.delivery_pull
-                .record_contact(&claim.seat, self.clock.utc_now());
+            self.delivery_pull.record_contact(
+                &claim.seat,
+                &claim.native_session,
+                self.clock.utc_now(),
+            );
         }
         // Subagent bindings are read-only (ht-54r.20). This claim-shape check is only the cheap
         // early refusal (stable code before `validate()`); the authority is the role on the
@@ -2199,6 +2243,7 @@ impl LocalService for DomainService {
             | Command::MessageDeliveryModes(_)
             | Command::WakeOn(_)
             | Command::NudgeThreshold(_)
+            | Command::GetSeatConfig(_)
             | Command::Warnings(_)
             | Command::ActiveWarnings(_)
             | Command::Thread(_)
@@ -2257,6 +2302,9 @@ impl LocalService for DomainService {
             Command::DeliveryConfirm(confirm) => self.delivery_confirm(confirm, peer, budget, read),
             Command::TurnEndDue(request) => self.turn_end_due(&request, peer, budget),
             Command::TurnState(request) => self.turn_state_edge(&request, peer, budget),
+            command @ (Command::SetSeatConfig(_) | Command::UnsetSeatConfig(_)) => {
+                self.seat_config_write(command, peer, budget, read)
+            }
             command @ (Command::BeginHandoff(_)
             | Command::CompleteHandoff(_)
             | Command::CheckIn(_)
@@ -2561,6 +2609,7 @@ mod operator_tests {
             pagination::PageRequest,
         };
         let claim = CallerClaim {
+            auxiliary_session: false,
             instance: "i".into(),
             host: crate::test_support::test_host_locator(),
             seat: SeatId::new("seat"),
@@ -2772,6 +2821,7 @@ mod operator_tests {
         )
         .with_cooperative_owner(501, Arc::new(FairWriter::new(8)));
         let claim = CallerClaim {
+            auxiliary_session: false,
             host: crate::test_support::test_host_locator(),
             instance: "34750f98bd59fcfc946da45aaabe933b".into(),
             seat: SeatId::new("s"),
@@ -2859,6 +2909,7 @@ mod operator_tests {
                 Command::Summary(SummaryRequest {
                     thread: ThreadId::new("t"),
                     claim: CallerClaim {
+                        auxiliary_session: false,
                         host: crate::test_support::test_host_locator(),
                         instance: "34750f98bd59fcfc946da45aaabe933b".into(),
                         seat: SeatId::new("s"),
@@ -2896,6 +2947,10 @@ mod cooperative_tests;
 #[cfg(test)]
 #[path = "../../tests/service/named_startup.rs"]
 mod named_startup_tests;
+
+#[cfg(test)]
+#[path = "../../tests/service/seat_config.rs"]
+mod seat_config_tests;
 
 #[cfg(test)]
 #[path = "../../tests/daemon/self_retire.rs"]

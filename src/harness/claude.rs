@@ -464,6 +464,7 @@ fn parse_hooks_2_1_283(
         _ => return Err(ContextError::Invalid),
     };
     Ok(LifecycleEvent {
+        auxiliary_session: false,
         harness: Harness::Claude,
         source,
         kind,

@@ -432,6 +432,7 @@ impl World {
             )
             .expect("the seat's lifecycle check-in opened its binding");
         herdr_threads::protocol::authority::CallerClaim {
+            auxiliary_session: false,
             host,
             instance: instance.to_string(),
             seat: SeatId::new(seat),

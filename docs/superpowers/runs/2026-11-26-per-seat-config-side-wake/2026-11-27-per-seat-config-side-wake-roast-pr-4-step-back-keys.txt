@@ -1,0 +1,57 @@
+r1 [Must-fix] final review: complete live-qualification row (ht-z41e.10)
+r1 [Must-fix] final review: run ignored herdr_release_wake on the final SHA
+r1 [Must-fix] untested: Codex non-/side fork with original binding connected
+r1 [Must-fix] untested: TRUST-POLICY /side and stale-authority hunks not inspected
+r1 [Must-fix] untested: changed docs paths not inspected
+r1 [Must-fix] untested: no full-suite measurement of this branch
+r1 [Must-fix] untested: review-inputs provenance gap
+r1 [Must-fix] untested: side-queue and side-native-defer never run live
+r1 [Must-fix] untested: stale-authority fallback after flag flip only store-level
+r1 [Must-fix] untested: whole-epic review incomplete (bounded hunks only)
+r1 [Nit] TRUST-POLICY.md:4277
+r1 [Nit] docs/superpowers/runs/2026-11-26-per-seat-config-side-wake/2026-11-26-per-seat-config-side-wake-design.md:221
+r1 [Nit] scripts/wake-e2e.py:3044
+r1 [Nit] src/harness/codex.rs:1525
+r1 [Nit] src/store/seat_config.rs:489; src/store/seat_config.rs:462
+r1 [Should-fix] scripts/wake-e2e.py:2979
+r1 [Should-fix] src/scheduler/mod.rs:1012
+r1 [Should-fix] src/store/wake.rs:272
+r1 [Should-fix] tests/integration/herdr_release_smoke.rs:1175
+r2 [Must-fix] final review r2: SKILL.md human config seat set 'asks the person' on harnesses without ask-rule (B6)
+r2 [Must-fix] final review r2: ansi-composer README codex-0.163.0-side row
+r2 [Must-fix] final review r2: ansi-composer README stale /side placeholder clause
+r2 [Must-fix] final review r2: bridge tool_boundary_check_in drops auxiliary evidence (B8)
+r2 [Must-fix] final review r2: cluster 3 run docs unreviewed
+r2 [Must-fix] final review r2: install.md release driver queue-proof sentence
+r2 [Must-fix] final review r2: wake_queue_cost lone-side test vacuous
+r2 [Must-fix] untested r2: doctor report_captured wiring not end to end
+r2 [Must-fix] untested r2: human config seat set without --seat in a pane only via test seam
+r2 [Must-fix] untested r2: live qualification not run
+r2 [Must-fix] untested r2: mark_auxiliary guards and reversible-close operator write untested
+r2 [Must-fix] untested r2: no build or test at head for any cluster
+r2 [Must-fix] untested r2: no live root contact under targeted session UUID
+r2 [Must-fix] untested r2: no real hook-path aux bit end to end
+r2 [Must-fix] untested r2: refusal-backoff retry timing after side closes unmeasured
+r2 [Must-fix] untested r2: release-qualify --queue-proof pass-through untested
+r2 [Must-fix] untested r2: scheduler/queue paths untested (OutcomeUnknown with root, unknown root, fallback scope)
+r2 [Must-fix] untested r2: service-level gaps (subagent human-tier write, human unset nudge_threshold, operator replay)
+r2 [Must-fix] untested r2: skill.rs needles for new sentences missing
+r2 [Nit] src/harness/bridge.rs:1293
+r2 [Should-fix] scripts/wake-e2e.py:2979
+r2 [Should-fix] src/harness/bridge.rs:430
+r2 [Should-fix] tests/integration/herdr_release_smoke.rs:1175
+r3 [FYI] src/notification/queue.rs:242
+r3 [Must-fix] final review r3: busy-side contradiction (pane working refuses vs docs promise)
+r3 [Must-fix] final review r3: run ht-z41e.10 live qualification at the final SHA
+r3 [Must-fix] final review r3: run ignored herdr_release_wake side-close path
+r3 [Nit] src/notification/dispatch.rs:694
+r3 [Should-fix] scripts/wake-e2e.py:2979
+r3 [Should-fix] tests/integration/herdr_release_smoke.rs:1175
+r4 [Must-fix] final review r4: run herdr_release_wake side-close path
+r4 [Must-fix] final review r4: run live qualification (ht-z41e.10/.31/.43) at the final SHA
+r4 [Must-fix] final review r4: side-draft narrowing without a human scope-change row
+r4 [Nit] src/notification/dispatch.rs:399
+r4 [Nit] src/notification/queue.rs:442; src/notification/queue.rs:463
+r4 [Should-fix] scripts/wake-e2e.py:2979
+r4 [Should-fix] src/notification/dispatch.rs:489
+r4 [Should-fix] tests/integration/herdr_release_smoke.rs:1175

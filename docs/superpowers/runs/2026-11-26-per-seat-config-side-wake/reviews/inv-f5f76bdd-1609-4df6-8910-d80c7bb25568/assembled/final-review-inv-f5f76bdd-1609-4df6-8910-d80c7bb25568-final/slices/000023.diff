@@ -1,0 +1,67 @@
+diff --git a/docs/superpowers/runs/2026-11-26-per-seat-config-side-wake/coverage-ledger.md b/docs/superpowers/runs/2026-11-26-per-seat-config-side-wake/coverage-ledger.md
+new file mode 100644
+index 000000000..83f4b34df
+--- /dev/null
++++ b/docs/superpowers/runs/2026-11-26-per-seat-config-side-wake/coverage-ledger.md
+@@ -0,0 +1,61 @@
++c1 · r1 · GAP · R13 human ask-rule coverage · applied — verified Claude rules ask on `<spelling> human` prefix; ht-z41e.3 gains a coverage test for both spellings (Claude, Codex)
++c2 · r1 · GAP · B8 default-off /side outcome · applied — goal narrowed to programmatic_wake-on seats per B8's question; default-off defers (ht-z41e.1 docs), programmatic_wake description says so (ht-z41e.2)
++c3 · r1 · GAP · R9→R8 spike contingency · applied — ht-z41e.6 routing verdict line; ht-z41e.7 stops with a blocker on 'no marker'
++c4 · r1 · GAP · R7 generic set side effects · applied — one shared service path (ht-z41e.2), M12 on config set (ht-z41e.3)
++c5 · r1 · GAP · R3 reads by subagent/other seat · applied — ht-z41e.2 service test, ht-z41e.3 CLI test
++c6 · r1 · UNOWNED-SEAM · seat.config_v1 client gate · applied — ht-z41e.3 owns it (R14)
++c7 · r1 · GAP · R1/R12 per-seat queue authority in TRUST-POLICY · applied — ht-z41e.4 restates it, flip-off stale-authority test
++c8 · r1 · GAP · R15 docs/CHANGELOG for removed node key · applied — ht-z41e.4; version decided at release
++c9 · r1 · GAP · R3 remote/named seat scope · applied — node-local, remote refused, named/terminal supported (ht-z41e.2, spec)
++c10 · r1 · GAP · R1 node-key write path · applied — ht-z41e.4 refuses/redirects any such path or states none
++c11 · r1 · UNOWNED-SEAM · native defer ↔ queue fallback · applied — ht-z41e.7 owns the crossing test
++c12 · r1 · UNOWNED-SEAM · native receipt identity with side contact · applied — ht-z41e.7 applies S3 or records any-binding contact
++c13 · r1 · GAP · R6 refusal names human command · applied — ht-z41e.3 acceptance
++c14 · r1 · GAP · R16 native defer live qualification · applied — ht-z41e.8 side-native-defer case + side-nudge/draft review; ht-z41e.10 runs it
++c15 · r1 · UNOWNED-SEAM · queue intent target UUID record · applied — ht-z41e.7 owns, ht-z41e.8 consumes (edge added)
++c16 · r1 · GAP · delivery-contract/AGENTS.md entries for wake changes · applied — ht-z41e.1, .4, .7 acceptance
++c17 · r1 · GAP · programmatic_wake on ineligible seat · applied — accepted and inert; description states scope (ht-z41e.2)
++c18 · r2 · GAP · B2 arbitrary vs closed registry · applied — human chose closed typed registry (S1 row); ht-z41e.2 doc+test that a key is one registry entry
++c19 · r2 · GAP · R13 human ask-rule on other harnesses · applied — ht-z41e.3 per-harness status, ht-z41e.2 TRUST-POLICY line
++c20 · r2 · GAP · R13 bypass spellings · applied — verified TRUST-POLICY requires immediate argv[1] human; ht-z41e.3 tests flag-before-human forms; residual limit (abs path/env prefix) in TRUST-POLICY
++c21 · r2 · GAP · R5/R7 agent-tier authority equals SetNudgeThreshold · applied — ht-z41e.2 per-binding-class tests
++c22 · r2 · GAP · subagent/readonly writes · applied — ht-z41e.2 rule + tests
++c23 · r2 · GAP · seatless caller · applied — ht-z41e.3
++c24 · r2 · GAP · B5 list fields and value spellings · applied — list shows all fields; synonyms refused with valid set
++c25 · r2 · GAP · c14 side-native-defer ownership and per-case modes · applied — ht-z41e.8 owns amended, ht-z41e.10 names invocations
++c26 · r2 · UNOWNED-SEAM · ht-z41e.4→ht-z41e.5 · applied — edge + consumes
++c27 · r2 · UNOWNED-SEAM · ht-z41e.1→ht-z41e.7 · applied — edge + consumes
++c28 · r2 · GAP · spike isolation · applied — ht-z41e.6 acceptance
++c29 · r2 · GAP · default Codex matrix at final SHA · applied — ht-z41e.10
++c30 · r2 · GAP · diagnosability after node flag removal · applied — doctor lists seats with programmatic_wake on (ht-z41e.4)
++c31 · r2 · GAP · reversible retirement keeps human-tier key · applied — ht-z41e.2 test + TRUST-POLICY
++c32 · r2 · GAP · contingency visibility · applied — ht-z41e.7 blocker to the human, re-scope .8/.10
++c33 · r2 · GAP · reconsideration on programmatic_wake flip · applied — ht-z41e.4
++c34 · r2 · GAP · ladder bound while side open · applied — ht-z41e.1 fake-clock test or stated limit
++c35 · r2 · UNOWNED-SEAM · S4 ui verdict · applied — ht-z41e.6 verdict field, ht-z41e.7 consumes
++c36 · r2 · GAP · skill mirrors · applied — ht-z41e.3
++c37 · r2 · GAP · unset to default · applied — UnsetSeatConfig (ht-z41e.2) + CLI unset (ht-z41e.3)
++c38 · r2 · GAP · README entry for command family · applied — ht-z41e.3
++c39 · r2 · GAP · lone root naming · applied — ht-z41e.7 adapter test
++g1 · graph · GRAPH-EDGE · ht-z41e.10 <- ht-z41e.11 · kept — final-SHA qualification runs on the swept tree
++g2 · graph · GRAPH-EDGE · ht-z41e.8 <- ht-z41e.7 · kept — intent record UUID field
++g3 · graph · GRAPH-EDGE · ht-z41e.8 <- ht-z41e.5 · kept — per-seat enablement in the driver, shared files
++g4 · graph · GRAPH-EDGE · ht-z41e.7 <- ht-z41e.4 · kept — queue_wake_selection shared logic
++g5 · graph · GRAPH-EDGE · ht-z41e.5 <- ht-z41e.4 · kept — weak but non-shortening
++g6 · graph · GRAPH-EDGE · ht-z41e.5 <- ht-z41e.3 · kept — human CLI the driver calls
++g7 · graph · GRAPH-EDGE · ht-z41e.4 <- ht-z41e.2 · kept — store read fn
++g8 · graph · GRAPH-EDGE · ht-z41e.3 <- ht-z41e.2 · kept — protocol commands
++g9 · graph · PROPOSAL · seam contracts 4/7, 3+4/5, 7/8 · declined — human chose no seams (depth stays 6)
++a1 · amend-code-1 · GAP · gate/sweep ordering after cycle-1 code · applied — .27/.28 ← .21-.26, .29 ← .21/.22/.25 (both reviewers)
++a2 · amend-code-1 · UNOWNED-SEAM · hook evidence → auxiliary_session → RootCandidate → predicate, TRUST-POLICY wording · applied — .21 owns all, supersedes .7's Codex predicate (both; NEEDS-SPEC was coverage-inputs first-sentence truncation, answered by the full bead text)
++a3 · amend-code-1 · GAP · live proof of amended marker · applied — .29 records first enrolling event and bits
++a4 · amend-code-1 · GAP · unreceived lift and root re-registration · applied — .22 session-UUID scoped contact, lift test
++a5 · amend-code-1 · GAP · plain-CLI Codex /side · applied — .21 test + documented native fallback
++a6 · amend-code-1 · GAP · sticky bit on reused UUID · applied — bit scoped to binding row (.21)
++a7 · amend-code-1 · GAP · not-yet-enrolled side limit owner · applied — .21 owns TRUST-POLICY line + test
++a8 · amend-code-1 · GAP · root null transcript_path risk · applied — .29 live check on every event/source
++a9 · amend-code-1 · GAP · receipt scope on queue→native fallback · applied — .22
++a10 · amend-code-1 · GAP · AGENTS.md rule f / closed-loop text · applied — .22, .24
++a11 · amend-code-1 · GAP · operator unset/column writes on retired seat · applied — .24
++a12 · amend-code-1 · GAP · B5 prose-to-set flow and approval-bypass modes · applied — .29 live step, .21 TRUST-POLICY line
++a13 · amend-code-1 · UNOWNED-SEAM · wake_state() refused-attempt field · applied — .25 confirms or uses an existing field

@@ -2150,8 +2150,7 @@ where
                             state_dir.clone(),
                             Arc::clone(&turn_state),
                             Arc::clone(&recovery),
-                        ).with_programmatic_wake(config.programmatic_wake())
-                        .with_error_log(Arc::clone(&factory_lane_log)));
+                        ).with_error_log(Arc::clone(&factory_lane_log)));
                     (Some(recovery), Some(wake))
                 }
                 None => (None, None),

@@ -1,0 +1,20 @@
+diff --git a/tests/store/facade.rs b/tests/store/facade.rs
+index 479e1e96d..27ee8e0c2 100644
+--- a/tests/store/facade.rs
++++ b/tests/store/facade.rs
+@@ -1757,6 +1757,7 @@ fn budget() -> CallBudget {
+ 
+ fn fixture_claim(seat: &str, target: &str) -> CallerClaim {
+     CallerClaim {
++        auxiliary_session: false,
+         host: crate::test_support::test_host_locator(),
+         instance: "34750f98bd59fcfc946da45aaabe933b".into(),
+         seat: SeatId::new(seat),
+@@ -2181,6 +2182,7 @@ fn invalid_inbox_completion_writes_no_state() {
+         .query_row("PRAGMA data_version", [], |r| r.get(0))
+         .unwrap();
+     let claim = CallerClaim {
++        auxiliary_session: false,
+         host: crate::test_support::test_host_locator(),
+         instance: "34750f98bd59fcfc946da45aaabe933b".into(),
+         seat: SeatId::new("a"),

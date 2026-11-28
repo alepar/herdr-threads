@@ -11,6 +11,7 @@ pub mod output;
 pub mod pagination;
 pub mod priority;
 pub mod results;
+pub mod seat_config;
 pub mod service;
 pub mod summary;
 pub mod sync_admin;

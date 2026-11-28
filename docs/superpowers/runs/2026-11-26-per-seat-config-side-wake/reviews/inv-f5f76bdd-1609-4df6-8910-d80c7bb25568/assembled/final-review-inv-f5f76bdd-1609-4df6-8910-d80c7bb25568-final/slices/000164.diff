@@ -1,0 +1,12 @@
+diff --git a/tests/harness/agy_wake.rs b/tests/harness/agy_wake.rs
+index e0a11d14b..c6853f66f 100644
+--- a/tests/harness/agy_wake.rs
++++ b/tests/harness/agy_wake.rs
+@@ -44,6 +44,7 @@ fn peer() -> PeerIdentity {
+ }
+ fn claim() -> CallerClaim {
+     CallerClaim {
++        auxiliary_session: false,
+         host: crate::test_support::test_host_locator(),
+         instance: "34750f98bd59fcfc946da45aaabe933b".into(),
+         seat: SeatId::new("s"),

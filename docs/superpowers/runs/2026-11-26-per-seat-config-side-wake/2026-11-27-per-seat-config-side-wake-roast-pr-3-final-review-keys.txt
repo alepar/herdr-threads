@@ -1,0 +1,4 @@
+review: not ready
+[Must-fix] final review r3: run ht-z41e.10 live qualification at the final SHA
+[Must-fix] final review r3: run ignored herdr_release_wake side-close path
+[Must-fix] final review r3: busy-side contradiction (pane working refuses vs docs promise)

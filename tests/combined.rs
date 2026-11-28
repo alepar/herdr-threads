@@ -226,6 +226,8 @@ mod host_no_wake_tripwire;
 mod opencode_plugin_js;
 #[path = "integration/priority_sweep.rs"]
 mod priority_sweep;
+#[path = "integration/seat_config_sweep.rs"]
+mod seat_config_sweep;
 #[path = "update/update_cli.rs"]
 mod update_cli;
 

@@ -1,0 +1,91 @@
+diff --git a/src/scheduler/mod.rs b/src/scheduler/mod.rs
+index fcffa9a55..ebccfd413 100644
+--- a/src/scheduler/mod.rs
++++ b/src/scheduler/mod.rs
+@@ -813,17 +813,24 @@ struct WakeRunnerState {
+ /// typing), or by reading the item, which ends the wake work. With neither by the time the
+ /// ladder's next retry is due, the wake was not received: it is recorded `unreceived` once and
+ /// not retyped while the seat stays silent, its targets are unchanged and no newer item arrived
+-/// (a new item gets its own wake, delivery contract rule 5).
++/// (a new item gets its own wake, delivery contract rule 5) and the seat's `programmatic_wake`
++/// did not change (a flip changes how it may be woken).
+ #[derive(Debug, Clone, PartialEq, Eq)]
+ struct AwaitingReceipt {
+     attempt: WakeAttemptId,
+     since: UtcMillis,
+     targets: Vec<BindingId>,
+     frontier: crate::ports::LogicalAttentionFrontier,
++    /// The seat's `programmatic_wake` when it was reserved; a change lifts the suppression.
++    programmatic_wake: bool,
+     /// A `Submitted` attempt is judged; an `OutcomeUnknown` one only once the dispatcher reports
+     /// the prompt was typed and seen held in the composer (`arm_unsubmitted`), else it is dropped.
+     armed: bool,
+     marked: bool,
++    /// The root native session a queue-delivered attempt went to: only a call from a binding with
++    /// this session UUID is its receipt. `None` for a native attempt (including a queue-selected
++    /// one that fell back to native), which any binding of the seat receives.
++    root_session: Option<crate::protocol::ids::NativeSessionId>,
+ }
+ 
+ fn target_bindings(targets: &[WakeTarget]) -> Vec<BindingId> {
+@@ -998,10 +1005,21 @@ impl<'a, S: WakePort + ?Sized, N: NotificationPort + ?Sized> WakeRunner<'a, S, N
+                 .as_ref()
+                 .expect("checked")
+                 .frontier();
++            let programmatic_wake = candidate
++                .attention_witness
++                .as_ref()
++                .is_some_and(|w| w.programmatic_wake());
+             let silent = awaiting.armed
++                && awaiting.programmatic_wake == programmatic_wake
+                 && awaiting.targets == target_bindings(&candidate.targets)
+                 && !frontier.advanced_beyond(&awaiting.frontier)
+-                && self.hook_pull.contacted_since(&seat, awaiting.since) == Some(false);
++                && match &awaiting.root_session {
++                    Some(root) => {
++                        self.hook_pull
++                            .contacted_since_session(&seat, root, awaiting.since)
++                    }
++                    None => self.hook_pull.contacted_since(&seat, awaiting.since),
++                } == Some(false);
+             if !silent {
+                 state.awaiting.remove(&seat);
+             } else {
+@@ -1066,6 +1084,9 @@ impl<'a, S: WakePort + ?Sized, N: NotificationPort + ?Sized> WakeRunner<'a, S, N
+         });
+         let attempt = self.run_attempt(&reservation, job.as_ref(), budget, committed_at);
+         let transport = self.notifier.take_transport(&reservation.attempt);
++        let root_session = (transport == WakeTransport::Queue)
++            .then(|| self.notifier.take_queue_root(&reservation.attempt))
++            .flatten();
+         let outcome = attempt.outcome;
+         let receipts = attempt
+             .poked
+@@ -1093,7 +1114,7 @@ impl<'a, S: WakePort + ?Sized, N: NotificationPort + ?Sized> WakeRunner<'a, S, N
+             } else {
+                 state.dispatch.record_outcome(&seat, outcome, completed_at);
+             }
+-            if transport == WakeTransport::Composer
++            if (transport == WakeTransport::Composer || root_session.is_some())
+                 && matches!(
+                     outcome,
+                     WakeOutcome::Submitted | WakeOutcome::OutcomeUnknown
+@@ -1106,8 +1127,10 @@ impl<'a, S: WakePort + ?Sized, N: NotificationPort + ?Sized> WakeRunner<'a, S, N
+                         since: reservation.reserved_at_utc,
+                         targets: target_bindings(&candidate.targets),
+                         frontier: reservation.attention_witness.frontier(),
++                        programmatic_wake: reservation.attention_witness.programmatic_wake(),
+                         armed: outcome == WakeOutcome::Submitted,
+                         marked: false,
++                        root_session,
+                     },
+                 );
+             }
+@@ -1268,6 +1291,7 @@ impl<'a, S: WakePort + ?Sized, N: NotificationPort + ?Sized> WakeRunner<'a, S, N
+         };
+         let attempt = self.run_attempt(&reservation, Some(&job), budget, committed_at);
+         self.notifier.take_transport(&reservation.attempt);
++        self.notifier.take_queue_root(&reservation.attempt);
+         let outcome = attempt.outcome;
+         failpoint!("wake.after_prompt", reservation.daemon_boot.to_string());
+         let completed_at = self.store.clock().monotonic_now();

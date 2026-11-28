@@ -44,6 +44,7 @@ pub mod receipts;
 pub mod remote_seat_status;
 pub mod retention;
 pub mod schema;
+pub mod seat_config;
 pub mod seat_directory;
 pub mod seats;
 pub mod service_controls;
@@ -1733,6 +1734,26 @@ impl StorePort for SqliteStore {
         self.no_wake_reports_apply_impl(observer, persist, clear, budget)
             .map(Some)
     }
+    fn seat_config_operator(
+        &self,
+        command: &Command,
+        actor: &crate::protocol::authority::OperatorActor,
+        budget: &CallBudget,
+    ) -> Result<CommandResult, ApiError> {
+        let mut writer = self.writer(budget)?;
+        match command {
+            Command::SetSeatConfig(v) => {
+                seat_config::set_operator(&self.context, &mut writer, &self.instance, v, actor)
+            }
+            Command::UnsetSeatConfig(v) => {
+                seat_config::unset_operator(&self.context, &mut writer, &self.instance, v, actor)
+            }
+            _ => Err(api_error(
+                ErrorCode::InvalidRequest,
+                "command is not a seat config write",
+            )),
+        }
+    }
     fn archival_pass(
         &self,
         runtime: &archival::Runtime,
@@ -2076,6 +2097,12 @@ impl StorePort for SqliteStore {
             }
             PermitMutation::SetNudgeThreshold(v) => {
                 seats::set_nudge_threshold(&self.context, &mut writer, budget, &v, permit)
+            }
+            PermitMutation::SetSeatConfig(v) => {
+                seat_config::set_agent(&self.context, &mut writer, budget, &v, permit)
+            }
+            PermitMutation::UnsetSeatConfig(v) => {
+                seat_config::unset_agent(&self.context, &mut writer, budget, &v, permit)
             }
             PermitMutation::SelfRetire(v) => {
                 seats::self_retire(&self.context, &mut writer, budget, &v, permit)
@@ -4083,6 +4110,19 @@ mod cooperative_checkin_tests;
 #[path = "../../tests/store/wake_discovery_cost.rs"]
 mod discovery_cost;
 
+/// The claim of an agent-tier seat config write: the tier carries one, a command without it is
+/// no permit mutation.
+fn seat_config_claim(
+    claim: &Option<crate::protocol::authority::CallerClaim>,
+) -> Result<crate::protocol::authority::CallerClaim, ApiError> {
+    claim.clone().ok_or_else(|| {
+        api_error(
+            ErrorCode::InvalidRequest,
+            "agent seat config write needs a caller claim",
+        )
+    })
+}
+
 /// Canonical service-local permit input for every accountable cooperative route.
 /// Accept freezes its current InvitationId inside the issuer, preserving episode
 /// races. The unresolved request marker can never authorize a new mutation.
@@ -4278,6 +4318,20 @@ pub fn cooperative_permit_request(
             v.operation.clone(),
             ObligationRef::CheckIn(v.claim.seat.clone()),
             control::cooperative_payload_hash("set_nudge_threshold", v)?,
+            None,
+        ),
+        PermitMutation::SetSeatConfig(v) => (
+            seat_config_claim(&v.claim)?,
+            v.operation.clone(),
+            ObligationRef::CheckIn(seat_config_claim(&v.claim)?.seat),
+            control::cooperative_payload_hash("set_seat_config", v)?,
+            None,
+        ),
+        PermitMutation::UnsetSeatConfig(v) => (
+            seat_config_claim(&v.claim)?,
+            v.operation.clone(),
+            ObligationRef::CheckIn(seat_config_claim(&v.claim)?.seat),
+            control::cooperative_payload_hash("unset_seat_config", v)?,
             None,
         ),
         PermitMutation::SelfRetire(v) => (

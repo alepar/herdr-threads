@@ -1,0 +1,12 @@
+diff --git a/tests/cli/accept_delivery.rs b/tests/cli/accept_delivery.rs
+index bf992db89..754777b6e 100644
+--- a/tests/cli/accept_delivery.rs
++++ b/tests/cli/accept_delivery.rs
+@@ -30,6 +30,7 @@ impl Clock for TestClock {
+ 
+ fn claim() -> CallerClaim {
+     CallerClaim {
++        auxiliary_session: false,
+         host: crate::test_support::test_host_locator(),
+         instance: "i".into(),
+         seat: SeatId::new("s"),

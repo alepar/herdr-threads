@@ -1,0 +1,3696 @@
+{
+  "facts": {
+    "run_id": "120929-dd69",
+    "sha": "a7d1d92e0b2af33d65d31026a60a5873ac12c9b3",
+    "dirty": true,
+    "versions": {
+      "herdr": "herdr 0.9.5",
+      "herdr-threads": "herdr-threads 3.6.0",
+      "codex": "codex-cli 0.172.0"
+    },
+    "harness_mode": "linux",
+    "codex_args": "--approve-for-me",
+    "bin": "$HOME/AleCode/herdr-threads/.worktrees/super-auto-per-seat-config-side-wake/.worktrees/super-auto-per-seat-config-side-wake--task-ht-z41e.43/bin/herdr-threads",
+    "bin_sha256": "fff0ee74c8b3aac9adab52224fa096f18e4d9b9c81943f08f047d950005172d0",
+    "root": "/tmp/ht-wake-e2e.vhwkrgkr",
+    "started_utc": "2026-11-27T20:09:29Z",
+    "queue_proof": true,
+    "queue_observation": true,
+    "queue_seats": {
+      "co-t0": "{\"version\":9,\"result\":{\"kind\":\"seat_config_written\",\"data\":{\"seat\":\"sG3xnaAQxk4u\",\"key\":\"programmatic_wake\",\"value\":\"on\",\"is_default\":false,\"changed\":true}}}"
+    },
+    "queue_bootstrap": {
+      "co-t0": {
+        "adapter": "codex",
+        "scope": {
+          "binding": "89a08ebaa9957dfde8dc4811c7ff8834",
+          "native_session": "01a21ea0-9b28-7633-9a6b-3f5dfba8492b",
+          "execution": "0ffe0244-2d20-5295-8b09-b0d47bc7004f",
+          "generation": 1,
+          "process": {
+            "pid": 422952,
+            "start": 143788903
+          },
+          "kernel_boot": "6d757418-e8a4-456d-a680-21953e8fa0a3"
+        },
+        "turn_id": "01a21ea0-a8ac-7973-9e33-4e73e814e09b",
+        "ordinal": 2
+      }
+    },
+    "finished_utc": "2026-11-27T20:16:03Z",
+    "exit_code": 1,
+    "codex_auth_refreshed_in_run": false,
+    "root_transcript": {
+      "co-t0": {
+        "events": [
+          [
+            "SessionStart",
+            "startup"
+          ],
+          [
+            "UserPromptSubmit",
+            null
+          ],
+          [
+            "PreToolUse",
+            null
+          ],
+          [
+            "Stop",
+            null
+          ]
+        ],
+        "null_events": [],
+        "defect": false
+      },
+      "co-t-1": {
+        "events": [],
+        "null_events": [],
+        "defect": false
+      },
+      "co-t3": {
+        "events": [],
+        "null_events": [],
+        "defect": false
+      }
+    }
+  },
+  "completeness": {
+    "expected": 1,
+    "collected": 1,
+    "missing": [],
+    "extra": []
+  },
+  "cleanup": {
+    "steps": [
+      {
+        "workspace_close_rc": 0
+      },
+      {
+        "daemon_stop_rc": 0
+      },
+      {
+        "codex_auth_copy": "deleted (unchanged)"
+      },
+      {
+        "root_removed": "/tmp/ht-wake-e2e.vhwkrgkr"
+      }
+    ],
+    "problems": []
+  },
+  "codex_hook_guidance": {
+    "rollouts": 1,
+    "guidance_contexts": 1,
+    "delivering_hooks": 1,
+    "over_allowance": 0,
+    "pass": true
+  },
+  "results": [
+    {
+      "case": "side-queue-focused/group",
+      "harness": "codex",
+      "threshold": 0,
+      "recipient": "co-t0",
+      "expect_wake": true,
+      "woke": false,
+      "t_wake_s": null,
+      "hello_sent": false,
+      "checks": {
+        "bindings_after_side": [
+          {
+            "session": "01a21ea0-9b28-7633-9a6b-3f5dfba8492b",
+            "provenance": "cooperative_top_level",
+            "liveness": "connected",
+            "pid": 422952,
+            "disconnect": null,
+            "concurrent": 0,
+            "auxiliary": 0
+          },
+          {
+            "session": "01a21ea1-03da-7bc1-9404-cdb96b13ad61",
+            "provenance": "cooperative_top_level",
+            "liveness": "connected",
+            "pid": 422952,
+            "disconnect": null,
+            "concurrent": 1,
+            "auxiliary": 0
+          }
+        ],
+        "root_session": "01a21ea0-9b28-7633-9a6b-3f5dfba8492b",
+        "setup": {
+          "side_setup_ok": true,
+          "focused": true,
+          "side_busy": true,
+          "agent_status": "working"
+        },
+        "screens": {
+          "busy_side": [
+            "\u203a You are a test recipient in an automated herdr-threads wake e2e run (the us\u2026 \u2502 Run side \u2026\u00d7                        +",
+            "                                                                               \u2502",
+            "\u2022 Ran herdr-threads skill                                                      \u2502\u203a Side of wake-e2e side-queue-focused/",
+            "  \u2514 Administrative recovery uses immediate argv1 `human`, with exact reported \u2026\u2502  group 120929-dd69: run the shell",
+            "                                                                               \u2502  command /tmp/ht-wake-e2e.vhwkrgkr/",
+            "    Quiet channels can archive automatically after an uninterrupted hour of ve\u2026\u2502  bin/herdr-threads inbox once, then",
+            "    + 216 lines (^t to expand)                                                 \u2502  print SIDE-FOCUS-DONE. Do not act on",
+            "                                                                               \u2502  anything it shows.",
+            "\u2022 Exited (status 2) herdr-threads nudge-threshold 0                            \u2502",
+            "  \u2514 herdr-threads: no resolved seat is mapped to pane w2:p3; run `herdr-thread\u2026\u2502",
+            "    + 1 line (^t to expand)                                                    \u2502\u2022 I\u2019ll run the inbox command once.",
+            "                                                                               \u2502",
+            "\u2022 Ran herdr-threads --state-dir /tmp/ht-wake-e2e.vhwkrgkr/state --host-endpoin\u2026\u2502\u2022 Ran /tmp/ht-wake-e2e.vhwkrgkr/bin/he\u2026",
+            "  \u2514 nudge_threshold: 0 (unchanged)                                             \u2502  \u2514 empty",
+            "    + Show details                                                             \u2502    + Show details",
+            "                                                                               \u2502",
+            "\u2022 SETUP-DONE nudge_threshold=0                                                 \u2502\u2022 SIDE-FOCUS-DONE",
+            "                                                                               \u2502",
+            "  Worked for 10s \u2022 12:09                                                       \u2502  Worked for 5s \u2022 12:10",
+            "                                                                               \u2502",
+            "                                                                               \u2502",
+            "\u203a herdr-threads: wake up                                                       \u2502\u203a Side focus test of wake-e2e side-",
+            "                                                                               \u2502  queue-focused/group 120929-dd69: run",
+            "                                                                               \u2502  the shell command sleep 100, then",
+            "\u2022 I\u2019ll accept the test invitation.                                             \u2502  print SIDE-FOCUS-BUSY-DONE. Do not",
+            "                                                                               \u2502  run any herdr-threads command.",
+            "\u2022 Ran herdr-threads --state-dir /tmp/ht-wake-e2e.vhwkrgkr/state accept tG3xbiD\u2026\u2502",
+            "  \u2514 accepted                                                                   \u2502",
+            "    value: \"iG3xybVpivOc\"                                                      \u2502",
+            "    + Show details                                                             \u2502",
+            "                                                                               \u2502",
+            "  Worked for 4s \u2022 12:09                                                        \u2502\u2022 Working (0s \u2022 esc to interrupt)",
+            "                                                                               \u2502",
+            "                                                                               \u2502",
+            "\u203a                                                                              \u2502\u203a Ask a follow-up question",
+            "                                                                               \u2502",
+            "  GPT-6.2-Sol default \u00b7 ~/AleCode/herdr-threads/.worktrees/super-auto-per-seat-\u2502  GPT-6.2-Sol default \u00b7 ~/AleCode/",
+            "  config-side-wake/.worktrees/super-auto-per-seat-config-side-wake--task-ht-   \u2502  herdr-threads/.worktrees/super-auto-",
+            "  z41e.43 \u00b7 Accept herdr-threads invitations                                   \u2502  per-seat-config-side-wake/.worktrees\u2026",
+            "                                                                               \u2502  \u2190 for agents \u00b7 ? for shortcuts"
+          ],
+          "after_send": [
+            "\u203a You are a test recipient in an automated herdr-threads wake e2e run (the us\u2026 \u2502 Run side \u2026\u00d7                        +",
+            "                                                                               \u2502\u203a Side of wake-e2e side-queue-focused/",
+            "\u2022 Ran herdr-threads skill                                                      \u2502  group 120929-dd69: run the shell",
+            "  \u2514 Administrative recovery uses immediate argv1 `human`, with exact reported \u2026\u2502  command /tmp/ht-wake-e2e.vhwkrgkr/",
+            "                                                                               \u2502  bin/herdr-threads inbox once, then",
+            "    Quiet channels can archive automatically after an uninterrupted hour of ve\u2026\u2502  print SIDE-FOCUS-DONE. Do not act on",
+            "    + 216 lines (^t to expand)                                                 \u2502  anything it shows.",
+            "                                                                               \u2502",
+            "\u2022 Exited (status 2) herdr-threads nudge-threshold 0                            \u2502",
+            "  \u2514 herdr-threads: no resolved seat is mapped to pane w2:p3; run `herdr-thread\u2026\u2502\u2022 I\u2019ll run the inbox command once.",
+            "    + 1 line (^t to expand)                                                    \u2502",
+            "                                                                               \u2502\u2022 Ran /tmp/ht-wake-e2e.vhwkrgkr/bin/he\u2026",
+            "\u2022 Ran herdr-threads --state-dir /tmp/ht-wake-e2e.vhwkrgkr/state --host-endpoin\u2026\u2502  \u2514 empty",
+            "  \u2514 nudge_threshold: 0 (unchanged)                                             \u2502    + Show details",
+            "    + Show details                                                             \u2502",
+            "                                                                               \u2502\u2022 SIDE-FOCUS-DONE",
+            "\u2022 SETUP-DONE nudge_threshold=0                                                 \u2502",
+            "                                                                               \u2502  Worked for 5s \u2022 12:10",
+            "  Worked for 10s \u2022 12:09                                                       \u2502",
+            "                                                                               \u2502",
+            "                                                                               \u2502\u203a Side focus test of wake-e2e side-",
+            "\u203a herdr-threads: wake up                                                       \u2502  queue-focused/group 120929-dd69: run",
+            "                                                                               \u2502  the shell command sleep 100, then",
+            "                                                                               \u2502  print SIDE-FOCUS-BUSY-DONE. Do not",
+            "\u2022 I\u2019ll accept the test invitation.                                             \u2502  run any herdr-threads command.",
+            "                                                                               \u2502",
+            "\u2022 Ran herdr-threads --state-dir /tmp/ht-wake-e2e.vhwkrgkr/state accept tG3xbiD\u2026\u2502",
+            "  \u2514 accepted                                                                   \u2502\u2022 I\u2019ll run sleep 100 in this side",
+            "    value: \"iG3xybVpivOc\"                                                      \u2502  conversation.",
+            "    + Show details                                                             \u2502",
+            "                                                                               \u2502\u2022 Waiting for background terminal (1m \u2026",
+            "  Worked for 4s \u2022 12:09                                                        \u2502  \u2514 sleep 100",
+            "                                                                               \u2502",
+            "                                                                               \u2502",
+            "\u203a                                                                              \u2502\u203a Ask a follow-up question",
+            "                                                                               \u2502",
+            "  GPT-6.2-Sol default \u00b7 ~/AleCode/herdr-threads/.worktrees/super-auto-per-seat-\u2502  GPT-6.2-Sol default \u00b7 ~/AleCode/",
+            "  config-side-wake/.worktrees/super-auto-per-seat-config-side-wake--task-ht-   \u2502  herdr-threads/.worktrees/super-auto-",
+            "  z41e.43 \u00b7 Accept herdr-threads invitations                                   \u2502  per-seat-config-side-wake/.worktrees\u2026",
+            "                                                                               \u2502  \u2190 for agents \u00b7 ? for shortcuts"
+          ],
+          "side_done": [
+            "\u203a You are a test recipient in an automated herdr-threads wake e2e run (the us\u2026 \u2502 Run side \u2026\u00d7                        +",
+            "                                                                               \u2502  print SIDE-FOCUS-DONE. Do not act on",
+            "\u2022 Ran herdr-threads skill                                                      \u2502  anything it shows.",
+            "  \u2514 Administrative recovery uses immediate argv1 `human`, with exact reported \u2026\u2502",
+            "                                                                               \u2502",
+            "    Quiet channels can archive automatically after an uninterrupted hour of ve\u2026\u2502\u2022 I\u2019ll run the inbox command once.",
+            "    + 216 lines (^t to expand)                                                 \u2502",
+            "                                                                               \u2502\u2022 Ran /tmp/ht-wake-e2e.vhwkrgkr/bin/he\u2026",
+            "\u2022 Exited (status 2) herdr-threads nudge-threshold 0                            \u2502  \u2514 empty",
+            "  \u2514 herdr-threads: no resolved seat is mapped to pane w2:p3; run `herdr-thread\u2026\u2502    + Show details",
+            "    + 1 line (^t to expand)                                                    \u2502",
+            "                                                                               \u2502\u2022 SIDE-FOCUS-DONE",
+            "\u2022 Ran herdr-threads --state-dir /tmp/ht-wake-e2e.vhwkrgkr/state --host-endpoin\u2026\u2502",
+            "  \u2514 nudge_threshold: 0 (unchanged)                                             \u2502  Worked for 5s \u2022 12:10",
+            "    + Show details                                                             \u2502",
+            "                                                                               \u2502",
+            "\u2022 SETUP-DONE nudge_threshold=0                                                 \u2502\u203a Side focus test of wake-e2e side-",
+            "                                                                               \u2502  queue-focused/group 120929-dd69: run",
+            "  Worked for 10s \u2022 12:09                                                       \u2502  the shell command sleep 100, then",
+            "                                                                               \u2502  print SIDE-FOCUS-BUSY-DONE. Do not",
+            "                                                                               \u2502  run any herdr-threads command.",
+            "\u203a herdr-threads: wake up                                                       \u2502",
+            "                                                                               \u2502",
+            "                                                                               \u2502\u2022 I\u2019ll run sleep 100 in this side",
+            "\u2022 I\u2019ll accept the test invitation.                                             \u2502  conversation.",
+            "                                                                               \u2502",
+            "\u2022 Ran herdr-threads --state-dir /tmp/ht-wake-e2e.vhwkrgkr/state accept tG3xbiD\u2026\u2502\u2022 Ran sleep 100",
+            "  \u2514 accepted                                                                   \u2502  \u2514 (no output)",
+            "    value: \"iG3xybVpivOc\"                                                      \u2502",
+            "    + Show details                                                             \u2502\u2022 SIDE-FOCUS-BUSY-DONE",
+            "                                                                               \u2502",
+            "  Worked for 4s \u2022 12:09                                                        \u2502  Worked for 1m 44s \u2022 12:14",
+            "                                                                               \u2502",
+            "                                                                               \u2502",
+            "\u203a                                                                              \u2502\u203a Ask a follow-up question",
+            "                                                                               \u2502",
+            "  GPT-6.2-Sol default \u00b7 ~/AleCode/herdr-threads/.worktrees/super-auto-per-seat-\u2502  GPT-6.2-Sol default \u00b7 ~/AleCode/",
+            "  config-side-wake/.worktrees/super-auto-per-seat-config-side-wake--task-ht-   \u2502  herdr-threads/.worktrees/super-auto-",
+            "  z41e.43 \u00b7 Accept herdr-threads invitations                                   \u2502  per-seat-config-side-wake/.worktrees\u2026",
+            "                                                                               \u2502  \u2190 for agents \u00b7 ? for shortcuts"
+          ]
+        },
+        "daemon_view": {
+          "doctor_wake": null,
+          "diagnostics": "{\"version\":9,\"result\":{\"kind\":\"diagnostics\",\"data\":{\"items\":[],\"next_cursor\":null,\"next_argv\":null,\"high_water_ordinal\":1,\"scope_revision\":null,\"has_more\":false,\"stop_reason\":\"complete\",\"consistency\":\"bounded_live\"}}}"
+        },
+        "side_typed": false,
+        "armed_s": null,
+        "first_attempt": false,
+        "root_busy_at_arm": false,
+        "activity_evidence": null,
+        "delivery_evidence": null,
+        "delivered_in_root": false,
+        "side_view_before": {
+          "prompts": [
+            "\u203a You are a test recipient in an automated herdr-threads wake e2e run (the us\u2026 \u2502 Run side \u2026\u00d7                        +",
+            "\u203a herdr-threads: wake up                                                       \u2502\u203a Side focus test of wake-e2e side-",
+            "\u203a                                                                              \u2502\u203a Ask a follow-up question"
+          ],
+          "answers": [],
+          "wake_markers": 1
+        },
+        "side_view_after": {
+          "prompts": [
+            "\u203a You are a test recipient in an automated herdr-threads wake e2e run (the us\u2026 \u2502 Run side \u2026\u00d7                        +",
+            "\u203a herdr-threads: wake up                                                       \u2502  queue-focused/group 120929-dd69: run",
+            "\u203a                                                                              \u2502\u203a Ask a follow-up question"
+          ],
+          "answers": [
+            "                                                                               \u2502\u2022 SIDE-FOCUS-DONE"
+          ],
+          "wake_markers": 1
+        },
+        "agent_status_at_send": "working",
+        "side_phase_at_send": [
+          "started"
+        ],
+        "side_bits": {
+          "01a21ea1-03da-7bc1-9404-cdb96b13ad61": {
+            "auxiliary": 0,
+            "concurrent": 1
+          }
+        },
+        "root_bits": {
+          "auxiliary": 0,
+          "concurrent": 0
+        },
+        "settled_by_root": false,
+        "wake_state_final": {
+          "last_outcome": "unsafe",
+          "completed_at_utc": 1795810436077,
+          "retry_step": 0
+        },
+        "close_side": {
+          "archive_dialog": true,
+          "archive_dialog_after": false
+        },
+        "release_blocking": [],
+        "queue_transport_ok": false
+      },
+      "ref": {
+        "message": "mG3xOy3YfqKI"
+      },
+      "result": "FAIL",
+      "utc": "2026-11-27T20:16:02Z",
+      "queue_evidence": {
+        "passed": false,
+        "expectation": "accepted",
+        "reasons": [
+          "no_correlated_accepted_with_baseline_and_add_witness"
+        ],
+        "attempts": [],
+        "observed": {
+          "samples": 30,
+          "intents": 0,
+          "armed": 0,
+          "accepted": 0,
+          "unknown": 0,
+          "add_witnesses": 0
+        },
+        "transport_inference": "compositional no-native-typing inference from reviewed Accepted/no-fallback path",
+        "root_session": "01a21ea0-9b28-7633-9a6b-3f5dfba8492b",
+        "accepted_wake_window_s": 6.0,
+        "before": {
+          "ok": true,
+          "seat": "sG3xnaAQxk4u",
+          "after": 1,
+          "truncated": false,
+          "seat_scope": {
+            "instance": "338f5548a2dc90b5c9a789ea8b0919e7",
+            "state": "resolved",
+            "generation": 1,
+            "target": "w2:p3",
+            "target_generation": 1
+          },
+          "kernel_boot": "6d757418-e8a4-456d-a680-21953e8fa0a3",
+          "watermark": 1,
+          "bindings": [
+            {
+              "adapter": "codex",
+              "scope": {
+                "binding": "7d097907c8941e6f38162c05e81d80be",
+                "native_session": "01a21ea1-03da-7bc1-9404-cdb96b13ad61",
+                "execution": "14417c7a-1e20-59a7-bea1-293920cfa8f7",
+                "generation": 1,
+                "process": {
+                  "pid": 422952,
+                  "start": 143788903
+                },
+                "kernel_boot": "6d757418-e8a4-456d-a680-21953e8fa0a3"
+              },
+              "connected": true,
+              "top_level": true,
+              "root_agent": true,
+              "registered": true,
+              "target": "w2:p3",
+              "target_generation": 1
+            },
+            {
+              "adapter": "codex",
+              "scope": {
+                "binding": "89a08ebaa9957dfde8dc4811c7ff8834",
+                "native_session": "01a21ea0-9b28-7633-9a6b-3f5dfba8492b",
+                "execution": "0ffe0244-2d20-5295-8b09-b0d47bc7004f",
+                "generation": 1,
+                "process": {
+                  "pid": 422952,
+                  "start": 143788903
+                },
+                "kernel_boot": "6d757418-e8a4-456d-a680-21953e8fa0a3"
+              },
+              "connected": true,
+              "top_level": true,
+              "root_agent": true,
+              "registered": true,
+              "target": "w2:p3",
+              "target_generation": 1
+            }
+          ],
+          "native": [
+            {
+              "scope": {
+                "binding": "7d097907c8941e6f38162c05e81d80be",
+                "native_session": "01a21ea1-03da-7bc1-9404-cdb96b13ad61",
+                "execution": "14417c7a-1e20-59a7-bea1-293920cfa8f7",
+                "generation": 1,
+                "process": {
+                  "pid": 422952,
+                  "start": 143788903
+                },
+                "kernel_boot": "6d757418-e8a4-456d-a680-21953e8fa0a3"
+              },
+              "turn_id": "01a21ea3-8b68-77d0-95bb-119656908130",
+              "phase": "started",
+              "ordinal": 3
+            },
+            {
+              "scope": {
+                "binding": "89a08ebaa9957dfde8dc4811c7ff8834",
+                "native_session": "01a21ea0-9b28-7633-9a6b-3f5dfba8492b",
+                "execution": "0ffe0244-2d20-5295-8b09-b0d47bc7004f",
+                "generation": 1,
+                "process": {
+                  "pid": 422952,
+                  "start": 143788903
+                },
+                "kernel_boot": "6d757418-e8a4-456d-a680-21953e8fa0a3"
+              },
+              "turn_id": "01a21ea0-e6f5-7103-a61e-9e925d87ab64",
+              "phase": "ended",
+              "ordinal": 4
+            }
+          ],
+          "intents": [],
+          "wake_work": {
+            "active_attempt": null,
+            "active_boot": null,
+            "last_attempt": "fc8d40f9-2417-42e4-8b8d-947c68f81a50",
+            "last_boot": "4538bdd1-965f-41f0-99f4-1b57d8075158",
+            "last_outcome": "submitted",
+            "reserved_at_utc": 1795810187073,
+            "last_reserved_at_utc": 1795810187073,
+            "completed_at_utc": 1795810187342,
+            "reason_bits": 1,
+            "retry_step": 0
+          },
+          "census_complete": true
+        },
+        "published": true,
+        "sample_bytes": 71761,
+        "publication_unix_ms": 1795810364782,
+        "host_observations": [
+          {
+            "start_ms": 196888,
+            "end_ms": 196890,
+            "status": "idle"
+          },
+          {
+            "start_ms": 197890,
+            "end_ms": 197891,
+            "status": "idle"
+          }
+        ],
+        "fulfillment_while_armed_observed": false,
+        "logical_fulfillment_observed": false,
+        "cleanup_list_attempted_observed": false,
+        "lifecycle_attempts": [],
+        "samples": [
+          {
+            "ok": true,
+            "seat": "sG3xnaAQxk4u",
+            "after": 1,
+            "truncated": false,
+            "seat_scope": {
+              "instance": "338f5548a2dc90b5c9a789ea8b0919e7",
+              "state": "resolved",
+              "generation": 1,
+              "target": "w2:p3",
+              "target_generation": 1
+            },
+            "kernel_boot": "6d757418-e8a4-456d-a680-21953e8fa0a3",
+            "watermark": 1,
+            "bindings": [
+              {
+                "adapter": "codex",
+                "scope": {
+                  "binding": "7d097907c8941e6f38162c05e81d80be",
+                  "native_session": "01a21ea1-03da-7bc1-9404-cdb96b13ad61",
+                  "execution": "14417c7a-1e20-59a7-bea1-293920cfa8f7",
+                  "generation": 1,
+                  "process": {
+                    "pid": 422952,
+                    "start": 143788903
+                  },
+                  "kernel_boot": "6d757418-e8a4-456d-a680-21953e8fa0a3"
+                },
+                "connected": true,
+                "top_level": true,
+                "root_agent": true,
+                "registered": true,
+                "target": "w2:p3",
+                "target_generation": 1
+              },
+              {
+                "adapter": "codex",
+                "scope": {
+                  "binding": "89a08ebaa9957dfde8dc4811c7ff8834",
+                  "native_session": "01a21ea0-9b28-7633-9a6b-3f5dfba8492b",
+                  "execution": "0ffe0244-2d20-5295-8b09-b0d47bc7004f",
+                  "generation": 1,
+                  "process": {
+                    "pid": 422952,
+                    "start": 143788903
+                  },
+                  "kernel_boot": "6d757418-e8a4-456d-a680-21953e8fa0a3"
+                },
+                "connected": true,
+                "top_level": true,
+                "root_agent": true,
+                "registered": true,
+                "target": "w2:p3",
+                "target_generation": 1
+              }
+            ],
+            "native": [
+              {
+                "scope": {
+                  "binding": "7d097907c8941e6f38162c05e81d80be",
+                  "native_session": "01a21ea1-03da-7bc1-9404-cdb96b13ad61",
+                  "execution": "14417c7a-1e20-59a7-bea1-293920cfa8f7",
+                  "generation": 1,
+                  "process": {
+                    "pid": 422952,
+                    "start": 143788903
+                  },
+                  "kernel_boot": "6d757418-e8a4-456d-a680-21953e8fa0a3"
+                },
+                "turn_id": "01a21ea3-8b68-77d0-95bb-119656908130",
+                "phase": "started",
+                "ordinal": 3
+              },
+              {
+                "scope": {
+                  "binding": "89a08ebaa9957dfde8dc4811c7ff8834",
+                  "native_session": "01a21ea0-9b28-7633-9a6b-3f5dfba8492b",
+                  "execution": "0ffe0244-2d20-5295-8b09-b0d47bc7004f",
+                  "generation": 1,
+                  "process": {
+                    "pid": 422952,
+                    "start": 143788903
+                  },
+                  "kernel_boot": "6d757418-e8a4-456d-a680-21953e8fa0a3"
+                },
+                "turn_id": "01a21ea0-e6f5-7103-a61e-9e925d87ab64",
+                "phase": "ended",
+                "ordinal": 4
+              }
+            ],
+            "intents": [],
+            "wake_work": {
+              "active_attempt": null,
+              "active_boot": null,
+              "last_attempt": "fc8d40f9-2417-42e4-8b8d-947c68f81a50",
+              "last_boot": "4538bdd1-965f-41f0-99f4-1b57d8075158",
+              "last_outcome": "submitted",
+              "reserved_at_utc": 1795810187073,
+              "last_reserved_at_utc": 1795810187073,
+              "completed_at_utc": 1795810187342,
+              "reason_bits": 1,
+              "retry_step": 0
+            },
+            "census_complete": true,
+            "observation_start_ms": 10,
+            "observation_end_ms": 14
+          },
+          {
+            "ok": true,
+            "seat": "sG3xnaAQxk4u",
+            "after": 1,
+            "truncated": false,
+            "seat_scope": {
+              "instance": "338f5548a2dc90b5c9a789ea8b0919e7",
+              "state": "resolved",
+              "generation": 1,
+              "target": "w2:p3",
+              "target_generation": 1
+            },
+            "kernel_boot": "6d757418-e8a4-456d-a680-21953e8fa0a3",
+            "watermark": 1,
+            "bindings": [
+              {
+                "adapter": "codex",
+                "scope": {
+                  "binding": "7d097907c8941e6f38162c05e81d80be",
+                  "native_session": "01a21ea1-03da-7bc1-9404-cdb96b13ad61",
+                  "execution": "14417c7a-1e20-59a7-bea1-293920cfa8f7",
+                  "generation": 1,
+                  "process": {
+                    "pid": 422952,
+                    "start": 143788903
+                  },
+                  "kernel_boot": "6d757418-e8a4-456d-a680-21953e8fa0a3"
+                },
+                "connected": true,
+                "top_level": true,
+                "root_agent": true,
+                "registered": true,
+                "target": "w2:p3",
+                "target_generation": 1
+              },
+              {
+                "adapter": "codex",
+                "scope": {
+                  "binding": "89a08ebaa9957dfde8dc4811c7ff8834",
+                  "native_session": "01a21ea0-9b28-7633-9a6b-3f5dfba8492b",
+                  "execution": "0ffe0244-2d20-5295-8b09-b0d47bc7004f",
+                  "generation": 1,
+                  "process": {
+                    "pid": 422952,
+                    "start": 143788903
+                  },
+                  "kernel_boot": "6d757418-e8a4-456d-a680-21953e8fa0a3"
+                },
+                "connected": true,
+                "top_level": true,
+                "root_agent": true,
+                "registered": true,
+                "target": "w2:p3",
+                "target_generation": 1
+              }
+            ],
+            "native": [
+              {
+                "scope": {
+                  "binding": "7d097907c8941e6f38162c05e81d80be",
+                  "native_session": "01a21ea1-03da-7bc1-9404-cdb96b13ad61",
+                  "execution": "14417c7a-1e20-59a7-bea1-293920cfa8f7",
+                  "generation": 1,
+                  "process": {
+                    "pid": 422952,
+                    "start": 143788903
+                  },
+                  "kernel_boot": "6d757418-e8a4-456d-a680-21953e8fa0a3"
+                },
+                "turn_id": "01a21ea3-8b68-77d0-95bb-119656908130",
+                "phase": "started",
+                "ordinal": 3
+              },
+              {
+                "scope": {
+                  "binding": "89a08ebaa9957dfde8dc4811c7ff8834",
+                  "native_session": "01a21ea0-9b28-7633-9a6b-3f5dfba8492b",
+                  "execution": "0ffe0244-2d20-5295-8b09-b0d47bc7004f",
+                  "generation": 1,
+                  "process": {
+                    "pid": 422952,
+                    "start": 143788903
+                  },
+                  "kernel_boot": "6d757418-e8a4-456d-a680-21953e8fa0a3"
+                },
+                "turn_id": "01a21ea0-e6f5-7103-a61e-9e925d87ab64",
+                "phase": "ended",
+                "ordinal": 4
+              }
+            ],
+            "intents": [],
+            "wake_work": {
+              "active_attempt": "d8f539bb-1742-402b-92b6-9aebe1b63d96",
+              "active_boot": "4538bdd1-965f-41f0-99f4-1b57d8075158",
+              "last_attempt": "d8f539bb-1742-402b-92b6-9aebe1b63d96",
+              "last_boot": "4538bdd1-965f-41f0-99f4-1b57d8075158",
+              "last_outcome": "submitted",
+              "reserved_at_utc": 1795810364821,
+              "last_reserved_at_utc": 1795810364821,
+              "completed_at_utc": 1795810187342,
+              "reason_bits": 1,
+              "retry_step": 1
+            },
+            "census_complete": true,
+            "observation_start_ms": 118,
+            "observation_end_ms": 121
+          },
+          {
+            "ok": true,
+            "seat": "sG3xnaAQxk4u",
+            "after": 1,
+            "truncated": false,
+            "seat_scope": {
+              "instance": "338f5548a2dc90b5c9a789ea8b0919e7",
+              "state": "resolved",
+              "generation": 1,
+              "target": "w2:p3",
+              "target_generation": 1
+            },
+            "kernel_boot": "6d757418-e8a4-456d-a680-21953e8fa0a3",
+            "watermark": 1,
+            "bindings": [
+              {
+                "adapter": "codex",
+                "scope": {
+                  "binding": "7d097907c8941e6f38162c05e81d80be",
+                  "native_session": "01a21ea1-03da-7bc1-9404-cdb96b13ad61",
+                  "execution": "14417c7a-1e20-59a7-bea1-293920cfa8f7",
+                  "generation": 1,
+                  "process": {
+                    "pid": 422952,
+                    "start": 143788903
+                  },
+                  "kernel_boot": "6d757418-e8a4-456d-a680-21953e8fa0a3"
+                },
+                "connected": true,
+                "top_level": true,
+                "root_agent": true,
+                "registered": true,
+                "target": "w2:p3",
+                "target_generation": 1
+              },
+              {
+                "adapter": "codex",
+                "scope": {
+                  "binding": "89a08ebaa9957dfde8dc4811c7ff8834",
+                  "native_session": "01a21ea0-9b28-7633-9a6b-3f5dfba8492b",
+                  "execution": "0ffe0244-2d20-5295-8b09-b0d47bc7004f",
+                  "generation": 1,
+                  "process": {
+                    "pid": 422952,
+                    "start": 143788903
+                  },
+                  "kernel_boot": "6d757418-e8a4-456d-a680-21953e8fa0a3"
+                },
+                "connected": true,
+                "top_level": true,
+                "root_agent": true,
+                "registered": true,
+                "target": "w2:p3",
+                "target_generation": 1
+              }
+            ],
+            "native": [
+              {
+                "scope": {
+                  "binding": "7d097907c8941e6f38162c05e81d80be",
+                  "native_session": "01a21ea1-03da-7bc1-9404-cdb96b13ad61",
+                  "execution": "14417c7a-1e20-59a7-bea1-293920cfa8f7",
+                  "generation": 1,
+                  "process": {
+                    "pid": 422952,
+                    "start": 143788903
+                  },
+                  "kernel_boot": "6d757418-e8a4-456d-a680-21953e8fa0a3"
+                },
+                "turn_id": "01a21ea3-8b68-77d0-95bb-119656908130",
+                "phase": "started",
+                "ordinal": 3
+              },
+              {
+                "scope": {
+                  "binding": "89a08ebaa9957dfde8dc4811c7ff8834",
+                  "native_session": "01a21ea0-9b28-7633-9a6b-3f5dfba8492b",
+                  "execution": "0ffe0244-2d20-5295-8b09-b0d47bc7004f",
+                  "generation": 1,
+                  "process": {
+                    "pid": 422952,
+                    "start": 143788903
+                  },
+                  "kernel_boot": "6d757418-e8a4-456d-a680-21953e8fa0a3"
+                },
+                "turn_id": "01a21ea0-e6f5-7103-a61e-9e925d87ab64",
+                "phase": "ended",
+                "ordinal": 4
+              }
+            ],
+            "intents": [],
+            "wake_work": {
+              "active_attempt": null,
+              "active_boot": null,
+              "last_attempt": "fc8d40f9-2417-42e4-8b8d-947c68f81a50",
+              "last_boot": "4538bdd1-965f-41f0-99f4-1b57d8075158",
+              "last_outcome": "unsafe",
+              "reserved_at_utc": 1795810364821,
+              "last_reserved_at_utc": 1795810187073,
+              "completed_at_utc": 1795810364940,
+              "reason_bits": 1,
+              "retry_step": 0
+            },
+            "census_complete": true,
+            "observation_start_ms": 222,
+            "observation_end_ms": 226
+          },
+          {
+            "ok": true,
+            "seat": "sG3xnaAQxk4u",
+            "after": 1,
+            "truncated": false,
+            "seat_scope": {
+              "instance": "338f5548a2dc90b5c9a789ea8b0919e7",
+              "state": "resolved",
+              "generation": 1,
+              "target": "w2:p3",
+              "target_generation": 1
+            },
+            "kernel_boot": "6d757418-e8a4-456d-a680-21953e8fa0a3",
+            "watermark": 1,
+            "bindings": [
+              {
+                "adapter": "codex",
+                "scope": {
+                  "binding": "7d097907c8941e6f38162c05e81d80be",
+                  "native_session": "01a21ea1-03da-7bc1-9404-cdb96b13ad61",
+                  "execution": "14417c7a-1e20-59a7-bea1-293920cfa8f7",
+                  "generation": 1,
+                  "process": {
+                    "pid": 422952,
+                    "start": 143788903
+                  },
+                  "kernel_boot": "6d757418-e8a4-456d-a680-21953e8fa0a3"
+                },
+                "connected": true,
+                "top_level": true,
+                "root_agent": true,
+                "registered": true,
+                "target": "w2:p3",
+                "target_generation": 1
+              },
+              {
+                "adapter": "codex",
+                "scope": {
+                  "binding": "89a08ebaa9957dfde8dc4811c7ff8834",
+                  "native_session": "01a21ea0-9b28-7633-9a6b-3f5dfba8492b",
+                  "execution": "0ffe0244-2d20-5295-8b09-b0d47bc7004f",
+                  "generation": 1,
+                  "process": {
+                    "pid": 422952,
+                    "start": 143788903
+                  },
+                  "kernel_boot": "6d757418-e8a4-456d-a680-21953e8fa0a3"
+                },
+                "connected": true,
+                "top_level": true,
+                "root_agent": true,
+                "registered": true,
+                "target": "w2:p3",
+                "target_generation": 1
+              }
+            ],
+            "native": [
+              {
+                "scope": {
+                  "binding": "7d097907c8941e6f38162c05e81d80be",
+                  "native_session": "01a21ea1-03da-7bc1-9404-cdb96b13ad61",
+                  "execution": "14417c7a-1e20-59a7-bea1-293920cfa8f7",
+                  "generation": 1,
+                  "process": {
+                    "pid": 422952,
+                    "start": 143788903
+                  },
+                  "kernel_boot": "6d757418-e8a4-456d-a680-21953e8fa0a3"
+                },
+                "turn_id": "01a21ea3-8b68-77d0-95bb-119656908130",
+                "phase": "started",
+                "ordinal": 3
+              },
+              {
+                "scope": {
+                  "binding": "89a08ebaa9957dfde8dc4811c7ff8834",
+                  "native_session": "01a21ea0-9b28-7633-9a6b-3f5dfba8492b",
+                  "execution": "0ffe0244-2d20-5295-8b09-b0d47bc7004f",
+                  "generation": 1,
+                  "process": {
+                    "pid": 422952,
+                    "start": 143788903
+                  },
+                  "kernel_boot": "6d757418-e8a4-456d-a680-21953e8fa0a3"
+                },
+                "turn_id": "01a21ea0-e6f5-7103-a61e-9e925d87ab64",
+                "phase": "ended",
+                "ordinal": 4
+              }
+            ],
+            "intents": [],
+            "wake_work": {
+              "active_attempt": null,
+              "active_boot": null,
+              "last_attempt": "fc8d40f9-2417-42e4-8b8d-947c68f81a50",
+              "last_boot": "4538bdd1-965f-41f0-99f4-1b57d8075158",
+              "last_outcome": "unsafe",
+              "reserved_at_utc": 1795810365031,
+              "last_reserved_at_utc": 1795810187073,
+              "completed_at_utc": 1795810365048,
+              "reason_bits": 1,
+              "retry_step": 0
+            },
+            "census_complete": true,
+            "observation_start_ms": 326,
+            "observation_end_ms": 330
+          },
+          {
+            "ok": true,
+            "seat": "sG3xnaAQxk4u",
+            "after": 1,
+            "truncated": false,
+            "seat_scope": {
+              "instance": "338f5548a2dc90b5c9a789ea8b0919e7",
+              "state": "resolved",
+              "generation": 1,
+              "target": "w2:p3",
+              "target_generation": 1
+            },
+            "kernel_boot": "6d757418-e8a4-456d-a680-21953e8fa0a3",
+            "watermark": 1,
+            "bindings": [
+              {
+                "adapter": "codex",
+                "scope": {
+                  "binding": "7d097907c8941e6f38162c05e81d80be",
+                  "native_session": "01a21ea1-03da-7bc1-9404-cdb96b13ad61",
+                  "execution": "14417c7a-1e20-59a7-bea1-293920cfa8f7",
+                  "generation": 1,
+                  "process": {
+                    "pid": 422952,
+                    "start": 143788903
+                  },
+                  "kernel_boot": "6d757418-e8a4-456d-a680-21953e8fa0a3"
+                },
+                "connected": true,
+                "top_level": true,
+                "root_agent": true,
+                "registered": true,
+                "target": "w2:p3",
+                "target_generation": 1
+              },
+              {
+                "adapter": "codex",
+                "scope": {
+                  "binding": "89a08ebaa9957dfde8dc4811c7ff8834",
+                  "native_session": "01a21ea0-9b28-7633-9a6b-3f5dfba8492b",
+                  "execution": "0ffe0244-2d20-5295-8b09-b0d47bc7004f",
+                  "generation": 1,
+                  "process": {
+                    "pid": 422952,
+                    "start": 143788903
+                  },
+                  "kernel_boot": "6d757418-e8a4-456d-a680-21953e8fa0a3"
+                },
+                "connected": true,
+                "top_level": true,
+                "root_agent": true,
+                "registered": true,
+                "target": "w2:p3",
+                "target_generation": 1
+              }
+            ],
+            "native": [
+              {
+                "scope": {
+                  "binding": "7d097907c8941e6f38162c05e81d80be",
+                  "native_session": "01a21ea1-03da-7bc1-9404-cdb96b13ad61",
+                  "execution": "14417c7a-1e20-59a7-bea1-293920cfa8f7",
+                  "generation": 1,
+                  "process": {
+                    "pid": 422952,
+                    "start": 143788903
+                  },
+                  "kernel_boot": "6d757418-e8a4-456d-a680-21953e8fa0a3"
+                },
+                "turn_id": "01a21ea3-8b68-77d0-95bb-119656908130",
+                "phase": "started",
+                "ordinal": 3
+              },
+              {
+                "scope": {
+                  "binding": "89a08ebaa9957dfde8dc4811c7ff8834",
+                  "native_session": "01a21ea0-9b28-7633-9a6b-3f5dfba8492b",
+                  "execution": "0ffe0244-2d20-5295-8b09-b0d47bc7004f",
+                  "generation": 1,
+                  "process": {
+                    "pid": 422952,
+                    "start": 143788903
+                  },
+                  "kernel_boot": "6d757418-e8a4-456d-a680-21953e8fa0a3"
+                },
+                "turn_id": "01a21ea0-e6f5-7103-a61e-9e925d87ab64",
+                "phase": "ended",
+                "ordinal": 4
+              }
+            ],
+            "intents": [],
+            "wake_work": {
+              "active_attempt": "5b80770d-7808-4ad6-bdf0-14fd61a46414",
+              "active_boot": "4538bdd1-965f-41f0-99f4-1b57d8075158",
+              "last_attempt": "5b80770d-7808-4ad6-bdf0-14fd61a46414",
+              "last_boot": "4538bdd1-965f-41f0-99f4-1b57d8075158",
+              "last_outcome": "unsafe",
+              "reserved_at_utc": 1795810365269,
+              "last_reserved_at_utc": 1795810365269,
+              "completed_at_utc": 1795810365048,
+              "reason_bits": 1,
+              "retry_step": 1
+            },
+            "census_complete": true,
+            "observation_start_ms": 534,
+            "observation_end_ms": 538
+          },
+          {
+            "ok": true,
+            "seat": "sG3xnaAQxk4u",
+            "after": 1,
+            "truncated": false,
+            "seat_scope": {
+              "instance": "338f5548a2dc90b5c9a789ea8b0919e7",
+              "state": "resolved",
+              "generation": 1,
+              "target": "w2:p3",
+              "target_generation": 1
+            },
+            "kernel_boot": "6d757418-e8a4-456d-a680-21953e8fa0a3",
+            "watermark": 1,
+            "bindings": [
+              {
+                "adapter": "codex",
+                "scope": {
+                  "binding": "7d097907c8941e6f38162c05e81d80be",
+                  "native_session": "01a21ea1-03da-7bc1-9404-cdb96b13ad61",
+                  "execution": "14417c7a-1e20-59a7-bea1-293920cfa8f7",
+                  "generation": 1,
+                  "process": {
+                    "pid": 422952,
+                    "start": 143788903
+                  },
+                  "kernel_boot": "6d757418-e8a4-456d-a680-21953e8fa0a3"
+                },
+                "connected": true,
+                "top_level": true,
+                "root_agent": true,
+                "registered": true,
+                "target": "w2:p3",
+                "target_generation": 1
+              },
+              {
+                "adapter": "codex",
+                "scope": {
+                  "binding": "89a08ebaa9957dfde8dc4811c7ff8834",
+                  "native_session": "01a21ea0-9b28-7633-9a6b-3f5dfba8492b",
+                  "execution": "0ffe0244-2d20-5295-8b09-b0d47bc7004f",
+                  "generation": 1,
+                  "process": {
+                    "pid": 422952,
+                    "start": 143788903
+                  },
+                  "kernel_boot": "6d757418-e8a4-456d-a680-21953e8fa0a3"
+                },
+                "connected": true,
+                "top_level": true,
+                "root_agent": true,
+                "registered": true,
+                "target": "w2:p3",
+                "target_generation": 1
+              }
+            ],
+            "native": [
+              {
+                "scope": {
+                  "binding": "7d097907c8941e6f38162c05e81d80be",
+                  "native_session": "01a21ea1-03da-7bc1-9404-cdb96b13ad61",
+                  "execution": "14417c7a-1e20-59a7-bea1-293920cfa8f7",
+                  "generation": 1,
+                  "process": {
+                    "pid": 422952,
+                    "start": 143788903
+                  },
+                  "kernel_boot": "6d757418-e8a4-456d-a680-21953e8fa0a3"
+                },
+                "turn_id": "01a21ea3-8b68-77d0-95bb-119656908130",
+                "phase": "started",
+                "ordinal": 3
+              },
+              {
+                "scope": {
+                  "binding": "89a08ebaa9957dfde8dc4811c7ff8834",
+                  "native_session": "01a21ea0-9b28-7633-9a6b-3f5dfba8492b",
+                  "execution": "0ffe0244-2d20-5295-8b09-b0d47bc7004f",
+                  "generation": 1,
+                  "process": {
+                    "pid": 422952,
+                    "start": 143788903
+                  },
+                  "kernel_boot": "6d757418-e8a4-456d-a680-21953e8fa0a3"
+                },
+                "turn_id": "01a21ea0-e6f5-7103-a61e-9e925d87ab64",
+                "phase": "ended",
+                "ordinal": 4
+              }
+            ],
+            "intents": [],
+            "wake_work": {
+              "active_attempt": null,
+              "active_boot": null,
+              "last_attempt": "fc8d40f9-2417-42e4-8b8d-947c68f81a50",
+              "last_boot": "4538bdd1-965f-41f0-99f4-1b57d8075158",
+              "last_outcome": "unsafe",
+              "reserved_at_utc": 1795810365269,
+              "last_reserved_at_utc": 1795810187073,
+              "completed_at_utc": 1795810365390,
+              "reason_bits": 1,
+              "retry_step": 0
+            },
+            "census_complete": true,
+            "observation_start_ms": 638,
+            "observation_end_ms": 641
+          },
+          {
+            "ok": true,
+            "seat": "sG3xnaAQxk4u",
+            "after": 1,
+            "truncated": false,
+            "seat_scope": {
+              "instance": "338f5548a2dc90b5c9a789ea8b0919e7",
+              "state": "resolved",
+              "generation": 1,
+              "target": "w2:p3",
+              "target_generation": 1
+            },
+            "kernel_boot": "6d757418-e8a4-456d-a680-21953e8fa0a3",
+            "watermark": 1,
+            "bindings": [
+              {
+                "adapter": "codex",
+                "scope": {
+                  "binding": "7d097907c8941e6f38162c05e81d80be",
+                  "native_session": "01a21ea1-03da-7bc1-9404-cdb96b13ad61",
+                  "execution": "14417c7a-1e20-59a7-bea1-293920cfa8f7",
+                  "generation": 1,
+                  "process": {
+                    "pid": 422952,
+                    "start": 143788903
+                  },
+                  "kernel_boot": "6d757418-e8a4-456d-a680-21953e8fa0a3"
+                },
+                "connected": true,
+                "top_level": true,
+                "root_agent": true,
+                "registered": true,
+                "target": "w2:p3",
+                "target_generation": 1
+              },
+              {
+                "adapter": "codex",
+                "scope": {
+                  "binding": "89a08ebaa9957dfde8dc4811c7ff8834",
+                  "native_session": "01a21ea0-9b28-7633-9a6b-3f5dfba8492b",
+                  "execution": "0ffe0244-2d20-5295-8b09-b0d47bc7004f",
+                  "generation": 1,
+                  "process": {
+                    "pid": 422952,
+                    "start": 143788903
+                  },
+                  "kernel_boot": "6d757418-e8a4-456d-a680-21953e8fa0a3"
+                },
+                "connected": true,
+                "top_level": true,
+                "root_agent": true,
+                "registered": true,
+                "target": "w2:p3",
+                "target_generation": 1
+              }
+            ],
+            "native": [
+              {
+                "scope": {
+                  "binding": "7d097907c8941e6f38162c05e81d80be",
+                  "native_session": "01a21ea1-03da-7bc1-9404-cdb96b13ad61",
+                  "execution": "14417c7a-1e20-59a7-bea1-293920cfa8f7",
+                  "generation": 1,
+                  "process": {
+                    "pid": 422952,
+                    "start": 143788903
+                  },
+                  "kernel_boot": "6d757418-e8a4-456d-a680-21953e8fa0a3"
+                },
+                "turn_id": "01a21ea3-8b68-77d0-95bb-119656908130",
+                "phase": "started",
+                "ordinal": 3
+              },
+              {
+                "scope": {
+                  "binding": "89a08ebaa9957dfde8dc4811c7ff8834",
+                  "native_session": "01a21ea0-9b28-7633-9a6b-3f5dfba8492b",
+                  "execution": "0ffe0244-2d20-5295-8b09-b0d47bc7004f",
+                  "generation": 1,
+                  "process": {
+                    "pid": 422952,
+                    "start": 143788903
+                  },
+                  "kernel_boot": "6d757418-e8a4-456d-a680-21953e8fa0a3"
+                },
+                "turn_id": "01a21ea0-e6f5-7103-a61e-9e925d87ab64",
+                "phase": "ended",
+                "ordinal": 4
+              }
+            ],
+            "intents": [],
+            "wake_work": {
+              "active_attempt": "e0b1df5f-27e4-45f3-b018-9486a0796a5d",
+              "active_boot": "4538bdd1-965f-41f0-99f4-1b57d8075158",
+              "last_attempt": "e0b1df5f-27e4-45f3-b018-9486a0796a5d",
+              "last_boot": "4538bdd1-965f-41f0-99f4-1b57d8075158",
+              "last_outcome": "unsafe",
+              "reserved_at_utc": 1795810365868,
+              "last_reserved_at_utc": 1795810365868,
+              "completed_at_utc": 1795810365390,
+              "reason_bits": 1,
+              "retry_step": 1
+            },
+            "census_complete": true,
+            "observation_start_ms": 1157,
+            "observation_end_ms": 1163
+          },
+          {
+            "ok": true,
+            "seat": "sG3xnaAQxk4u",
+            "after": 1,
+            "truncated": false,
+            "seat_scope": {
+              "instance": "338f5548a2dc90b5c9a789ea8b0919e7",
+              "state": "resolved",
+              "generation": 1,
+              "target": "w2:p3",
+              "target_generation": 1
+            },
+            "kernel_boot": "6d757418-e8a4-456d-a680-21953e8fa0a3",
+            "watermark": 1,
+            "bindings": [
+              {
+                "adapter": "codex",
+                "scope": {
+                  "binding": "7d097907c8941e6f38162c05e81d80be",
+                  "native_session": "01a21ea1-03da-7bc1-9404-cdb96b13ad61",
+                  "execution": "14417c7a-1e20-59a7-bea1-293920cfa8f7",
+                  "generation": 1,
+                  "process": {
+                    "pid": 422952,
+                    "start": 143788903
+                  },
+                  "kernel_boot": "6d757418-e8a4-456d-a680-21953e8fa0a3"
+                },
+                "connected": true,
+                "top_level": true,
+                "root_agent": true,
+                "registered": true,
+                "target": "w2:p3",
+                "target_generation": 1
+              },
+              {
+                "adapter": "codex",
+                "scope": {
+                  "binding": "89a08ebaa9957dfde8dc4811c7ff8834",
+                  "native_session": "01a21ea0-9b28-7633-9a6b-3f5dfba8492b",
+                  "execution": "0ffe0244-2d20-5295-8b09-b0d47bc7004f",
+                  "generation": 1,
+                  "process": {
+                    "pid": 422952,
+                    "start": 143788903
+                  },
+                  "kernel_boot": "6d757418-e8a4-456d-a680-21953e8fa0a3"
+                },
+                "connected": true,
+                "top_level": true,
+                "root_agent": true,
+                "registered": true,
+                "target": "w2:p3",
+                "target_generation": 1
+              }
+            ],
+            "native": [
+              {
+                "scope": {
+                  "binding": "7d097907c8941e6f38162c05e81d80be",
+                  "native_session": "01a21ea1-03da-7bc1-9404-cdb96b13ad61",
+                  "execution": "14417c7a-1e20-59a7-bea1-293920cfa8f7",
+                  "generation": 1,
+                  "process": {
+                    "pid": 422952,
+                    "start": 143788903
+                  },
+                  "kernel_boot": "6d757418-e8a4-456d-a680-21953e8fa0a3"
+                },
+                "turn_id": "01a21ea3-8b68-77d0-95bb-119656908130",
+                "phase": "started",
+                "ordinal": 3
+              },
+              {
+                "scope": {
+                  "binding": "89a08ebaa9957dfde8dc4811c7ff8834",
+                  "native_session": "01a21ea0-9b28-7633-9a6b-3f5dfba8492b",
+                  "execution": "0ffe0244-2d20-5295-8b09-b0d47bc7004f",
+                  "generation": 1,
+                  "process": {
+                    "pid": 422952,
+                    "start": 143788903
+                  },
+                  "kernel_boot": "6d757418-e8a4-456d-a680-21953e8fa0a3"
+                },
+                "turn_id": "01a21ea0-e6f5-7103-a61e-9e925d87ab64",
+                "phase": "ended",
+                "ordinal": 4
+              }
+            ],
+            "intents": [],
+            "wake_work": {
+              "active_attempt": null,
+              "active_boot": null,
+              "last_attempt": "fc8d40f9-2417-42e4-8b8d-947c68f81a50",
+              "last_boot": "4538bdd1-965f-41f0-99f4-1b57d8075158",
+              "last_outcome": "unsafe",
+              "reserved_at_utc": 1795810365868,
+              "last_reserved_at_utc": 1795810187073,
+              "completed_at_utc": 1795810365990,
+              "reason_bits": 1,
+              "retry_step": 0
+            },
+            "census_complete": true,
+            "observation_start_ms": 1263,
+            "observation_end_ms": 1267
+          },
+          {
+            "ok": true,
+            "seat": "sG3xnaAQxk4u",
+            "after": 1,
+            "truncated": false,
+            "seat_scope": {
+              "instance": "338f5548a2dc90b5c9a789ea8b0919e7",
+              "state": "resolved",
+              "generation": 1,
+              "target": "w2:p3",
+              "target_generation": 1
+            },
+            "kernel_boot": "6d757418-e8a4-456d-a680-21953e8fa0a3",
+            "watermark": 1,
+            "bindings": [
+              {
+                "adapter": "codex",
+                "scope": {
+                  "binding": "7d097907c8941e6f38162c05e81d80be",
+                  "native_session": "01a21ea1-03da-7bc1-9404-cdb96b13ad61",
+                  "execution": "14417c7a-1e20-59a7-bea1-293920cfa8f7",
+                  "generation": 1,
+                  "process": {
+                    "pid": 422952,
+                    "start": 143788903
+                  },
+                  "kernel_boot": "6d757418-e8a4-456d-a680-21953e8fa0a3"
+                },
+                "connected": true,
+                "top_level": true,
+                "root_agent": true,
+                "registered": true,
+                "target": "w2:p3",
+                "target_generation": 1
+              },
+              {
+                "adapter": "codex",
+                "scope": {
+                  "binding": "89a08ebaa9957dfde8dc4811c7ff8834",
+                  "native_session": "01a21ea0-9b28-7633-9a6b-3f5dfba8492b",
+                  "execution": "0ffe0244-2d20-5295-8b09-b0d47bc7004f",
+                  "generation": 1,
+                  "process": {
+                    "pid": 422952,
+                    "start": 143788903
+                  },
+                  "kernel_boot": "6d757418-e8a4-456d-a680-21953e8fa0a3"
+                },
+                "connected": true,
+                "top_level": true,
+                "root_agent": true,
+                "registered": true,
+                "target": "w2:p3",
+                "target_generation": 1
+              }
+            ],
+            "native": [
+              {
+                "scope": {
+                  "binding": "7d097907c8941e6f38162c05e81d80be",
+                  "native_session": "01a21ea1-03da-7bc1-9404-cdb96b13ad61",
+                  "execution": "14417c7a-1e20-59a7-bea1-293920cfa8f7",
+                  "generation": 1,
+                  "process": {
+                    "pid": 422952,
+                    "start": 143788903
+                  },
+                  "kernel_boot": "6d757418-e8a4-456d-a680-21953e8fa0a3"
+                },
+                "turn_id": "01a21ea3-8b68-77d0-95bb-119656908130",
+                "phase": "started",
+                "ordinal": 3
+              },
+              {
+                "scope": {
+                  "binding": "89a08ebaa9957dfde8dc4811c7ff8834",
+                  "native_session": "01a21ea0-9b28-7633-9a6b-3f5dfba8492b",
+                  "execution": "0ffe0244-2d20-5295-8b09-b0d47bc7004f",
+                  "generation": 1,
+                  "process": {
+                    "pid": 422952,
+                    "start": 143788903
+                  },
+                  "kernel_boot": "6d757418-e8a4-456d-a680-21953e8fa0a3"
+                },
+                "turn_id": "01a21ea0-e6f5-7103-a61e-9e925d87ab64",
+                "phase": "ended",
+                "ordinal": 4
+              }
+            ],
+            "intents": [],
+            "wake_work": {
+              "active_attempt": "4daf7211-079e-45fa-b602-9bef11b5ff67",
+              "active_boot": "4538bdd1-965f-41f0-99f4-1b57d8075158",
+              "last_attempt": "4daf7211-079e-45fa-b602-9bef11b5ff67",
+              "last_boot": "4538bdd1-965f-41f0-99f4-1b57d8075158",
+              "last_outcome": "unsafe",
+              "reserved_at_utc": 1795810366856,
+              "last_reserved_at_utc": 1795810366856,
+              "completed_at_utc": 1795810365990,
+              "reason_bits": 1,
+              "retry_step": 1
+            },
+            "census_complete": true,
+            "observation_start_ms": 2094,
+            "observation_end_ms": 2098
+          },
+          {
+            "ok": true,
+            "seat": "sG3xnaAQxk4u",
+            "after": 1,
+            "truncated": false,
+            "seat_scope": {
+              "instance": "338f5548a2dc90b5c9a789ea8b0919e7",
+              "state": "resolved",
+              "generation": 1,
+              "target": "w2:p3",
+              "target_generation": 1
+            },
+            "kernel_boot": "6d757418-e8a4-456d-a680-21953e8fa0a3",
+            "watermark": 1,
+            "bindings": [
+              {
+                "adapter": "codex",
+                "scope": {
+                  "binding": "7d097907c8941e6f38162c05e81d80be",
+                  "native_session": "01a21ea1-03da-7bc1-9404-cdb96b13ad61",
+                  "execution": "14417c7a-1e20-59a7-bea1-293920cfa8f7",
+                  "generation": 1,
+                  "process": {
+                    "pid": 422952,
+                    "start": 143788903
+                  },
+                  "kernel_boot": "6d757418-e8a4-456d-a680-21953e8fa0a3"
+                },
+                "connected": true,
+                "top_level": true,
+                "root_agent": true,
+                "registered": true,
+                "target": "w2:p3",
+                "target_generation": 1
+              },
+              {
+                "adapter": "codex",
+                "scope": {
+                  "binding": "89a08ebaa9957dfde8dc4811c7ff8834",
+                  "native_session": "01a21ea0-9b28-7633-9a6b-3f5dfba8492b",
+                  "execution": "0ffe0244-2d20-5295-8b09-b0d47bc7004f",
+                  "generation": 1,
+                  "process": {
+                    "pid": 422952,
+                    "start": 143788903
+                  },
+                  "kernel_boot": "6d757418-e8a4-456d-a680-21953e8fa0a3"
+                },
+                "connected": true,
+                "top_level": true,
+                "root_agent": true,
+                "registered": true,
+                "target": "w2:p3",
+                "target_generation": 1
+              }
+            ],
+            "native": [
+              {
+                "scope": {
+                  "binding": "7d097907c8941e6f38162c05e81d80be",
+                  "native_session": "01a21ea1-03da-7bc1-9404-cdb96b13ad61",
+                  "execution": "14417c7a-1e20-59a7-bea1-293920cfa8f7",
+                  "generation": 1,
+                  "process": {
+                    "pid": 422952,
+                    "start": 143788903
+                  },
+                  "kernel_boot": "6d757418-e8a4-456d-a680-21953e8fa0a3"
+                },
+                "turn_id": "01a21ea3-8b68-77d0-95bb-119656908130",
+                "phase": "started",
+                "ordinal": 3
+              },
+              {
+                "scope": {
+                  "binding": "89a08ebaa9957dfde8dc4811c7ff8834",
+                  "native_session": "01a21ea0-9b28-7633-9a6b-3f5dfba8492b",
+                  "execution": "0ffe0244-2d20-5295-8b09-b0d47bc7004f",
+                  "generation": 1,
+                  "process": {
+                    "pid": 422952,
+                    "start": 143788903
+                  },
+                  "kernel_boot": "6d757418-e8a4-456d-a680-21953e8fa0a3"
+                },
+                "turn_id": "01a21ea0-e6f5-7103-a61e-9e925d87ab64",
+                "phase": "ended",
+                "ordinal": 4
+              }
+            ],
+            "intents": [],
+            "wake_work": {
+              "active_attempt": null,
+              "active_boot": null,
+              "last_attempt": "fc8d40f9-2417-42e4-8b8d-947c68f81a50",
+              "last_boot": "4538bdd1-965f-41f0-99f4-1b57d8075158",
+              "last_outcome": "unsafe",
+              "reserved_at_utc": 1795810366856,
+              "last_reserved_at_utc": 1795810187073,
+              "completed_at_utc": 1795810367173,
+              "reason_bits": 1,
+              "retry_step": 0
+            },
+            "census_complete": true,
+            "observation_start_ms": 2407,
+            "observation_end_ms": 2411
+          },
+          {
+            "ok": true,
+            "seat": "sG3xnaAQxk4u",
+            "after": 1,
+            "truncated": false,
+            "seat_scope": {
+              "instance": "338f5548a2dc90b5c9a789ea8b0919e7",
+              "state": "resolved",
+              "generation": 1,
+              "target": "w2:p3",
+              "target_generation": 1
+            },
+            "kernel_boot": "6d757418-e8a4-456d-a680-21953e8fa0a3",
+            "watermark": 1,
+            "bindings": [
+              {
+                "adapter": "codex",
+                "scope": {
+                  "binding": "7d097907c8941e6f38162c05e81d80be",
+                  "native_session": "01a21ea1-03da-7bc1-9404-cdb96b13ad61",
+                  "execution": "14417c7a-1e20-59a7-bea1-293920cfa8f7",
+                  "generation": 1,
+                  "process": {
+                    "pid": 422952,
+                    "start": 143788903
+                  },
+                  "kernel_boot": "6d757418-e8a4-456d-a680-21953e8fa0a3"
+                },
+                "connected": true,
+                "top_level": true,
+                "root_agent": true,
+                "registered": true,
+                "target": "w2:p3",
+                "target_generation": 1
+              },
+              {
+                "adapter": "codex",
+                "scope": {
+                  "binding": "89a08ebaa9957dfde8dc4811c7ff8834",
+                  "native_session": "01a21ea0-9b28-7633-9a6b-3f5dfba8492b",
+                  "execution": "0ffe0244-2d20-5295-8b09-b0d47bc7004f",
+                  "generation": 1,
+                  "process": {
+                    "pid": 422952,
+                    "start": 143788903
+                  },
+                  "kernel_boot": "6d757418-e8a4-456d-a680-21953e8fa0a3"
+                },
+                "connected": true,
+                "top_level": true,
+                "root_agent": true,
+                "registered": true,
+                "target": "w2:p3",
+                "target_generation": 1
+              }
+            ],
+            "native": [
+              {
+                "scope": {
+                  "binding": "7d097907c8941e6f38162c05e81d80be",
+                  "native_session": "01a21ea1-03da-7bc1-9404-cdb96b13ad61",
+                  "execution": "14417c7a-1e20-59a7-bea1-293920cfa8f7",
+                  "generation": 1,
+                  "process": {
+                    "pid": 422952,
+                    "start": 143788903
+                  },
+                  "kernel_boot": "6d757418-e8a4-456d-a680-21953e8fa0a3"
+                },
+                "turn_id": "01a21ea3-8b68-77d0-95bb-119656908130",
+                "phase": "started",
+                "ordinal": 3
+              },
+              {
+                "scope": {
+                  "binding": "89a08ebaa9957dfde8dc4811c7ff8834",
+                  "native_session": "01a21ea0-9b28-7633-9a6b-3f5dfba8492b",
+                  "execution": "0ffe0244-2d20-5295-8b09-b0d47bc7004f",
+                  "generation": 1,
+                  "process": {
+                    "pid": 422952,
+                    "start": 143788903
+                  },
+                  "kernel_boot": "6d757418-e8a4-456d-a680-21953e8fa0a3"
+                },
+                "turn_id": "01a21ea0-e6f5-7103-a61e-9e925d87ab64",
+                "phase": "ended",
+                "ordinal": 4
+              }
+            ],
+            "intents": [],
+            "wake_work": {
+              "active_attempt": null,
+              "active_boot": null,
+              "last_attempt": "fc8d40f9-2417-42e4-8b8d-947c68f81a50",
+              "last_boot": "4538bdd1-965f-41f0-99f4-1b57d8075158",
+              "last_outcome": "unsafe",
+              "reserved_at_utc": 1795810368800,
+              "last_reserved_at_utc": 1795810187073,
+              "completed_at_utc": 1795810368837,
+              "reason_bits": 1,
+              "retry_step": 0
+            },
+            "census_complete": true,
+            "observation_start_ms": 4083,
+            "observation_end_ms": 4094
+          },
+          {
+            "ok": true,
+            "seat": "sG3xnaAQxk4u",
+            "after": 1,
+            "truncated": false,
+            "seat_scope": {
+              "instance": "338f5548a2dc90b5c9a789ea8b0919e7",
+              "state": "resolved",
+              "generation": 1,
+              "target": "w2:p3",
+              "target_generation": 1
+            },
+            "kernel_boot": "6d757418-e8a4-456d-a680-21953e8fa0a3",
+            "watermark": 1,
+            "bindings": [
+              {
+                "adapter": "codex",
+                "scope": {
+                  "binding": "7d097907c8941e6f38162c05e81d80be",
+                  "native_session": "01a21ea1-03da-7bc1-9404-cdb96b13ad61",
+                  "execution": "14417c7a-1e20-59a7-bea1-293920cfa8f7",
+                  "generation": 1,
+                  "process": {
+                    "pid": 422952,
+                    "start": 143788903
+                  },
+                  "kernel_boot": "6d757418-e8a4-456d-a680-21953e8fa0a3"
+                },
+                "connected": true,
+                "top_level": true,
+                "root_agent": true,
+                "registered": true,
+                "target": "w2:p3",
+                "target_generation": 1
+              },
+              {
+                "adapter": "codex",
+                "scope": {
+                  "binding": "89a08ebaa9957dfde8dc4811c7ff8834",
+                  "native_session": "01a21ea0-9b28-7633-9a6b-3f5dfba8492b",
+                  "execution": "0ffe0244-2d20-5295-8b09-b0d47bc7004f",
+                  "generation": 1,
+                  "process": {
+                    "pid": 422952,
+                    "start": 143788903
+                  },
+                  "kernel_boot": "6d757418-e8a4-456d-a680-21953e8fa0a3"
+                },
+                "connected": true,
+                "top_level": true,
+                "root_agent": true,
+                "registered": true,
+                "target": "w2:p3",
+                "target_generation": 1
+              }
+            ],
+            "native": [
+              {
+                "scope": {
+                  "binding": "7d097907c8941e6f38162c05e81d80be",
+                  "native_session": "01a21ea1-03da-7bc1-9404-cdb96b13ad61",
+                  "execution": "14417c7a-1e20-59a7-bea1-293920cfa8f7",
+                  "generation": 1,
+                  "process": {
+                    "pid": 422952,
+                    "start": 143788903
+                  },
+                  "kernel_boot": "6d757418-e8a4-456d-a680-21953e8fa0a3"
+                },
+                "turn_id": "01a21ea3-8b68-77d0-95bb-119656908130",
+                "phase": "started",
+                "ordinal": 3
+              },
+              {
+                "scope": {
+                  "binding": "89a08ebaa9957dfde8dc4811c7ff8834",
+                  "native_session": "01a21ea0-9b28-7633-9a6b-3f5dfba8492b",
+                  "execution": "0ffe0244-2d20-5295-8b09-b0d47bc7004f",
+                  "generation": 1,
+                  "process": {
+                    "pid": 422952,
+                    "start": 143788903
+                  },
+                  "kernel_boot": "6d757418-e8a4-456d-a680-21953e8fa0a3"
+                },
+                "turn_id": "01a21ea0-e6f5-7103-a61e-9e925d87ab64",
+                "phase": "ended",
+                "ordinal": 4
+              }
+            ],
+            "intents": [],
+            "wake_work": {
+              "active_attempt": null,
+              "active_boot": null,
+              "last_attempt": "fc8d40f9-2417-42e4-8b8d-947c68f81a50",
+              "last_boot": "4538bdd1-965f-41f0-99f4-1b57d8075158",
+              "last_outcome": "unsafe",
+              "reserved_at_utc": 1795810372005,
+              "last_reserved_at_utc": 1795810187073,
+              "completed_at_utc": 1795810372028,
+              "reason_bits": 1,
+              "retry_step": 0
+            },
+            "census_complete": true,
+            "observation_start_ms": 7314,
+            "observation_end_ms": 7318
+          },
+          {
+            "ok": true,
+            "seat": "sG3xnaAQxk4u",
+            "after": 1,
+            "truncated": false,
+            "seat_scope": {
+              "instance": "338f5548a2dc90b5c9a789ea8b0919e7",
+              "state": "resolved",
+              "generation": 1,
+              "target": "w2:p3",
+              "target_generation": 1
+            },
+            "kernel_boot": "6d757418-e8a4-456d-a680-21953e8fa0a3",
+            "watermark": 1,
+            "bindings": [
+              {
+                "adapter": "codex",
+                "scope": {
+                  "binding": "7d097907c8941e6f38162c05e81d80be",
+                  "native_session": "01a21ea1-03da-7bc1-9404-cdb96b13ad61",
+                  "execution": "14417c7a-1e20-59a7-bea1-293920cfa8f7",
+                  "generation": 1,
+                  "process": {
+                    "pid": 422952,
+                    "start": 143788903
+                  },
+                  "kernel_boot": "6d757418-e8a4-456d-a680-21953e8fa0a3"
+                },
+                "connected": true,
+                "top_level": true,
+                "root_agent": true,
+                "registered": true,
+                "target": "w2:p3",
+                "target_generation": 1
+              },
+              {
+                "adapter": "codex",
+                "scope": {
+                  "binding": "89a08ebaa9957dfde8dc4811c7ff8834",
+                  "native_session": "01a21ea0-9b28-7633-9a6b-3f5dfba8492b",
+                  "execution": "0ffe0244-2d20-5295-8b09-b0d47bc7004f",
+                  "generation": 1,
+                  "process": {
+                    "pid": 422952,
+                    "start": 143788903
+                  },
+                  "kernel_boot": "6d757418-e8a4-456d-a680-21953e8fa0a3"
+                },
+                "connected": true,
+                "top_level": true,
+                "root_agent": true,
+                "registered": true,
+                "target": "w2:p3",
+                "target_generation": 1
+              }
+            ],
+            "native": [
+              {
+                "scope": {
+                  "binding": "7d097907c8941e6f38162c05e81d80be",
+                  "native_session": "01a21ea1-03da-7bc1-9404-cdb96b13ad61",
+                  "execution": "14417c7a-1e20-59a7-bea1-293920cfa8f7",
+                  "generation": 1,
+                  "process": {
+                    "pid": 422952,
+                    "start": 143788903
+                  },
+                  "kernel_boot": "6d757418-e8a4-456d-a680-21953e8fa0a3"
+                },
+                "turn_id": "01a21ea3-8b68-77d0-95bb-119656908130",
+                "phase": "started",
+                "ordinal": 3
+              },
+              {
+                "scope": {
+                  "binding": "89a08ebaa9957dfde8dc4811c7ff8834",
+                  "native_session": "01a21ea0-9b28-7633-9a6b-3f5dfba8492b",
+                  "execution": "0ffe0244-2d20-5295-8b09-b0d47bc7004f",
+                  "generation": 1,
+                  "process": {
+                    "pid": 422952,
+                    "start": 143788903
+                  },
+                  "kernel_boot": "6d757418-e8a4-456d-a680-21953e8fa0a3"
+                },
+                "turn_id": "01a21ea0-e6f5-7103-a61e-9e925d87ab64",
+                "phase": "ended",
+                "ordinal": 4
+              }
+            ],
+            "intents": [],
+            "wake_work": {
+              "active_attempt": "5ae41aa0-483b-48e2-89c8-660a575f53b0",
+              "active_boot": "4538bdd1-965f-41f0-99f4-1b57d8075158",
+              "last_attempt": "5ae41aa0-483b-48e2-89c8-660a575f53b0",
+              "last_boot": "4538bdd1-965f-41f0-99f4-1b57d8075158",
+              "last_outcome": "unsafe",
+              "reserved_at_utc": 1795810378105,
+              "last_reserved_at_utc": 1795810378105,
+              "completed_at_utc": 1795810372028,
+              "reason_bits": 1,
+              "retry_step": 1
+            },
+            "census_complete": true,
+            "observation_start_ms": 13394,
+            "observation_end_ms": 13398
+          },
+          {
+            "ok": true,
+            "seat": "sG3xnaAQxk4u",
+            "after": 1,
+            "truncated": false,
+            "seat_scope": {
+              "instance": "338f5548a2dc90b5c9a789ea8b0919e7",
+              "state": "resolved",
+              "generation": 1,
+              "target": "w2:p3",
+              "target_generation": 1
+            },
+            "kernel_boot": "6d757418-e8a4-456d-a680-21953e8fa0a3",
+            "watermark": 1,
+            "bindings": [
+              {
+                "adapter": "codex",
+                "scope": {
+                  "binding": "7d097907c8941e6f38162c05e81d80be",
+                  "native_session": "01a21ea1-03da-7bc1-9404-cdb96b13ad61",
+                  "execution": "14417c7a-1e20-59a7-bea1-293920cfa8f7",
+                  "generation": 1,
+                  "process": {
+                    "pid": 422952,
+                    "start": 143788903
+                  },
+                  "kernel_boot": "6d757418-e8a4-456d-a680-21953e8fa0a3"
+                },
+                "connected": true,
+                "top_level": true,
+                "root_agent": true,
+                "registered": true,
+                "target": "w2:p3",
+                "target_generation": 1
+              },
+              {
+                "adapter": "codex",
+                "scope": {
+                  "binding": "89a08ebaa9957dfde8dc4811c7ff8834",
+                  "native_session": "01a21ea0-9b28-7633-9a6b-3f5dfba8492b",
+                  "execution": "0ffe0244-2d20-5295-8b09-b0d47bc7004f",
+                  "generation": 1,
+                  "process": {
+                    "pid": 422952,
+                    "start": 143788903
+                  },
+                  "kernel_boot": "6d757418-e8a4-456d-a680-21953e8fa0a3"
+                },
+                "connected": true,
+                "top_level": true,
+                "root_agent": true,
+                "registered": true,
+                "target": "w2:p3",
+                "target_generation": 1
+              }
+            ],
+            "native": [
+              {
+                "scope": {
+                  "binding": "7d097907c8941e6f38162c05e81d80be",
+                  "native_session": "01a21ea1-03da-7bc1-9404-cdb96b13ad61",
+                  "execution": "14417c7a-1e20-59a7-bea1-293920cfa8f7",
+                  "generation": 1,
+                  "process": {
+                    "pid": 422952,
+                    "start": 143788903
+                  },
+                  "kernel_boot": "6d757418-e8a4-456d-a680-21953e8fa0a3"
+                },
+                "turn_id": "01a21ea3-8b68-77d0-95bb-119656908130",
+                "phase": "started",
+                "ordinal": 3
+              },
+              {
+                "scope": {
+                  "binding": "89a08ebaa9957dfde8dc4811c7ff8834",
+                  "native_session": "01a21ea0-9b28-7633-9a6b-3f5dfba8492b",
+                  "execution": "0ffe0244-2d20-5295-8b09-b0d47bc7004f",
+                  "generation": 1,
+                  "process": {
+                    "pid": 422952,
+                    "start": 143788903
+                  },
+                  "kernel_boot": "6d757418-e8a4-456d-a680-21953e8fa0a3"
+                },
+                "turn_id": "01a21ea0-e6f5-7103-a61e-9e925d87ab64",
+                "phase": "ended",
+                "ordinal": 4
+              }
+            ],
+            "intents": [],
+            "wake_work": {
+              "active_attempt": null,
+              "active_boot": null,
+              "last_attempt": "fc8d40f9-2417-42e4-8b8d-947c68f81a50",
+              "last_boot": "4538bdd1-965f-41f0-99f4-1b57d8075158",
+              "last_outcome": "unsafe",
+              "reserved_at_utc": 1795810378105,
+              "last_reserved_at_utc": 1795810187073,
+              "completed_at_utc": 1795810378223,
+              "reason_bits": 1,
+              "retry_step": 0
+            },
+            "census_complete": true,
+            "observation_start_ms": 13498,
+            "observation_end_ms": 13502
+          },
+          {
+            "ok": true,
+            "seat": "sG3xnaAQxk4u",
+            "after": 1,
+            "truncated": false,
+            "seat_scope": {
+              "instance": "338f5548a2dc90b5c9a789ea8b0919e7",
+              "state": "resolved",
+              "generation": 1,
+              "target": "w2:p3",
+              "target_generation": 1
+            },
+            "kernel_boot": "6d757418-e8a4-456d-a680-21953e8fa0a3",
+            "watermark": 1,
+            "bindings": [
+              {
+                "adapter": "codex",
+                "scope": {
+                  "binding": "7d097907c8941e6f38162c05e81d80be",
+                  "native_session": "01a21ea1-03da-7bc1-9404-cdb96b13ad61",
+                  "execution": "14417c7a-1e20-59a7-bea1-293920cfa8f7",
+                  "generation": 1,
+                  "process": {
+                    "pid": 422952,
+                    "start": 143788903
+                  },
+                  "kernel_boot": "6d757418-e8a4-456d-a680-21953e8fa0a3"
+                },
+                "connected": true,
+                "top_level": true,
+                "root_agent": true,
+                "registered": true,
+                "target": "w2:p3",
+                "target_generation": 1
+              },
+              {
+                "adapter": "codex",
+                "scope": {
+                  "binding": "89a08ebaa9957dfde8dc4811c7ff8834",
+                  "native_session": "01a21ea0-9b28-7633-9a6b-3f5dfba8492b",
+                  "execution": "0ffe0244-2d20-5295-8b09-b0d47bc7004f",
+                  "generation": 1,
+                  "process": {
+                    "pid": 422952,
+                    "start": 143788903
+                  },
+                  "kernel_boot": "6d757418-e8a4-456d-a680-21953e8fa0a3"
+                },
+                "connected": true,
+                "top_level": true,
+                "root_agent": true,
+                "registered": true,
+                "target": "w2:p3",
+                "target_generation": 1
+              }
+            ],
+            "native": [
+              {
+                "scope": {
+                  "binding": "7d097907c8941e6f38162c05e81d80be",
+                  "native_session": "01a21ea1-03da-7bc1-9404-cdb96b13ad61",
+                  "execution": "14417c7a-1e20-59a7-bea1-293920cfa8f7",
+                  "generation": 1,
+                  "process": {
+                    "pid": 422952,
+                    "start": 143788903
+                  },
+                  "kernel_boot": "6d757418-e8a4-456d-a680-21953e8fa0a3"
+                },
+                "turn_id": "01a21ea3-8b68-77d0-95bb-119656908130",
+                "phase": "started",
+                "ordinal": 3
+              },
+              {
+                "scope": {
+                  "binding": "89a08ebaa9957dfde8dc4811c7ff8834",
+                  "native_session": "01a21ea0-9b28-7633-9a6b-3f5dfba8492b",
+                  "execution": "0ffe0244-2d20-5295-8b09-b0d47bc7004f",
+                  "generation": 1,
+                  "process": {
+                    "pid": 422952,
+                    "start": 143788903
+                  },
+                  "kernel_boot": "6d757418-e8a4-456d-a680-21953e8fa0a3"
+                },
+                "turn_id": "01a21ea0-e6f5-7103-a61e-9e925d87ab64",
+                "phase": "ended",
+                "ordinal": 4
+              }
+            ],
+            "intents": [],
+            "wake_work": {
+              "active_attempt": "53220325-3460-4990-b82f-e534e5baa51d",
+              "active_boot": "4538bdd1-965f-41f0-99f4-1b57d8075158",
+              "last_attempt": "53220325-3460-4990-b82f-e534e5baa51d",
+              "last_boot": "4538bdd1-965f-41f0-99f4-1b57d8075158",
+              "last_outcome": "unsafe",
+              "reserved_at_utc": 1795810389241,
+              "last_reserved_at_utc": 1795810389241,
+              "completed_at_utc": 1795810378223,
+              "reason_bits": 1,
+              "retry_step": 1
+            },
+            "census_complete": true,
+            "observation_start_ms": 24556,
+            "observation_end_ms": 24560
+          },
+          {
+            "ok": true,
+            "seat": "sG3xnaAQxk4u",
+            "after": 1,
+            "truncated": false,
+            "seat_scope": {
+              "instance": "338f5548a2dc90b5c9a789ea8b0919e7",
+              "state": "resolved",
+              "generation": 1,
+              "target": "w2:p3",
+              "target_generation": 1
+            },
+            "kernel_boot": "6d757418-e8a4-456d-a680-21953e8fa0a3",
+            "watermark": 1,
+            "bindings": [
+              {
+                "adapter": "codex",
+                "scope": {
+                  "binding": "7d097907c8941e6f38162c05e81d80be",
+                  "native_session": "01a21ea1-03da-7bc1-9404-cdb96b13ad61",
+                  "execution": "14417c7a-1e20-59a7-bea1-293920cfa8f7",
+                  "generation": 1,
+                  "process": {
+                    "pid": 422952,
+                    "start": 143788903
+                  },
+                  "kernel_boot": "6d757418-e8a4-456d-a680-21953e8fa0a3"
+                },
+                "connected": true,
+                "top_level": true,
+                "root_agent": true,
+                "registered": true,
+                "target": "w2:p3",
+                "target_generation": 1
+              },
+              {
+                "adapter": "codex",
+                "scope": {
+                  "binding": "89a08ebaa9957dfde8dc4811c7ff8834",
+                  "native_session": "01a21ea0-9b28-7633-9a6b-3f5dfba8492b",
+                  "execution": "0ffe0244-2d20-5295-8b09-b0d47bc7004f",
+                  "generation": 1,
+                  "process": {
+                    "pid": 422952,
+                    "start": 143788903
+                  },
+                  "kernel_boot": "6d757418-e8a4-456d-a680-21953e8fa0a3"
+                },
+                "connected": true,
+                "top_level": true,
+                "root_agent": true,
+                "registered": true,
+                "target": "w2:p3",
+                "target_generation": 1
+              }
+            ],
+            "native": [
+              {
+                "scope": {
+                  "binding": "7d097907c8941e6f38162c05e81d80be",
+                  "native_session": "01a21ea1-03da-7bc1-9404-cdb96b13ad61",
+                  "execution": "14417c7a-1e20-59a7-bea1-293920cfa8f7",
+                  "generation": 1,
+                  "process": {
+                    "pid": 422952,
+                    "start": 143788903
+                  },
+                  "kernel_boot": "6d757418-e8a4-456d-a680-21953e8fa0a3"
+                },
+                "turn_id": "01a21ea3-8b68-77d0-95bb-119656908130",
+                "phase": "started",
+                "ordinal": 3
+              },
+              {
+                "scope": {
+                  "binding": "89a08ebaa9957dfde8dc4811c7ff8834",
+                  "native_session": "01a21ea0-9b28-7633-9a6b-3f5dfba8492b",
+                  "execution": "0ffe0244-2d20-5295-8b09-b0d47bc7004f",
+                  "generation": 1,
+                  "process": {
+                    "pid": 422952,
+                    "start": 143788903
+                  },
+                  "kernel_boot": "6d757418-e8a4-456d-a680-21953e8fa0a3"
+                },
+                "turn_id": "01a21ea0-e6f5-7103-a61e-9e925d87ab64",
+                "phase": "ended",
+                "ordinal": 4
+              }
+            ],
+            "intents": [],
+            "wake_work": {
+              "active_attempt": null,
+              "active_boot": null,
+              "last_attempt": "fc8d40f9-2417-42e4-8b8d-947c68f81a50",
+              "last_boot": "4538bdd1-965f-41f0-99f4-1b57d8075158",
+              "last_outcome": "unsafe",
+              "reserved_at_utc": 1795810389241,
+              "last_reserved_at_utc": 1795810187073,
+              "completed_at_utc": 1795810389459,
+              "reason_bits": 1,
+              "retry_step": 0
+            },
+            "census_complete": true,
+            "observation_start_ms": 24764,
+            "observation_end_ms": 24769
+          },
+          {
+            "ok": true,
+            "seat": "sG3xnaAQxk4u",
+            "after": 1,
+            "truncated": false,
+            "seat_scope": {
+              "instance": "338f5548a2dc90b5c9a789ea8b0919e7",
+              "state": "resolved",
+              "generation": 1,
+              "target": "w2:p3",
+              "target_generation": 1
+            },
+            "kernel_boot": "6d757418-e8a4-456d-a680-21953e8fa0a3",
+            "watermark": 1,
+            "bindings": [
+              {
+                "adapter": "codex",
+                "scope": {
+                  "binding": "7d097907c8941e6f38162c05e81d80be",
+                  "native_session": "01a21ea1-03da-7bc1-9404-cdb96b13ad61",
+                  "execution": "14417c7a-1e20-59a7-bea1-293920cfa8f7",
+                  "generation": 1,
+                  "process": {
+                    "pid": 422952,
+                    "start": 143788903
+                  },
+                  "kernel_boot": "6d757418-e8a4-456d-a680-21953e8fa0a3"
+                },
+                "connected": true,
+                "top_level": true,
+                "root_agent": true,
+                "registered": true,
+                "target": "w2:p3",
+                "target_generation": 1
+              },
+              {
+                "adapter": "codex",
+                "scope": {
+                  "binding": "89a08ebaa9957dfde8dc4811c7ff8834",
+                  "native_session": "01a21ea0-9b28-7633-9a6b-3f5dfba8492b",
+                  "execution": "0ffe0244-2d20-5295-8b09-b0d47bc7004f",
+                  "generation": 1,
+                  "process": {
+                    "pid": 422952,
+                    "start": 143788903
+                  },
+                  "kernel_boot": "6d757418-e8a4-456d-a680-21953e8fa0a3"
+                },
+                "connected": true,
+                "top_level": true,
+                "root_agent": true,
+                "registered": true,
+                "target": "w2:p3",
+                "target_generation": 1
+              }
+            ],
+            "native": [
+              {
+                "scope": {
+                  "binding": "7d097907c8941e6f38162c05e81d80be",
+                  "native_session": "01a21ea1-03da-7bc1-9404-cdb96b13ad61",
+                  "execution": "14417c7a-1e20-59a7-bea1-293920cfa8f7",
+                  "generation": 1,
+                  "process": {
+                    "pid": 422952,
+                    "start": 143788903
+                  },
+                  "kernel_boot": "6d757418-e8a4-456d-a680-21953e8fa0a3"
+                },
+                "turn_id": "01a21ea3-8b68-77d0-95bb-119656908130",
+                "phase": "started",
+                "ordinal": 3
+              },
+              {
+                "scope": {
+                  "binding": "89a08ebaa9957dfde8dc4811c7ff8834",
+                  "native_session": "01a21ea0-9b28-7633-9a6b-3f5dfba8492b",
+                  "execution": "0ffe0244-2d20-5295-8b09-b0d47bc7004f",
+                  "generation": 1,
+                  "process": {
+                    "pid": 422952,
+                    "start": 143788903
+                  },
+                  "kernel_boot": "6d757418-e8a4-456d-a680-21953e8fa0a3"
+                },
+                "turn_id": "01a21ea0-e6f5-7103-a61e-9e925d87ab64",
+                "phase": "ended",
+                "ordinal": 4
+              }
+            ],
+            "intents": [],
+            "wake_work": {
+              "active_attempt": "205ec9f5-ec67-493a-87c2-040daf9bfec8",
+              "active_boot": "4538bdd1-965f-41f0-99f4-1b57d8075158",
+              "last_attempt": "205ec9f5-ec67-493a-87c2-040daf9bfec8",
+              "last_boot": "4538bdd1-965f-41f0-99f4-1b57d8075158",
+              "last_outcome": "unsafe",
+              "reserved_at_utc": 1795810411199,
+              "last_reserved_at_utc": 1795810411199,
+              "completed_at_utc": 1795810389459,
+              "reason_bits": 1,
+              "retry_step": 1
+            },
+            "census_complete": true,
+            "observation_start_ms": 46462,
+            "observation_end_ms": 46466
+          },
+          {
+            "ok": true,
+            "seat": "sG3xnaAQxk4u",
+            "after": 1,
+            "truncated": false,
+            "seat_scope": {
+              "instance": "338f5548a2dc90b5c9a789ea8b0919e7",
+              "state": "resolved",
+              "generation": 1,
+              "target": "w2:p3",
+              "target_generation": 1
+            },
+            "kernel_boot": "6d757418-e8a4-456d-a680-21953e8fa0a3",
+            "watermark": 1,
+            "bindings": [
+              {
+                "adapter": "codex",
+                "scope": {
+                  "binding": "7d097907c8941e6f38162c05e81d80be",
+                  "native_session": "01a21ea1-03da-7bc1-9404-cdb96b13ad61",
+                  "execution": "14417c7a-1e20-59a7-bea1-293920cfa8f7",
+                  "generation": 1,
+                  "process": {
+                    "pid": 422952,
+                    "start": 143788903
+                  },
+                  "kernel_boot": "6d757418-e8a4-456d-a680-21953e8fa0a3"
+                },
+                "connected": true,
+                "top_level": true,
+                "root_agent": true,
+                "registered": true,
+                "target": "w2:p3",
+                "target_generation": 1
+              },
+              {
+                "adapter": "codex",
+                "scope": {
+                  "binding": "89a08ebaa9957dfde8dc4811c7ff8834",
+                  "native_session": "01a21ea0-9b28-7633-9a6b-3f5dfba8492b",
+                  "execution": "0ffe0244-2d20-5295-8b09-b0d47bc7004f",
+                  "generation": 1,
+                  "process": {
+                    "pid": 422952,
+                    "start": 143788903
+                  },
+                  "kernel_boot": "6d757418-e8a4-456d-a680-21953e8fa0a3"
+                },
+                "connected": true,
+                "top_level": true,
+                "root_agent": true,
+                "registered": true,
+                "target": "w2:p3",
+                "target_generation": 1
+              }
+            ],
+            "native": [
+              {
+                "scope": {
+                  "binding": "7d097907c8941e6f38162c05e81d80be",
+                  "native_session": "01a21ea1-03da-7bc1-9404-cdb96b13ad61",
+                  "execution": "14417c7a-1e20-59a7-bea1-293920cfa8f7",
+                  "generation": 1,
+                  "process": {
+                    "pid": 422952,
+                    "start": 143788903
+                  },
+                  "kernel_boot": "6d757418-e8a4-456d-a680-21953e8fa0a3"
+                },
+                "turn_id": "01a21ea3-8b68-77d0-95bb-119656908130",
+                "phase": "started",
+                "ordinal": 3
+              },
+              {
+                "scope": {
+                  "binding": "89a08ebaa9957dfde8dc4811c7ff8834",
+                  "native_session": "01a21ea0-9b28-7633-9a6b-3f5dfba8492b",
+                  "execution": "0ffe0244-2d20-5295-8b09-b0d47bc7004f",
+                  "generation": 1,
+                  "process": {
+                    "pid": 422952,
+                    "start": 143788903
+                  },
+                  "kernel_boot": "6d757418-e8a4-456d-a680-21953e8fa0a3"
+                },
+                "turn_id": "01a21ea0-e6f5-7103-a61e-9e925d87ab64",
+                "phase": "ended",
+                "ordinal": 4
+              }
+            ],
+            "intents": [],
+            "wake_work": {
+              "active_attempt": null,
+              "active_boot": null,
+              "last_attempt": "fc8d40f9-2417-42e4-8b8d-947c68f81a50",
+              "last_boot": "4538bdd1-965f-41f0-99f4-1b57d8075158",
+              "last_outcome": "unsafe",
+              "reserved_at_utc": 1795810411199,
+              "last_reserved_at_utc": 1795810187073,
+              "completed_at_utc": 1795810411517,
+              "reason_bits": 1,
+              "retry_step": 0
+            },
+            "census_complete": true,
+            "observation_start_ms": 46774,
+            "observation_end_ms": 46778
+          },
+          {
+            "ok": true,
+            "seat": "sG3xnaAQxk4u",
+            "after": 1,
+            "truncated": false,
+            "seat_scope": {
+              "instance": "338f5548a2dc90b5c9a789ea8b0919e7",
+              "state": "resolved",
+              "generation": 1,
+              "target": "w2:p3",
+              "target_generation": 1
+            },
+            "kernel_boot": "6d757418-e8a4-456d-a680-21953e8fa0a3",
+            "watermark": 1,
+            "bindings": [
+              {
+                "adapter": "codex",
+                "scope": {
+                  "binding": "7d097907c8941e6f38162c05e81d80be",
+                  "native_session": "01a21ea1-03da-7bc1-9404-cdb96b13ad61",
+                  "execution": "14417c7a-1e20-59a7-bea1-293920cfa8f7",
+                  "generation": 1,
+                  "process": {
+                    "pid": 422952,
+                    "start": 143788903
+                  },
+                  "kernel_boot": "6d757418-e8a4-456d-a680-21953e8fa0a3"
+                },
+                "connected": true,
+                "top_level": true,
+                "root_agent": true,
+                "registered": true,
+                "target": "w2:p3",
+                "target_generation": 1
+              },
+              {
+                "adapter": "codex",
+                "scope": {
+                  "binding": "89a08ebaa9957dfde8dc4811c7ff8834",
+                  "native_session": "01a21ea0-9b28-7633-9a6b-3f5dfba8492b",
+                  "execution": "0ffe0244-2d20-5295-8b09-b0d47bc7004f",
+                  "generation": 1,
+                  "process": {
+                    "pid": 422952,
+                    "start": 143788903
+                  },
+                  "kernel_boot": "6d757418-e8a4-456d-a680-21953e8fa0a3"
+                },
+                "connected": true,
+                "top_level": true,
+                "root_agent": true,
+                "registered": true,
+                "target": "w2:p3",
+                "target_generation": 1
+              }
+            ],
+            "native": [
+              {
+                "scope": {
+                  "binding": "7d097907c8941e6f38162c05e81d80be",
+                  "native_session": "01a21ea1-03da-7bc1-9404-cdb96b13ad61",
+                  "execution": "14417c7a-1e20-59a7-bea1-293920cfa8f7",
+                  "generation": 1,
+                  "process": {
+                    "pid": 422952,
+                    "start": 143788903
+                  },
+                  "kernel_boot": "6d757418-e8a4-456d-a680-21953e8fa0a3"
+                },
+                "turn_id": "01a21ea3-8b68-77d0-95bb-119656908130",
+                "phase": "started",
+                "ordinal": 3
+              },
+              {
+                "scope": {
+                  "binding": "89a08ebaa9957dfde8dc4811c7ff8834",
+                  "native_session": "01a21ea0-9b28-7633-9a6b-3f5dfba8492b",
+                  "execution": "0ffe0244-2d20-5295-8b09-b0d47bc7004f",
+                  "generation": 1,
+                  "process": {
+                    "pid": 422952,
+                    "start": 143788903
+                  },
+                  "kernel_boot": "6d757418-e8a4-456d-a680-21953e8fa0a3"
+                },
+                "turn_id": "01a21ea0-e6f5-7103-a61e-9e925d87ab64",
+                "phase": "ended",
+                "ordinal": 4
+              }
+            ],
+            "intents": [],
+            "wake_work": {
+              "active_attempt": "5f1024c4-5c15-4f66-b645-25cf11dcfe69",
+              "active_boot": "4538bdd1-965f-41f0-99f4-1b57d8075158",
+              "last_attempt": "5f1024c4-5c15-4f66-b645-25cf11dcfe69",
+              "last_boot": "4538bdd1-965f-41f0-99f4-1b57d8075158",
+              "last_outcome": "unsafe",
+              "reserved_at_utc": 1795810435858,
+              "last_reserved_at_utc": 1795810435858,
+              "completed_at_utc": 1795810411517,
+              "reason_bits": 1,
+              "retry_step": 1
+            },
+            "census_complete": true,
+            "observation_start_ms": 71115,
+            "observation_end_ms": 71119
+          },
+          {
+            "ok": true,
+            "seat": "sG3xnaAQxk4u",
+            "after": 1,
+            "truncated": false,
+            "seat_scope": {
+              "instance": "338f5548a2dc90b5c9a789ea8b0919e7",
+              "state": "resolved",
+              "generation": 1,
+              "target": "w2:p3",
+              "target_generation": 1
+            },
+            "kernel_boot": "6d757418-e8a4-456d-a680-21953e8fa0a3",
+            "watermark": 1,
+            "bindings": [
+              {
+                "adapter": "codex",
+                "scope": {
+                  "binding": "7d097907c8941e6f38162c05e81d80be",
+                  "native_session": "01a21ea1-03da-7bc1-9404-cdb96b13ad61",
+                  "execution": "14417c7a-1e20-59a7-bea1-293920cfa8f7",
+                  "generation": 1,
+                  "process": {
+                    "pid": 422952,
+                    "start": 143788903
+                  },
+                  "kernel_boot": "6d757418-e8a4-456d-a680-21953e8fa0a3"
+                },
+                "connected": true,
+                "top_level": true,
+                "root_agent": true,
+                "registered": true,
+                "target": "w2:p3",
+                "target_generation": 1
+              },
+              {
+                "adapter": "codex",
+                "scope": {
+                  "binding": "89a08ebaa9957dfde8dc4811c7ff8834",
+                  "native_session": "01a21ea0-9b28-7633-9a6b-3f5dfba8492b",
+                  "execution": "0ffe0244-2d20-5295-8b09-b0d47bc7004f",
+                  "generation": 1,
+                  "process": {
+                    "pid": 422952,
+                    "start": 143788903
+                  },
+                  "kernel_boot": "6d757418-e8a4-456d-a680-21953e8fa0a3"
+                },
+                "connected": true,
+                "top_level": true,
+                "root_agent": true,
+                "registered": true,
+                "target": "w2:p3",
+                "target_generation": 1
+              }
+            ],
+            "native": [
+              {
+                "scope": {
+                  "binding": "7d097907c8941e6f38162c05e81d80be",
+                  "native_session": "01a21ea1-03da-7bc1-9404-cdb96b13ad61",
+                  "execution": "14417c7a-1e20-59a7-bea1-293920cfa8f7",
+                  "generation": 1,
+                  "process": {
+                    "pid": 422952,
+                    "start": 143788903
+                  },
+                  "kernel_boot": "6d757418-e8a4-456d-a680-21953e8fa0a3"
+                },
+                "turn_id": "01a21ea3-8b68-77d0-95bb-119656908130",
+                "phase": "started",
+                "ordinal": 3
+              },
+              {
+                "scope": {
+                  "binding": "89a08ebaa9957dfde8dc4811c7ff8834",
+                  "native_session": "01a21ea0-9b28-7633-9a6b-3f5dfba8492b",
+                  "execution": "0ffe0244-2d20-5295-8b09-b0d47bc7004f",
+                  "generation": 1,
+                  "process": {
+                    "pid": 422952,
+                    "start": 143788903
+                  },
+                  "kernel_boot": "6d757418-e8a4-456d-a680-21953e8fa0a3"
+                },
+                "turn_id": "01a21ea0-e6f5-7103-a61e-9e925d87ab64",
+                "phase": "ended",
+                "ordinal": 4
+              }
+            ],
+            "intents": [],
+            "wake_work": {
+              "active_attempt": null,
+              "active_boot": null,
+              "last_attempt": "fc8d40f9-2417-42e4-8b8d-947c68f81a50",
+              "last_boot": "4538bdd1-965f-41f0-99f4-1b57d8075158",
+              "last_outcome": "unsafe",
+              "reserved_at_utc": 1795810435858,
+              "last_reserved_at_utc": 1795810187073,
+              "completed_at_utc": 1795810436077,
+              "reason_bits": 1,
+              "retry_step": 0
+            },
+            "census_complete": true,
+            "observation_start_ms": 71323,
+            "observation_end_ms": 71326
+          },
+          {
+            "ok": true,
+            "seat": "sG3xnaAQxk4u",
+            "after": 1,
+            "truncated": false,
+            "seat_scope": {
+              "instance": "338f5548a2dc90b5c9a789ea8b0919e7",
+              "state": "resolved",
+              "generation": 1,
+              "target": "w2:p3",
+              "target_generation": 1
+            },
+            "kernel_boot": "6d757418-e8a4-456d-a680-21953e8fa0a3",
+            "watermark": 1,
+            "bindings": [
+              {
+                "adapter": "codex",
+                "scope": {
+                  "binding": "7d097907c8941e6f38162c05e81d80be",
+                  "native_session": "01a21ea1-03da-7bc1-9404-cdb96b13ad61",
+                  "execution": "14417c7a-1e20-59a7-bea1-293920cfa8f7",
+                  "generation": 1,
+                  "process": {
+                    "pid": 422952,
+                    "start": 143788903
+                  },
+                  "kernel_boot": "6d757418-e8a4-456d-a680-21953e8fa0a3"
+                },
+                "connected": true,
+                "top_level": true,
+                "root_agent": true,
+                "registered": true,
+                "target": "w2:p3",
+                "target_generation": 1
+              },
+              {
+                "adapter": "codex",
+                "scope": {
+                  "binding": "89a08ebaa9957dfde8dc4811c7ff8834",
+                  "native_session": "01a21ea0-9b28-7633-9a6b-3f5dfba8492b",
+                  "execution": "0ffe0244-2d20-5295-8b09-b0d47bc7004f",
+                  "generation": 1,
+                  "process": {
+                    "pid": 422952,
+                    "start": 143788903
+                  },
+                  "kernel_boot": "6d757418-e8a4-456d-a680-21953e8fa0a3"
+                },
+                "connected": true,
+                "top_level": true,
+                "root_agent": true,
+                "registered": true,
+                "target": "w2:p3",
+                "target_generation": 1
+              }
+            ],
+            "native": [
+              {
+                "scope": {
+                  "binding": "7d097907c8941e6f38162c05e81d80be",
+                  "native_session": "01a21ea1-03da-7bc1-9404-cdb96b13ad61",
+                  "execution": "14417c7a-1e20-59a7-bea1-293920cfa8f7",
+                  "generation": 1,
+                  "process": {
+                    "pid": 422952,
+                    "start": 143788903
+                  },
+                  "kernel_boot": "6d757418-e8a4-456d-a680-21953e8fa0a3"
+                },
+                "turn_id": "01a21ea3-8b68-77d0-95bb-119656908130",
+                "phase": "started",
+                "ordinal": 3
+              },
+              {
+                "scope": {
+                  "binding": "89a08ebaa9957dfde8dc4811c7ff8834",
+                  "native_session": "01a21ea0-9b28-7633-9a6b-3f5dfba8492b",
+                  "execution": "0ffe0244-2d20-5295-8b09-b0d47bc7004f",
+                  "generation": 1,
+                  "process": {
+                    "pid": 422952,
+                    "start": 143788903
+                  },
+                  "kernel_boot": "6d757418-e8a4-456d-a680-21953e8fa0a3"
+                },
+                "turn_id": "01a21ea0-e6f5-7103-a61e-9e925d87ab64",
+                "phase": "ended",
+                "ordinal": 4
+              }
+            ],
+            "intents": [],
+            "wake_work": {
+              "active_attempt": "3a141e04-65b8-47a6-809f-d6b4bd4c62b7",
+              "active_boot": "4538bdd1-965f-41f0-99f4-1b57d8075158",
+              "last_attempt": "3a141e04-65b8-47a6-809f-d6b4bd4c62b7",
+              "last_boot": "4538bdd1-965f-41f0-99f4-1b57d8075158",
+              "last_outcome": "unsafe",
+              "reserved_at_utc": 1795810465812,
+              "last_reserved_at_utc": 1795810465812,
+              "completed_at_utc": 1795810436077,
+              "reason_bits": 1,
+              "retry_step": 1
+            },
+            "census_complete": true,
+            "observation_start_ms": 101033,
+            "observation_end_ms": 101038
+          },
+          {
+            "ok": true,
+            "seat": "sG3xnaAQxk4u",
+            "after": 1,
+            "truncated": false,
+            "seat_scope": {
+              "instance": "338f5548a2dc90b5c9a789ea8b0919e7",
+              "state": "resolved",
+              "generation": 1,
+              "target": "w2:p3",
+              "target_generation": 1
+            },
+            "kernel_boot": "6d757418-e8a4-456d-a680-21953e8fa0a3",
+            "watermark": 1,
+            "bindings": [
+              {
+                "adapter": "codex",
+                "scope": {
+                  "binding": "7d097907c8941e6f38162c05e81d80be",
+                  "native_session": "01a21ea1-03da-7bc1-9404-cdb96b13ad61",
+                  "execution": "14417c7a-1e20-59a7-bea1-293920cfa8f7",
+                  "generation": 1,
+                  "process": {
+                    "pid": 422952,
+                    "start": 143788903
+                  },
+                  "kernel_boot": "6d757418-e8a4-456d-a680-21953e8fa0a3"
+                },
+                "connected": true,
+                "top_level": true,
+                "root_agent": true,
+                "registered": true,
+                "target": "w2:p3",
+                "target_generation": 1
+              },
+              {
+                "adapter": "codex",
+                "scope": {
+                  "binding": "89a08ebaa9957dfde8dc4811c7ff8834",
+                  "native_session": "01a21ea0-9b28-7633-9a6b-3f5dfba8492b",
+                  "execution": "0ffe0244-2d20-5295-8b09-b0d47bc7004f",
+                  "generation": 1,
+                  "process": {
+                    "pid": 422952,
+                    "start": 143788903
+                  },
+                  "kernel_boot": "6d757418-e8a4-456d-a680-21953e8fa0a3"
+                },
+                "connected": true,
+                "top_level": true,
+                "root_agent": true,
+                "registered": true,
+                "target": "w2:p3",
+                "target_generation": 1
+              }
+            ],
+            "native": [
+              {
+                "scope": {
+                  "binding": "7d097907c8941e6f38162c05e81d80be",
+                  "native_session": "01a21ea1-03da-7bc1-9404-cdb96b13ad61",
+                  "execution": "14417c7a-1e20-59a7-bea1-293920cfa8f7",
+                  "generation": 1,
+                  "process": {
+                    "pid": 422952,
+                    "start": 143788903
+                  },
+                  "kernel_boot": "6d757418-e8a4-456d-a680-21953e8fa0a3"
+                },
+                "turn_id": "01a21ea3-8b68-77d0-95bb-119656908130",
+                "phase": "started",
+                "ordinal": 3
+              },
+              {
+                "scope": {
+                  "binding": "89a08ebaa9957dfde8dc4811c7ff8834",
+                  "native_session": "01a21ea0-9b28-7633-9a6b-3f5dfba8492b",
+                  "execution": "0ffe0244-2d20-5295-8b09-b0d47bc7004f",
+                  "generation": 1,
+                  "process": {
+                    "pid": 422952,
+                    "start": 143788903
+                  },
+                  "kernel_boot": "6d757418-e8a4-456d-a680-21953e8fa0a3"
+                },
+                "turn_id": "01a21ea0-e6f5-7103-a61e-9e925d87ab64",
+                "phase": "ended",
+                "ordinal": 4
+              }
+            ],
+            "intents": [],
+            "wake_work": {
+              "active_attempt": null,
+              "active_boot": null,
+              "last_attempt": "fc8d40f9-2417-42e4-8b8d-947c68f81a50",
+              "last_boot": "4538bdd1-965f-41f0-99f4-1b57d8075158",
+              "last_outcome": "unsafe",
+              "reserved_at_utc": 1795810465812,
+              "last_reserved_at_utc": 1795810187073,
+              "completed_at_utc": 1795810465930,
+              "reason_bits": 1,
+              "retry_step": 0
+            },
+            "census_complete": true,
+            "observation_start_ms": 101243,
+            "observation_end_ms": 101247
+          },
+          {
+            "ok": true,
+            "seat": "sG3xnaAQxk4u",
+            "after": 1,
+            "truncated": false,
+            "seat_scope": {
+              "instance": "338f5548a2dc90b5c9a789ea8b0919e7",
+              "state": "resolved",
+              "generation": 1,
+              "target": "w2:p3",
+              "target_generation": 1
+            },
+            "kernel_boot": "6d757418-e8a4-456d-a680-21953e8fa0a3",
+            "watermark": 1,
+            "bindings": [
+              {
+                "adapter": "codex",
+                "scope": {
+                  "binding": "7d097907c8941e6f38162c05e81d80be",
+                  "native_session": "01a21ea1-03da-7bc1-9404-cdb96b13ad61",
+                  "execution": "14417c7a-1e20-59a7-bea1-293920cfa8f7",
+                  "generation": 1,
+                  "process": {
+                    "pid": 422952,
+                    "start": 143788903
+                  },
+                  "kernel_boot": "6d757418-e8a4-456d-a680-21953e8fa0a3"
+                },
+                "connected": true,
+                "top_level": true,
+                "root_agent": true,
+                "registered": true,
+                "target": "w2:p3",
+                "target_generation": 1
+              },
+              {
+                "adapter": "codex",
+                "scope": {
+                  "binding": "89a08ebaa9957dfde8dc4811c7ff8834",
+                  "native_session": "01a21ea0-9b28-7633-9a6b-3f5dfba8492b",
+                  "execution": "0ffe0244-2d20-5295-8b09-b0d47bc7004f",
+                  "generation": 1,
+                  "process": {
+                    "pid": 422952,
+                    "start": 143788903
+                  },
+                  "kernel_boot": "6d757418-e8a4-456d-a680-21953e8fa0a3"
+                },
+                "connected": true,
+                "top_level": true,
+                "root_agent": true,
+                "registered": true,
+                "target": "w2:p3",
+                "target_generation": 1
+              }
+            ],
+            "native": [
+              {
+                "scope": {
+                  "binding": "7d097907c8941e6f38162c05e81d80be",
+                  "native_session": "01a21ea1-03da-7bc1-9404-cdb96b13ad61",
+                  "execution": "14417c7a-1e20-59a7-bea1-293920cfa8f7",
+                  "generation": 1,
+                  "process": {
+                    "pid": 422952,
+                    "start": 143788903
+                  },
+                  "kernel_boot": "6d757418-e8a4-456d-a680-21953e8fa0a3"
+                },
+                "turn_id": "01a21ea3-8b68-77d0-95bb-119656908130",
+                "phase": "ended",
+                "ordinal": 4
+              },
+              {
+                "scope": {
+                  "binding": "89a08ebaa9957dfde8dc4811c7ff8834",
+                  "native_session": "01a21ea0-9b28-7633-9a6b-3f5dfba8492b",
+                  "execution": "0ffe0244-2d20-5295-8b09-b0d47bc7004f",
+                  "generation": 1,
+                  "process": {
+                    "pid": 422952,
+                    "start": 143788903
+                  },
+                  "kernel_boot": "6d757418-e8a4-456d-a680-21953e8fa0a3"
+                },
+                "turn_id": "01a21ea0-e6f5-7103-a61e-9e925d87ab64",
+                "phase": "ended",
+                "ordinal": 4
+              }
+            ],
+            "intents": [],
+            "wake_work": {
+              "active_attempt": null,
+              "active_boot": null,
+              "last_attempt": "fc8d40f9-2417-42e4-8b8d-947c68f81a50",
+              "last_boot": "4538bdd1-965f-41f0-99f4-1b57d8075158",
+              "last_outcome": "unsafe",
+              "reserved_at_utc": 1795810465812,
+              "last_reserved_at_utc": 1795810187073,
+              "completed_at_utc": 1795810465930,
+              "reason_bits": 1,
+              "retry_step": 0
+            },
+            "census_complete": true,
+            "observation_start_ms": 103645,
+            "observation_end_ms": 103650
+          },
+          {
+            "ok": true,
+            "seat": "sG3xnaAQxk4u",
+            "after": 1,
+            "truncated": false,
+            "seat_scope": {
+              "instance": "338f5548a2dc90b5c9a789ea8b0919e7",
+              "state": "resolved",
+              "generation": 1,
+              "target": "w2:p3",
+              "target_generation": 1
+            },
+            "kernel_boot": "6d757418-e8a4-456d-a680-21953e8fa0a3",
+            "watermark": 1,
+            "bindings": [
+              {
+                "adapter": "codex",
+                "scope": {
+                  "binding": "7d097907c8941e6f38162c05e81d80be",
+                  "native_session": "01a21ea1-03da-7bc1-9404-cdb96b13ad61",
+                  "execution": "14417c7a-1e20-59a7-bea1-293920cfa8f7",
+                  "generation": 1,
+                  "process": {
+                    "pid": 422952,
+                    "start": 143788903
+                  },
+                  "kernel_boot": "6d757418-e8a4-456d-a680-21953e8fa0a3"
+                },
+                "connected": true,
+                "top_level": true,
+                "root_agent": true,
+                "registered": true,
+                "target": "w2:p3",
+                "target_generation": 1
+              },
+              {
+                "adapter": "codex",
+                "scope": {
+                  "binding": "89a08ebaa9957dfde8dc4811c7ff8834",
+                  "native_session": "01a21ea0-9b28-7633-9a6b-3f5dfba8492b",
+                  "execution": "0ffe0244-2d20-5295-8b09-b0d47bc7004f",
+                  "generation": 1,
+                  "process": {
+                    "pid": 422952,
+                    "start": 143788903
+                  },
+                  "kernel_boot": "6d757418-e8a4-456d-a680-21953e8fa0a3"
+                },
+                "connected": true,
+                "top_level": true,
+                "root_agent": true,
+                "registered": true,
+                "target": "w2:p3",
+                "target_generation": 1
+              }
+            ],
+            "native": [
+              {
+                "scope": {
+                  "binding": "7d097907c8941e6f38162c05e81d80be",
+                  "native_session": "01a21ea1-03da-7bc1-9404-cdb96b13ad61",
+                  "execution": "14417c7a-1e20-59a7-bea1-293920cfa8f7",
+                  "generation": 1,
+                  "process": {
+                    "pid": 422952,
+                    "start": 143788903
+                  },
+                  "kernel_boot": "6d757418-e8a4-456d-a680-21953e8fa0a3"
+                },
+                "turn_id": "01a21ea3-8b68-77d0-95bb-119656908130",
+                "phase": "ended",
+                "ordinal": 4
+              },
+              {
+                "scope": {
+                  "binding": "89a08ebaa9957dfde8dc4811c7ff8834",
+                  "native_session": "01a21ea0-9b28-7633-9a6b-3f5dfba8492b",
+                  "execution": "0ffe0244-2d20-5295-8b09-b0d47bc7004f",
+                  "generation": 1,
+                  "process": {
+                    "pid": 422952,
+                    "start": 143788903
+                  },
+                  "kernel_boot": "6d757418-e8a4-456d-a680-21953e8fa0a3"
+                },
+                "turn_id": "01a21ea0-e6f5-7103-a61e-9e925d87ab64",
+                "phase": "ended",
+                "ordinal": 4
+              }
+            ],
+            "intents": [],
+            "wake_work": {
+              "active_attempt": "fca6feb5-7b69-4a43-8e5e-c9dbf9dc3307",
+              "active_boot": "4538bdd1-965f-41f0-99f4-1b57d8075158",
+              "last_attempt": "fca6feb5-7b69-4a43-8e5e-c9dbf9dc3307",
+              "last_boot": "4538bdd1-965f-41f0-99f4-1b57d8075158",
+              "last_outcome": "unsafe",
+              "reserved_at_utc": 1795810493560,
+              "last_reserved_at_utc": 1795810493560,
+              "completed_at_utc": 1795810465930,
+              "reason_bits": 1,
+              "retry_step": 1
+            },
+            "census_complete": true,
+            "observation_start_ms": 128789,
+            "observation_end_ms": 128793
+          },
+          {
+            "ok": true,
+            "seat": "sG3xnaAQxk4u",
+            "after": 1,
+            "truncated": false,
+            "seat_scope": {
+              "instance": "338f5548a2dc90b5c9a789ea8b0919e7",
+              "state": "resolved",
+              "generation": 1,
+              "target": "w2:p3",
+              "target_generation": 1
+            },
+            "kernel_boot": "6d757418-e8a4-456d-a680-21953e8fa0a3",
+            "watermark": 1,
+            "bindings": [
+              {
+                "adapter": "codex",
+                "scope": {
+                  "binding": "7d097907c8941e6f38162c05e81d80be",
+                  "native_session": "01a21ea1-03da-7bc1-9404-cdb96b13ad61",
+                  "execution": "14417c7a-1e20-59a7-bea1-293920cfa8f7",
+                  "generation": 1,
+                  "process": {
+                    "pid": 422952,
+                    "start": 143788903
+                  },
+                  "kernel_boot": "6d757418-e8a4-456d-a680-21953e8fa0a3"
+                },
+                "connected": true,
+                "top_level": true,
+                "root_agent": true,
+                "registered": true,
+                "target": "w2:p3",
+                "target_generation": 1
+              },
+              {
+                "adapter": "codex",
+                "scope": {
+                  "binding": "89a08ebaa9957dfde8dc4811c7ff8834",
+                  "native_session": "01a21ea0-9b28-7633-9a6b-3f5dfba8492b",
+                  "execution": "0ffe0244-2d20-5295-8b09-b0d47bc7004f",
+                  "generation": 1,
+                  "process": {
+                    "pid": 422952,
+                    "start": 143788903
+                  },
+                  "kernel_boot": "6d757418-e8a4-456d-a680-21953e8fa0a3"
+                },
+                "connected": true,
+                "top_level": true,
+                "root_agent": true,
+                "registered": true,
+                "target": "w2:p3",
+                "target_generation": 1
+              }
+            ],
+            "native": [
+              {
+                "scope": {
+                  "binding": "7d097907c8941e6f38162c05e81d80be",
+                  "native_session": "01a21ea1-03da-7bc1-9404-cdb96b13ad61",
+                  "execution": "14417c7a-1e20-59a7-bea1-293920cfa8f7",
+                  "generation": 1,
+                  "process": {
+                    "pid": 422952,
+                    "start": 143788903
+                  },
+                  "kernel_boot": "6d757418-e8a4-456d-a680-21953e8fa0a3"
+                },
+                "turn_id": "01a21ea3-8b68-77d0-95bb-119656908130",
+                "phase": "ended",
+                "ordinal": 4
+              },
+              {
+                "scope": {
+                  "binding": "89a08ebaa9957dfde8dc4811c7ff8834",
+                  "native_session": "01a21ea0-9b28-7633-9a6b-3f5dfba8492b",
+                  "execution": "0ffe0244-2d20-5295-8b09-b0d47bc7004f",
+                  "generation": 1,
+                  "process": {
+                    "pid": 422952,
+                    "start": 143788903
+                  },
+                  "kernel_boot": "6d757418-e8a4-456d-a680-21953e8fa0a3"
+                },
+                "turn_id": "01a21ea0-e6f5-7103-a61e-9e925d87ab64",
+                "phase": "ended",
+                "ordinal": 4
+              }
+            ],
+            "intents": [],
+            "wake_work": {
+              "active_attempt": null,
+              "active_boot": null,
+              "last_attempt": "fc8d40f9-2417-42e4-8b8d-947c68f81a50",
+              "last_boot": "4538bdd1-965f-41f0-99f4-1b57d8075158",
+              "last_outcome": "unsafe",
+              "reserved_at_utc": 1795810493560,
+              "last_reserved_at_utc": 1795810187073,
+              "completed_at_utc": 1795810493583,
+              "reason_bits": 1,
+              "retry_step": 0
+            },
+            "census_complete": true,
+            "observation_start_ms": 128893,
+            "observation_end_ms": 128897
+          },
+          {
+            "ok": true,
+            "seat": "sG3xnaAQxk4u",
+            "after": 1,
+            "truncated": false,
+            "seat_scope": {
+              "instance": "338f5548a2dc90b5c9a789ea8b0919e7",
+              "state": "resolved",
+              "generation": 1,
+              "target": "w2:p3",
+              "target_generation": 1
+            },
+            "kernel_boot": "6d757418-e8a4-456d-a680-21953e8fa0a3",
+            "watermark": 1,
+            "bindings": [
+              {
+                "adapter": "codex",
+                "scope": {
+                  "binding": "7d097907c8941e6f38162c05e81d80be",
+                  "native_session": "01a21ea1-03da-7bc1-9404-cdb96b13ad61",
+                  "execution": "14417c7a-1e20-59a7-bea1-293920cfa8f7",
+                  "generation": 1,
+                  "process": {
+                    "pid": 422952,
+                    "start": 143788903
+                  },
+                  "kernel_boot": "6d757418-e8a4-456d-a680-21953e8fa0a3"
+                },
+                "connected": true,
+                "top_level": true,
+                "root_agent": true,
+                "registered": true,
+                "target": "w2:p3",
+                "target_generation": 1
+              },
+              {
+                "adapter": "codex",
+                "scope": {
+                  "binding": "89a08ebaa9957dfde8dc4811c7ff8834",
+                  "native_session": "01a21ea0-9b28-7633-9a6b-3f5dfba8492b",
+                  "execution": "0ffe0244-2d20-5295-8b09-b0d47bc7004f",
+                  "generation": 1,
+                  "process": {
+                    "pid": 422952,
+                    "start": 143788903
+                  },
+                  "kernel_boot": "6d757418-e8a4-456d-a680-21953e8fa0a3"
+                },
+                "connected": true,
+                "top_level": true,
+                "root_agent": true,
+                "registered": true,
+                "target": "w2:p3",
+                "target_generation": 1
+              }
+            ],
+            "native": [
+              {
+                "scope": {
+                  "binding": "7d097907c8941e6f38162c05e81d80be",
+                  "native_session": "01a21ea1-03da-7bc1-9404-cdb96b13ad61",
+                  "execution": "14417c7a-1e20-59a7-bea1-293920cfa8f7",
+                  "generation": 1,
+                  "process": {
+                    "pid": 422952,
+                    "start": 143788903
+                  },
+                  "kernel_boot": "6d757418-e8a4-456d-a680-21953e8fa0a3"
+                },
+                "turn_id": "01a21ea3-8b68-77d0-95bb-119656908130",
+                "phase": "ended",
+                "ordinal": 4
+              },
+              {
+                "scope": {
+                  "binding": "89a08ebaa9957dfde8dc4811c7ff8834",
+                  "native_session": "01a21ea0-9b28-7633-9a6b-3f5dfba8492b",
+                  "execution": "0ffe0244-2d20-5295-8b09-b0d47bc7004f",
+                  "generation": 1,
+                  "process": {
+                    "pid": 422952,
+                    "start": 143788903
+                  },
+                  "kernel_boot": "6d757418-e8a4-456d-a680-21953e8fa0a3"
+                },
+                "turn_id": "01a21ea0-e6f5-7103-a61e-9e925d87ab64",
+                "phase": "ended",
+                "ordinal": 4
+              }
+            ],
+            "intents": [],
+            "wake_work": {
+              "active_attempt": "a3fbf793-be10-4f57-ad15-dbcfd0553cbd",
+              "active_boot": "4538bdd1-965f-41f0-99f4-1b57d8075158",
+              "last_attempt": "a3fbf793-be10-4f57-ad15-dbcfd0553cbd",
+              "last_boot": "4538bdd1-965f-41f0-99f4-1b57d8075158",
+              "last_outcome": "unsafe",
+              "reserved_at_utc": 1795810523587,
+              "last_reserved_at_utc": 1795810523587,
+              "completed_at_utc": 1795810493583,
+              "reason_bits": 1,
+              "retry_step": 1
+            },
+            "census_complete": true,
+            "observation_start_ms": 158804,
+            "observation_end_ms": 158808
+          },
+          {
+            "ok": true,
+            "seat": "sG3xnaAQxk4u",
+            "after": 1,
+            "truncated": false,
+            "seat_scope": {
+              "instance": "338f5548a2dc90b5c9a789ea8b0919e7",
+              "state": "resolved",
+              "generation": 1,
+              "target": "w2:p3",
+              "target_generation": 1
+            },
+            "kernel_boot": "6d757418-e8a4-456d-a680-21953e8fa0a3",
+            "watermark": 1,
+            "bindings": [
+              {
+                "adapter": "codex",
+                "scope": {
+                  "binding": "7d097907c8941e6f38162c05e81d80be",
+                  "native_session": "01a21ea1-03da-7bc1-9404-cdb96b13ad61",
+                  "execution": "14417c7a-1e20-59a7-bea1-293920cfa8f7",
+                  "generation": 1,
+                  "process": {
+                    "pid": 422952,
+                    "start": 143788903
+                  },
+                  "kernel_boot": "6d757418-e8a4-456d-a680-21953e8fa0a3"
+                },
+                "connected": true,
+                "top_level": true,
+                "root_agent": true,
+                "registered": true,
+                "target": "w2:p3",
+                "target_generation": 1
+              },
+              {
+                "adapter": "codex",
+                "scope": {
+                  "binding": "89a08ebaa9957dfde8dc4811c7ff8834",
+                  "native_session": "01a21ea0-9b28-7633-9a6b-3f5dfba8492b",
+                  "execution": "0ffe0244-2d20-5295-8b09-b0d47bc7004f",
+                  "generation": 1,
+                  "process": {
+                    "pid": 422952,
+                    "start": 143788903
+                  },
+                  "kernel_boot": "6d757418-e8a4-456d-a680-21953e8fa0a3"
+                },
+                "connected": true,
+                "top_level": true,
+                "root_agent": true,
+                "registered": true,
+                "target": "w2:p3",
+                "target_generation": 1
+              }
+            ],
+            "native": [
+              {
+                "scope": {
+                  "binding": "7d097907c8941e6f38162c05e81d80be",
+                  "native_session": "01a21ea1-03da-7bc1-9404-cdb96b13ad61",
+                  "execution": "14417c7a-1e20-59a7-bea1-293920cfa8f7",
+                  "generation": 1,
+                  "process": {
+                    "pid": 422952,
+                    "start": 143788903
+                  },
+                  "kernel_boot": "6d757418-e8a4-456d-a680-21953e8fa0a3"
+                },
+                "turn_id": "01a21ea3-8b68-77d0-95bb-119656908130",
+                "phase": "ended",
+                "ordinal": 4
+              },
+              {
+                "scope": {
+                  "binding": "89a08ebaa9957dfde8dc4811c7ff8834",
+                  "native_session": "01a21ea0-9b28-7633-9a6b-3f5dfba8492b",
+                  "execution": "0ffe0244-2d20-5295-8b09-b0d47bc7004f",
+                  "generation": 1,
+                  "process": {
+                    "pid": 422952,
+                    "start": 143788903
+                  },
+                  "kernel_boot": "6d757418-e8a4-456d-a680-21953e8fa0a3"
+                },
+                "turn_id": "01a21ea0-e6f5-7103-a61e-9e925d87ab64",
+                "phase": "ended",
+                "ordinal": 4
+              }
+            ],
+            "intents": [],
+            "wake_work": {
+              "active_attempt": null,
+              "active_boot": null,
+              "last_attempt": "fc8d40f9-2417-42e4-8b8d-947c68f81a50",
+              "last_boot": "4538bdd1-965f-41f0-99f4-1b57d8075158",
+              "last_outcome": "unsafe",
+              "reserved_at_utc": 1795810523587,
+              "last_reserved_at_utc": 1795810187073,
+              "completed_at_utc": 1795810523809,
+              "reason_bits": 1,
+              "retry_step": 0
+            },
+            "census_complete": true,
+            "observation_start_ms": 159118,
+            "observation_end_ms": 159123
+          },
+          {
+            "ok": true,
+            "seat": "sG3xnaAQxk4u",
+            "after": 1,
+            "truncated": false,
+            "seat_scope": {
+              "instance": "338f5548a2dc90b5c9a789ea8b0919e7",
+              "state": "resolved",
+              "generation": 1,
+              "target": "w2:p3",
+              "target_generation": 1
+            },
+            "kernel_boot": "6d757418-e8a4-456d-a680-21953e8fa0a3",
+            "watermark": 1,
+            "bindings": [
+              {
+                "adapter": "codex",
+                "scope": {
+                  "binding": "7d097907c8941e6f38162c05e81d80be",
+                  "native_session": "01a21ea1-03da-7bc1-9404-cdb96b13ad61",
+                  "execution": "14417c7a-1e20-59a7-bea1-293920cfa8f7",
+                  "generation": 1,
+                  "process": {
+                    "pid": 422952,
+                    "start": 143788903
+                  },
+                  "kernel_boot": "6d757418-e8a4-456d-a680-21953e8fa0a3"
+                },
+                "connected": true,
+                "top_level": true,
+                "root_agent": true,
+                "registered": true,
+                "target": "w2:p3",
+                "target_generation": 1
+              },
+              {
+                "adapter": "codex",
+                "scope": {
+                  "binding": "89a08ebaa9957dfde8dc4811c7ff8834",
+                  "native_session": "01a21ea0-9b28-7633-9a6b-3f5dfba8492b",
+                  "execution": "0ffe0244-2d20-5295-8b09-b0d47bc7004f",
+                  "generation": 1,
+                  "process": {
+                    "pid": 422952,
+                    "start": 143788903
+                  },
+                  "kernel_boot": "6d757418-e8a4-456d-a680-21953e8fa0a3"
+                },
+                "connected": true,
+                "top_level": true,
+                "root_agent": true,
+                "registered": true,
+                "target": "w2:p3",
+                "target_generation": 1
+              }
+            ],
+            "native": [
+              {
+                "scope": {
+                  "binding": "7d097907c8941e6f38162c05e81d80be",
+                  "native_session": "01a21ea1-03da-7bc1-9404-cdb96b13ad61",
+                  "execution": "14417c7a-1e20-59a7-bea1-293920cfa8f7",
+                  "generation": 1,
+                  "process": {
+                    "pid": 422952,
+                    "start": 143788903
+                  },
+                  "kernel_boot": "6d757418-e8a4-456d-a680-21953e8fa0a3"
+                },
+                "turn_id": "01a21ea3-8b68-77d0-95bb-119656908130",
+                "phase": "ended",
+                "ordinal": 4
+              },
+              {
+                "scope": {
+                  "binding": "89a08ebaa9957dfde8dc4811c7ff8834",
+                  "native_session": "01a21ea0-9b28-7633-9a6b-3f5dfba8492b",
+                  "execution": "0ffe0244-2d20-5295-8b09-b0d47bc7004f",
+                  "generation": 1,
+                  "process": {
+                    "pid": 422952,
+                    "start": 143788903
+                  },
+                  "kernel_boot": "6d757418-e8a4-456d-a680-21953e8fa0a3"
+                },
+                "turn_id": "01a21ea0-e6f5-7103-a61e-9e925d87ab64",
+                "phase": "ended",
+                "ordinal": 4
+              }
+            ],
+            "intents": [],
+            "wake_work": {
+              "active_attempt": "cd3d03ed-ec59-4098-a09a-91ddd639c657",
+              "active_boot": "4538bdd1-965f-41f0-99f4-1b57d8075158",
+              "last_attempt": "cd3d03ed-ec59-4098-a09a-91ddd639c657",
+              "last_boot": "4538bdd1-965f-41f0-99f4-1b57d8075158",
+              "last_outcome": "unsafe",
+              "reserved_at_utc": 1795810553487,
+              "last_reserved_at_utc": 1795810553487,
+              "completed_at_utc": 1795810523809,
+              "reason_bits": 1,
+              "retry_step": 1
+            },
+            "census_complete": true,
+            "observation_start_ms": 188794,
+            "observation_end_ms": 188798
+          },
+          {
+            "ok": true,
+            "seat": "sG3xnaAQxk4u",
+            "after": 1,
+            "truncated": false,
+            "seat_scope": {
+              "instance": "338f5548a2dc90b5c9a789ea8b0919e7",
+              "state": "resolved",
+              "generation": 1,
+              "target": "w2:p3",
+              "target_generation": 1
+            },
+            "kernel_boot": "6d757418-e8a4-456d-a680-21953e8fa0a3",
+            "watermark": 1,
+            "bindings": [
+              {
+                "adapter": "codex",
+                "scope": {
+                  "binding": "7d097907c8941e6f38162c05e81d80be",
+                  "native_session": "01a21ea1-03da-7bc1-9404-cdb96b13ad61",
+                  "execution": "14417c7a-1e20-59a7-bea1-293920cfa8f7",
+                  "generation": 1,
+                  "process": {
+                    "pid": 422952,
+                    "start": 143788903
+                  },
+                  "kernel_boot": "6d757418-e8a4-456d-a680-21953e8fa0a3"
+                },
+                "connected": true,
+                "top_level": true,
+                "root_agent": true,
+                "registered": true,
+                "target": "w2:p3",
+                "target_generation": 1
+              },
+              {
+                "adapter": "codex",
+                "scope": {
+                  "binding": "89a08ebaa9957dfde8dc4811c7ff8834",
+                  "native_session": "01a21ea0-9b28-7633-9a6b-3f5dfba8492b",
+                  "execution": "0ffe0244-2d20-5295-8b09-b0d47bc7004f",
+                  "generation": 1,
+                  "process": {
+                    "pid": 422952,
+                    "start": 143788903
+                  },
+                  "kernel_boot": "6d757418-e8a4-456d-a680-21953e8fa0a3"
+                },
+                "connected": true,
+                "top_level": true,
+                "root_agent": true,
+                "registered": true,
+                "target": "w2:p3",
+                "target_generation": 1
+              }
+            ],
+            "native": [
+              {
+                "scope": {
+                  "binding": "7d097907c8941e6f38162c05e81d80be",
+                  "native_session": "01a21ea1-03da-7bc1-9404-cdb96b13ad61",
+                  "execution": "14417c7a-1e20-59a7-bea1-293920cfa8f7",
+                  "generation": 1,
+                  "process": {
+                    "pid": 422952,
+                    "start": 143788903
+                  },
+                  "kernel_boot": "6d757418-e8a4-456d-a680-21953e8fa0a3"
+                },
+                "turn_id": "01a21ea3-8b68-77d0-95bb-119656908130",
+                "phase": "ended",
+                "ordinal": 4
+              },
+              {
+                "scope": {
+                  "binding": "89a08ebaa9957dfde8dc4811c7ff8834",
+                  "native_session": "01a21ea0-9b28-7633-9a6b-3f5dfba8492b",
+                  "execution": "0ffe0244-2d20-5295-8b09-b0d47bc7004f",
+                  "generation": 1,
+                  "process": {
+                    "pid": 422952,
+                    "start": 143788903
+                  },
+                  "kernel_boot": "6d757418-e8a4-456d-a680-21953e8fa0a3"
+                },
+                "turn_id": "01a21ea0-e6f5-7103-a61e-9e925d87ab64",
+                "phase": "ended",
+                "ordinal": 4
+              }
+            ],
+            "intents": [],
+            "wake_work": {
+              "active_attempt": null,
+              "active_boot": null,
+              "last_attempt": "fc8d40f9-2417-42e4-8b8d-947c68f81a50",
+              "last_boot": "4538bdd1-965f-41f0-99f4-1b57d8075158",
+              "last_outcome": "unsafe",
+              "reserved_at_utc": 1795810553487,
+              "last_reserved_at_utc": 1795810187073,
+              "completed_at_utc": 1795810553606,
+              "reason_bits": 1,
+              "retry_step": 0
+            },
+            "census_complete": true,
+            "observation_start_ms": 188898,
+            "observation_end_ms": 188902
+          },
+          {
+            "ok": true,
+            "seat": "sG3xnaAQxk4u",
+            "after": 1,
+            "truncated": false,
+            "seat_scope": {
+              "instance": "338f5548a2dc90b5c9a789ea8b0919e7",
+              "state": "resolved",
+              "generation": 1,
+              "target": "w2:p3",
+              "target_generation": 1
+            },
+            "kernel_boot": "6d757418-e8a4-456d-a680-21953e8fa0a3",
+            "watermark": 1,
+            "bindings": [
+              {
+                "adapter": "codex",
+                "scope": {
+                  "binding": "7d097907c8941e6f38162c05e81d80be",
+                  "native_session": "01a21ea1-03da-7bc1-9404-cdb96b13ad61",
+                  "execution": "14417c7a-1e20-59a7-bea1-293920cfa8f7",
+                  "generation": 1,
+                  "process": {
+                    "pid": 422952,
+                    "start": 143788903
+                  },
+                  "kernel_boot": "6d757418-e8a4-456d-a680-21953e8fa0a3"
+                },
+                "connected": false,
+                "top_level": true,
+                "root_agent": true,
+                "registered": true,
+                "target": "w2:p3",
+                "target_generation": 1
+              },
+              {
+                "adapter": "codex",
+                "scope": {
+                  "binding": "89a08ebaa9957dfde8dc4811c7ff8834",
+                  "native_session": "01a21ea0-9b28-7633-9a6b-3f5dfba8492b",
+                  "execution": "0ffe0244-2d20-5295-8b09-b0d47bc7004f",
+                  "generation": 1,
+                  "process": {
+                    "pid": 422952,
+                    "start": 143788903
+                  },
+                  "kernel_boot": "6d757418-e8a4-456d-a680-21953e8fa0a3"
+                },
+                "connected": true,
+                "top_level": true,
+                "root_agent": true,
+                "registered": true,
+                "target": "w2:p3",
+                "target_generation": 1
+              }
+            ],
+            "native": [
+              {
+                "scope": {
+                  "binding": "7d097907c8941e6f38162c05e81d80be",
+                  "native_session": "01a21ea1-03da-7bc1-9404-cdb96b13ad61",
+                  "execution": "14417c7a-1e20-59a7-bea1-293920cfa8f7",
+                  "generation": 1,
+                  "process": {
+                    "pid": 422952,
+                    "start": 143788903
+                  },
+                  "kernel_boot": "6d757418-e8a4-456d-a680-21953e8fa0a3"
+                },
+                "turn_id": "01a21ea3-8b68-77d0-95bb-119656908130",
+                "phase": "ended",
+                "ordinal": 4
+              },
+              {
+                "scope": {
+                  "binding": "89a08ebaa9957dfde8dc4811c7ff8834",
+                  "native_session": "01a21ea0-9b28-7633-9a6b-3f5dfba8492b",
+                  "execution": "0ffe0244-2d20-5295-8b09-b0d47bc7004f",
+                  "generation": 1,
+                  "process": {
+                    "pid": 422952,
+                    "start": 143788903
+                  },
+                  "kernel_boot": "6d757418-e8a4-456d-a680-21953e8fa0a3"
+                },
+                "turn_id": "01a21ea0-e6f5-7103-a61e-9e925d87ab64",
+                "phase": "ended",
+                "ordinal": 4
+              }
+            ],
+            "intents": [],
+            "wake_work": {
+              "active_attempt": null,
+              "active_boot": null,
+              "last_attempt": "fc8d40f9-2417-42e4-8b8d-947c68f81a50",
+              "last_boot": "4538bdd1-965f-41f0-99f4-1b57d8075158",
+              "last_outcome": "unsafe",
+              "reserved_at_utc": 1795810553487,
+              "last_reserved_at_utc": 1795810187073,
+              "completed_at_utc": 1795810553606,
+              "reason_bits": 1,
+              "retry_step": 0
+            },
+            "census_complete": true,
+            "observation_start_ms": 194951,
+            "observation_end_ms": 194955
+          }
+        ]
+      },
+      "wake_windows": [],
+      "actual_transport": "none"
+    }
+  ]
+}

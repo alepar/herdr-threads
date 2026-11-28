@@ -1,0 +1,20 @@
+review: not ready
+[Must-fix] final review r2: bridge tool_boundary_check_in drops auxiliary evidence (B8)
+[Must-fix] final review r2: cluster 3 run docs unreviewed
+[Must-fix] final review r2: ansi-composer README stale /side placeholder clause
+[Must-fix] final review r2: ansi-composer README codex-0.163.0-side row
+[Must-fix] final review r2: install.md release driver queue-proof sentence
+[Must-fix] final review r2: SKILL.md human config seat set 'asks the person' on harnesses without ask-rule (B6)
+[Must-fix] final review r2: wake_queue_cost lone-side test vacuous
+[Must-fix] untested r2: no build or test at head for any cluster
+[Must-fix] untested r2: live qualification not run
+[Must-fix] untested r2: no real hook-path aux bit end to end
+[Must-fix] untested r2: no live root contact under targeted session UUID
+[Must-fix] untested r2: refusal-backoff retry timing after side closes unmeasured
+[Must-fix] untested r2: doctor report_captured wiring not end to end
+[Must-fix] untested r2: human config seat set without --seat in a pane only via test seam
+[Must-fix] untested r2: release-qualify --queue-proof pass-through untested
+[Must-fix] untested r2: scheduler/queue paths untested (OutcomeUnknown with root, unknown root, fallback scope)
+[Must-fix] untested r2: service-level gaps (subagent human-tier write, human unset nudge_threshold, operator replay)
+[Must-fix] untested r2: mark_auxiliary guards and reversible-close operator write untested
+[Must-fix] untested r2: skill.rs needles for new sentences missing

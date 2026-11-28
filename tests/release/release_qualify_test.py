@@ -21,11 +21,10 @@ loader.exec_module(release)
 
 
 class QueueProofRouting(unittest.TestCase):
-    def wake_command(self, queue_proof=False, install_enabled=False):
+    def wake_command(self, queue_proof=False):
         with tempfile.TemporaryDirectory(prefix='ht-release-routing-') as temp:
             evidence = Path(temp) / 'evidence'
-            with mock.patch.object(release, 'operator_programmatic_wake', return_value=install_enabled), \
-                    mock.patch.object(release.subprocess, 'run', return_value=subprocess.CompletedProcess([], 0)) as run:
+            with mock.patch.object(release.subprocess, 'run', return_value=subprocess.CompletedProcess([], 0)) as run:
                 with contextlib.redirect_stdout(io.StringIO()):
                     if queue_proof:
                         result = release.qualify(evidence, False, queue_proof=True)
@@ -75,97 +74,60 @@ class QueueProofRouting(unittest.TestCase):
         run.assert_not_called()
 
 
-class OperatorQueueMode(unittest.TestCase):
-    def configured(self, raw):
-        with tempfile.TemporaryDirectory(prefix='ht-mode-test-') as temp:
-            node=Path(temp)/'node';node.mkdir()
-            if raw is not None:(node/'settings.json').write_bytes(raw)
-            report={'doctor':{'node_dir':str(node),'daemon':{'state':'not_running'},'harness_states':{'warning':'unrelated'}}}
-            with mock.patch.object(release,'_doctor_report',return_value=report):
-                return release.operator_programmatic_wake()
+class ExplicitOnlyQueueSelection(unittest.TestCase):
+    """Queue proof is selected only by --queue-proof; no operator setting or doctor is read."""
 
-    def test_missing_file_key_off_and_true(self):
-        for raw,expected in [(None,False),(b'{}',False),(b'{"programmatic_wake":false}',False),(b'{"programmatic_wake":true}',True)]:
-            self.assertIs(self.configured(raw),expected)
-
-    def test_invalid_setting_and_unresolved_probe_do_not_silently_downgrade(self):
-        for raw in [b'[]',b'{bad',b'{"programmatic_wake":1}',b'{"programmatic_wake":"on"}',b' '*4097]:
-            with self.subTest(raw=raw[:40]),self.assertRaises(RuntimeError):self.configured(raw)
-        for report in [{},{'doctor':None},{'doctor':[]},{'doctor':{'node_dir':'relative'}},{'doctor':{'node_dir':[]}}]:
-            with mock.patch.object(release,'_doctor_report',return_value=report),self.assertRaises(RuntimeError):
-                release.operator_programmatic_wake()
-
-    def test_duplicate_mode_keys_are_ambiguous_not_last_value_wins(self):
-        with self.assertRaises(RuntimeError):
-            self.configured(b'{"programmatic_wake":true,"programmatic_wake":false}')
-        with self.assertRaises(RuntimeError):
-            release._doctor_report([sys.executable,'-c',
-                'import sys;sys.stdout.write(' + repr('{"doctor":{"node_dir":"/first","node_dir":"/second"}}') + ')'])
-
-    def test_settings_reject_non_json_numeric_constants_before_selecting_mode(self):
-        for constant in ('NaN', 'Infinity', '-Infinity'):
-            for enabled in ('false', 'true'):
-                raw = ('{"minimum_wake_delay_ms":' + constant + ',"programmatic_wake":' + enabled + '}').encode()
-                with self.subTest(constant=constant, enabled=enabled), self.assertRaisesRegex(RuntimeError, 'invalid JSON'):
-                    self.configured(raw)
-
-    def test_doctor_rejects_non_json_numeric_constants(self):
-        for constant in ('NaN', 'Infinity', '-Infinity'):
-            raw = '{"doctor":{"node_dir":"/valid","extra":' + constant + '}}'
-            with self.subTest(constant=constant), self.assertRaisesRegex(RuntimeError, 'invalid JSON'):
-                release._doctor_report([sys.executable, '-c', 'import sys;sys.stdout.write(' + repr(raw) + ')'])
-
-    def test_selected_install_on_routes_required_queue_proof(self):
-        with mock.patch.object(sys,'platform','linux'):
-            argv,_=QueueProofRouting().wake_command(install_enabled=True)
-        self.assertIn('--queue-proof',argv)
-
-    def qualification(self, explicit=False, self_test=False):
+    def qualification(self, explicit=False, self_test=False, platform='linux'):
+        opened = []
+        real_open = Path.open
+        def guarded_open(path, *args, **kwargs):
+            if path.name == 'settings.json':
+                opened.append(str(path))
+                raise AssertionError('operator settings opened')
+            return real_open(path, *args, **kwargs)
         with tempfile.TemporaryDirectory(prefix='ht-mode-route-') as temp, \
-                mock.patch.object(release.subprocess,'run',return_value=subprocess.CompletedProcess([],0)) as run, \
-                mock.patch.object(release,'operator_programmatic_wake',side_effect=RuntimeError('unresolved')) as probe, \
-                mock.patch.object(sys,'platform','linux'),contextlib.redirect_stdout(io.StringIO()):
-            result=release.qualify(Path(temp)/'evidence',self_test,queue_proof=explicit)
-            commands=[call.args[0] for call in run.call_args_list]
-            return result,commands,probe.call_count
+                mock.patch.object(release.subprocess, 'run', return_value=subprocess.CompletedProcess([], 0)) as run, \
+                mock.patch.object(release.subprocess, 'Popen', side_effect=AssertionError('doctor probe spawned')), \
+                mock.patch.object(Path, 'open', guarded_open), \
+                mock.patch.object(sys, 'platform', platform), contextlib.redirect_stdout(io.StringIO()):
+            result = release.qualify(Path(temp) / 'evidence', self_test, queue_proof=explicit)
+            summary = json.loads((Path(temp) / 'evidence/summary.json').read_text())
+        commands = [call.args[0] for call in run.call_args_list]
+        return result, commands, opened, summary
 
-    def test_explicit_proof_bypasses_operator_probe(self):
-        result,commands,count=self.qualification(explicit=True)
-        self.assertEqual(result,0);self.assertEqual(count,0)
-        self.assertTrue(any(argv[0]=='scripts/wake-e2e-herdr' and '--queue-proof' in argv for argv in commands))
+    def test_no_probe_machinery_remains(self):
+        for name in ('operator_programmatic_wake', '_doctor_report'):
+            self.assertFalse(hasattr(release, name), name)
 
-    def test_self_test_skips_real_operator_probe(self):
-        result,commands,count=self.qualification(self_test=True)
-        self.assertEqual(result,0);self.assertEqual(count,0)
-        self.assertFalse(any(argv[0]=='scripts/wake-e2e-herdr' for argv in commands))
+    def test_unflagged_run_never_selects_queue_proof_or_reads_settings(self):
+        for platform in ('linux', 'darwin'):
+            with self.subTest(platform=platform):
+                result, commands, opened, summary = self.qualification(platform=platform)
+                self.assertEqual(result, 0)
+                self.assertEqual(opened, [])
+                wakes = [argv for argv in commands if argv[0] == 'scripts/wake-e2e-herdr']
+                self.assertEqual(len(wakes), 1)
+                self.assertNotIn('--queue-proof', wakes[0])
+                self.assertNotIn('queue-mode', [row['step'] for row in summary['results']])
 
-    def test_unresolved_mode_blocks_authenticated_wake(self):
-        result,commands,count=self.qualification()
-        self.assertEqual(result,1);self.assertEqual(count,1)
-        self.assertFalse(any(argv[0]=='scripts/wake-e2e-herdr' for argv in commands))
+    def test_explicit_flag_selects_queue_proof_without_reading_settings(self):
+        result, commands, opened, _ = self.qualification(explicit=True)
+        self.assertEqual(result, 0)
+        self.assertEqual(opened, [])
+        self.assertTrue(any(argv[0] == 'scripts/wake-e2e-herdr' and '--queue-proof' in argv for argv in commands))
 
-    def test_probe_execution_and_output_are_bounded(self):
-        with mock.patch.object(release,'DOCTOR_OUTPUT_LIMIT',128),self.assertRaisesRegex(RuntimeError,'bound'):
-            release._doctor_report([sys.executable,'-c',"print('x'*200)"])
-        with mock.patch.object(release,'DOCTOR_PROBE_TIMEOUT',0.05),self.assertRaisesRegex(RuntimeError,'timed out'):
-            release._doctor_report([sys.executable,'-c','import time;time.sleep(10)'])
+    def test_self_test_skips_authenticated_wake(self):
+        result, commands, opened, _ = self.qualification(self_test=True)
+        self.assertEqual(result, 0)
+        self.assertEqual(opened, [])
+        self.assertFalse(any(argv[0] == 'scripts/wake-e2e-herdr' for argv in commands))
 
-    def test_valid_canonical_report_does_not_require_healthy_exit(self):
-        report=release._doctor_report([sys.executable,'-c','import json;print(json.dumps({"doctor":{"node_dir":"/valid"}}));raise SystemExit(1)'])
-        self.assertEqual(report['doctor']['node_dir'],'/valid')
-
-    def test_unsupported_platform_ordinary_mode_never_probes_operator(self):
-        with tempfile.TemporaryDirectory(prefix='ht-native-mode-') as temp, \
-                mock.patch.object(release.subprocess,'run',return_value=subprocess.CompletedProcess([],0)), \
-                mock.patch.object(release,'operator_programmatic_wake',side_effect=AssertionError('unexpected probe')) as probe, \
-                mock.patch.object(sys,'platform','win32'),contextlib.redirect_stdout(io.StringIO()):
-            self.assertEqual(release.qualify(Path(temp)/'evidence',False),0)
-            probe.assert_not_called()
-
-    def test_macos_selected_install_on_routes_required_queue_proof(self):
-        with mock.patch.object(sys,'platform','darwin'):
-            argv,_=QueueProofRouting().wake_command(install_enabled=True)
-        self.assertIn('--queue-proof',argv)
+    def test_help_states_explicit_only_selection(self):
+        out = subprocess.run([sys.executable, str(ROOT / 'scripts/release-qualify'), '--help'],
+                             capture_output=True, text=True, check=True).stdout
+        flat = ' '.join(out.split())
+        self.assertIn('never read from operator settings', flat)
+        self.assertIn('per owned Codex seat', flat)
 
 
 if __name__ == '__main__':

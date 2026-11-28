@@ -1,0 +1,20 @@
+diff --git a/tests/store/receipts.rs b/tests/store/receipts.rs
+index 4949ac8ed..fe0b4d81d 100644
+--- a/tests/store/receipts.rs
++++ b/tests/store/receipts.rs
+@@ -130,6 +130,7 @@ fn send_request(mut explicit: Vec<&str>) -> SendMessage {
+         deadline_millis: None,
+         operation: OperationId::new("op"),
+         claim: CallerClaim {
++            auxiliary_session: false,
+             host: crate::test_support::test_host_locator(),
+             instance: "34750f98bd59fcfc946da45aaabe933b".into(),
+             seat: SeatId::new("a"),
+@@ -401,6 +402,7 @@ fn ack_request(ids: Vec<MessageId>) -> Ack {
+         messages: ids,
+         operation: OperationId::new("ack-op"),
+         claim: CallerClaim {
++            auxiliary_session: false,
+             host: crate::test_support::test_host_locator(),
+             instance: "34750f98bd59fcfc946da45aaabe933b".into(),
+             seat: SeatId::new("b"),
