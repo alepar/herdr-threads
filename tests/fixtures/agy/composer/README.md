@@ -36,6 +36,19 @@ on exit; check with `scripts/check-no-leaked-processes`.
 | `subagent-tool-running` | as above, the child's reply is `run_command sleep 90` (allowed) |
 | `old-agent-row` | the scripted reply quotes `● Agent(DeepCoder)  Generating · 12m31s`, so the row sits in the transcript above the composer |
 
+`statusline-*` (ht-rot9) come from `capture-statusline.sh` (same recipe; it runs on Linux too, where
+there is no `sandbox-exec`, with only the isolated HOME and the loopback base URL). Its settings add a
+`statusLine` command printing one fixed bar, which replaces agy's default footer:
+
+- agy: Antigravity CLI 1.5.18 (linux-x64), Herdr: 0.9.5, captured 2026-11-27, 119 by 40
+
+| Capture | How |
+|---|---|
+| `statusline-empty` | idle composer |
+| `statusline-help-overlay` | `?` typed in an empty composer |
+| `statusline-draft` | `pane send-text "hello draft"`, no Enter |
+| `statusline-busy` | the queue holds the reply for 40 s (the footer stays the statusline) |
+
 The parent and the child race for the next queue entry, so `capture.sh` retries a subagent state in a
 fresh pane until the screen shows the `● Agent(` row.
 
@@ -43,7 +56,10 @@ fresh pane until the screen shows the `● Agent(` row.
 
 - Composer: two full-width `─` rules; between them the first row starts `>` (`>` alone is empty), later
   rows are indented two spaces. A footer line follows the bottom rule: `? for shortcuts …` when idle and
-  empty, blank-led (`   … Gemini 3.1 Pro · low`) with a draft, `esc to cancel …` while a turn runs.
+  empty, blank-led (`   … Gemini 3.1 Pro · low`) with a draft, `esc to cancel …` while a turn runs; with
+  a configured statusline it is the statusline's text in every state.
+- A running turn shows a spinner row (`⣷  Generating...`, a Braille pattern first) right above the
+  composer's top rule, with either footer.
 - Transcript separators above the composer are 60 `─` wide, not pane width.
 - A subagent adds a status region: rule, `  ● Agent(<name>)  <Working|tool action> · <elapsed>`, rule, and
   the footer gains ` · N subagent(s)`. Herdr reports `idle` for this screen (issue #2354).
@@ -57,7 +73,9 @@ fresh pane until the screen shows the `● Agent(` row.
 Design D8 said "the rows between the last two `─` rules". The captures need more: with a subagent the last
 two rules enclose the agent row, and a permission prompt's last two rules (the 60-wide transcript separator
 and the pane-wide one) enclose transcript text starting `>`. `AgyComposer` therefore uses only
-pane-width rules, requires exactly one idle footer line after the bottom rule, and treats any
+pane-width rules, requires one to three footer lines after the bottom rule (any text: the default
+footer or a statusline; the shortcuts overlay has many more), reads a spinner row above the box or an
+`esc to cancel` footer as a running turn, and treats any
 `Agent(<name>)` row from the third-from-last pane-width rule down as `Unreadable`.
 
 The old-row capture stands in for a stale row in scrollback with a model reply that quotes a row; agy

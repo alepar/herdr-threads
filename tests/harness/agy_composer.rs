@@ -87,14 +87,86 @@ fn unknown_screens_are_unreadable() {
         "─────────────────────────\n> x\n─────────────────────────\n",
         // The idle footer is required.
         &capture!("empty").replace("? for shortcuts", "esc to cancel"),
-        // A second footer line is not the idle layout.
-        &format!("{}extra status line\n", capture!("empty")),
+        // More footer rows than a footer or statusline: an overlay below the box.
+        &format!("{}one\ntwo\nthree\n", capture!("empty")),
         // The composer's first row must start with the prompt.
         &capture!("draft").replace("> hello draft", "hello draft"),
         // A continuation row must be indented two spaces.
         &capture!("multiline").replace("  second row", "second row"),
     ] {
         assert_eq!(read(screen), ComposerRead::Unreadable, "{screen:?}");
+    }
+}
+
+/// A user-configured statusline replaces the default footer (ht-rot9).
+const STATUSLINE: &str =
+    "████░░░░░░░░░░░░░░░░ 18%/1m | Fake Model (Medium) | wk:100%/100% | default | !sbx";
+
+/// `screen` with its last line (agy's default footer) replaced by the statusline.
+fn with_statusline(screen: &str) -> String {
+    let lines: Vec<&str> = screen.lines().collect();
+    let (_, body) = lines.split_last().unwrap();
+    format!("{}\n{STATUSLINE}\n", body.join("\n"))
+}
+
+#[test]
+fn a_statusline_footer_reads_like_the_default_one() {
+    assert_eq!(read(capture!("statusline-empty")), ComposerRead::Empty);
+    assert_eq!(
+        read(capture!("statusline-draft")),
+        ComposerRead::Text("hello draft".into())
+    );
+    // The idle composer with agy's footer and the statusline stacked.
+    let stacked = format!("{}{STATUSLINE}\n", capture!("empty"));
+    assert_eq!(read(&stacked), ComposerRead::Empty);
+}
+
+// Catches a running turn read as an empty composer once the `esc to cancel` footer is gone.
+#[test]
+fn a_spinner_above_the_box_is_a_running_turn_whatever_the_footer() {
+    let default_busy = with_statusline(capture!("busy"));
+    assert!(!default_busy.contains("esc to cancel"));
+    for (name, screen) in [
+        ("statusline-busy", capture!("statusline-busy")),
+        ("busy with a statusline", default_busy.as_str()),
+    ] {
+        assert_eq!(read(screen), ComposerRead::Unreadable, "{name}");
+        assert_eq!(
+            AgyComposer.screen_turn_running(screen),
+            Some(true),
+            "{name}"
+        );
+        assert_eq!(AgyComposer.screen_blocked(screen), None, "{name}");
+    }
+    let running_command =
+        capture!("statusline-busy").replace("Generating...", "Running command...");
+    assert_eq!(read(&running_command), ComposerRead::Unreadable);
+    assert_eq!(
+        AgyComposer.screen_turn_running(capture!("statusline-empty")),
+        Some(false)
+    );
+    assert_eq!(
+        AgyComposer.screen_blocked(capture!("statusline-empty")),
+        Some(false)
+    );
+}
+
+#[test]
+fn overlay_prompt_and_subagent_screens_stay_unreadable_with_a_statusline() {
+    assert_eq!(
+        read(capture!("statusline-help-overlay")),
+        ComposerRead::Unreadable
+    );
+    for (name, screen) in [
+        ("permission-prompt", capture!("permission-prompt")),
+        ("subagent-generating", capture!("subagent-generating")),
+        ("subagent-tool-running", capture!("subagent-tool-running")),
+    ] {
+        assert_eq!(
+            read(&with_statusline(screen)),
+            ComposerRead::Unreadable,
+            "{name}"
+        );
     }
 }
 
