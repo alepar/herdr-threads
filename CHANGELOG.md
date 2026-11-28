@@ -1,10 +1,23 @@
 # Changelog
 
-## Unreleased
+## v3.8.0
+
+Minor release: per-seat configuration, with queue wake switched on per seat, and Codex `/side` wake routing.
+
+One-way store upgrade to node schema 23. Older binaries that support at most schema 20 refuse an upgraded store.
+
+### Added
+
+- **Per-seat configuration (ht-z41e).** `ht config seat list|get|set|unset` reads and sets a seat's settings, and `ht human config seat set|unset [--seat S]` sets the person-only ones. The settings are `nudge_threshold` (agent tier, the existing threshold) and `programmatic_wake` (human tier, default off). Writes record operator provenance. Peers advertise capability `seat.config_v1`.
 
 ### Changed
 
 - **Queue wake is per seat (ht-z41e.4).** `programmatic_wake` in `node/settings.json` no longer takes effect (it still parses; `doctor` flags it as obsolete). Enable it per seat with `ht human config seat set --seat S programmatic_wake on`. Users who enabled the node key must set it on each seat. The daemon reads the seat's value on every attempt and again at arm, so a toggle needs no restart; an unreadable value falls back to native wake. `doctor` lists the seats that have it on, and a flip lifts an `unreceived` wake suppression for that seat. No CLI wrote the node key, so none needed to refuse it.
+
+### Fixed
+
+- **Codex `/side` chats (ht-z41e).** Native wake defers while a `/side` chat is displayed instead of typing into it, and queue wake for a `/side` session routes to its root session.
+- **agy idle wake with a custom statusline (ht-rot9).** The agy composer reader anchors on the rule-bounded prompt box instead of agy's default footer, so a seat whose agy shows a user statusline is woken again (doctor read `wake=unreadable`). A running turn is recognised by its spinner row.
 
 ## v3.7.0
 
